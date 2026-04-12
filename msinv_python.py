@@ -26,6 +26,7 @@ Options:
   -inv <p_inv> <c>            Inversion: frequency p_inv, gene flux
                               coefficient c (in [0,1])
   -I <n_std> <n_inv>          Sample composition (must sum to nsam)
+  -bp <left> <right>          Inversion breakpoints as fractions (default: 0.3 0.7)
   -flux_window <w>            Gene flux interval width (default: 0.3)
   -t_inv <age>                Inversion age in 2N gen (bounds S-I divergence)
   -N <Ne>                     Effective pop size for trajectory (default: 10000)
@@ -33,12 +34,45 @@ Options:
   -s <sel_coeff>              Selection coefficient for inversion (default: 0)
   -seed <s>                   Random seed
 
+Multi-population options:
+  -npops <n>                  Number of populations (default: 1)
+  -m <rate>                   Symmetric migration rate 4Nm (default: 0)
+  -sample_config <spec>       Sample composition per (class, pop), e.g.
+                              "S:0:3,I:0:2,S:1:3,I:1:2"
+  -demo_merge <t:src:dst>     Population merge: at time t, pop src → pop dst
+                              (can be specified multiple times)
+
 Trajectories:
-  constant:       Fixed p_inv, optionally bounded by -t_inv
-  deterministic:  Logistic sweep from 1/(2N) to p_inv under selection s
+  constant:       Fixed p_inv, optionally bounded by -t_inv.
+                  WARNING: without -t_inv, S-I coalescence time
+                  diverges to infinity at breakpoints.
+  deterministic:  Logistic sweep from 1/(2N) to p_inv under selection s.
+                  t_inv computed automatically from s and N.
   stochastic:     WF diffusion backward with drift + selection.
                   Reflecting boundary at p=0 models recurrent origins
                   at same breakpoints (driven by repeat arrays).
+                  t_inv is the time to reach 1/(2N) going backward.
+
+Chromosome structure:
+  [0, bp_left):       collinear, panmictic coalescence
+  [bp_left, bp_right]: inversion, class-structured coalescence + gene flux
+  (bp_right, 1]:      collinear, panmictic coalescence
+
+  At inversion breakpoints, trees are rebuilt from the equilibrium
+  distribution for the new region (LD drops to zero at breakpoints).
+
+Examples:
+  # Basic: 6 samples (3S+3I), inversion at [0.3,0.7], t_inv=10
+  msinv.py 6 100 -t 10 -r 50 1000 -inv 0.5 0.01 -I 3 3 -t_inv 10
+
+  # Stochastic trajectory (neutral, N=10000)
+  msinv.py 6 100 -t 10 -r 50 1000 -inv 0.5 0.01 -I 3 3 \
+    -trajectory stochastic -N 10000
+
+  # Two populations with migration
+  msinv.py 10 100 -t 10 -r 50 1000 -inv 0.5 0.01 -npops 2 -m 1.0 \
+    -sample_config "S:0:3,I:0:2,S:1:3,I:1:2" -t_inv 10 \
+    -demo_merge "5.0:1:0"
 """
 
 import numpy as np

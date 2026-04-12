@@ -618,6 +618,311 @@ def build_multi_inv_tree(nsam, active_inversions, rng, demography=None,
 
 
 # ===================================================================
+# n=2 utility functions (site-by-site coalescence times)
+# ===================================================================
+# These are fast, exact structured coalescent computations for n=2.
+# Useful for: validation, analytical comparison, Peischl replication,
+# computing E[T_SI] at specific positions, quick n=2 simulations.
+
+def phi(x, w=0.3):
+    """Gene flux probability at position x in [0,1] within inversion."""
+    if x <= 0 or x >= 1:
+        return 0.0
+    d = 1.0 - w
+    if d <= 0:
+        return 1.0
+    return min(x, 1.0 - x, w) / d
+
+
+class SMCTree:
+    """Minimal tree for n=2: coalescence time and two class labels."""
+    __slots__ = ['t_coal', 'class0', 'class1']
+
+    def __init__(self, t_coal, class0, class1):
+        self.t_coal = t_coal
+        self.class0 = class0
+        self.class1 = class1
+
+    def branch_length(self):
+        return 2.0 * self.t_coal
+
+
+def build_initial_tree(class0, class1, p_inv_func, c, rho, phi_x, rng):
+    """
+    Build structured coalescent tree for n=2 at a single site.
+    p_inv_func(t) returns inversion frequency at time t.
+
+    Events:
+      - Coalescence (same class): rate 1/p_class(t)
+      - Gene flux: rate c * rho/2 * p_other(t) * phi_x per lineage
+      - At t >= t_inv: all become S, panmictic coalescence
+    """
+    c0, c1 = class0, class1
+    t = 0.0
+
+    for _ in range(10000000):
+        p_inv = p_inv_func(t)
+
+        if p_inv <= 0:
+            c0, c1 = 0, 0
+            dt = rng.exponential(1.0)
+            return SMCTree(t + dt, c0, c1)
+
+        p_std = 1.0 - p_inv
+
+        if c0 == c1:
+            p_class = p_std if c0 == 0 else p_inv
+            rate_coal = 1.0 / p_class if p_class > 0 else 0.0
+        else:
+            rate_coal = 0.0
+
+        p_other_0 = p_inv if c0 == 0 else p_std
+        p_other_1 = p_inv if c1 == 0 else p_std
+        rate_flux_0 = c * (rho / 2.0) * p_other_0 * phi_x
+        rate_flux_1 = c * (rho / 2.0) * p_other_1 * phi_x
+
+        total = rate_coal + rate_flux_0 + rate_flux_1
+        if total <= 0:
+            t_inv = getattr(p_inv_func, 't_inv', None)
+            if t_inv is not None:
+                t = t_inv
+                continue
+            t += 100.0
+            return SMCTree(t, c0, c1)
+
+        dt = rng.exponential(1.0 / total)
+
+        t_inv = getattr(p_inv_func, 't_inv', None)
+        if t_inv is not None and t + dt >= t_inv:
+            t = t_inv
+            continue
+
+        t += dt
+        u = rng.random() * total
+
+        if u < rate_coal:
+            return SMCTree(t, c0, c1)
+        elif u < rate_coal + rate_flux_0:
+            c0 = 1 - c0
+        else:
+            c1 = 1 - c1
+
+    return SMCTree(t, c0, c1)
+
+
+def smc_step(tree, class0, class1, p_inv_func, c, rho, phi_x, rng):
+    """
+    One SMC step at n=2: prune one lineage, reattach via structured
+    coalescent. Uses time-varying p_inv_func(t).
+    """
+    p_inv_now = p_inv_func(0.0)
+    p_std_now = 1.0 - p_inv_now
+
+    if tree.class0 == tree.class1:
+        pruned = rng.integers(2)
+    else:
+        w0 = p_std_now if tree.class0 == 0 else p_inv_now
+        w1 = p_std_now if tree.class1 == 0 else p_inv_now
+        total_w = w0 + w1
+        if total_w <= 0:
+            pruned = rng.integers(2)
+        else:
+            pruned = 0 if rng.random() < w0 / total_w else 1
+
+    if pruned == 0:
+        floating_class = class0
+        remaining_class = class1
+    else:
+        floating_class = class1
+        remaining_class = class0
+
+    t_cut = rng.random() * tree.t_coal
+    fc = floating_class
+    t = t_cut
+
+    for _ in range(10000000):
+        p_inv = p_inv_func(t)
+
+        if p_inv <= 0:
+            fc = 0
+            remaining_class = 0
+            if t < tree.t_coal:
+                dt = rng.exponential(1.0)
+                t_attach = t + dt
+                if t_attach < tree.t_coal:
+                    return SMCTree(t_attach, class0, class1)
+                else:
+                    dt2 = rng.exponential(1.0)
+                    return SMCTree(tree.t_coal + dt2, class0, class1)
+            else:
+                dt = rng.exponential(1.0)
+                return SMCTree(t + dt, class0, class1)
+
+        p_std = 1.0 - p_inv
+
+        if t < tree.t_coal:
+            if fc == remaining_class:
+                p_class = p_std if fc == 0 else p_inv
+                rate_coal = 1.0 / p_class if p_class > 0 else 0.0
+            else:
+                rate_coal = 0.0
+
+            p_other = p_inv if fc == 0 else p_std
+            rate_flux = c * (rho / 2.0) * p_other * phi_x
+
+            total = rate_coal + rate_flux
+            if total <= 0:
+                t = tree.t_coal
+                continue
+
+            dt = rng.exponential(1.0 / total)
+
+            t_inv = getattr(p_inv_func, 't_inv', None)
+            if t_inv is not None and t + dt >= t_inv:
+                t = t_inv
+                continue
+
+            if t + dt < tree.t_coal:
+                t += dt
+                if rng.random() * total < rate_coal:
+                    return SMCTree(t, class0, class1)
+                else:
+                    fc = 1 - fc
+            else:
+                t = tree.t_coal
+        else:
+            rc = remaining_class
+            if fc == rc:
+                p_class = p_std if fc == 0 else p_inv
+                rate_coal = 1.0 / p_class if p_class > 0 else 0.0
+            else:
+                rate_coal = 0.0
+
+            p_other_f = p_inv if fc == 0 else p_std
+            p_other_r = p_inv if rc == 0 else p_std
+            rate_flux_f = c * (rho / 2.0) * p_other_f * phi_x
+            rate_flux_r = c * (rho / 2.0) * p_other_r * phi_x
+
+            total = rate_coal + rate_flux_f + rate_flux_r
+            if total <= 0:
+                t_inv = getattr(p_inv_func, 't_inv', None)
+                if t_inv is not None:
+                    t = t_inv
+                    continue
+                t += 100.0
+                return SMCTree(t, class0, class1)
+
+            dt = rng.exponential(1.0 / total)
+
+            t_inv = getattr(p_inv_func, 't_inv', None)
+            if t_inv is not None and t + dt >= t_inv:
+                t = t_inv
+                continue
+
+            t += dt
+            u = rng.random() * total
+
+            if u < rate_coal:
+                return SMCTree(t, class0, class1)
+            elif u < rate_coal + rate_flux_f:
+                fc = 1 - fc
+            else:
+                remaining_class = 1 - remaining_class
+
+
+def build_panmictic_tree_n2(rng):
+    """Standard coalescent tree for n=2 (panmictic). E[T] = 1."""
+    t = rng.exponential(1.0)
+    return SMCTree(t, 0, 0)
+
+
+def simulate_one_n2(theta, rho, nsites, p_inv, c,
+                     bp_left, bp_right, flux_w, class0, class1, rng,
+                     p_inv_func=None):
+    """
+    Simulate one replicate at n=2: SMC across the chromosome.
+    Returns (segsites, positions, hap0, hap1) in ms format.
+    Exact structured coalescent at each site (no tree approximation).
+    """
+    if p_inv_func is None:
+        p_inv_func = ConstantFrequency(p_inv)
+
+    inv_len = bp_right - bp_left
+    mutations = []
+
+    tree = build_panmictic_tree_n2(rng)
+    pos = 0.0
+
+    while pos < 1.0:
+        in_inv = bp_left <= pos < bp_right
+        p_inv_now = p_inv_func(0.0)
+        p_std_now = 1.0 - p_inv_now
+
+        if in_inv and p_inv_now > 0:
+            inv_pos = (pos - bp_left) / inv_len
+            phi_x = phi(inv_pos, flux_w)
+            if tree.class0 == tree.class1:
+                p_class = p_std_now if tree.class0 == 0 else p_inv_now
+                weighted_L = 2.0 * tree.t_coal * p_class
+            else:
+                w0 = p_std_now if tree.class0 == 0 else p_inv_now
+                w1 = p_std_now if tree.class1 == 0 else p_inv_now
+                weighted_L = tree.t_coal * (w0 + w1)
+            next_boundary = bp_right
+        else:
+            phi_x = 0.0
+            weighted_L = 2.0 * tree.t_coal
+            next_boundary = bp_left if pos < bp_left else 1.0
+
+        if weighted_L <= 0:
+            break
+
+        rate_recomb = (rho / 2.0) * weighted_L
+        dx = rng.exponential(1.0 / rate_recomb) if rate_recomb > 0 else 1e10
+
+        extent = min(dx, next_boundary - pos, 1.0 - pos)
+        if extent <= 0:
+            extent = 1e-10
+
+        total_bl = 2.0 * tree.t_coal
+        n_muts = rng.poisson((theta / 2.0) * total_bl * extent)
+        for _ in range(n_muts):
+            mut_pos = pos + rng.random() * extent
+            if 0 <= mut_pos < 1.0:
+                mutations.append((mut_pos, rng.integers(2)))
+
+        new_pos = pos + extent
+
+        if dx < (next_boundary - pos) and dx < (1.0 - pos):
+            new_pos = pos + dx
+            new_in_inv = bp_left <= new_pos < bp_right
+
+            if new_in_inv and p_inv_now > 0:
+                new_phi = phi((new_pos - bp_left) / inv_len, flux_w)
+                tree = smc_step(tree, class0, class1, p_inv_func, c, rho,
+                                new_phi, rng)
+            else:
+                tree = build_panmictic_tree_n2(rng)
+        else:
+            if new_pos >= bp_left and pos < bp_left:
+                inv_pos_new = max(0.01, (new_pos - bp_left) / inv_len)
+                tree = build_initial_tree(class0, class1, p_inv_func, c, rho,
+                                          phi(inv_pos_new, flux_w), rng)
+            elif new_pos >= bp_right and in_inv:
+                tree = build_panmictic_tree_n2(rng)
+
+        pos = new_pos
+
+    mutations.sort()
+    segsites = len(mutations)
+    positions = [m[0] for m in mutations]
+    hap0 = ''.join('1' if m[1] == 0 else '0' for m in mutations)
+    hap1 = ''.join('1' if m[1] == 1 else '0' for m in mutations)
+
+    return segsites, positions, hap0, hap1
+
+
+# ===================================================================
 # Gene flux model
 # ===================================================================
 

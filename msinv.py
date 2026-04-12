@@ -336,6 +336,288 @@ def find_root(node):
 
 
 # ===================================================================
+# Inversion specification (for multiple inversions)
+# ===================================================================
+
+class InversionSpec:
+    """
+    Specification for one inversion on the chromosome.
+
+    bp_left, bp_right: breakpoints as fractions of chromosome [0, 1]
+    p_inv: frequency of inverted arrangement
+    c: gene flux coefficient
+    t_inv: age (coalescent units), or None for infinite
+    trajectory: frequency trajectory function, or None for constant
+    flux_w: gene flux window width (default 0.3)
+    label: identifier (e.g., 'inv1', '2La')
+    """
+
+    def __init__(self, bp_left, bp_right, p_inv=0.5, c=0.01,
+                 t_inv=None, trajectory=None, flux_w=0.3, label=None):
+        self.bp_left = bp_left
+        self.bp_right = bp_right
+        self.p_inv = p_inv
+        self.c = c
+        self.flux_w = flux_w
+        self.label = label or f"inv[{bp_left:.2f},{bp_right:.2f}]"
+        self.flux_model = GeneFluxModel(w=flux_w)
+
+        # Trajectory
+        if trajectory is not None:
+            self.p_inv_func = trajectory
+        elif t_inv is not None:
+            self.p_inv_func = ConstantFrequency(p_inv, t_inv=t_inv)
+        else:
+            self.p_inv_func = ConstantFrequency(p_inv)
+
+        self.t_inv = getattr(self.p_inv_func, 't_inv', None)
+
+    def is_active_at(self, pos):
+        """Is this inversion active at genomic position pos?"""
+        return self.bp_left <= pos < self.bp_right
+
+    def inv_pos(self, pos):
+        """Convert genomic position to inversion-relative [0, 1]."""
+        inv_len = self.bp_right - self.bp_left
+        if inv_len <= 0:
+            return 0.5
+        return (pos - self.bp_left) / inv_len
+
+    def phi_at(self, pos):
+        """Gene flux probability at genomic position."""
+        if not self.is_active_at(pos):
+            return 0.0
+        x = self.inv_pos(pos)
+        return self.flux_model.phi(max(0.02, min(0.98, x)))
+
+
+def get_active_inversions(inversions, pos):
+    """Return list of inversions active at position pos."""
+    return [inv for inv in inversions if inv.is_active_at(pos)]
+
+
+def get_region_boundaries(inversions):
+    """
+    Get sorted list of unique boundary positions from all inversions.
+    These define the regions where the set of active inversions changes.
+    """
+    boundaries = set([0.0, 1.0])
+    for inv in inversions:
+        boundaries.add(inv.bp_left)
+        boundaries.add(inv.bp_right)
+    return sorted(boundaries)
+
+
+def karyotype_frequency(karyotype, active_inversions, t=0.0):
+    """
+    Compute the population frequency of a karyotype.
+    karyotype: tuple of 'S'/'I' for each active inversion.
+    Assumes independent frequencies (no LD between inversions).
+    """
+    freq = 1.0
+    for i, inv in enumerate(active_inversions):
+        p = inv.p_inv_func(t)
+        if p <= 0:
+            if karyotype[i] == 'I':
+                return 0.0
+        elif karyotype[i] == 'I':
+            freq *= p
+        else:
+            freq *= (1.0 - p)
+    return freq
+
+
+def all_karyotypes(n_inv):
+    """Generate all 2^n karyotype tuples for n active inversions."""
+    if n_inv == 0:
+        return [()]
+    result = []
+    for i in range(2 ** n_inv):
+        k = tuple('I' if (i >> j) & 1 else 'S' for j in range(n_inv))
+        result.append(k)
+    return result
+
+
+def assign_karyotype(sample_id, n_std, n_inv_samples, n_active_inv, rng):
+    """
+    Assign a karyotype tuple to a sample based on its index.
+    For the simple case: first n_std are Standard for all inversions,
+    rest are Inverted for all inversions.
+    """
+    if n_active_inv == 0:
+        return ()
+    if sample_id < n_std:
+        return ('S',) * n_active_inv
+    else:
+        return ('I',) * n_active_inv
+
+
+def build_multi_inv_tree(nsam, active_inversions, rng, demography=None,
+                          n_std=None, n_inv=None, rho=0.0,
+                          sample_karyotypes=None):
+    """
+    Build structured coalescent tree for multiple active inversions.
+
+    Each lineage has a karyotype tuple (one entry per active inversion).
+    Coalescence only between same-karyotype lineages.
+    Gene flux for each inversion independently switches one entry.
+
+    Returns (root, leaves).
+    """
+    n_active = len(active_inversions)
+
+    # Create leaves with karyotype assignments
+    leaves = []
+    if sample_karyotypes is not None:
+        for sid, karyo in enumerate(sample_karyotypes):
+            n = Node(time=0.0, sample_id=sid,
+                     branch_class=karyo, population=0)
+            leaves.append(n)
+    else:
+        ns = n_std if n_std is not None else nsam
+        ni = n_inv if n_inv is not None else 0
+        for i in range(nsam):
+            karyo = assign_karyotype(i, ns, ni, n_active, rng)
+            n = Node(time=0.0, sample_id=i,
+                     branch_class=karyo, population=0)
+            leaves.append(n)
+
+    # active: [node, karyotype, pop]
+    active = [[leaf, leaf.branch_class, leaf.population]
+              for leaf in leaves]
+    t = 0.0
+
+    while len(active) > 1:
+        # Check if any inversion has expired
+        all_expired = True
+        for inv in active_inversions:
+            if inv.p_inv_func(t) > 0:
+                all_expired = False
+                break
+
+        if all_expired or n_active == 0:
+            # Panmictic: all same class
+            for e in active:
+                e[1] = ()
+            while len(active) > 1:
+                k = len(active)
+                sf = demography.coal_rate_factor(0, t) if demography else 1.0
+                rate = k * (k - 1) / 2.0 * sf
+                if rate <= 0:
+                    break
+                dt = rng.exponential(1.0 / rate)
+                t += dt
+                idx = rng.choice(k, size=2, replace=False)
+                i1, i2 = int(idx[0]), int(idx[1])
+                coal = Node(time=t, branch_class=(), population=0)
+                coal.children = [active[i1][0], active[i2][0]]
+                active[i1][0].parent = coal
+                active[i2][0].parent = coal
+                for ii in sorted([i1, i2], reverse=True):
+                    active.pop(ii)
+                active.append([coal, (), 0])
+            break
+
+        # Count lineages by karyotype
+        counts = {}
+        for _, karyo, pop in active:
+            key = (karyo, pop)
+            counts[key] = counts.get(key, 0) + 1
+
+        # Build rate table
+        rates = []
+        for (karyo, pop), k in counts.items():
+            freq = karyotype_frequency(karyo, active_inversions, t)
+            # Coalescence
+            if k >= 2 and freq > 0:
+                sf = demography.coal_rate_factor(pop, t) if demography else 1.0
+                rates.append(('coal', karyo, pop,
+                              k * (k - 1) / 2.0 / freq * sf))
+
+            # Gene flux: for each active inversion independently
+            for inv_idx, inv in enumerate(active_inversions):
+                p_inv_t = inv.p_inv_func(t)
+                if p_inv_t <= 0:
+                    continue
+                p_other = (1 - p_inv_t) if karyo[inv_idx] == 'I' else p_inv_t
+                phi = inv.phi_at(0.5 * (inv.bp_left + inv.bp_right))
+                rf = k * inv.c * (rho / 2.0) * p_other * phi
+                if rf > 0:
+                    rates.append(('flux', karyo, pop, rf, inv_idx))
+
+        total = sum(r[-2] if len(r) == 5 else r[3] for r in rates)
+        if total <= 0:
+            # Jump to earliest t_inv
+            earliest = min((inv.t_inv for inv in active_inversions
+                           if inv.t_inv is not None), default=None)
+            if earliest is not None and t < earliest:
+                t = earliest
+                continue
+            break
+
+        dt = rng.exponential(1.0 / total)
+
+        # Check t_inv for each inversion
+        for inv in active_inversions:
+            if inv.t_inv is not None and t + dt >= inv.t_inv:
+                t = inv.t_inv
+                dt = 0  # force re-evaluation
+                break
+        if dt == 0:
+            continue
+
+        t += dt
+
+        # Choose event
+        u = rng.random() * total
+        cum = 0
+        for rate_entry in rates:
+            r_val = rate_entry[-2] if len(rate_entry) == 5 else rate_entry[3]
+            cum += r_val
+            if u < cum:
+                etype = rate_entry[0]
+                karyo = rate_entry[1]
+                pop = rate_entry[2]
+
+                if etype == 'coal':
+                    # Coalesce two lineages with this karyotype
+                    indices = [i for i, (_, k, p) in enumerate(active)
+                               if k == karyo and p == pop]
+                    if len(indices) >= 2:
+                        picked = rng.choice(len(indices), size=2, replace=False)
+                        i1 = indices[int(picked[0])]
+                        i2 = indices[int(picked[1])]
+                        n1, n2 = active[i1][0], active[i2][0]
+                        coal = Node(time=t, branch_class=karyo, population=pop)
+                        coal.children = [n1, n2]
+                        n1.parent = coal
+                        n2.parent = coal
+                        for ii in sorted([i1, i2], reverse=True):
+                            active.pop(ii)
+                        active.append([coal, karyo, pop])
+
+                elif etype == 'flux':
+                    inv_idx = rate_entry[4]
+                    indices = [i for i, (_, k, p) in enumerate(active)
+                               if k == karyo and p == pop]
+                    if indices:
+                        idx = indices[int(rng.integers(len(indices)))]
+                        old_node = active[idx][0]
+                        # Flip the inv_idx-th entry
+                        new_karyo = list(karyo)
+                        new_karyo[inv_idx] = 'I' if karyo[inv_idx] == 'S' else 'S'
+                        new_karyo = tuple(new_karyo)
+                        fn = Node(time=t, branch_class=new_karyo, population=pop)
+                        fn.children = [old_node]
+                        old_node.parent = fn
+                        active[idx] = [fn, new_karyo, pop]
+                break
+
+    root = active[0][0] if active else leaves[0]
+    return root, leaves
+
+
+# ===================================================================
 # Gene flux model
 # ===================================================================
 
@@ -1381,7 +1663,8 @@ class MsinvSimulator:
                  bp_left=0.3, bp_right=0.7,
                  n_pops=1, mig_rate=0.0,
                  sample_config=None, demo_events=None,
-                 demography=None):
+                 demography=None,
+                 inversions=None):
         self.nsam = nsam
         self.nreps = nreps
         self.theta = theta
@@ -1426,6 +1709,19 @@ class MsinvSimulator:
             self.n_std = None
             self.n_inv = None
 
+        # Multiple inversions support
+        if inversions is not None:
+            self.inversions = inversions
+        elif self._has_inversion():
+            # Convert single inversion to InversionSpec
+            self.inversions = [InversionSpec(
+                bp_left=bp_left, bp_right=bp_right,
+                p_inv=p_inv, c=c, flux_w=flux_window,
+                t_inv=t_inv, trajectory=p_inv_func,
+                label='inv1')]
+        else:
+            self.inversions = []
+
     def _get_sample(self):
         if self.n_std is not None:
             return self.n_std, self.n_inv
@@ -1456,9 +1752,137 @@ class MsinvSimulator:
         One replicate: SMC across the full chromosome.
         Returns (positions, haplotypes) in ms format.
         """
+        if len(self.inversions) > 1:
+            return self._simulate_one_multi_inv()
         result = self._simulate_one_internal()
         (pos, haps), root = result
         return pos, haps
+
+    def _simulate_one_multi_inv(self):
+        """
+        SMC walk with multiple inversions.
+        The chromosome is divided into regions by inversion boundaries.
+        Each region has its own set of active inversions and structured
+        coalescent. Trees are rebuilt at each boundary.
+        """
+        rng = self.rng
+        nsam = self.nsam
+        n_std = self.n_std or nsam
+        n_inv = self.n_inv or 0
+        demo = self.demography.copy()
+
+        boundaries = get_region_boundaries(self.inversions)
+        mutations = []
+
+        # Build initial panmictic tree
+        active_inv = get_active_inversions(self.inversions, 0.0)
+        if active_inv:
+            root, leaves = build_multi_inv_tree(
+                nsam, active_inv, rng, demography=demo,
+                n_std=n_std, n_inv=n_inv, rho=self.rho)
+        else:
+            # Panmictic
+            root, leaves = build_multi_inv_tree(
+                nsam, [], rng, demography=demo,
+                n_std=n_std, n_inv=n_inv, rho=self.rho)
+
+        pos = 0.0
+
+        for _ in range(500000):
+            if pos >= 1.0:
+                break
+
+            # Determine current region and next boundary
+            active_inv = get_active_inversions(self.inversions, pos)
+            next_boundary = 1.0
+            for b in boundaries:
+                if b > pos:
+                    next_boundary = b
+                    break
+
+            # Compute total branch length and recombination rate
+            L_total = sum(bl for _, bl in get_branches(root))
+            if L_total <= 0:
+                _drop_muts_segment(root, pos, next_boundary,
+                                    self.theta, rng, mutations)
+                pos = next_boundary
+                # Rebuild at boundary
+                if pos < 1.0:
+                    active_inv_new = get_active_inversions(self.inversions, pos)
+                    # Reuse leaves from current tree
+                    all_n = get_all_nodes(root)
+                    sample_leaves = sorted(
+                        [n for n in all_n if n.is_leaf()],
+                        key=lambda n: n.sample_id)
+                    # Assign karyotypes for new region
+                    sample_karyo = []
+                    for leaf in sample_leaves:
+                        k = assign_karyotype(leaf.sample_id, n_std, n_inv,
+                                             len(active_inv_new), rng)
+                        sample_karyo.append(k)
+                    for leaf in sample_leaves:
+                        leaf.parent = None
+                        leaf.children = []
+                    root, _ = build_multi_inv_tree(
+                        nsam, active_inv_new, rng, demography=demo,
+                        n_std=n_std, n_inv=n_inv, rho=self.rho,
+                        sample_karyotypes=sample_karyo)
+                continue
+
+            # Weighted recombination rate
+            if active_inv:
+                # Scale by karyotype frequency (approximate: use mean)
+                weighted_L = L_total * 0.5  # approximate
+            else:
+                weighted_L = L_total
+
+            rate = (self.rho / 2.0) * weighted_L
+            dx = rng.exponential(1.0 / rate)
+            extent = min(dx, next_boundary - pos, 1.0 - pos)
+            if extent <= 0:
+                extent = 1e-10
+
+            new_pos = pos + extent
+            _drop_muts_segment(root, pos, new_pos, self.theta, rng, mutations)
+
+            if dx < (next_boundary - pos) and dx < (1.0 - pos):
+                # Recombination: panmictic prune-and-reattach
+                # (simplified: doesn't do structured reattach for multi-inv)
+                root = smc_prune_and_reattach_panmictic(root, rng)
+                root = find_root(root)
+            else:
+                # Boundary: rebuild tree for new region
+                if new_pos < 1.0:
+                    active_inv_new = get_active_inversions(self.inversions, new_pos)
+                    all_n = get_all_nodes(root)
+                    sample_leaves = sorted(
+                        [n for n in all_n if n.is_leaf()],
+                        key=lambda n: n.sample_id)
+                    sample_karyo = []
+                    for leaf in sample_leaves:
+                        k = assign_karyotype(leaf.sample_id, n_std, n_inv,
+                                             len(active_inv_new), rng)
+                        sample_karyo.append(k)
+                    for leaf in sample_leaves:
+                        leaf.parent = None
+                        leaf.children = []
+                    root, _ = build_multi_inv_tree(
+                        nsam, active_inv_new, rng, demography=demo,
+                        n_std=n_std, n_inv=n_inv, rho=self.rho,
+                        sample_karyotypes=sample_karyo)
+
+            pos = new_pos
+
+        # Build haplotype matrix
+        if not mutations:
+            return [], np.zeros((nsam, 0), dtype=int)
+        mutations.sort(key=lambda x: x[0])
+        positions = [m[0] for m in mutations]
+        haplotypes = np.zeros((nsam, len(mutations)), dtype=int)
+        for j, (_, ids) in enumerate(mutations):
+            for sid in ids:
+                haplotypes[sid, j] = 1
+        return positions, haplotypes
 
     def _simulate_one_internal(self, recorder=None):
         """

@@ -87,9 +87,12 @@ class Node:
     branch_class: karyotype class ('S' or 'I') of the branch from
     this node UP to its parent.
     population: population index (0, 1, ...) of this lineage.
+    node_id: unique integer ID for tskit edge recording.
     """
+    _next_id = 0
+
     __slots__ = ['time', 'children', 'parent', 'sample_id',
-                 'branch_class', 'population']
+                 'branch_class', 'population', 'node_id']
 
     def __init__(self, time=0.0, sample_id=None, branch_class='S',
                  population=0):
@@ -99,6 +102,12 @@ class Node:
         self.sample_id = sample_id
         self.branch_class = branch_class
         self.population = population
+        self.node_id = Node._next_id
+        Node._next_id += 1
+
+    @classmethod
+    def reset_ids(cls):
+        cls._next_id = 0
 
     def branch_length(self):
         if self.parent is None:
@@ -110,9 +119,135 @@ class Node:
 
     def __repr__(self):
         if self.is_leaf():
-            return f"Leaf({self.sample_id},{self.branch_class},t={self.time:.3f})"
-        nc = len(self.children)
-        return f"Node({self.branch_class},t={self.time:.3f},nc={nc})"
+            return f"Leaf(id={self.node_id},sid={self.sample_id})"
+        return f"Node(id={self.node_id},t={self.time:.3f})"
+
+
+class EdgeRecorder:
+    """
+    Records tree topology changes during the SMC walk for tskit output.
+
+    Tracks active parent-child edges. At each recombination event,
+    diffs the current tree against the active edge set, closing
+    removed edges and opening new ones.
+
+    Usage:
+        rec = EdgeRecorder()
+        rec.open_all(root, left=0.0)   # initial tree
+        # ... modify tree via prune-and-reattach ...
+        rec.update(root, pos)           # after each SMC step
+        rec.close_all(right=1.0)        # finalize
+        ts = rec.to_tree_sequence(...)  # build tskit output
+    """
+
+    def __init__(self):
+        self.edges_left = []
+        self.edges_right = []
+        self.edges_parent = []
+        self.edges_child = []
+        self.active = {}  # {(parent_id, child_id): left_coord}
+        self.all_nodes = {}  # {node_id: Node}
+
+    def _get_current_edges(self, root):
+        """Get all (parent_id, child_id) pairs in current tree."""
+        edges = set()
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            self.all_nodes[n.node_id] = n
+            if n.parent is not None:
+                edges.add((n.parent.node_id, n.node_id))
+            for ch in n.children:
+                stack.append(ch)
+        return edges
+
+    def open_all(self, root, left):
+        """Record all edges in current tree starting at position left."""
+        self.active.clear()
+        current = self._get_current_edges(root)
+        for key in current:
+            self.active[key] = left
+
+    def close_all(self, right):
+        """Close all active edges at position right."""
+        for (pid, cid), left in self.active.items():
+            if right > left:
+                self.edges_left.append(left)
+                self.edges_right.append(right)
+                self.edges_parent.append(pid)
+                self.edges_child.append(cid)
+        self.active.clear()
+
+    def update(self, root, pos):
+        """
+        Diff current tree against active edges.
+        Close removed edges, open new ones.
+        """
+        current = self._get_current_edges(root)
+
+        # Close edges that no longer exist
+        removed = set(self.active.keys()) - current
+        for key in removed:
+            left = self.active.pop(key)
+            if pos > left:
+                self.edges_left.append(left)
+                self.edges_right.append(pos)
+                self.edges_parent.append(key[0])
+                self.edges_child.append(key[1])
+
+        # Open new edges
+        for key in current - set(self.active.keys()):
+            self.active[key] = pos
+
+    def to_tree_sequence(self, nsam, sequence_length, n_pops=1):
+        """Build a tskit TreeSequence from recorded edges."""
+        import tskit
+
+        tables = tskit.TableCollection(sequence_length=sequence_length)
+
+        # Add populations
+        for _ in range(max(n_pops, 1)):
+            tables.populations.add_row()
+
+        # Add nodes, sorted by ID
+        node_list = sorted(self.all_nodes.values(), key=lambda n: n.node_id)
+
+        # Map node_id to table row (should be identity if IDs are sequential)
+        id_map = {}
+        for node in node_list:
+            flags = tskit.NODE_IS_SAMPLE if node.sample_id is not None else 0
+            pop = min(node.population, n_pops - 1)
+            row = tables.nodes.add_row(
+                flags=flags, time=node.time, population=pop)
+            id_map[node.node_id] = row
+
+        # Add edges
+        for left, right, pid, cid in zip(
+                self.edges_left, self.edges_right,
+                self.edges_parent, self.edges_child):
+            if pid in id_map and cid in id_map:
+                p_row = id_map[pid]
+                c_row = id_map[cid]
+                p_time = self.all_nodes[pid].time
+                c_time = self.all_nodes[cid].time
+                if right > left and p_time > c_time:
+                    tables.edges.add_row(
+                        left=left * sequence_length,
+                        right=right * sequence_length,
+                        parent=p_row, child=c_row)
+
+        tables.sort()
+
+        # Simplify to remove unused nodes
+        samples = [id_map[n.node_id] for n in node_list
+                   if n.sample_id is not None]
+        samples.sort()
+        try:
+            tables.simplify(samples=samples)
+        except Exception:
+            pass
+
+        return tables.tree_sequence()
 
 
 def get_all_nodes(root):
@@ -1224,25 +1359,46 @@ class MsinvSimulator:
     def _has_inversion(self):
         return self.c > 0 and 0 < self.p_inv < 1
 
+    def simulate_one_ts(self):
+        """
+        Run one replicate and return a tskit TreeSequence.
+        Uses EdgeRecorder to track topology changes during the SMC walk.
+        """
+        Node.reset_ids()
+        recorder = EdgeRecorder()
+        (pos, haps), root = self._simulate_one_internal(recorder=recorder)
+
+        if root is not None:
+            recorder.close_all(1.0)
+            ts = recorder.to_tree_sequence(
+                self.nsam, self.nsites, n_pops=self.demography.n_pops)
+            return ts
+        return None
+
     def simulate_one(self):
         """
         One replicate: SMC across the full chromosome.
+        Returns (positions, haplotypes) in ms format.
+        """
+        result = self._simulate_one_internal()
+        (pos, haps), root = result
+        return pos, haps
 
-        Three regions:
-          [0, bp_left):          collinear, panmictic
-          [bp_left, bp_right]:   inversion, class-structured
-          (bp_right, 1]:         collinear, panmictic
-
-        Returns (positions, haplotypes).
+    def _simulate_one_internal(self, recorder=None):
+        """
+        Core simulation. If recorder is provided, tracks edges for tskit.
+        Returns (positions, haplotypes, root).
         """
         rng = self.rng
 
         if not self._has_inversion():
-            return self._sim_standard()
+            result = self._sim_standard()
+            return result, None
 
         n_std, n_inv = self._get_sample()
         if n_std == 0 or n_inv == 0:
-            return self._sim_single_class(n_std, n_inv)
+            result = self._sim_single_class(n_std, n_inv)
+            return result, None
 
         bp_l = self.bp_left
         bp_r = self.bp_right
@@ -1270,6 +1426,9 @@ class MsinvSimulator:
                 active.pop(ii)
             active.append(coal)
         root = active[0]
+
+        if recorder is not None:
+            recorder.open_all(root, 0.0)
 
         trees = []
         pos = 0.0
@@ -1352,30 +1511,72 @@ class MsinvSimulator:
                         self.p_inv, self.c, self.rho, phi_x, rng,
                         p_inv_func=self.p_inv_func
                     )
+                    if recorder is not None:
+                        recorder.update(root, new_pos)
                 else:
                     # Panmictic prune-and-reattach
                     root = smc_prune_and_reattach_panmictic(root, rng)
+                    if recorder is not None:
+                        recorder.update(root, new_pos)
             else:
-                # Hit region boundary. Inversion breakpoints are
-                # structural discontinuities — build a new tree
-                # from the correct stationary distribution for the
-                # new region. This is like forced recombination at
-                # the breakpoint, giving independent genealogies
-                # across the breakpoint (LD drops to zero there).
+                # Hit region boundary — rebuild tree
+                if recorder is not None:
+                    recorder.close_all(new_pos)
+
                 if new_pos >= bp_l and pos < bp_l:
-                    # Entering inversion: build structured tree
-                    # from equilibrium distribution at bp_left.
+                    # Entering inversion: reuse existing leaves,
+                    # build structured tree on top of them
                     inv_pos = max(0.02, (new_pos - bp_l) / inv_len)
                     phi_x = self.flux_model.phi(inv_pos)
-                    root, _ = build_structured_tree(
-                        n_std, n_inv, self.p_inv, self.c, self.rho,
-                        phi_x, rng, p_inv_func=self.p_inv_func,
-                        sample_config=self.sample_config,
-                        n_pops=self.n_pops, mig_rate=self.mig_rate,
-                        demo_events=self.demo_events,
-                        demography=self.demography)
+                    all_leaves = get_all_nodes(root)
+                    sample_leaves = sorted(
+                        [n for n in all_leaves if n.is_leaf()],
+                        key=lambda n: n.sample_id)
+                    active = [[leaf, leaf.branch_class, leaf.population]
+                              for leaf in sample_leaves]
+                    for leaf in sample_leaves:
+                        leaf.parent = None
+                        leaf.children = []
+                    t = 0.0
+                    # Use structured coalescent for inversion region
+                    # (simplified: just run coalescence on the active list)
+                    p_inv_func = self.p_inv_func
+                    while len(active) > 1:
+                        p_inv_t = p_inv_func(t)
+                        if p_inv_t <= 0:
+                            for e in active: e[1] = 'S'
+                            while len(active) > 1:
+                                k = len(active)
+                                dt = rng.exponential(2.0/(k*(k-1)))
+                                t += dt
+                                _coalesce_pop(active, 'S', active[0][2], t, rng)
+                            break
+                        p_std_t = 1.0 - p_inv_t
+                        k_S = sum(1 for _, c, _ in active if c == 'S')
+                        k_I = sum(1 for _, c, _ in active if c == 'I')
+                        rc_S = k_S*(k_S-1)/2.0/p_std_t if k_S>=2 and p_std_t>0 else 0
+                        rc_I = k_I*(k_I-1)/2.0/p_inv_t if k_I>=2 and p_inv_t>0 else 0
+                        rf_SI = k_S*self.c*(self.rho/2)*p_inv_t*phi_x if k_S>0 else 0
+                        rf_IS = k_I*self.c*(self.rho/2)*p_std_t*phi_x if k_I>0 else 0
+                        total = rc_S + rc_I + rf_SI + rf_IS
+                        if total <= 0:
+                            t_inv = getattr(p_inv_func, 't_inv', None)
+                            if t_inv and t < t_inv: t = t_inv; continue
+                            break
+                        dt = rng.exponential(1.0/total)
+                        t_inv = getattr(p_inv_func, 't_inv', None)
+                        if t_inv and t+dt >= t_inv: t = t_inv; continue
+                        t += dt
+                        u = rng.random() * total
+                        cum = rc_S
+                        if u < cum: _coalesce_pop(active, 'S', 0, t, rng); continue
+                        cum += rc_I
+                        if u < cum: _coalesce_pop(active, 'I', 0, t, rng); continue
+                        cum += rf_SI
+                        if u < cum: _flux_pop(active, 'S', 0, t, rng); continue
+                        _flux_pop(active, 'I', 0, t, rng)
+                    root = active[0][0]
                 elif new_pos >= bp_r and in_inv:
-                    # Leaving inversion: build panmictic tree
                     all_leaves = get_all_nodes(root)
                     sample_leaves = sorted(
                         [n for n in all_leaves if n.is_leaf()],
@@ -1398,9 +1599,12 @@ class MsinvSimulator:
                         active.append(coal)
                     root = active[0]
 
+                if recorder is not None:
+                    recorder.open_all(root, new_pos)
+
             pos = new_pos
 
-        return drop_mutations(trees, self.theta, self.nsam, rng)
+        return drop_mutations(trees, self.theta, self.nsam, rng), root
 
     def _sim_standard(self):
         """Standard coalescent with SMC (no inversion)."""

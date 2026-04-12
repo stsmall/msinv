@@ -160,15 +160,22 @@ def simulate_one(nsam, n_std, n_inv, theta, rho, nsites,
     if demography is not None and hasattr(demography, 'events'):
         events = sorted(demography.events, key=lambda e: e[1])
         n_events = len(events)
-        d_types = b''.join(e[0][0:1].encode() if isinstance(e[0], str)
-                          else bytes([e[0]]) for e in events)
+        # Event type: 'eN' → 'N', 'en' → 'n', 'ej' → 'j', etc.
+        def _event_type_char(e):
+            name = e[0]
+            if isinstance(name, str) and len(name) >= 2 and name[0] == 'e':
+                return name[1:2].encode()
+            elif isinstance(name, str):
+                return name[0:1].encode()
+            return bytes([name])
+        d_types = b''.join(_event_type_char(e) for e in events)
         d_times = np.array([e[1] for e in events], dtype=np.float64)
-        d_pop_i = np.array([e[2] if len(e) > 2 else 0 for e in events],
+        d_pop_i = np.array([int(e[2]) if len(e) > 2 else 0 for e in events],
                            dtype=np.int32)
-        d_pop_j = np.array([e[3] if len(e) > 3 else 0 for e in events],
+        d_pop_j = np.array([int(e[3]) if len(e) > 3 else 0 for e in events],
                            dtype=np.int32)
-        d_values = np.array([e[-1] if len(e) > 2 else 0.0 for e in events],
-                            dtype=np.float64)
+        d_values = np.array([float(e[-1]) if len(e) > 2 else 0.0
+                            for e in events], dtype=np.float64)
     else:
         n_events = 0
         d_types = b''
@@ -178,8 +185,8 @@ def simulate_one(nsam, n_std, n_inv, theta, rho, nsites,
         d_values = np.zeros(1, dtype=np.float64)
 
     # Pop sizes
-    if demography is not None and hasattr(demography, 'state'):
-        ps = np.array(demography.state.pop_sizes[:n_pops], dtype=np.float64)
+    if demography is not None and hasattr(demography, 'pop_sizes'):
+        ps = np.array(demography.pop_sizes[:n_pops], dtype=np.float64)
     else:
         ps = np.ones(max(1, n_pops), dtype=np.float64)
 

@@ -55,15 +55,19 @@ class Node:
 
     branch_class: karyotype class ('S' or 'I') of the branch from
     this node UP to its parent.
+    population: population index (0, 1, ...) of this lineage.
     """
-    __slots__ = ['time', 'children', 'parent', 'sample_id', 'branch_class']
+    __slots__ = ['time', 'children', 'parent', 'sample_id',
+                 'branch_class', 'population']
 
-    def __init__(self, time=0.0, sample_id=None, branch_class='S'):
+    def __init__(self, time=0.0, sample_id=None, branch_class='S',
+                 population=0):
         self.time = time
         self.children = []
         self.parent = None
         self.sample_id = sample_id
         self.branch_class = branch_class
+        self.population = population
 
     def branch_length(self):
         if self.parent is None:
@@ -102,6 +106,20 @@ def branch_lengths_by_class(root):
             else:
                 L_I += bl
     return L_S, L_I
+
+
+def count_lineages_by_class_pop(active):
+    """Count lineages per (class, population) from active list."""
+    counts = {}
+    for entry in active:
+        if len(entry) == 3:
+            _, cls, pop = entry
+        else:
+            _, cls = entry
+            pop = 0
+        key = (cls, pop)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def get_branches(root, klass=None):
@@ -269,19 +287,28 @@ class StochasticTrajectory:
 # ===================================================================
 
 def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
-                          p_inv_func=None):
+                          p_inv_func=None, sample_config=None,
+                          n_pops=1, mig_rate=0.0, demo_events=None):
     """
     Build coalescent tree at a single site under the structured coalescent
-    with two karyotype classes.
+    with karyotype classes and (optionally) multiple populations.
 
-    Rates from Peischl et al. (2013) equation (2):
+    Single population (n_pops=1):
       Coal S:     C(k_S,2) / (1 - p_inv)
       Coal I:     C(k_I,2) / p_inv
-      Flux S->I:  k_S * c * (rho/2) * p_inv * phi_x
-      Flux I->S:  k_I * c * (rho/2) * (1-p_inv) * phi_x
+      Flux S->I:  k_S * c * (rho/2) * p_inv * phi_x  (within pop)
+      Flux I->S:  k_I * c * (rho/2) * (1-p_inv) * phi_x  (within pop)
 
-    If p_inv_func is provided, p_inv varies with time.
-    At t >= t_inv (p_inv=0), all lineages become S and coalesce panmictically.
+    Multiple populations (n_pops>1):
+      Same rates per (class, pop) combination.
+      Migration: k * mig_rate / 2 per (class, pop) → other pop.
+      Gene flux: only within the same population.
+
+    sample_config: dict {(class, pop): count} for initial samples.
+      If None, uses n_std S in pop 0, n_inv I in pop 0.
+
+    demo_events: list of (time, event_type, args) for population merges etc.
+      event_type 'merge': all lineages in pop args[0] move to pop args[1]
 
     Returns (root, leaves).
     """
@@ -290,79 +317,142 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
 
     # Create leaves
     leaves = []
-    for i in range(n_std):
-        leaves.append(Node(time=0.0, sample_id=i, branch_class='S'))
-    for i in range(n_inv):
-        leaves.append(Node(time=0.0, sample_id=n_std + i, branch_class='I'))
+    sid = 0
+    if sample_config is not None:
+        for (cls, pop), count in sorted(sample_config.items()):
+            for _ in range(count):
+                leaves.append(Node(time=0.0, sample_id=sid,
+                                   branch_class=cls, population=pop))
+                sid += 1
+    else:
+        for i in range(n_std):
+            leaves.append(Node(time=0.0, sample_id=sid, branch_class='S'))
+            sid += 1
+        for i in range(n_inv):
+            leaves.append(Node(time=0.0, sample_id=sid, branch_class='I'))
+            sid += 1
 
-    active = [[leaf, leaf.branch_class] for leaf in leaves]
+    # Active: [node, class, pop]
+    active = [[leaf, leaf.branch_class, leaf.population] for leaf in leaves]
     t = 0.0
 
+    # Sort demographic events by time
+    if demo_events is None:
+        demo_events = []
+    demo_events = sorted(demo_events, key=lambda x: x[0])
+    demo_idx = 0
+
     while len(active) > 1:
+        # Check demographic events
+        while demo_idx < len(demo_events) and demo_events[demo_idx][0] <= t:
+            _, etype, eargs = demo_events[demo_idx]
+            if etype == 'merge':
+                # Move all lineages from pop eargs[0] to pop eargs[1]
+                src, dst = eargs
+                for entry in active:
+                    if entry[2] == src:
+                        entry[2] = dst
+                        entry[0].population = dst
+            demo_idx += 1
+
         p_inv_t = p_inv_func(t)
 
-        # Beyond inversion age: all become S, panmictic coalescence
+        # Beyond inversion age: all become S, panmictic within each pop
         if p_inv_t <= 0:
             for entry in active:
                 entry[1] = 'S'
-            # Standard coalescent for remaining lineages
-            while len(active) > 1:
-                k = len(active)
-                dt = rng.exponential(1.0 / (k * (k - 1) / 2.0))
-                t += dt
-                _coalesce(active, 'S', t, rng)
-            break
+            # If multiple pops still exist, continue with migration
+            # Otherwise standard panmictic
+            pops_present = set(e[2] for e in active)
+            if len(pops_present) == 1:
+                while len(active) > 1:
+                    k = len(active)
+                    dt = rng.exponential(1.0 / (k * (k - 1) / 2.0))
+                    t += dt
+                    _coalesce_pop(active, 'S', active[0][2], t, rng)
+                break
+            # Multiple pops: fall through to rate-based loop below
+            # with p_inv=0 (panmictic within each pop, migration between)
 
-        p_std_t = 1.0 - p_inv_t
-        k_S = sum(1 for _, cls in active if cls == 'S')
-        k_I = sum(1 for _, cls in active if cls == 'I')
+        p_std_t = 1.0 - max(p_inv_t, 0)
+        p_inv_t = max(p_inv_t, 0)
 
-        rc_S = (k_S * (k_S - 1) / 2.0) / p_std_t if k_S >= 2 and p_std_t > 0 else 0.0
-        rc_I = (k_I * (k_I - 1) / 2.0) / p_inv_t if k_I >= 2 and p_inv_t > 0 else 0.0
-        rf_SI = k_S * c * (rho / 2.0) * p_inv_t * phi_x if k_S > 0 else 0.0
-        rf_IS = k_I * c * (rho / 2.0) * p_std_t * phi_x if k_I > 0 else 0.0
+        # Build rate table: (event_type, class, pop, rate)
+        rates = []
+        counts = count_lineages_by_class_pop(active)
 
-        total = rc_S + rc_I + rf_SI + rf_IS
+        for (cls, pop), k in counts.items():
+            if p_inv_t > 0:
+                f = p_std_t if cls == 'S' else p_inv_t
+            else:
+                f = 1.0  # panmictic
+
+            # Coalescence
+            if k >= 2 and f > 0:
+                rates.append(('coal', cls, pop, k * (k - 1) / 2.0 / f))
+
+            # Gene flux (within population, only if inversion exists)
+            if k > 0 and phi_x > 0 and p_inv_t > 0:
+                f_other = p_inv_t if cls == 'S' else p_std_t
+                rf = k * c * (rho / 2.0) * f_other * phi_x
+                if rf > 0:
+                    rates.append(('flux', cls, pop, rf))
+
+            # Migration (to each other population)
+            if k > 0 and mig_rate > 0:
+                for other_pop in range(n_pops):
+                    if other_pop != pop:
+                        rates.append(('mig', cls, pop, k * mig_rate / 2.0))
+
+        total = sum(r for _, _, _, r in rates)
         if total <= 0:
-            # Jump to t_inv if available
             t_inv = getattr(p_inv_func, 't_inv', None)
-            if t_inv is not None:
+            if t_inv is not None and t < t_inv:
                 t = t_inv
                 continue
+            # Check next demographic event
+            if demo_idx < len(demo_events):
+                t = demo_events[demo_idx][0]
+                continue
             raise RuntimeError(
-                f"Stuck: k_S={k_S}, k_I={k_I}, phi={phi_x}, "
-                f"p_inv={p_inv_t}, c={c}, rho={rho}"
-            )
+                f"Stuck: counts={counts}, phi={phi_x}, "
+                f"p_inv={p_inv_t}, c={c}")
 
         dt = rng.exponential(1.0 / total)
 
-        # Check if we'd pass t_inv
+        # Check t_inv
         t_inv = getattr(p_inv_func, 't_inv', None)
         if t_inv is not None and t + dt >= t_inv:
             t = t_inv
             continue
 
+        # Check next demographic event
+        if demo_idx < len(demo_events) and t + dt >= demo_events[demo_idx][0]:
+            t = demo_events[demo_idx][0]
+            continue
+
         t += dt
 
+        # Choose event
         u = rng.random() * total
         cum = 0.0
+        event = None
+        for etype, cls, pop, r in rates:
+            cum += r
+            if u < cum:
+                event = (etype, cls, pop)
+                break
+        if event is None:
+            event = (rates[-1][0], rates[-1][1], rates[-1][2])
 
-        cum += rc_S
-        if u < cum and rc_S > 0:
-            _coalesce(active, 'S', t, rng)
-            continue
+        etype, cls, pop = event
 
-        cum += rc_I
-        if u < cum and rc_I > 0:
-            _coalesce(active, 'I', t, rng)
-            continue
-
-        cum += rf_SI
-        if u < cum and rf_SI > 0:
-            _flux(active, 'S', 'I', t, rng)
-            continue
-
-        _flux(active, 'I', 'S', t, rng)
+        if etype == 'coal':
+            _coalesce_pop(active, cls, pop, t, rng)
+        elif etype == 'flux':
+            _flux_pop(active, cls, pop, t, rng)
+        elif etype == 'mig':
+            _migrate(active, cls, pop, n_pops, t, rng)
 
     root = active[0][0]
     root.branch_class = active[0][1]
@@ -370,34 +460,95 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
 
 
 def _coalesce(active, klass, t, rng):
-    """Coalesce two random lineages of the given class."""
-    indices = [i for i, (_, cls) in enumerate(active) if cls == klass]
+    """Coalesce two random lineages of the given class (single-pop compat)."""
+    indices = [i for i, entry in enumerate(active)
+               if entry[1] == klass]
     picked = rng.choice(len(indices), size=2, replace=False)
     i1, i2 = indices[picked[0]], indices[picked[1]]
-    n1, _ = active[i1]
-    n2, _ = active[i2]
+    n1 = active[i1][0]
+    n2 = active[i2][0]
+    pop = active[i1][2] if len(active[i1]) > 2 else 0
 
-    coal = Node(time=t, branch_class=klass)
+    coal = Node(time=t, branch_class=klass, population=pop)
     coal.children = [n1, n2]
     n1.parent = coal
     n2.parent = coal
 
     for i in sorted([i1, i2], reverse=True):
         active.pop(i)
-    active.append([coal, klass])
+    active.append([coal, klass, pop])
+
+
+def _coalesce_pop(active, klass, pop, t, rng):
+    """Coalesce two random lineages of given class AND population."""
+    indices = [i for i, entry in enumerate(active)
+               if entry[1] == klass and entry[2] == pop]
+    if len(indices) < 2:
+        return
+    picked = rng.choice(len(indices), size=2, replace=False)
+    i1, i2 = indices[picked[0]], indices[picked[1]]
+    n1 = active[i1][0]
+    n2 = active[i2][0]
+
+    coal = Node(time=t, branch_class=klass, population=pop)
+    coal.children = [n1, n2]
+    n1.parent = coal
+    n2.parent = coal
+
+    for i in sorted([i1, i2], reverse=True):
+        active.pop(i)
+    active.append([coal, klass, pop])
 
 
 def _flux(active, from_cls, to_cls, t, rng):
-    """Gene flux: one lineage switches class. Creates degree-2 node."""
-    indices = [i for i, (_, cls) in enumerate(active) if cls == from_cls]
+    """Gene flux: one lineage switches class (single-pop compat)."""
+    indices = [i for i, entry in enumerate(active)
+               if entry[1] == from_cls]
     idx = indices[rng.integers(len(indices))]
-    old_node, _ = active[idx]
+    old_node = active[idx][0]
+    pop = active[idx][2] if len(active[idx]) > 2 else 0
 
-    flux_node = Node(time=t, branch_class=to_cls)
+    flux_node = Node(time=t, branch_class=to_cls, population=pop)
     flux_node.children = [old_node]
     old_node.parent = flux_node
 
-    active[idx] = [flux_node, to_cls]
+    active[idx] = [flux_node, to_cls, pop]
+
+
+def _flux_pop(active, from_cls, pop, t, rng):
+    """Gene flux within a specific population."""
+    to_cls = 'I' if from_cls == 'S' else 'S'
+    indices = [i for i, entry in enumerate(active)
+               if entry[1] == from_cls and entry[2] == pop]
+    if not indices:
+        return
+    idx = indices[rng.integers(len(indices))]
+    old_node = active[idx][0]
+
+    flux_node = Node(time=t, branch_class=to_cls, population=pop)
+    flux_node.children = [old_node]
+    old_node.parent = flux_node
+
+    active[idx] = [flux_node, to_cls, pop]
+
+
+def _migrate(active, klass, from_pop, n_pops, t, rng):
+    """Migration: one lineage moves to a random other population."""
+    indices = [i for i, entry in enumerate(active)
+               if entry[1] == klass and entry[2] == from_pop]
+    if not indices:
+        return
+    idx = indices[rng.integers(len(indices))]
+
+    # Choose destination (uniform among other pops)
+    other_pops = [p for p in range(n_pops) if p != from_pop]
+    if not other_pops:
+        return
+    to_pop = other_pops[rng.integers(len(other_pops))]
+
+    # Migration doesn't create a new node, just changes population
+    active[idx][0].population = to_pop
+    active[idx][2] = to_pop
 
 
 # ===================================================================
@@ -807,7 +958,9 @@ class MsinvSimulator:
                  p_inv=0.0, c=0.0,
                  flux_window=0.3, seed=None,
                  p_inv_func=None, t_inv=None,
-                 bp_left=0.3, bp_right=0.7):
+                 bp_left=0.3, bp_right=0.7,
+                 n_pops=1, mig_rate=0.0,
+                 sample_config=None, demo_events=None):
         self.nsam = nsam
         self.nreps = nreps
         self.theta = theta
@@ -818,6 +971,10 @@ class MsinvSimulator:
         self.bp_left = bp_left
         self.bp_right = bp_right
         self.flux_model = GeneFluxModel(w=flux_window)
+        self.n_pops = n_pops
+        self.mig_rate = mig_rate
+        self.sample_config = sample_config
+        self.demo_events = demo_events or []
 
         self.rng = np.random.default_rng(seed)
 
@@ -985,7 +1142,10 @@ class MsinvSimulator:
                     phi_x = self.flux_model.phi(inv_pos)
                     root, _ = build_structured_tree(
                         n_std, n_inv, self.p_inv, self.c, self.rho,
-                        phi_x, rng, p_inv_func=self.p_inv_func)
+                        phi_x, rng, p_inv_func=self.p_inv_func,
+                        sample_config=self.sample_config,
+                        n_pops=self.n_pops, mig_rate=self.mig_rate,
+                        demo_events=self.demo_events)
                 elif new_pos >= bp_r and in_inv:
                     # Leaving inversion: build panmictic tree
                     all_leaves = get_all_nodes(root)
@@ -1190,6 +1350,8 @@ def parse_args(argv=None):
     t_inv = None; N_e = 10000
     trajectory = 'constant'; s_coeff = 0.0
     bp_left = 0.3; bp_right = 0.7
+    n_pops = 1; mig_rate = 0.0
+    sample_config = None; demo_events = []
 
     i = 2
     while i < len(argv):
@@ -1214,6 +1376,22 @@ def parse_args(argv=None):
             s_coeff = float(argv[i+1]); i += 2
         elif f == '-bp':
             bp_left = float(argv[i+1]); bp_right = float(argv[i+2]); i += 3
+        elif f == '-npops':
+            n_pops = int(argv[i+1]); i += 2
+        elif f == '-m':
+            mig_rate = float(argv[i+1]); i += 2
+        elif f == '-sample_config':
+            # Format: "S:0:3,I:0:2,S:1:3,I:1:2" (class:pop:count)
+            sample_config = {}
+            for part in argv[i+1].split(','):
+                cls, pop, cnt = part.split(':')
+                sample_config[(cls, int(pop))] = int(cnt)
+            i += 2
+        elif f == '-demo_merge':
+            # Format: time:src_pop:dst_pop
+            t_m, src, dst = argv[i+1].split(':')
+            demo_events.append((float(t_m), 'merge', (int(src), int(dst))))
+            i += 2
         elif f in ('-seed', '-seeds'):
             seed = int(argv[i+1]); i += 2
         else:
@@ -1225,7 +1403,9 @@ def parse_args(argv=None):
                 flux_window=flux_window, seed=seed,
                 t_inv=t_inv, N_e=N_e,
                 trajectory=trajectory, s_coeff=s_coeff,
-                bp_left=bp_left, bp_right=bp_right)
+                bp_left=bp_left, bp_right=bp_right,
+                n_pops=n_pops, mig_rate=mig_rate,
+                sample_config=sample_config, demo_events=demo_events)
 
 
 def main():

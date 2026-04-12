@@ -1747,36 +1747,59 @@ class MsinvSimulator:
             target.parent = None
             p.children = []
 
-            # Reattach target: find branches in remaining tree above t_cut
-            above = []
-            for n in get_all_nodes(root):
-                if n.parent is not None and n.parent.time > t_cut:
-                    lo = max(n.time, t_cut)
-                    hi = n.parent.time
-                    if hi > lo:
-                        above.append((n, lo, hi - lo))
+            # Reattach target via coalescent process:
+            # Walk backward from t_cut, coalescing with the remaining
+            # tree at rate k(t) where k(t) is the number of branches
+            # alive at time t. This is the correct SMC/SMC' reattachment.
+            t_now = t_cut
+            all_nodes = get_all_nodes(root)
 
-            if above:
-                lens = np.array([l for _, _, l in above])
-                aprobs = lens / lens.sum()
-                ai = rng.choice(len(above), p=aprobs)
-                an, lo, _ = above[ai]
-                t_a = lo + rng.random() * (an.parent.time - lo)
+            # Get sorted unique node times above t_cut
+            times_above = sorted(set(
+                n.time for n in all_nodes if n.time > t_now))
 
-                # Insert new coalescence node between an and an.parent
-                coal = Node(time=t_a)
-                old_p = an.parent
-                coal.parent = old_p
-                if old_p is not None:
-                    old_p.children = [coal if ch is an else ch
-                                      for ch in old_p.children]
-                coal.children = [an, target]
-                an.parent = coal
-                target.parent = coal
-                root = find_root(root)
-            else:
-                # Above root: 2 lineages coalesce
-                t_c = max(t_cut, root.time) + rng.exponential(1.0)
+            reattached = False
+            for t_next in times_above:
+                # k = number of branches alive in interval [t_now, t_next)
+                k = sum(1 for n in all_nodes
+                        if n.parent is not None
+                        and n.time <= t_now < n.parent.time)
+                if k <= 0:
+                    t_now = t_next
+                    continue
+
+                # Rate of coalescence: k (one lineage vs k branches)
+                rate = float(k)
+                dt = rng.exponential(1.0 / rate)
+
+                if t_now + dt < t_next:
+                    # Coalesce at t_now + dt
+                    t_a = t_now + dt
+                    # Pick which branch to coalesce with (uniform)
+                    candidates = [n for n in all_nodes
+                                  if n.parent is not None
+                                  and n.time <= t_now < n.parent.time]
+                    an = candidates[rng.integers(len(candidates))]
+
+                    coal = Node(time=t_a)
+                    old_p = an.parent
+                    coal.parent = old_p
+                    if old_p is not None:
+                        old_p.children = [coal if ch is an else ch
+                                          for ch in old_p.children]
+                    coal.children = [an, target]
+                    an.parent = coal
+                    target.parent = coal
+                    root = find_root(root)
+                    reattached = True
+                    break
+                else:
+                    t_now = t_next
+
+            if not reattached:
+                # Above root: 2 lineages, rate = 1
+                dt = rng.exponential(1.0)
+                t_c = max(t_now, root.time) + dt
                 coal = Node(time=t_c)
                 coal.children = [root, target]
                 root.parent = coal

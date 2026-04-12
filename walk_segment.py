@@ -16,6 +16,8 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
 
     Returns (mutations, root) where mutations is list of (pos, leaf_ids).
     """
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from msinv import (get_all_nodes, get_branches, find_root,
                         _drop_muts_segment, _coalesce_pop, _flux_pop,
                         smc_prune_and_reattach, smc_prune_and_reattach_panmictic,
@@ -130,6 +132,8 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
 
 def _rebuild_panmictic(root, rng):
     """Rebuild panmictic tree reusing existing leaves."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from msinv import get_all_nodes, Node
     all_leaves = get_all_nodes(root)
     sample_leaves = sorted([n for n in all_leaves if n.is_leaf()],
@@ -156,6 +160,8 @@ def _rebuild_panmictic(root, rng):
 def _rebuild_structured_from_leaves(sim, root, n_std, n_inv, bp_l, inv_len,
                                       pos, rng):
     """Rebuild structured tree at inversion entry, reusing leaves."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from msinv import get_all_nodes, _coalesce_pop, _flux_pop
     inv_pos = max(0.02, (pos - bp_l) / inv_len)
     phi_x = sim.flux_model.phi(inv_pos)

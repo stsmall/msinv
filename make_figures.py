@@ -235,39 +235,72 @@ def fig4_multiple_inversions():
 
 
 def fig5_trajectory():
-    """Figure 5: Stochastic frequency trajectories."""
+    """Figure 5: Inversion frequency trajectories through time."""
     print("Fig 5: Trajectories...")
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    # Panel A: Multiple stochastic trajectories
+    N = 10000
+    gen_per_year = 10  # approximate for many organisms
+
+    # Panel A: Forward-time view — neutral drift vs selective sweep
     ax = axes[0]
-    for trial in range(10):
-        traj = msinv.StochasticTrajectory(0.5, N=10000, s=0.0,
-            rng=np.random.default_rng(trial))
-        ax.plot(traj._times, traj._freqs, alpha=0.5, lw=1)
-    ax.set_xlabel('Time (2N generations, backward)')
-    ax.set_ylabel('Inversion frequency')
-    ax.set_title('Neutral stochastic trajectories\n(N=10000, p=0.5)')
-    ax.set_xlim(0, 30)
-    ax.axhline(1/(2*10000), color='red', ls='--', lw=1, label='1/(2N)')
-    ax.legend(fontsize=8)
+    ax.set_title('A. How inversions establish\n(forward in time, from origin to present)',
+                  fontsize=11)
 
-    # Panel B: Deterministic vs stochastic
+    # Multiple neutral trajectories
+    for trial in range(8):
+        traj = msinv.StochasticTrajectory(0.5, N=N, s=0.0,
+            rng=np.random.default_rng(trial + 10))
+        # Convert to forward time in thousands of years
+        t_fwd_ky = (traj.t_inv - traj._times) * 2 * N / gen_per_year / 1000
+        ax.plot(t_fwd_ky, traj._freqs, alpha=0.3, lw=1, color='steelblue')
+    ax.plot([], [], color='steelblue', alpha=0.5, lw=2,
+            label='Neutral drift (s=0)')
+
+    # One deterministic sweep
+    det = msinv.DeterministicTrajectory(0.5, N=N, s=0.005)
+    t_det = np.linspace(0, det.t_inv, 300)
+    t_det_ky = (det.t_inv - t_det) * 2 * N / gen_per_year / 1000
+    freqs_det = [det(t) for t in t_det]
+    ax.plot(t_det_ky, freqs_det, 'r-', lw=2.5, label='Selected (s=0.005)')
+
+    ax.axhline(1/(2*N), color='gray', ls='--', lw=0.8)
+    ax.axhline(0.5, color='gray', ls=':', lw=0.5)
+    ax.text(0.98, 0.52, 'present freq = 0.5', transform=ax.transAxes,
+            ha='right', fontsize=8, color='gray')
+    ax.text(0.98, 0.02, 'origin: single mutation (1/2N)',
+            transform=ax.transAxes, ha='right', fontsize=8, color='gray')
+
+    ax.set_xlabel('Thousands of years ago (← past | present →)')
+    ax.set_ylabel('Inversion frequency in population')
+    ax.set_ylim(-0.05, 1.05)
+    ax.invert_xaxis()
+    ax.legend(fontsize=9, loc='center left')
+
+    # Panel B: Age distribution from recurrent origins
     ax = axes[1]
-    det = msinv.DeterministicTrajectory(0.5, N=10000, s=0.001)
-    ax.plot([det.t_inv - t for t in np.linspace(0, det.t_inv, 100)],
-            [det(t) for t in np.linspace(0, det.t_inv, 100)],
-            'r-', lw=2, label=f'Deterministic (s=0.001)')
-    for trial in range(5):
-        traj = msinv.StochasticTrajectory(0.5, N=10000, s=0.001,
-            rng=np.random.default_rng(trial*77))
-        ax.plot([traj.t_inv - t for t in traj._times],
-                traj._freqs, alpha=0.4, lw=1, color='blue')
-    ax.plot([], [], 'b-', alpha=0.5, label='Stochastic (s=0.001)')
-    ax.set_xlabel('Time (forward, 2N gen)')
-    ax.set_ylabel('Inversion frequency')
-    ax.set_title('Frequency trajectories\n(sweep from 1/2N)')
-    ax.legend(fontsize=8)
+    ax.set_title('B. Inversion age depends on stochastic history\n'
+                  '(20 independent neutral trajectories)', fontsize=11)
+
+    t_invs_ky = []
+    for trial in range(20):
+        traj = msinv.StochasticTrajectory(0.5, N=N, s=0.0,
+            rng=np.random.default_rng(trial))
+        age_ky = traj.t_inv * 2 * N / gen_per_year / 1000
+        t_invs_ky.append(age_ky)
+
+    ax.hist(t_invs_ky, bins=15, color='steelblue', alpha=0.7, edgecolor='white')
+    ax.axvline(np.median(t_invs_ky), color='red', ls='--', lw=2,
+               label=f'Median = {np.median(t_invs_ky):.0f} ky')
+    ax.set_xlabel('Inversion age (thousands of years)')
+    ax.set_ylabel('Count (out of 20 trajectories)')
+    ax.legend(fontsize=9)
+    ax.text(0.95, 0.85,
+            f'Range: {np.min(t_invs_ky):.0f}–{np.max(t_invs_ky):.0f} ky\n'
+            f'Key insight: same p=0.5 today,\n'
+            f'but very different ages',
+            transform=ax.transAxes, ha='right', fontsize=9,
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig5_trajectories.pdf'))

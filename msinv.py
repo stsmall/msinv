@@ -324,12 +324,159 @@ class StochasticTrajectory:
 
 
 # ===================================================================
+# Demography: population sizes, growth, migration, events
+# ===================================================================
+
+class Demography:
+    """
+    ms-compatible demographic model.
+
+    Tracks per-population sizes, growth rates, and migration matrix.
+    Events applied at specified times going backward.
+
+    Population size at time t for pop i:
+      N_i(t) = N_i(t_start) * exp(-growth_i * (t - t_start))
+
+    All times/rates in coalescent units (2N0 gen). Sizes relative to N0.
+
+    Events (ms-compatible):
+      ('eN',  t, x)           — all pops: size = x * N0
+      ('en',  t, i, x)        — pop i: size = x * N0
+      ('eG',  t, alpha)       — all pops: growth rate = alpha
+      ('eg',  t, i, alpha)    — pop i: growth rate = alpha
+      ('eM',  t, x)           — all migration: M_ij = x/(npops-1)
+      ('em',  t, i, j, M)     — migration from j to i: M_ij = M
+      ('ej',  t, i, j)        — merge pop i into pop j
+      ('es',  t, i, p)        — admixture: p stays in i, (1-p) → new pop
+      ('ema', t, matrix)      — set full migration matrix
+    """
+
+    def __init__(self, n_pops=1, mig_rate=0.0):
+        self.n_pops = n_pops
+        self.pop_sizes = [1.0] * n_pops
+        self.growth_rates = [0.0] * n_pops
+        self.growth_start = [0.0] * n_pops
+        self.mig_matrix = [[0.0] * n_pops for _ in range(n_pops)]
+        if n_pops > 1 and mig_rate > 0:
+            for i in range(n_pops):
+                for j in range(n_pops):
+                    if i != j:
+                        self.mig_matrix[i][j] = mig_rate / max(1, n_pops - 1)
+        self.events = []
+
+    def add_event(self, event):
+        self.events.append(event)
+        self.events.sort(key=lambda e: e[1])
+
+    def get_size(self, pop, t):
+        if pop >= len(self.pop_sizes):
+            return 1.0
+        dt = t - self.growth_start[pop]
+        g = self.growth_rates[pop]
+        if g == 0:
+            return self.pop_sizes[pop]
+        return self.pop_sizes[pop] * np.exp(-g * dt)
+
+    def coal_rate_factor(self, pop, t):
+        """Returns 1/N(t) for scaling coalescence rate."""
+        sz = self.get_size(pop, t)
+        return 1.0 / sz if sz > 0 else 0.0
+
+    def mig_rate_from(self, src, dst):
+        if src < self.n_pops and dst < self.n_pops:
+            return self.mig_matrix[dst][src]
+        return 0.0
+
+    def apply_events_at(self, t, active=None, rng=None):
+        """Apply all events at time <= t. Returns list of applied events."""
+        applied = []
+        while self.events and self.events[0][1] <= t:
+            event = self.events.pop(0)
+            etype = event[0]
+            applied.append(event)
+
+            if etype == 'eN':
+                _, _, x = event
+                for i in range(self.n_pops):
+                    self.pop_sizes[i] = x
+                    self.growth_rates[i] = 0.0
+                    self.growth_start[i] = t
+            elif etype == 'en':
+                _, _, i, x = event
+                if i < self.n_pops:
+                    self.pop_sizes[i] = x
+                    self.growth_rates[i] = 0.0
+                    self.growth_start[i] = t
+            elif etype == 'eG':
+                _, _, alpha = event
+                for i in range(self.n_pops):
+                    self.pop_sizes[i] = self.get_size(i, t)
+                    self.growth_rates[i] = alpha
+                    self.growth_start[i] = t
+            elif etype == 'eg':
+                _, _, i, alpha = event
+                if i < self.n_pops:
+                    self.pop_sizes[i] = self.get_size(i, t)
+                    self.growth_rates[i] = alpha
+                    self.growth_start[i] = t
+            elif etype == 'eM':
+                _, _, x = event
+                for i in range(self.n_pops):
+                    for j in range(self.n_pops):
+                        if i != j:
+                            self.mig_matrix[i][j] = x / max(1, self.n_pops - 1)
+            elif etype == 'em':
+                _, _, i, j, M = event
+                if i < self.n_pops and j < self.n_pops:
+                    self.mig_matrix[i][j] = M
+            elif etype == 'ej':
+                _, _, i, j = event
+                if active is not None:
+                    for entry in active:
+                        if entry[2] == i:
+                            entry[2] = j
+                            entry[0].population = j
+                # Zero out migration to/from merged pop
+                for k in range(self.n_pops):
+                    self.mig_matrix[i][k] = 0.0
+                    self.mig_matrix[k][i] = 0.0
+            elif etype == 'es':
+                _, _, i, p = event
+                new_pop = self.n_pops
+                self.n_pops += 1
+                self.pop_sizes.append(self.get_size(i, t))
+                self.growth_rates.append(0.0)
+                self.growth_start.append(t)
+                for row in self.mig_matrix:
+                    row.append(0.0)
+                self.mig_matrix.append([0.0] * self.n_pops)
+                if active is not None and rng is not None:
+                    for entry in active:
+                        if entry[2] == i:
+                            if rng.random() > p:
+                                entry[2] = new_pop
+                                entry[0].population = new_pop
+            elif etype == 'ema':
+                _, _, matrix = event
+                for i in range(min(len(matrix), self.n_pops)):
+                    for j in range(min(len(matrix[i]), self.n_pops)):
+                        self.mig_matrix[i][j] = matrix[i][j]
+        return applied
+
+    def next_event_time(self):
+        if self.events:
+            return self.events[0][1]
+        return float('inf')
+
+
+# ===================================================================
 # Structured coalescent tree builder
 # ===================================================================
 
 def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
                           p_inv_func=None, sample_config=None,
-                          n_pops=1, mig_rate=0.0, demo_events=None):
+                          n_pops=1, mig_rate=0.0, demo_events=None,
+                          demography=None):
     """
     Build coalescent tree at a single site under the structured coalescent
     with karyotype classes and (optionally) multiple populations.
@@ -418,6 +565,11 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
         p_std_t = 1.0 - max(p_inv_t, 0)
         p_inv_t = max(p_inv_t, 0)
 
+        # Apply demographic events
+        if demography is not None:
+            demography.apply_events_at(t, active=active, rng=rng)
+            n_pops = demography.n_pops
+
         # Build rate table: (event_type, class, pop, rate)
         rates = []
         counts = count_lineages_by_class_pop(active)
@@ -428,9 +580,14 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
             else:
                 f = 1.0  # panmictic
 
-            # Coalescence
+            # Coalescence: scaled by 1/N_pop(t)
             if k >= 2 and f > 0:
-                rates.append(('coal', cls, pop, k * (k - 1) / 2.0 / f))
+                if demography is not None:
+                    size_factor = demography.coal_rate_factor(pop, t)
+                else:
+                    size_factor = 1.0
+                rates.append(('coal', cls, pop,
+                              k * (k - 1) / 2.0 / f * size_factor))
 
             # Gene flux (within population, only if inversion exists)
             if k > 0 and phi_x > 0 and p_inv_t > 0:
@@ -439,11 +596,16 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
                 if rf > 0:
                     rates.append(('flux', cls, pop, rf))
 
-            # Migration (to each other population)
-            if k > 0 and mig_rate > 0:
+            # Migration (per destination, using migration matrix)
+            if k > 0:
                 for other_pop in range(n_pops):
                     if other_pop != pop:
-                        rates.append(('mig', cls, pop, k * mig_rate / 2.0))
+                        if demography is not None:
+                            m = demography.mig_matrix[other_pop][pop]
+                        else:
+                            m = mig_rate / max(1, n_pops - 1) if mig_rate > 0 else 0
+                        if m > 0:
+                            rates.append(('mig', cls, pop, k * m / 2.0))
 
         total = sum(r for _, _, _, r in rates)
         if total <= 0:
@@ -452,8 +614,11 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
                 t = t_inv
                 continue
             # Check next demographic event
-            if demo_idx < len(demo_events):
-                t = demo_events[demo_idx][0]
+            next_demo = demography.next_event_time() if demography else float('inf')
+            next_old = demo_events[demo_idx][0] if demo_idx < len(demo_events) else float('inf')
+            next_t = min(next_demo, next_old)
+            if next_t < float('inf'):
+                t = next_t
                 continue
             raise RuntimeError(
                 f"Stuck: counts={counts}, phi={phi_x}, "
@@ -467,9 +632,12 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
             t = t_inv
             continue
 
-        # Check next demographic event
-        if demo_idx < len(demo_events) and t + dt >= demo_events[demo_idx][0]:
-            t = demo_events[demo_idx][0]
+        # Check next demographic event (from both old and new system)
+        next_demo = demography.next_event_time() if demography else float('inf')
+        next_old = demo_events[demo_idx][0] if demo_idx < len(demo_events) else float('inf')
+        next_t = min(next_demo, next_old)
+        if t + dt >= next_t:
+            t = next_t
             continue
 
         t += dt
@@ -1001,7 +1169,8 @@ class MsinvSimulator:
                  p_inv_func=None, t_inv=None,
                  bp_left=0.3, bp_right=0.7,
                  n_pops=1, mig_rate=0.0,
-                 sample_config=None, demo_events=None):
+                 sample_config=None, demo_events=None,
+                 demography=None):
         self.nsam = nsam
         self.nreps = nreps
         self.theta = theta
@@ -1016,6 +1185,17 @@ class MsinvSimulator:
         self.mig_rate = mig_rate
         self.sample_config = sample_config
         self.demo_events = demo_events or []
+
+        # Demography: use provided or create from simple params
+        if demography is not None:
+            self.demography = demography
+        else:
+            self.demography = Demography(n_pops=n_pops, mig_rate=mig_rate)
+            # Add old-style demo_events as ej events
+            for evt in self.demo_events:
+                if evt[1] == 'merge':
+                    src, dst = evt[2]
+                    self.demography.add_event(('ej', evt[0], src, dst))
 
         self.rng = np.random.default_rng(seed)
 
@@ -1192,7 +1372,8 @@ class MsinvSimulator:
                         phi_x, rng, p_inv_func=self.p_inv_func,
                         sample_config=self.sample_config,
                         n_pops=self.n_pops, mig_rate=self.mig_rate,
-                        demo_events=self.demo_events)
+                        demo_events=self.demo_events,
+                        demography=self.demography)
                 elif new_pos >= bp_r and in_inv:
                     # Leaving inversion: build panmictic tree
                     all_leaves = get_all_nodes(root)
@@ -1399,6 +1580,7 @@ def parse_args(argv=None):
     bp_left = 0.3; bp_right = 0.7
     n_pops = 1; mig_rate = 0.0
     sample_config = None; demo_events = []
+    ms_demo_events = []  # ms-compatible demographic events
 
     i = 2
     while i < len(argv):
@@ -1428,16 +1610,47 @@ def parse_args(argv=None):
         elif f == '-m':
             mig_rate = float(argv[i+1]); i += 2
         elif f == '-sample_config':
-            # Format: "S:0:3,I:0:2,S:1:3,I:1:2" (class:pop:count)
             sample_config = {}
             for part in argv[i+1].split(','):
                 cls, pop, cnt = part.split(':')
                 sample_config[(cls, int(pop))] = int(cnt)
             i += 2
         elif f == '-demo_merge':
-            # Format: time:src_pop:dst_pop
             t_m, src, dst = argv[i+1].split(':')
             demo_events.append((float(t_m), 'merge', (int(src), int(dst))))
+            i += 2
+        # --- ms-compatible demographic flags ---
+        elif f == '-eN':
+            ms_demo_events.append(('eN', float(argv[i+1]), float(argv[i+2])))
+            i += 3
+        elif f == '-en':
+            ms_demo_events.append(('en', float(argv[i+1]), int(argv[i+2]),
+                                   float(argv[i+3])))
+            i += 4
+        elif f == '-eG':
+            ms_demo_events.append(('eG', float(argv[i+1]), float(argv[i+2])))
+            i += 3
+        elif f == '-eg':
+            ms_demo_events.append(('eg', float(argv[i+1]), int(argv[i+2]),
+                                   float(argv[i+3])))
+            i += 4
+        elif f == '-eM':
+            ms_demo_events.append(('eM', float(argv[i+1]), float(argv[i+2])))
+            i += 3
+        elif f == '-em':
+            ms_demo_events.append(('em', float(argv[i+1]), int(argv[i+2]),
+                                   int(argv[i+3]), float(argv[i+4])))
+            i += 5
+        elif f == '-ej':
+            ms_demo_events.append(('ej', float(argv[i+1]), int(argv[i+2]),
+                                   int(argv[i+3])))
+            i += 4
+        elif f == '-es':
+            ms_demo_events.append(('es', float(argv[i+1]), int(argv[i+2]),
+                                   float(argv[i+3])))
+            i += 4
+        elif f == '-G':
+            ms_demo_events.append(('eG', 0.0, float(argv[i+1])))
             i += 2
         elif f in ('-seed', '-seeds'):
             seed = int(argv[i+1]); i += 2
@@ -1452,7 +1665,8 @@ def parse_args(argv=None):
                 trajectory=trajectory, s_coeff=s_coeff,
                 bp_left=bp_left, bp_right=bp_right,
                 n_pops=n_pops, mig_rate=mig_rate,
-                sample_config=sample_config, demo_events=demo_events)
+                sample_config=sample_config, demo_events=demo_events,
+                ms_demo_events=ms_demo_events)
 
 
 def main():
@@ -1464,6 +1678,7 @@ def main():
     N_e = p.pop('N_e')
     s_coeff = p.pop('s_coeff')
     t_inv_arg = p.pop('t_inv')
+    ms_demo_events = p.pop('ms_demo_events')
 
     if traj_type == 'deterministic':
         p_inv_func = DeterministicTrajectory(p['p_inv'], N_e, s=s_coeff)
@@ -1478,7 +1693,6 @@ def main():
         print(f"# trajectory=stochastic s={s_coeff} N={N_e} "
               f"t_inv={p_inv_func.t_inv:.4f}", file=sys.stderr)
     else:
-        # constant
         if p['p_inv'] > 0 and p['c'] > 0 and t_inv_arg is None:
             print("WARNING: no -t_inv with constant trajectory. "
                   "S-I coalescence may be infinite at breakpoints. "
@@ -1488,7 +1702,21 @@ def main():
         t_str = f"{t_inv_arg:.4f}" if t_inv_arg else "inf"
         print(f"# trajectory=constant t_inv={t_str}", file=sys.stderr)
 
+    # Build Demography object with ms-compatible events
+    demo = Demography(n_pops=p['n_pops'], mig_rate=p['mig_rate'])
+    for evt in ms_demo_events:
+        demo.add_event(evt)
+    # Also add old-style demo_merge events
+    for evt in p.get('demo_events', []):
+        if evt[1] == 'merge':
+            src, dst = evt[2]
+            demo.add_event(('ej', evt[0], src, dst))
+
+    if ms_demo_events:
+        print(f"# demography: {len(ms_demo_events)} events", file=sys.stderr)
+
     p['p_inv_func'] = p_inv_func
+    p['demography'] = demo
     sim = MsinvSimulator(**p)
     sim.run()
 

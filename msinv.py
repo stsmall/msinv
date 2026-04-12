@@ -664,6 +664,7 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
         demo_events = []
     demo_events = sorted(demo_events, key=lambda x: x[0])
     demo_idx = 0
+    panmictic_mode = False  # set True when p_inv reaches 0
 
     while len(active) > 1:
         # Check demographic events
@@ -678,24 +679,40 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
                         entry[0].population = dst
             demo_idx += 1
 
-        p_inv_t = p_inv_func(t)
+        if not panmictic_mode:
+            p_inv_t = p_inv_func(t)
+        else:
+            p_inv_t = 0.0
 
         # Beyond inversion age: all become S, panmictic within each pop
-        if p_inv_t <= 0:
+        if p_inv_t <= 0 and not panmictic_mode:
             for entry in active:
                 entry[1] = 'S'
-            # If multiple pops still exist, continue with migration
-            # Otherwise standard panmictic
             pops_present = set(e[2] for e in active)
             if len(pops_present) == 1:
+                # Single pop: fast panmictic coalescent with demography
+                pop0 = active[0][2]
                 while len(active) > 1:
                     k = len(active)
-                    dt = rng.exponential(1.0 / (k * (k - 1) / 2.0))
+                    if demography is not None:
+                        demography.apply_events_at(t, active=active, rng=rng)
+                        sf = demography.coal_rate_factor(pop0, t)
+                    else:
+                        sf = 1.0
+                    rate = k * (k - 1) / 2.0 * sf
+                    if rate <= 0:
+                        next_t = demography.next_event_time() if demography else float('inf')
+                        if next_t < float('inf'): t = next_t; continue
+                        break
+                    dt = rng.exponential(1.0 / rate)
+                    next_t = demography.next_event_time() if demography else float('inf')
+                    if t + dt >= next_t: t = next_t; continue
                     t += dt
-                    _coalesce_pop(active, 'S', active[0][2], t, rng)
+                    _coalesce_pop(active, 'S', pop0, t, rng)
                 break
-            # Multiple pops: fall through to rate-based loop below
-            # with p_inv=0 (panmictic within each pop, migration between)
+            # Multiple pops: continue rate-based loop with p_inv=0.
+            panmictic_mode = True
+            p_inv_t = 0.0
 
         p_std_t = 1.0 - max(p_inv_t, 0)
         p_inv_t = max(p_inv_t, 0)
@@ -1248,6 +1265,29 @@ def _coalesce_above_root(root, floating, fclass, t, p_inv, c, rho, phi_x, rng,
 # Mutation model (infinite sites)
 # ===================================================================
 
+def _drop_muts_segment(root, left, right, theta, rng, mutations):
+    """Drop mutations on the current tree for segment [left, right).
+    Appends (position, leaf_ids) to mutations list."""
+    seg_len = right - left
+    if seg_len <= 0:
+        return
+    branches = get_branches(root)
+    L_total = sum(bl for _, bl in branches)
+    if L_total <= 0:
+        return
+    n_muts = rng.poisson(min((theta / 2.0) * L_total * seg_len, 1e6))
+    if n_muts == 0:
+        return
+    n_muts = min(n_muts, 100000)
+    bl_arr = np.array([bl for _, bl in branches])
+    bl_probs = bl_arr / bl_arr.sum()
+    for _ in range(n_muts):
+        pos = rng.uniform(left, right)
+        bi = rng.choice(len(branches), p=bl_probs)
+        leaf_ids = get_leaves_below(branches[bi][0])
+        mutations.append((pos, leaf_ids))
+
+
 def drop_mutations(trees_intervals, theta, nsam, rng):
     """
     Infinite sites mutations on marginal trees.
@@ -1391,14 +1431,19 @@ class MsinvSimulator:
         """
         rng = self.rng
 
-        if not self._has_inversion():
+        # Use simple path only when no inversion AND no demography/multi-pop
+        has_demo = (self.demography.events or
+                    self.demography.n_pops > 1 or
+                    any(g != 0 for g in self.demography.growth_rates))
+        if not self._has_inversion() and not has_demo and recorder is None:
             result = self._sim_standard()
             return result, None
 
         n_std, n_inv = self._get_sample()
-        if n_std == 0 or n_inv == 0:
-            result = self._sim_single_class(n_std, n_inv)
-            return result, None
+        if not self._has_inversion():
+            # No inversion but has demography: use all S samples
+            n_std = self.nsam
+            n_inv = 0
 
         bp_l = self.bp_left
         bp_r = self.bp_right
@@ -1406,26 +1451,16 @@ class MsinvSimulator:
         p_inv_now = self.p_inv_func(0.0)
         p_std_now = 1.0 - p_inv_now
 
-        # Build initial panmictic tree at position 0 (collinear)
-        leaves = [Node(time=0.0, sample_id=i, branch_class='S')
-                  for i in range(n_std)]
-        leaves += [Node(time=0.0, sample_id=n_std + i, branch_class='I')
-                   for i in range(n_inv)]
-        active = list(leaves)
-        t = 0.0
-        # Standard coalescent for initial tree
-        while len(active) > 1:
-            k = len(active)
-            t += rng.exponential(2.0 / (k * (k - 1)))
-            idx = rng.choice(k, size=2, replace=False)
-            coal = Node(time=t, branch_class='S')
-            coal.children = [active[idx[0]], active[idx[1]]]
-            active[idx[0]].parent = coal
-            active[idx[1]].parent = coal
-            for ii in sorted(idx, reverse=True):
-                active.pop(ii)
-            active.append(coal)
-        root = active[0]
+        # Build initial tree at position 0 (collinear = panmictic).
+        # Use p_inv=0 so all rates are panmictic, but with demography
+        # for population sizes, migration, and demographic events.
+        root, _ = build_structured_tree(
+            n_std, 0, 0.0, 0.0, self.rho, 0.0, rng,
+            p_inv_func=ConstantFrequency(0.0, t_inv=0.0),
+            sample_config=self.sample_config,
+            n_pops=self.n_pops, mig_rate=self.mig_rate,
+            demo_events=self.demo_events,
+            demography=self.demography)
 
         if recorder is not None:
             recorder.open_all(root, 0.0)
@@ -1631,24 +1666,25 @@ class MsinvSimulator:
         root = active[0]
 
         # SMC
-        trees = []
+        # Drop mutations on-the-fly (tree is modified in place by SMC)
+        mutations = []
         pos = 0.0
         for _ in range(500000):
             branches = get_branches(root)
             L = sum(bl for _, bl in branches)
             if L <= 0:
-                trees.append((root, pos, 1.0))
+                _drop_muts_segment(root, pos, 1.0, self.theta, rng, mutations)
                 break
             rate = (self.rho / 2.0) * L
             if rate <= 0:
-                trees.append((root, pos, 1.0))
+                _drop_muts_segment(root, pos, 1.0, self.theta, rng, mutations)
                 break
             dx = rng.exponential(1.0 / rate)
             new_pos = pos + dx
             if new_pos >= 1.0:
-                trees.append((root, pos, 1.0))
+                _drop_muts_segment(root, pos, 1.0, self.theta, rng, mutations)
                 break
-            trees.append((root, pos, new_pos))
+            _drop_muts_segment(root, pos, new_pos, self.theta, rng, mutations)
             pos = new_pos
 
             # Pick branch
@@ -1658,20 +1694,31 @@ class MsinvSimulator:
             target, tbl = branches[bi]
             t_cut = target.time + rng.random() * tbl
 
-            # Prune (standard: no degree-2 nodes in standard tree)
+            # SMC prune-and-reattach:
+            # 1. Remove the coalescence node (p) above target
+            # 2. Connect sibling directly to grandparent
+            # 3. Disconnect target from p
+            # 4. Reattach target to a new position in the tree
             p = target.parent
             if p is None or len(p.children) != 2:
                 continue
             sib = [ch for ch in p.children if ch is not target][0]
             gp = p.parent
-            sib.parent = gp
+
+            # Remove p from tree, connect sib to gp
             if gp is not None:
                 gp.children = [sib if ch is p else ch for ch in gp.children]
-            root = sib if root is p else root
+                sib.parent = gp
+            else:
+                sib.parent = None
+            if root is p:
+                root = sib
 
+            # Disconnect target from p
             target.parent = None
+            p.children = []
 
-            # Reattach (standard SMC)
+            # Reattach target: find branches in remaining tree above t_cut
             above = []
             for n in get_all_nodes(root):
                 if n.parent is not None and n.parent.time > t_cut:
@@ -1687,16 +1734,19 @@ class MsinvSimulator:
                 an, lo, _ = above[ai]
                 t_a = lo + rng.random() * (an.parent.time - lo)
 
+                # Insert new coalescence node between an and an.parent
                 coal = Node(time=t_a)
                 old_p = an.parent
                 coal.parent = old_p
+                if old_p is not None:
+                    old_p.children = [coal if ch is an else ch
+                                      for ch in old_p.children]
                 coal.children = [an, target]
                 an.parent = coal
                 target.parent = coal
-                if old_p is not None:
-                    old_p.children = [coal if ch is an else ch for ch in old_p.children]
                 root = find_root(root)
             else:
+                # Above root: 2 lineages coalesce
                 t_c = max(t_cut, root.time) + rng.exponential(1.0)
                 coal = Node(time=t_c)
                 coal.children = [root, target]
@@ -1704,9 +1754,17 @@ class MsinvSimulator:
                 target.parent = coal
                 root = coal
 
-        if not trees:
-            trees.append((root, 0.0, 1.0))
-        return drop_mutations(trees, self.theta, self.nsam, rng)
+        # Build haplotype matrix from accumulated mutations
+        if not mutations:
+            return ([], np.zeros((self.nsam, 0), dtype=int))
+
+        mutations.sort(key=lambda x: x[0])
+        positions = [m[0] for m in mutations]
+        haplotypes = np.zeros((self.nsam, len(mutations)), dtype=int)
+        for j, (_, ids) in enumerate(mutations):
+            for sid in ids:
+                haplotypes[sid, j] = 1
+        return (positions, haplotypes)
 
     def _sim_single_class(self, n_std, n_inv):
         """All samples from one class."""

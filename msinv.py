@@ -360,6 +360,22 @@ class GeneFluxModel:
         val = min(x, 1.0 - x, w) / denom
         return max(0.0, min(1.0, val))
 
+    def draw_b2(self, x, rng):
+        """
+        Given flux at inversion position x, draw right boundary b2.
+
+        The double crossover interval [b1, b1+w] contains x.
+        b1 is uniform in [max(0, x-w), min(1-w, x)].
+        b2 = b1 + w.
+        """
+        w = self.w
+        b1_lo = max(0.0, x - w)
+        b1_hi = min(1.0 - w, x)
+        if b1_hi <= b1_lo:
+            return min(x + 1e-10, 1.0)
+        b1 = rng.uniform(b1_lo, b1_hi)
+        return min(b1 + w, 1.0)
+
 
 # ===================================================================
 # Inversion frequency trajectories
@@ -1487,7 +1503,10 @@ class MsinvSimulator:
         if recorder is not None:
             recorder.open_all(root, 0.0)
 
-        trees = []
+        import heapq
+        pending_flux = []  # min-heap of (b2_abs, flux_node)
+
+        mutations = []
         pos = 0.0
 
         for _ in range(500000):
@@ -1527,7 +1546,7 @@ class MsinvSimulator:
                 next_boundary = bp_l if pos < bp_l else 1.0
 
             if weighted_L <= 0:
-                trees.append((root, pos, next_boundary))
+                _drop_muts_segment(root, pos, next_boundary, self.theta, rng, mutations)
                 pos = next_boundary
                 continue
 
@@ -1538,8 +1557,29 @@ class MsinvSimulator:
             if extent <= 0:
                 extent = 1e-10
 
+            # Check pending flux reversions before advancing
+            if pending_flux and in_inv:
+                b2_abs, fn = pending_flux[0]
+                if pos + extent > b2_abs:
+                    # Stop at b2: revert the flux
+                    _drop_muts_segment(root, pos, b2_abs, self.theta, rng, mutations)
+                    # Revert class: walk up from fn, flip class until coalescence
+                    old_cls = fn.branch_class
+                    new_cls = 'I' if old_cls == 'S' else 'S'
+                    cur = fn
+                    while cur is not None:
+                        cur.branch_class = new_cls
+                        if cur.parent is not None and len(cur.parent.children) > 1:
+                            break
+                        cur = cur.parent
+                    heapq.heappop(pending_flux)
+                    if recorder is not None:
+                        recorder.update(root, b2_abs)
+                    pos = b2_abs
+                    continue
+
             new_pos = pos + extent
-            trees.append((root, pos, new_pos))
+            _drop_muts_segment(root, pos, new_pos, self.theta, rng, mutations)
 
             if dx < (next_boundary - pos) and dx < (1.0 - pos):
                 # Recombination event
@@ -1563,11 +1603,28 @@ class MsinvSimulator:
                     inv_pos = max(0.02, min(0.98, inv_pos))
                     phi_x = self.flux_model.phi(inv_pos)
 
+                    # Track nodes before reattach to detect new flux nodes
+                    nodes_before = set(id(n) for n in get_all_nodes(root))
+                    target_class = recomb_class
+
                     root = smc_prune_and_reattach(
                         root, recomb_class,
                         self.p_inv, self.c, self.rho, phi_x, rng,
                         p_inv_func=self.p_inv_func
                     )
+
+                    # Record pending gene flux events
+                    for n in get_all_nodes(root):
+                        if id(n) not in nodes_before:
+                            # New node — check if it's a flux node
+                            # (degree-2: exactly 1 child, class differs from child)
+                            if (len(n.children) == 1
+                                    and n.branch_class != n.children[0].branch_class):
+                                b2 = self.flux_model.draw_b2(inv_pos, rng)
+                                b2_abs = bp_l + b2 * inv_len
+                                if b2_abs > new_pos:
+                                    heapq.heappush(pending_flux, (b2_abs, n))
+
                     if recorder is not None:
                         recorder.update(root, new_pos)
                 else:
@@ -1668,7 +1725,17 @@ class MsinvSimulator:
 
             pos = new_pos
 
-        return drop_mutations(trees, self.theta, self.nsam, rng), root
+        # Build haplotype matrix from accumulated mutations
+        if not mutations:
+            return ([], np.zeros((self.nsam, 0), dtype=int)), root
+
+        mutations.sort(key=lambda x: x[0])
+        positions = [m[0] for m in mutations]
+        haplotypes = np.zeros((self.nsam, len(mutations)), dtype=int)
+        for j, (_, ids) in enumerate(mutations):
+            for sid in ids:
+                haplotypes[sid, j] = 1
+        return (positions, haplotypes), root
 
     def _sim_standard(self):
         """Standard coalescent with SMC (no inversion)."""

@@ -1477,7 +1477,7 @@ class MsinvSimulator:
         # Use p_inv=0 so all rates are panmictic, but with demography
         # for population sizes, migration, and demographic events.
         root, _ = build_structured_tree(
-            n_std, 0, 0.0, 0.0, self.rho, 0.0, rng,
+            n_std + n_inv, 0, 0.0, 0.0, self.rho, 0.0, rng,
             p_inv_func=ConstantFrequency(0.0, t_inv=0.0),
             sample_config=self.sample_config,
             n_pops=self.n_pops, mig_rate=self.mig_rate,
@@ -1589,8 +1589,15 @@ class MsinvSimulator:
                     sample_leaves = sorted(
                         [n for n in all_leaves if n.is_leaf()],
                         key=lambda n: n.sample_id)
-                    active = [[leaf, leaf.branch_class, leaf.population]
-                              for leaf in sample_leaves]
+                    # Reassign class labels for inversion region:
+                    # first n_std are S, rest are I
+                    active = []
+                    for leaf in sample_leaves:
+                        if leaf.sample_id < n_std:
+                            leaf.branch_class = 'S'
+                        else:
+                            leaf.branch_class = 'I'
+                        active.append([leaf, leaf.branch_class, leaf.population])
                     for leaf in sample_leaves:
                         leaf.parent = None
                         leaf.children = []

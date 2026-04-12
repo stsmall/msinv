@@ -13,7 +13,11 @@ from tree_core import (
     branch_lengths_by_class, get_branches_arr,
     find_branches_above_time, get_leaves_below,
 )
-from smc_jit import panmictic_prune_reattach as _jit_panmictic_pr
+try:
+    import smc_bridge
+    _HAS_C = smc_bridge.is_available()
+except ImportError:
+    _HAS_C = False
 
 # Import trajectory classes from msinv (unchanged)
 from msinv import (
@@ -203,7 +207,11 @@ def build_structured_tree_fast(n_std, n_inv, p_inv, c, rho, phi_x, rng,
 # ===================================================================
 
 def smc_prune_reattach_panmictic_fast(tree, rng):
-    """Panmictic prune-and-reattach on ArrayTree (Python, Numba traversals)."""
+    """Panmictic prune-and-reattach. Uses C core if available."""
+    if _HAS_C:
+        tree._ensure_space(needed=5)
+        smc_bridge.panmictic_pr(tree)
+        return
     indices, lengths, count = tree.get_branches(filter_class=-1)
     if count == 0:
         return
@@ -589,6 +597,10 @@ class MsinvSimulatorFast:
             active.append(coal)
         tree.root = active[0]
 
+        # Seed C RNG if available
+        if _HAS_C:
+            smc_bridge.seed(int(rng.integers(2**63)))
+
         trees = []
         pos = 0.0
 
@@ -598,8 +610,12 @@ class MsinvSimulatorFast:
 
             in_inv = bp_l <= pos < bp_r
 
-            # Single traversal via Numba
-            L_S, L_I, t_max = tree.get_branch_lengths()
+            # Branch lengths via C or Numba
+            if _HAS_C:
+                L_S, L_I, t_max = smc_bridge.branch_lengths(
+                    tree.time, tree.parent, tree.klass, tree.n)
+            else:
+                L_S, L_I, t_max = tree.get_branch_lengths()
             L_total = L_S + L_I
 
             if in_inv:

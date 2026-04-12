@@ -91,20 +91,25 @@ def get_all_nodes(root):
     while stack:
         n = stack.pop()
         nodes.append(n)
-        stack.extend(n.children)
+        for ch in n.children:
+            stack.append(ch)
     return nodes
 
 
 def branch_lengths_by_class(root):
-    """Return (L_S, L_I) total branch lengths."""
+    """Return (L_S, L_I) total branch lengths. Single traversal."""
     L_S = L_I = 0.0
-    for n in get_all_nodes(root):
+    stack = [root]
+    while stack:
+        n = stack.pop()
         if n.parent is not None:
             bl = n.parent.time - n.time
             if n.branch_class == 'S':
                 L_S += bl
             else:
                 L_I += bl
+        for ch in n.children:
+            stack.append(ch)
     return L_S, L_I
 
 
@@ -123,13 +128,18 @@ def count_lineages_by_class_pop(active):
 
 
 def get_branches(root, klass=None):
-    """Return [(node, branch_length), ...] for branches of given class."""
+    """Return [(node, branch_length), ...] for branches of given class.
+    Single traversal without intermediate list."""
     out = []
-    for n in get_all_nodes(root):
+    stack = [root]
+    while stack:
+        n = stack.pop()
         if n.parent is not None:
             bl = n.parent.time - n.time
             if bl > 0 and (klass is None or n.branch_class == klass):
                 out.append((n, bl))
+        for ch in n.children:
+            stack.append(ch)
     return out
 
 
@@ -1059,25 +1069,33 @@ class MsinvSimulator:
 
             in_inv = bp_l <= pos < bp_r
 
+            # Single traversal: get L_S, L_I, L_total, t_max
+            L_S = L_I = 0.0
+            t_max = 0.0
+            stack = [root]
+            while stack:
+                n = stack.pop()
+                if n.time > t_max:
+                    t_max = n.time
+                if n.parent is not None:
+                    bl = n.parent.time - n.time
+                    if n.branch_class == 'S':
+                        L_S += bl
+                    else:
+                        L_I += bl
+                for ch in n.children:
+                    stack.append(ch)
+            L_total = L_S + L_I
+
             if in_inv:
-                # Inside inversion: class-structured recombination.
-                # Weight each class's branch length by its class frequency.
-                # Use p_inv at the tree's mean time (approximation for
-                # time-varying frequency).
-                all_n = get_all_nodes(root)
-                t_mean = 0.5 * max(n.time for n in all_n)
-                p_inv_t = self.p_inv_func(t_mean)
+                p_inv_t = self.p_inv_func(0.5 * t_max)
                 p_std_t = 1.0 - p_inv_t
-                L_S, L_I = branch_lengths_by_class(root)
                 if p_inv_t > 0:
                     weighted_L = L_S * p_std_t + L_I * p_inv_t
                 else:
-                    # Beyond inversion age: panmictic
-                    weighted_L = L_S + L_I
+                    weighted_L = L_total
                 next_boundary = bp_r
             else:
-                # Collinear: panmictic
-                L_total = sum(bl for _, bl in get_branches(root))
                 weighted_L = L_total
                 next_boundary = bp_l if pos < bp_l else 1.0
 
@@ -1104,11 +1122,9 @@ class MsinvSimulator:
 
                 if new_in_inv:
                     # Structured prune-and-reattach
-                    all_n = get_all_nodes(root)
-                    t_mean = 0.5 * max(n.time for n in all_n)
-                    p_inv_t = self.p_inv_func(t_mean)
+                    # Reuse L_S, L_I from traversal above (tree unchanged)
+                    p_inv_t = self.p_inv_func(0.5 * t_max)
                     p_std_t = 1.0 - p_inv_t
-                    L_S, L_I = branch_lengths_by_class(root)
                     weighted_L_now = L_S * p_std_t + L_I * p_inv_t
                     if weighted_L_now > 0:
                         u = rng.random() * weighted_L_now

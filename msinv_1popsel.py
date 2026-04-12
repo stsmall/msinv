@@ -52,11 +52,6 @@ Trajectories:
                   Reflecting boundary at p=0 models recurrent origins
                   at same breakpoints (driven by repeat arrays).
                   t_inv is the time to reach 1/(2N) going backward.
-  coupled:        Per-population 2D diffusion with local selection and
-                  migration.  Models local adaptation where inversion is
-                  favored in some populations but not others (e.g.
-                  An. funestus Kiribina/Folonzo).  Pass comma-separated
-                  values: -inv p0,p1 c  -s s0,s1  -N N0,N1
 
 Chromosome structure:
   [0, bp_left):       collinear, panmictic coalescence
@@ -79,20 +74,6 @@ Examples:
 
 import numpy as np
 import sys
-
-
-def _flux_rate(c, rho):
-    """Gene flux rate coefficient: c * rho/2 by default.
-
-    This is the per-lineage rate at which gene flux (double crossover /
-    gene conversion) transfers material between karyotype classes.
-    The full flux rate for a lineage is: _flux_rate(c, rho) * p_other * phi(x).
-
-    By default, flux scales with recombination rate (Peischl model).
-    To decouple gene flux from recombination, set c = gamma / (rho/2)
-    or override this by passing gamma directly to MsinvSimulator.
-    """
-    return c * (rho / 2.0)
 
 
 # ===================================================================
@@ -371,13 +352,12 @@ class InversionSpec:
     label: identifier (e.g., 'inv1', '2La')
     """
 
-    def __init__(self, bp_left, bp_right, p_inv=0.5, c=0.01, gamma=None,
+    def __init__(self, bp_left, bp_right, p_inv=0.5, c=0.01,
                  t_inv=None, trajectory=None, flux_w=0.3, label=None):
         self.bp_left = bp_left
         self.bp_right = bp_right
         self.p_inv = p_inv
         self.c = c
-        self.gamma = gamma  # absolute flux rate, overrides c*rho/2 if set
         self.flux_w = flux_w
         self.label = label or f"inv[{bp_left:.2f},{bp_right:.2f}]"
         self.flux_model = GeneFluxModel(w=flux_w)
@@ -561,7 +541,7 @@ def build_multi_inv_tree(nsam, active_inversions, rng, demography=None,
                     continue
                 p_other = (1 - p_inv_t) if karyo[inv_idx] == 'I' else p_inv_t
                 phi = inv.phi_at(0.5 * (inv.bp_left + inv.bp_right))
-                rf = k * inv._flux_rate(c, rho) * p_other * phi
+                rf = k * inv.c * (rho / 2.0) * p_other * phi
                 if rf > 0:
                     rates.append(('flux', karyo, pop, rf, inv_idx))
 
@@ -698,8 +678,8 @@ def build_initial_tree(class0, class1, p_inv_func, c, rho, phi_x, rng):
 
         p_other_0 = p_inv if c0 == 0 else p_std
         p_other_1 = p_inv if c1 == 0 else p_std
-        rate_flux_0 = _flux_rate(c, rho) * p_other_0 * phi_x
-        rate_flux_1 = _flux_rate(c, rho) * p_other_1 * phi_x
+        rate_flux_0 = c * (rho / 2.0) * p_other_0 * phi_x
+        rate_flux_1 = c * (rho / 2.0) * p_other_1 * phi_x
 
         total = rate_coal + rate_flux_0 + rate_flux_1
         if total <= 0:
@@ -788,7 +768,7 @@ def smc_step(tree, class0, class1, p_inv_func, c, rho, phi_x, rng):
                 rate_coal = 0.0
 
             p_other = p_inv if fc == 0 else p_std
-            rate_flux = _flux_rate(c, rho) * p_other * phi_x
+            rate_flux = c * (rho / 2.0) * p_other * phi_x
 
             total = rate_coal + rate_flux
             if total <= 0:
@@ -820,8 +800,8 @@ def smc_step(tree, class0, class1, p_inv_func, c, rho, phi_x, rng):
 
             p_other_f = p_inv if fc == 0 else p_std
             p_other_r = p_inv if rc == 0 else p_std
-            rate_flux_f = _flux_rate(c, rho) * p_other_f * phi_x
-            rate_flux_r = _flux_rate(c, rho) * p_other_r * phi_x
+            rate_flux_f = c * (rho / 2.0) * p_other_f * phi_x
+            rate_flux_r = c * (rho / 2.0) * p_other_r * phi_x
 
             total = rate_coal + rate_flux_f + rate_flux_r
             if total <= 0:
@@ -1000,7 +980,7 @@ class ConstantFrequency:
     def __init__(self, p_inv, t_inv=None):
         self.p_inv = p_inv
         self.t_inv = t_inv
-    def __call__(self, t, pop=0):
+    def __call__(self, t):
         if self.t_inv is not None and t >= self.t_inv:
             return 0.0
         return self.p_inv
@@ -1028,7 +1008,7 @@ class DeterministicTrajectory:
         else:
             self.t_inv = 20.0
 
-    def __call__(self, t, pop=0):
+    def __call__(self, t):
         if t >= self.t_inv:
             return 0.0
         t_fwd = self.t_inv - t
@@ -1082,122 +1062,10 @@ class StochasticTrajectory:
         self._times = np.array(times)
         self._freqs = np.array(freqs)
 
-    def __call__(self, t, pop=0):
+    def __call__(self, t):
         if t >= self.t_inv:
             return 0.0
         return float(np.interp(t, self._times, self._freqs))
-
-
-class CoupledTrajectory:
-    """
-    Per-population inversion frequency trajectory with coupled 2D diffusion.
-
-    Models local adaptation: the inversion has different selection
-    coefficients in each population, with migration coupling the
-    frequencies.  Going backward in time:
-
-      dp_i = [-s_i * p_i * (1-p_i) + m * sum_j(p_j - p_i)] dt
-             + sqrt(p_i*(1-p_i) / (2*N_i)) * dW_i
-
-    Parameters
-    ----------
-    p_final : list of float
-        Present-day inversion frequency in each population.
-    N : list of float or float
-        Effective population size per pop (or single value for all).
-    s : list of float
-        Selection coefficient per pop (positive = inversion favored).
-    m : float
-        Symmetric migration rate (fraction per generation, not 4Nm).
-    rng : numpy Generator, optional
-
-    Attributes
-    ----------
-    t_inv : float
-        Time (backward, coalescent units of 2*N_ref generations) when
-        ALL populations first reach 1/(2N).  Before this, the inversion
-        did not exist.
-    """
-    def __init__(self, p_final, N, s, m=0.0, rng=None):
-        n_pops = len(p_final)
-        self.n_pops = n_pops
-        self.p_final = list(p_final)
-
-        if isinstance(N, (int, float)):
-            N = [N] * n_pops
-        self.N = list(N)
-        self.N_ref = self.N[0]
-        self.s = list(s)
-        self.m = m
-        self.p0 = [1.0 / (2 * Ni) for Ni in self.N]
-
-        if rng is None:
-            rng = np.random.default_rng()
-
-        # Time step in coalescent units (2*N_ref generations)
-        dt = 1.0 / (2 * self.N_ref)
-
-        # Simulate backward from present
-        p = np.array(p_final, dtype=float)
-        times = [0.0]
-        freqs = [p.copy()]
-        t = 0.0
-
-        alive = np.array([True] * n_pops)  # which pops still have inversion
-
-        while np.any(alive) and t < 100.0:
-            p_new = p.copy()
-            for i in range(n_pops):
-                if not alive[i]:
-                    continue
-                # Selection (backward: sign flipped)
-                dp_sel = -self.s[i] * p[i] * (1.0 - p[i]) * dt
-                # Migration: pull toward other pops' frequencies
-                mig_sum = 0.0
-                for j in range(n_pops):
-                    if j != i:
-                        mig_sum += p[j] - p[i]
-                dp_mig = m * mig_sum * dt
-                # Drift
-                sd = np.sqrt(max(0, p[i] * (1.0 - p[i]) * dt
-                                 * self.N_ref / self.N[i]))
-                dp_drift = rng.normal(0, sd) if sd > 0 else 0.0
-
-                p_new[i] = p[i] + dp_sel + dp_mig + dp_drift
-
-                # Reflecting boundary at 0 (recurrent origins)
-                if p_new[i] <= 0:
-                    p_new[i] = abs(p_new[i]) + self.p0[i]
-                if p_new[i] >= 1.0:
-                    p_new[i] = 2.0 - p_new[i]
-                p_new[i] = np.clip(p_new[i], self.p0[i], 1.0 - self.p0[i])
-
-                # Check if this pop has reached 1/(2N)
-                if p_new[i] <= self.p0[i] * 1.01:
-                    alive[i] = False
-                    p_new[i] = 0.0
-
-            p = p_new
-            t += dt
-            times.append(t)
-            freqs.append(p.copy())
-
-        self.t_inv = t
-        self._times = np.array(times)
-        self._freqs = np.array(freqs)  # shape (n_steps, n_pops)
-
-    def __call__(self, t, pop=0):
-        """Return inversion frequency in population pop at time t."""
-        if t >= self.t_inv:
-            return 0.0
-        return float(np.interp(t, self._times, self._freqs[:, pop]))
-
-    def freq_all(self, t):
-        """Return array of frequencies for all populations at time t."""
-        if t >= self.t_inv:
-            return np.zeros(self.n_pops)
-        return np.array([np.interp(t, self._times, self._freqs[:, i])
-                         for i in range(self.n_pops)])
 
 
 # ===================================================================
@@ -1435,20 +1303,12 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
             demo_idx += 1
 
         if not panmictic_mode:
-            # Per-population inversion frequency (CoupledTrajectory-aware)
-            _has_pop_freq = hasattr(p_inv_func, 'n_pops')
+            p_inv_t = p_inv_func(t)
         else:
-            _has_pop_freq = False
-
-        if not panmictic_mode:
-            # Check if inversion has expired globally
-            p_inv_global = p_inv_func(t, 0) if not _has_pop_freq else max(
-                p_inv_func(t, pp) for pp in range(n_pops))
-        else:
-            p_inv_global = 0.0
+            p_inv_t = 0.0
 
         # Beyond inversion age: all become S, panmictic within each pop
-        if p_inv_global <= 0 and not panmictic_mode:
+        if p_inv_t <= 0 and not panmictic_mode:
             for entry in active:
                 entry[1] = 'S'
             pops_present = set(e[2] for e in active)
@@ -1475,7 +1335,10 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
                 break
             # Multiple pops: continue rate-based loop with p_inv=0.
             panmictic_mode = True
-            p_inv_global = 0.0
+            p_inv_t = 0.0
+
+        p_std_t = 1.0 - max(p_inv_t, 0)
+        p_inv_t = max(p_inv_t, 0)
 
         # Apply demographic events
         if demography is not None:
@@ -1487,13 +1350,6 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
         counts = count_lineages_by_class_pop(active)
 
         for (cls, pop), k in counts.items():
-            # Per-population inversion frequency
-            if not panmictic_mode:
-                p_inv_t = max(p_inv_func(t, pop), 0)
-            else:
-                p_inv_t = 0.0
-            p_std_t = 1.0 - p_inv_t
-
             if p_inv_t > 0:
                 f = p_std_t if cls == 'S' else p_inv_t
             else:
@@ -1511,7 +1367,7 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
             # Gene flux (within population, only if inversion exists)
             if k > 0 and phi_x > 0 and p_inv_t > 0:
                 f_other = p_inv_t if cls == 'S' else p_std_t
-                rf = k * _flux_rate(c, rho) * f_other * phi_x
+                rf = k * c * (rho / 2.0) * f_other * phi_x
                 if rf > 0:
                     rates.append(('flux', cls, pop, rf))
 
@@ -1814,31 +1670,26 @@ def smc_prune_and_reattach(root, recomb_class, p_inv, c, rho, phi_x, rng,
     target.parent = None
 
     # --- Reattach ---
-    target_pop = getattr(target, 'population', 0)
     new_root = _reattach(new_root, target, recomb_class, t_cut,
                          p_inv, c, rho, phi_x, rng,
-                         p_inv_func=p_inv_func, pop=target_pop)
+                         p_inv_func=p_inv_func)
     return new_root
 
 
 def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
-              p_inv_func=None, pop=0):
+              p_inv_func=None):
     """
     Reattach floating lineage. Walk backward in time through tree
     intervals, attempting coalescence or gene flux.
-    Uses p_inv_func(t, pop) for time-varying, population-specific frequency.
+    Uses p_inv_func(t) for time-varying frequency.
     """
     if p_inv_func is None:
         p_inv_func = ConstantFrequency(p_inv)
 
-    _has_pop_freq = hasattr(p_inv_func, 'n_pops')
     t = t_start
 
-    def _get_p_inv(t_val):
-        return p_inv_func(t_val, pop)
-
     for _safety in range(50000):
-        p_inv_t = _get_p_inv(t)
+        p_inv_t = p_inv_func(t)
 
         # Beyond inversion age: panmictic, coalesce with any branch
         if p_inv_t <= 0:
@@ -1853,7 +1704,7 @@ def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
 
         went_above = True
         for t_next in times_above:
-            p_inv_t = _get_p_inv(t)
+            p_inv_t = p_inv_func(t)
             if p_inv_t <= 0:
                 went_above = True
                 break
@@ -1869,7 +1720,7 @@ def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
             p_other = p_inv_t if fclass == 'S' else p_std_t
 
             rate_coal = k_same / p_same if k_same > 0 and p_same > 0 else 0.0
-            rate_flux = _flux_rate(c, rho) * p_other * phi_x if phi_x > 0 else 0.0
+            rate_flux = c * (rho / 2.0) * p_other * phi_x if phi_x > 0 else 0.0
             total = rate_coal + rate_flux
 
             if total <= 0:
@@ -1922,33 +1773,28 @@ def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
 
         if went_above:
             return _coalesce_above_root(root, floating, fclass, t,
-                                        _get_p_inv(t), c, rho, phi_x, rng,
-                                        p_inv_func=p_inv_func, pop=pop)
+                                        p_inv_func(t), c, rho, phi_x, rng,
+                                        p_inv_func=p_inv_func)
 
     return _coalesce_above_root(root, floating, fclass, t,
-                                _get_p_inv(t), c, rho, phi_x, rng,
-                                p_inv_func=p_inv_func, pop=pop)
+                                p_inv_func(t), c, rho, phi_x, rng,
+                                p_inv_func=p_inv_func)
 
 
 def _coalesce_above_root(root, floating, fclass, t, p_inv, c, rho, phi_x, rng,
-                         p_inv_func=None, pop=0):
+                         p_inv_func=None):
     """
     Coalesce floating lineage with root lineage above the tree.
-    Uses p_inv_func(t, pop) for time-varying, population-specific frequency.
+    Uses p_inv_func(t) for time-varying frequency.
     At t >= t_inv, forces panmictic coalescence.
     """
     if p_inv_func is None:
         p_inv_func = ConstantFrequency(p_inv)
 
-    _has_pop_freq = hasattr(p_inv_func, 'n_pops')
-
-    def _get_p_inv(t_val):
-        return p_inv_func(t_val, pop)
-
     rclass = root.branch_class
 
     for _ in range(100000):
-        p_inv_t = _get_p_inv(t)
+        p_inv_t = p_inv_func(t)
 
         # Beyond inversion age: panmictic
         if p_inv_t <= 0:
@@ -1966,10 +1812,10 @@ def _coalesce_above_root(root, floating, fclass, t, p_inv, c, rho, phi_x, rng,
         p_std_t = 1.0 - p_inv_t
 
         p_other_f = p_inv_t if fclass == 'S' else p_std_t
-        rf_floating = _flux_rate(c, rho) * p_other_f * phi_x
+        rf_floating = c * (rho / 2.0) * p_other_f * phi_x
 
         p_other_r = p_inv_t if rclass == 'S' else p_std_t
-        rf_root = _flux_rate(c, rho) * p_other_r * phi_x
+        rf_root = c * (rho / 2.0) * p_other_r * phi_x
 
         if fclass == rclass:
             p_same = p_std_t if fclass == 'S' else p_inv_t
@@ -2116,15 +1962,14 @@ def drop_mutations(trees_intervals, theta, nsam, rng):
 class MsinvSimulator:
     def __init__(self, nsam, nreps, theta, rho, nsites,
                  n_std=None, n_inv=None,
-                 p_inv=0.0, c=0.0, gamma=None,
+                 p_inv=0.0, c=0.0,
                  flux_window=0.3, seed=None,
                  p_inv_func=None, t_inv=None,
                  bp_left=0.3, bp_right=0.7,
                  n_pops=1, mig_rate=0.0,
                  sample_config=None, demo_events=None,
                  demography=None,
-                 inversions=None,
-                 sweep=None):
+                 inversions=None):
         self.nsam = nsam
         self.nreps = nreps
         self.theta = theta
@@ -2132,13 +1977,6 @@ class MsinvSimulator:
         self.nsites = nsites
         self.p_inv = p_inv
         self.c = c
-        # Gene flux rate: gamma (absolute, coalescent units) or c * rho/2
-        # gamma = 4*N*g where g = gene conversion rate per bp per gen
-        # If gamma is set, it overrides c * rho/2
-        if gamma is not None:
-            self.gamma = gamma
-        else:
-            self.gamma = c * rho / 2.0
         self.bp_left = bp_left
         self.bp_right = bp_right
         self.flux_model = GeneFluxModel(w=flux_window)
@@ -2189,14 +2027,6 @@ class MsinvSimulator:
         else:
             self.inversions = []
 
-        # Sweep inside inversion: (x_sel, s_sel, origin_class)
-        # x_sel: position as fraction [0,1] — must be inside an inversion
-        # s_sel: selection coefficient (determines sweep speed)
-        # origin_class: 'S' or 'I' — which background the allele arose on
-        # The sweep forces coalescence at x_sel. Gene flux determines
-        # whether/when the allele transferred to the other background.
-        self.sweep = sweep
-
     def _get_sample(self):
         if self.n_std is not None:
             return self.n_std, self.n_inv
@@ -2205,115 +2035,6 @@ class MsinvSimulator:
 
     def _has_inversion(self):
         return self.c > 0 and 0 < self.p_inv < 1
-
-    def apply_sweep(self, positions, haplotypes):
-        """
-        Apply a selective sweep inside the inversion.
-
-        Modifies the haplotype matrix around x_sel to reflect a hard sweep.
-        The sweep occurred on one karyotype background (origin_class).
-        Gene flux may have transferred the selected allele to the other
-        background at time t_flux (drawn stochastically).
-
-        The sweep signature: reduced diversity (forced coalescence) on the
-        sweep background near x_sel, with the width of the swept region
-        depending on s_sel and rho.
-
-        Going backward in time at x_sel:
-          - On origin background: all lineages coalesce at t_sweep = ln(2Ns)/s
-          - On other background: if flux transferred the allele (probability
-            depends on gamma, phi, time at fixation), those lineages also
-            coalesce at t_flux > t_sweep.
-          - The sweep reduces diversity in a window ~s/rho around x_sel.
-        """
-        if self.sweep is None:
-            return positions, haplotypes
-
-        x_sel, s_sel, origin_class = self.sweep
-        rng = self.rng
-        n_std, n_inv = self._get_sample()
-        nsam = self.nsam
-
-        if not positions:
-            return positions, haplotypes
-
-        # Sweep time (coalescent units): t_sweep ≈ ln(2*Ne*s) / (2*Ne*s)
-        # For s = 0.1, Ne = 100000: t_sweep ≈ ln(20000)/20000 ≈ 0.0005
-        # In generations: ~100
-        Ne_approx = 100000  # rough estimate
-        if s_sel > 0:
-            s_scaled = 2 * Ne_approx * s_sel
-            t_sweep = np.log(s_scaled) / s_scaled if s_scaled > 1 else 1.0
-        else:
-            return positions, haplotypes
-
-        # Hitchhiking: the sweep took t_sweep coalescent units.
-        # A linked site at recombination distance rho_d from x_sel
-        # escapes hitchhiking with probability:
-        #   P(escape) = 1 - exp(-rho_d * t_sweep)
-        # where rho_d = rho * |pos - x_sel|
-        # So P(swept) = exp(-rho * |d| * t_sweep)
-
-        # Determine which samples are on the origin background
-        if origin_class == 'S':
-            origin_samples = list(range(n_std))
-            other_samples = list(range(n_std, nsam))
-        else:
-            origin_samples = list(range(n_std, nsam))
-            other_samples = list(range(n_std))
-
-        # Did the allele flux-transfer to the other background?
-        # Population-level rate = p_other * gamma * phi(x_sel) / 2 per coal unit
-        inv_len = self.bp_right - self.bp_left if not self.inversions else \
-            max(inv.bp_right - inv.bp_left for inv in self.inversions)
-        bp_l = self.bp_left if not self.inversions else \
-            min(inv.bp_left for inv in self.inversions)
-        inv_pos = (x_sel - bp_l) / inv_len if inv_len > 0 else 0.5
-        inv_pos = max(0.02, min(0.98, inv_pos))
-        phi_x = self.flux_model.phi(inv_pos)
-        p_other = self.p_inv if origin_class == 'S' else (1 - self.p_inv)
-
-        # Population rate: gamma * p_other * phi(x) / 2 per coalescent unit
-        pop_rate_coal = p_other * self.gamma * phi_x / 2.0
-        # Time allele has been at fixation on origin background
-        # (from present back to t_sweep in coalescent units)
-        # Draw whether flux occurred: exponential waiting time
-        if pop_rate_coal > 0:
-            t_flux = rng.exponential(1.0 / pop_rate_coal)
-            allele_on_other = t_flux < t_sweep  # transferred before sweep ended
-            # If transferred during sweep, the other background has a
-            # narrower swept region (flux happened at t_flux < t_sweep)
-            t_sweep_other = t_flux if allele_on_other else 0
-        else:
-            allele_on_other = False
-            t_sweep_other = 0
-
-        # Apply sweep to haplotype matrix
-        pos_arr = np.array(positions)
-        haps = haplotypes.copy()
-
-        for j, p in enumerate(pos_arr):
-            dist = abs(p - x_sel)
-            rho_d = self.rho * dist  # recombination distance
-
-            # Origin background: P(swept) = exp(-rho_d * t_sweep)
-            p_swept = np.exp(-rho_d * t_sweep)
-            if rng.random() < p_swept:
-                # All origin samples carry same allele at this site
-                majority = int(np.median([haps[s, j] for s in origin_samples]))
-                for s in origin_samples:
-                    haps[s, j] = majority
-
-            # Other background: if allele transferred, swept with narrower width
-            if allele_on_other and t_sweep_other > 0:
-                p_swept_other = np.exp(-rho_d * t_sweep_other)
-                if rng.random() < p_swept_other:
-                    majority_o = int(np.median([haps[s, j]
-                                                for s in other_samples]))
-                    for s in other_samples:
-                        haps[s, j] = majority_o
-
-        return positions, haps
 
     def simulate_one_ts(self):
         """
@@ -2339,17 +2060,13 @@ class MsinvSimulator:
         Returns (positions, haplotypes) in ms format.
         """
         if len(self.inversions) > 1:
-            pos, haps = self._simulate_one_multi_inv()
-        elif self._has_inversion():
-            pos, haps = self._simulate_one_4walk()
-        else:
-            result = self._simulate_one_internal()
-            (pos, haps), root = result
+            return self._simulate_one_multi_inv()
 
-        # Apply selective sweep if specified
-        if self.sweep is not None and len(pos) > 0:
-            pos, haps = self.apply_sweep(pos, haps)
-
+        # Single inversion: use 4-walk strategy
+        if self._has_inversion():
+            return self._simulate_one_4walk()
+        result = self._simulate_one_internal()
+        (pos, haps), root = result
         return pos, haps
 
     def _simulate_one_multi_inv(self):
@@ -2375,7 +2092,7 @@ class MsinvSimulator:
             phi_left = inv.flux_model.phi(0.02)
             demo1 = self.demography.copy()
             root1, _ = build_structured_tree(
-                n_std, n_inv, inv.p_inv, inv.gamma if inv.gamma is not None else inv.c, self.rho if inv.gamma is None else 2.0,
+                n_std, n_inv, inv.p_inv, inv.c, self.rho,
                 phi_left, rng, p_inv_func=inv.p_inv_func,
                 sample_config=self.sample_config,
                 n_pops=self.n_pops, mig_rate=self.mig_rate,
@@ -2391,7 +2108,7 @@ class MsinvSimulator:
             phi_right = inv.flux_model.phi(0.98)
             demo2 = self.demography.copy()
             root2, _ = build_structured_tree(
-                n_std, n_inv, inv.p_inv, inv.gamma if inv.gamma is not None else inv.c, self.rho if inv.gamma is None else 2.0,
+                n_std, n_inv, inv.p_inv, inv.c, self.rho,
                 phi_right, rng, p_inv_func=inv.p_inv_func,
                 sample_config=self.sample_config,
                 n_pops=self.n_pops, mig_rate=self.mig_rate,
@@ -2487,7 +2204,7 @@ class MsinvSimulator:
         phi_left = self.flux_model.phi(0.02)
         demo1 = self.demography.copy()
         root1, _ = build_structured_tree(
-            n_std, n_inv, self.p_inv, self.gamma, 2.0, phi_left, rng,
+            n_std, n_inv, self.p_inv, self.c, self.rho, phi_left, rng,
             p_inv_func=self.p_inv_func, sample_config=self.sample_config,
             n_pops=self.n_pops, mig_rate=self.mig_rate,
             demo_events=self.demo_events, demography=demo1)
@@ -2502,7 +2219,7 @@ class MsinvSimulator:
         phi_right = self.flux_model.phi(0.98)
         demo2 = self.demography.copy()
         root2, _ = build_structured_tree(
-            n_std, n_inv, self.p_inv, self.gamma, 2.0, phi_right, rng,
+            n_std, n_inv, self.p_inv, self.c, self.rho, phi_right, rng,
             p_inv_func=self.p_inv_func, sample_config=self.sample_config,
             n_pops=self.n_pops, mig_rate=self.mig_rate,
             demo_events=self.demo_events, demography=demo2)
@@ -2638,22 +2355,12 @@ class MsinvSimulator:
             L_total = L_S + L_I
 
             if in_inv:
-                # Per-branch weighting by population frequency
-                weighted_L = 0.0
-                stack2 = [root]
-                while stack2:
-                    n = stack2.pop()
-                    if n.parent is not None:
-                        bl = n.parent.time - n.time
-                        pop_i = getattr(n, 'population', 0)
-                        p_inv_t_i = self.p_inv_func(0.5 * t_max, pop_i)
-                        if p_inv_t_i > 0:
-                            w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
-                        else:
-                            w = 1.0
-                        weighted_L += bl * w
-                    for ch in n.children:
-                        stack2.append(ch)
+                p_inv_t = self.p_inv_func(0.5 * t_max)
+                p_std_t = 1.0 - p_inv_t
+                if p_inv_t > 0:
+                    weighted_L = L_S * p_std_t + L_I * p_inv_t
+                else:
+                    weighted_L = L_total
                 next_boundary = bp_r
             else:
                 weighted_L = L_total
@@ -2703,28 +2410,13 @@ class MsinvSimulator:
 
                 if new_in_inv:
                     # Structured prune-and-reattach
-                    # Pick recomb class proportional to per-pop weighted branch lengths
-                    wL_S = wL_I = 0.0
-                    stack3 = [root]
-                    while stack3:
-                        n = stack3.pop()
-                        if n.parent is not None:
-                            bl = n.parent.time - n.time
-                            pop_i = getattr(n, 'population', 0)
-                            p_inv_t_i = self.p_inv_func(0.5 * t_max, pop_i)
-                            if p_inv_t_i > 0:
-                                w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
-                            else:
-                                w = 1.0
-                            if n.branch_class == 'S':
-                                wL_S += bl * w
-                            else:
-                                wL_I += bl * w
-                        for ch in n.children:
-                            stack3.append(ch)
-                    weighted_L_now = wL_S + wL_I
+                    # Reuse L_S, L_I from traversal above (tree unchanged)
+                    p_inv_t = self.p_inv_func(0.5 * t_max)
+                    p_std_t = 1.0 - p_inv_t
+                    weighted_L_now = L_S * p_std_t + L_I * p_inv_t
                     if weighted_L_now > 0:
-                        recomb_class = 'S' if rng.random() * weighted_L_now < wL_S else 'I'
+                        u = rng.random() * weighted_L_now
+                        recomb_class = 'S' if u < L_S * p_std_t else 'I'
                     else:
                         recomb_class = 'S'
 
@@ -2738,7 +2430,7 @@ class MsinvSimulator:
 
                     root = smc_prune_and_reattach(
                         root, recomb_class,
-                        self.p_inv, self.gamma, 2.0, phi_x, rng,
+                        self.p_inv, self.c, self.rho, phi_x, rng,
                         p_inv_func=self.p_inv_func
                     )
 
@@ -2794,12 +2486,9 @@ class MsinvSimulator:
                     # Use structured coalescent for inversion region
                     # (simplified: just run coalescence on the active list)
                     p_inv_func = self.p_inv_func
-                    _n_pops_traj = getattr(p_inv_func, 'n_pops', 1)
                     while len(active) > 1:
-                        # Check if inversion expired in all pops
-                        p_inv_global = max(
-                            p_inv_func(t, pp) for pp in range(_n_pops_traj))
-                        if p_inv_global <= 0:
+                        p_inv_t = p_inv_func(t)
+                        if p_inv_t <= 0:
                             for e in active: e[1] = 'S'
                             while len(active) > 1:
                                 k = len(active)
@@ -2807,28 +2496,14 @@ class MsinvSimulator:
                                 t += dt
                                 _coalesce_pop(active, 'S', active[0][2], t, rng)
                             break
-                        # Build per-pop rate table
-                        rates_bnd = []
-                        counts_bnd = {}
-                        for _, cls_b, pop_b in active:
-                            key = (cls_b, pop_b)
-                            counts_bnd[key] = counts_bnd.get(key, 0) + 1
-                        for (cls_b, pop_b), k_b in counts_bnd.items():
-                            p_inv_t_b = max(p_inv_func(t, pop_b), 0)
-                            p_std_t_b = 1.0 - p_inv_t_b
-                            if p_inv_t_b > 0:
-                                f_b = p_std_t_b if cls_b == 'S' else p_inv_t_b
-                            else:
-                                f_b = 1.0
-                            if k_b >= 2 and f_b > 0:
-                                rates_bnd.append(('coal', cls_b, pop_b,
-                                                   k_b*(k_b-1)/2.0/f_b))
-                            if k_b > 0 and p_inv_t_b > 0:
-                                f_other_b = p_inv_t_b if cls_b == 'S' else p_std_t_b
-                                rf_b = k_b*self.gamma*f_other_b*phi_x
-                                if rf_b > 0:
-                                    rates_bnd.append(('flux', cls_b, pop_b, rf_b))
-                        total = sum(r for _, _, _, r in rates_bnd)
+                        p_std_t = 1.0 - p_inv_t
+                        k_S = sum(1 for _, c, _ in active if c == 'S')
+                        k_I = sum(1 for _, c, _ in active if c == 'I')
+                        rc_S = k_S*(k_S-1)/2.0/p_std_t if k_S>=2 and p_std_t>0 else 0
+                        rc_I = k_I*(k_I-1)/2.0/p_inv_t if k_I>=2 and p_inv_t>0 else 0
+                        rf_SI = k_S*self.c*(self.rho/2)*p_inv_t*phi_x if k_S>0 else 0
+                        rf_IS = k_I*self.c*(self.rho/2)*p_std_t*phi_x if k_I>0 else 0
+                        total = rc_S + rc_I + rf_SI + rf_IS
                         if total <= 0:
                             t_inv = getattr(p_inv_func, 't_inv', None)
                             if t_inv and t < t_inv: t = t_inv; continue
@@ -2838,15 +2513,13 @@ class MsinvSimulator:
                         if t_inv and t+dt >= t_inv: t = t_inv; continue
                         t += dt
                         u = rng.random() * total
-                        cum = 0.0
-                        for etype_b, cls_b, pop_b, r_b in rates_bnd:
-                            cum += r_b
-                            if u < cum:
-                                if etype_b == 'coal':
-                                    _coalesce_pop(active, cls_b, pop_b, t, rng)
-                                else:
-                                    _flux_pop(active, cls_b, pop_b, t, rng)
-                                break
+                        cum = rc_S
+                        if u < cum: _coalesce_pop(active, 'S', 0, t, rng); continue
+                        cum += rc_I
+                        if u < cum: _coalesce_pop(active, 'I', 0, t, rng); continue
+                        cum += rf_SI
+                        if u < cum: _flux_pop(active, 'S', 0, t, rng); continue
+                        _flux_pop(active, 'I', 0, t, rng)
                     root = active[0][0]
                 elif new_pos >= bp_r and in_inv:
                     all_leaves = get_all_nodes(root)
@@ -3224,29 +2897,6 @@ def main():
             p_inv_func.t_inv = t_inv_arg
         print(f"# trajectory=stochastic s={s_coeff} N={N_e} "
               f"t_inv={p_inv_func.t_inv:.4f}", file=sys.stderr)
-    elif traj_type == 'coupled':
-        # Parse per-pop frequencies and selection from comma-separated
-        # -inv p0,p1 c  -s s0,s1  -N N0,N1
-        p_finals = [float(x) for x in str(p['p_inv']).split(',')]
-        s_vals = [float(x) for x in str(s_coeff).split(',')]
-        if isinstance(N_e, str):
-            N_vals = [int(x) for x in N_e.split(',')]
-        else:
-            N_vals = [N_e] * len(p_finals)
-        while len(s_vals) < len(p_finals):
-            s_vals.append(s_vals[-1])
-        while len(N_vals) < len(p_finals):
-            N_vals.append(N_vals[-1])
-        p_inv_func = CoupledTrajectory(
-            p_final=p_finals, N=N_vals, s=s_vals,
-            m=p['mig_rate'] / (4 * N_vals[0]) if p['mig_rate'] > 0 else 0.0,
-            rng=rng)
-        if t_inv_arg is not None:
-            p_inv_func.t_inv = t_inv_arg
-        print(f"# trajectory=coupled p_final={p_finals} s={s_vals} "
-              f"N={N_vals} m={p_inv_func.m:.6f} "
-              f"t_inv={p_inv_func.t_inv:.4f}", file=sys.stderr)
-        p['p_inv'] = p_finals[0]  # use pop0 freq as global default
     else:
         if p['p_inv'] > 0 and p['c'] > 0 and t_inv_arg is None:
             print("WARNING: no -t_inv with constant trajectory. "

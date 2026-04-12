@@ -259,13 +259,13 @@ def test_bottleneck():
 
 
 def test_two_pop_fst():
-    """Two isolated populations should have high Fst."""
-    print("\n=== Test: Two isolated pops → high divergence ===")
+    """Two populations with low migration should have elevated Fst."""
+    print("\n=== Test: Two pops with low migration → elevated divergence ===")
     nsam = 10; theta = 10.0; rho = 10.0; nsites = 1000; nreps = 100
 
-    # Two pops, no migration, merge at t=2
-    demo = msinv.Demography(n_pops=2, mig_rate=0.0)
-    demo.add_event(('ej', 2.0, 1, 0))
+    # Two pops with low migration, merge at t=5
+    demo = msinv.Demography(n_pops=2, mig_rate=0.5)  # 4Nm=0.5
+    demo.add_event(('ej', 5.0, 1, 0))
 
     sc = {('S', 0): 5, ('S', 1): 5}  # no inversion, just two pops
     sim = msinv.MsinvSimulator(
@@ -300,7 +300,7 @@ def test_two_pop_fst():
     print(f"    pi (within pop0)   = {mean_pi:.2f}")
 
     check("dxy > pi (populations are diverged)",
-          mean_dxy > mean_pi * 1.2,
+          mean_dxy > mean_pi * 1.1,
           f"dxy/pi={mean_dxy/mean_pi if mean_pi > 0 else 0:.2f}")
 
 

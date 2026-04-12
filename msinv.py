@@ -498,10 +498,13 @@ class Demography:
                     if i != j:
                         self.mig_matrix[i][j] = mig_rate / max(1, n_pops - 1)
         self.events = []
+        self._original_events = []
 
     def add_event(self, event):
         self.events.append(event)
         self.events.sort(key=lambda e: e[1])
+        self._original_events.append(event)
+        self._original_events.sort(key=lambda e: e[1])
 
     def get_size(self, pop, t):
         if pop >= len(self.pop_sizes):
@@ -521,6 +524,16 @@ class Demography:
         if src < self.n_pops and dst < self.n_pops:
             return self.mig_matrix[dst][src]
         return 0.0
+
+    def copy(self):
+        """Return a fresh copy with all events restored."""
+        d = Demography(n_pops=self.n_pops)
+        d.pop_sizes = list(self.pop_sizes)
+        d.growth_rates = list(self.growth_rates)
+        d.growth_start = list(self.growth_start)
+        d.mig_matrix = [list(row) for row in self.mig_matrix]
+        d.events = list(self._original_events)
+        return d
 
     def apply_events_at(self, t, active=None, rng=None):
         """Apply all events at time <= t. Returns list of applied events."""
@@ -778,11 +791,12 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
 
         dt = rng.exponential(1.0 / total)
 
-        # Check t_inv
-        t_inv = getattr(p_inv_func, 't_inv', None)
-        if t_inv is not None and t + dt >= t_inv:
-            t = t_inv
-            continue
+        # Check t_inv (skip if already in panmictic mode)
+        if not panmictic_mode:
+            t_inv = getattr(p_inv_func, 't_inv', None)
+            if t_inv is not None and t + dt >= t_inv:
+                t = t_inv
+                continue
 
         # Check next demographic event (from both old and new system)
         next_demo = demography.next_event_time() if demography else float('inf')
@@ -1445,7 +1459,15 @@ class MsinvSimulator:
             n_std = self.nsam
             n_inv = 0
 
-        bp_l = self.bp_left
+        # Fresh copy of demography for this replicate (events are consumed)
+        demo = self.demography.copy()
+
+        # If no inversion, disable the inversion region entirely
+        if n_inv == 0:
+            bp_l = 0.0
+            bp_r = 0.0
+        else:
+            bp_l = self.bp_left
         bp_r = self.bp_right
         inv_len = bp_r - bp_l
         p_inv_now = self.p_inv_func(0.0)
@@ -1460,7 +1482,7 @@ class MsinvSimulator:
             sample_config=self.sample_config,
             n_pops=self.n_pops, mig_rate=self.mig_rate,
             demo_events=self.demo_events,
-            demography=self.demography)
+            demography=demo)
 
         if recorder is not None:
             recorder.open_all(root, 0.0)

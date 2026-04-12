@@ -187,8 +187,13 @@ def test_drosophila_3epoch():
     mu = contig.mutation_rate
     r = contig.recombination_map.mean_rate
 
-    # Use current N as reference (standard convention)
-    N_ref = pops[0].initial_size
+    # Use bottleneck N as reference (keeps theta/rho manageable)
+    # For multi-epoch models, pick the smallest N
+    all_sizes = [pops[0].initial_size]
+    for e in events:
+        if hasattr(e, 'initial_size') and e.initial_size:
+            all_sizes.append(e.initial_size)
+    N_ref = min(all_sizes)
     theta, rho, demo = convert_demography(demog, N_ref, mu, r, L)
 
     print(f"  N_ref={N_ref:.0f}, theta={theta:.1f}, rho={rho:.1f}")

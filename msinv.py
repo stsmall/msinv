@@ -149,14 +149,21 @@ class EdgeRecorder:
         self.all_nodes = {}  # {node_id: Node}
 
     def _get_current_edges(self, root):
-        """Get all (parent_id, child_id) pairs in current tree."""
+        """Get all (parent_id, child_id) pairs in current tree.
+        Uses iterative DFS from root, following children."""
         edges = set()
         stack = [root]
+        visited = set()
         while stack:
             n = stack.pop()
+            if id(n) in visited:
+                continue
+            visited.add(id(n))
             self.all_nodes[n.node_id] = n
             if n.parent is not None:
                 edges.add((n.parent.node_id, n.node_id))
+                # Also register parent
+                self.all_nodes[n.parent.node_id] = n.parent
             for ch in n.children:
                 stack.append(ch)
         return edges
@@ -948,8 +955,8 @@ def _migrate(active, klass, from_pop, n_pops, t, rng):
 
 def smc_prune_and_reattach_panmictic(root, rng):
     """
-    Standard SMC prune-and-reattach for panmictic (collinear) regions.
-    No class structure: any lineage can reattach to any branch.
+    SMC prune-and-reattach for panmictic regions.
+    Uses coalescent-based reattachment (matching _sim_standard).
     """
     branches = get_branches(root)
     if not branches:
@@ -959,72 +966,71 @@ def smc_prune_and_reattach_panmictic(root, rng):
     probs = lengths / lengths.sum()
     bi = rng.choice(len(branches), p=probs)
     target, target_bl = branches[bi]
-
     t_cut = target.time + rng.random() * target_bl
 
-    # Prune
-    current = target
-    new_root = root
-    pruned = False
-    while current.parent is not None:
-        p = current.parent
-        if len(p.children) == 2:
-            siblings = [ch for ch in p.children if ch is not current]
-            if not siblings:
-                break
-            sibling = siblings[0]
-            gp = p.parent
-            sibling.parent = gp
-            if gp is not None:
-                gp.children = [sibling if ch is p else ch for ch in gp.children]
-            new_root = sibling if new_root is p else new_root
-            pruned = True
-            break
-        elif len(p.children) == 1:
-            current = p
-        else:
-            break
-
-    if not pruned:
+    # Prune: remove coalescence node above target
+    p = target.parent
+    if p is None or len(p.children) != 2:
         return root
+    sib = [ch for ch in p.children if ch is not target][0]
+    gp = p.parent
+
+    if gp is not None:
+        gp.children = [sib if ch is p else ch for ch in gp.children]
+        sib.parent = gp
+    else:
+        sib.parent = None
+    if root is p:
+        root = sib
 
     target.parent = None
+    p.children = []
 
-    # Reattach: standard (panmictic) — pick any branch above t_cut
-    all_nodes = get_all_nodes(new_root)
-    above = []
-    for n in all_nodes:
-        if n.parent is not None and n.parent.time > t_cut:
-            lo = max(n.time, t_cut)
-            hi = n.parent.time
-            if hi > lo:
-                above.append((n, lo, hi - lo))
+    # Coalescent-based reattach
+    t_now = t_cut
+    all_nodes = get_all_nodes(root)
+    times_above = sorted(set(n.time for n in all_nodes if n.time > t_now))
 
-    if above:
-        lens = np.array([l for _, _, l in above])
-        aprobs = lens / lens.sum()
-        ai = rng.choice(len(above), p=aprobs)
-        an, lo, _ = above[ai]
-        t_a = lo + rng.random() * (an.parent.time - lo)
+    reattached = False
+    for t_next in times_above:
+        candidates = [n for n in all_nodes
+                      if n.parent is not None
+                      and n.time <= t_now < n.parent.time]
+        k = len(candidates)
+        if k <= 0:
+            t_now = t_next
+            continue
 
-        coal = Node(time=t_a, branch_class=an.branch_class)
-        old_p = an.parent
-        coal.parent = old_p
-        coal.children = [an, target]
-        an.parent = coal
-        target.parent = coal
-        if old_p is not None:
-            old_p.children = [coal if ch is an else ch for ch in old_p.children]
-        new_root = find_root(new_root)
-    else:
-        t_c = max(t_cut, new_root.time) + rng.exponential(1.0)
+        dt = rng.exponential(1.0 / k)
+        if t_now + dt < t_next:
+            t_a = t_now + dt
+            an = candidates[rng.integers(k)]
+            coal = Node(time=t_a, branch_class=an.branch_class,
+                       population=an.population)
+            old_p = an.parent
+            coal.parent = old_p
+            if old_p is not None:
+                old_p.children = [coal if ch is an else ch
+                                  for ch in old_p.children]
+            coal.children = [an, target]
+            an.parent = coal
+            target.parent = coal
+            root = find_root(root)
+            reattached = True
+            break
+        else:
+            t_now = t_next
+
+    if not reattached:
+        dt = rng.exponential(1.0)
+        t_c = max(t_now, root.time) + dt
         coal = Node(time=t_c, branch_class='S')
-        coal.children = [new_root, target]
-        new_root.parent = coal
+        coal.children = [root, target]
+        root.parent = coal
         target.parent = coal
-        new_root = coal
+        root = coal
 
-    return new_root
+    return root
 
 
 def smc_prune_and_reattach(root, recomb_class, p_inv, c, rho, phi_x, rng,
@@ -1625,11 +1631,14 @@ class MsinvSimulator:
                                 if b2_abs > new_pos:
                                     heapq.heappush(pending_flux, (b2_abs, n))
 
+                    root = find_root(root)
                     if recorder is not None:
                         recorder.update(root, new_pos)
                 else:
                     # Panmictic prune-and-reattach
                     root = smc_prune_and_reattach_panmictic(root, rng)
+                    # Ensure root is correct (walk up from any sample)
+                    root = find_root(root)
                     if recorder is not None:
                         recorder.update(root, new_pos)
             else:

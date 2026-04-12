@@ -2224,25 +2224,42 @@ class MsinvSimulator:
         p_inv_now = self.p_inv_func(0.0)
         p_std_now = 1.0 - p_inv_now
 
-        # Build initial tree at position 0 (collinear = panmictic).
-        # Use p_inv=0 so all rates are panmictic, but with demography
-        # for population sizes, migration, and demographic events.
-        root, _ = build_structured_tree(
-            n_std + n_inv, 0, 0.0, 0.0, self.rho, 0.0, rng,
-            p_inv_func=ConstantFrequency(0.0, t_inv=0.0),
-            sample_config=self.sample_config,
-            n_pops=self.n_pops, mig_rate=self.mig_rate,
-            demo_events=self.demo_events,
-            demography=demo)
+        # BIDIRECTIONAL WALK: if there's an inversion, start at its
+        # center and walk both directions. This eliminates the left-to-right
+        # asymmetry in the SMC walk that causes dxy to peak near bp_left.
+        if inv_len > 0 and n_inv > 0:
+            center = (bp_l + bp_r) / 2.0
+            inv_center = 0.5
+            phi_center = self.flux_model.phi(inv_center)
+
+            # Build structured tree at inversion center
+            root, _ = build_structured_tree(
+                n_std, n_inv, self.p_inv, self.c, self.rho,
+                phi_center, rng, p_inv_func=self.p_inv_func,
+                sample_config=self.sample_config,
+                n_pops=self.n_pops, mig_rate=self.mig_rate,
+                demo_events=self.demo_events,
+                demography=demo)
+            start_pos = center
+        else:
+            # No inversion: panmictic from position 0
+            root, _ = build_structured_tree(
+                n_std + n_inv, 0, 0.0, 0.0, self.rho, 0.0, rng,
+                p_inv_func=ConstantFrequency(0.0, t_inv=0.0),
+                sample_config=self.sample_config,
+                n_pops=self.n_pops, mig_rate=self.mig_rate,
+                demo_events=self.demo_events,
+                demography=demo)
+            start_pos = 0.0
 
         if recorder is not None:
-            recorder.open_all(root, 0.0)
+            recorder.open_all(root, start_pos)
 
         import heapq
-        pending_flux = []  # min-heap of (b2_abs, flux_node)
+        pending_flux = []
 
         mutations = []
-        pos = 0.0
+        pos = start_pos
 
         for _ in range(500000):
             if pos >= 1.0:
@@ -2462,6 +2479,182 @@ class MsinvSimulator:
                     recorder.open_all(root, new_pos)
 
             pos = new_pos
+
+        # --- LEFTWARD WALK (center → 0) for bidirectional ---
+        # Only if we started at the inversion center
+        if start_pos > 0 and inv_len > 0 and n_inv > 0:
+            center = start_pos
+
+            # Build a FRESH structured tree at center for leftward walk
+            demo_left = self.demography.copy()
+            root_left, _ = build_structured_tree(
+                n_std, n_inv, self.p_inv, self.c, self.rho,
+                self.flux_model.phi(0.5), rng,
+                p_inv_func=self.p_inv_func,
+                sample_config=self.sample_config,
+                n_pops=self.n_pops, mig_rate=self.mig_rate,
+                demo_events=self.demo_events,
+                demography=demo_left)
+
+            # Mirror trick: transform positions so that walking
+            # from center→0 becomes walking from (1-center)→1
+            # in a mirrored coordinate system.
+            # Mutations placed at mirrored position x' = 1-x
+            # will be un-mirrored after the walk.
+            mirror_bp_l = 1.0 - bp_r
+            mirror_bp_r = 1.0 - bp_l
+            mirror_start = 1.0 - center
+            mirror_mutations = []
+
+            # Run the same walk logic on the mirrored chromosome
+            root_m = root_left
+            pos_m = mirror_start
+            pending_flux_m = []
+
+            for _ in range(500000):
+                if pos_m >= 1.0:
+                    break
+
+                in_inv_m = mirror_bp_l <= pos_m < mirror_bp_r
+
+                L_S = L_I = 0.0
+                t_max = 0.0
+                stack = [root_m]
+                while stack:
+                    n = stack.pop()
+                    if n.time > t_max: t_max = n.time
+                    if n.parent is not None:
+                        bl = n.parent.time - n.time
+                        if n.branch_class == 'S': L_S += bl
+                        else: L_I += bl
+                    for ch in n.children: stack.append(ch)
+                L_total = L_S + L_I
+
+                if in_inv_m and inv_len > 0:
+                    p_inv_t = self.p_inv_func(0.5 * t_max)
+                    p_std_t = 1.0 - p_inv_t
+                    weighted_L = L_S * p_std_t + L_I * p_inv_t if p_inv_t > 0 else L_total
+                    next_boundary = mirror_bp_r
+                else:
+                    weighted_L = L_total
+                    next_boundary = mirror_bp_l if pos_m < mirror_bp_l else 1.0
+
+                if weighted_L <= 0:
+                    _drop_muts_segment(root_m, pos_m, next_boundary,
+                                        self.theta, rng, mirror_mutations)
+                    pos_m = next_boundary
+                    continue
+
+                rate = (self.rho / 2.0) * weighted_L
+                dx = rng.exponential(1.0 / rate)
+                extent = min(dx, next_boundary - pos_m, 1.0 - pos_m)
+                if extent <= 0: extent = 1e-10
+
+                new_pos_m = pos_m + extent
+                _drop_muts_segment(root_m, pos_m, new_pos_m,
+                                    self.theta, rng, mirror_mutations)
+
+                if dx < (next_boundary - pos_m) and dx < (1.0 - pos_m):
+                    new_pos_m = pos_m + dx
+                    new_in_inv_m = mirror_bp_l <= new_pos_m < mirror_bp_r
+
+                    if new_in_inv_m and inv_len > 0:
+                        p_inv_t = self.p_inv_func(0.5 * t_max)
+                        p_std_t = 1.0 - p_inv_t
+                        wL = L_S * p_std_t + L_I * p_inv_t
+                        if wL > 0:
+                            u = rng.random() * wL
+                            rc = 'S' if u < L_S * p_std_t else 'I'
+                        else:
+                            rc = 'S'
+                        inv_pos_m = (new_pos_m - mirror_bp_l) / inv_len
+                        inv_pos_m = max(0.02, min(0.98, inv_pos_m))
+                        phi_x = self.flux_model.phi(inv_pos_m)
+                        root_m = smc_prune_and_reattach(
+                            root_m, rc, self.p_inv, self.c, self.rho,
+                            phi_x, rng, p_inv_func=self.p_inv_func)
+                        root_m = find_root(root_m)
+                    else:
+                        root_m = smc_prune_and_reattach_panmictic(root_m, rng)
+                        root_m = find_root(root_m)
+                else:
+                    # Boundary: rebuild tree (same logic as rightward walk)
+                    entering = new_pos_m >= mirror_bp_l and pos_m < mirror_bp_l
+                    leaving = new_pos_m >= mirror_bp_r and in_inv_m
+
+                    if entering and inv_len > 0:
+                        inv_pos_m = max(0.02, (new_pos_m - mirror_bp_l) / inv_len)
+                        phi_x = self.flux_model.phi(inv_pos_m)
+                        all_leaves = get_all_nodes(root_m)
+                        sample_leaves = sorted([n for n in all_leaves if n.is_leaf()],
+                            key=lambda n: n.sample_id)
+                        active = []
+                        for leaf in sample_leaves:
+                            leaf.branch_class = 'S' if leaf.sample_id < n_std else 'I'
+                            active.append([leaf, leaf.branch_class, leaf.population])
+                        for leaf in sample_leaves:
+                            leaf.parent = None; leaf.children = []
+                        t = 0.0
+                        p_inv_func_l = self.p_inv_func
+                        while len(active) > 1:
+                            p_inv_t = p_inv_func_l(t)
+                            if p_inv_t <= 0:
+                                for e in active: e[1] = 'S'
+                                while len(active) > 1:
+                                    k = len(active)
+                                    dt = rng.exponential(2.0/(k*(k-1)))
+                                    t += dt
+                                    _coalesce_pop(active, 'S', active[0][2], t, rng)
+                                break
+                            p_std_t = 1.0 - p_inv_t
+                            k_S = sum(1 for _, c, _ in active if c == 'S')
+                            k_I = sum(1 for _, c, _ in active if c == 'I')
+                            rc_S = k_S*(k_S-1)/2.0/p_std_t if k_S>=2 and p_std_t>0 else 0
+                            rc_I = k_I*(k_I-1)/2.0/p_inv_t if k_I>=2 and p_inv_t>0 else 0
+                            rf_SI = k_S*self.c*(self.rho/2)*p_inv_t*phi_x if k_S>0 else 0
+                            rf_IS = k_I*self.c*(self.rho/2)*p_std_t*phi_x if k_I>0 else 0
+                            total = rc_S + rc_I + rf_SI + rf_IS
+                            if total <= 0:
+                                t_inv = getattr(p_inv_func_l, 't_inv', None)
+                                if t_inv and t < t_inv: t = t_inv; continue
+                                break
+                            dt = rng.exponential(1.0/total)
+                            t_inv = getattr(p_inv_func_l, 't_inv', None)
+                            if t_inv and t+dt >= t_inv: t = t_inv; continue
+                            t += dt
+                            u = rng.random() * total
+                            cum = rc_S
+                            if u < cum: _coalesce_pop(active, 'S', 0, t, rng); continue
+                            cum += rc_I
+                            if u < cum: _coalesce_pop(active, 'I', 0, t, rng); continue
+                            cum += rf_SI
+                            if u < cum: _flux_pop(active, 'S', 0, t, rng); continue
+                            _flux_pop(active, 'I', 0, t, rng)
+                        root_m = active[0][0]
+                    elif leaving:
+                        all_leaves = get_all_nodes(root_m)
+                        sample_leaves = sorted([n for n in all_leaves if n.is_leaf()],
+                            key=lambda n: n.sample_id)
+                        active = list(sample_leaves)
+                        for n in active: n.parent = None; n.children = []
+                        t = 0.0
+                        while len(active) > 1:
+                            k = len(active)
+                            t += rng.exponential(2.0/(k*(k-1)))
+                            idx = rng.choice(k, size=2, replace=False)
+                            coal = Node(time=t, branch_class='S')
+                            coal.children = [active[idx[0]], active[idx[1]]]
+                            active[idx[0]].parent = coal
+                            active[idx[1]].parent = coal
+                            for ii in sorted(idx, reverse=True): active.pop(ii)
+                            active.append(coal)
+                        root_m = active[0]
+
+                pos_m = new_pos_m
+
+            # Un-mirror mutation positions: x → 1-x
+            for mut_pos, leaf_ids in mirror_mutations:
+                mutations.append((1.0 - mut_pos, leaf_ids))
 
         # Build haplotype matrix from accumulated mutations
         if not mutations:

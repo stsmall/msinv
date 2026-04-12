@@ -52,12 +52,22 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
         L_total = L_S + L_I
 
         if in_inv and inv_len > 0:
-            p_inv_t = sim.p_inv_func(0.5 * t_max)
-            p_std_t = 1.0 - p_inv_t
-            if p_inv_t > 0:
-                weighted_L = L_S * p_std_t + L_I * p_inv_t
-            else:
-                weighted_L = L_total
+            # Per-branch weighting by population frequency
+            weighted_L = 0.0
+            stack2 = [root]
+            while stack2:
+                n = stack2.pop()
+                if n.parent is not None:
+                    bl = n.parent.time - n.time
+                    pop_i = getattr(n, 'population', 0)
+                    p_inv_t_i = sim.p_inv_func(0.5 * t_max, pop_i)
+                    if p_inv_t_i > 0:
+                        w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
+                    else:
+                        w = 1.0
+                    weighted_L += bl * w
+                for ch in n.children:
+                    stack2.append(ch)
             next_boundary = min(bp_r, end_pos)
         else:
             weighted_L = L_total
@@ -96,12 +106,28 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
             new_in_inv = bp_l <= new_pos < bp_r
 
             if new_in_inv and inv_len > 0:
-                p_inv_t = sim.p_inv_func(0.5 * t_max)
-                p_std_t = 1.0 - p_inv_t
-                wL = L_S * p_std_t + L_I * p_inv_t
+                # Per-branch per-pop weighted class selection
+                wL_S = wL_I = 0.0
+                stack3 = [root]
+                while stack3:
+                    n = stack3.pop()
+                    if n.parent is not None:
+                        bl = n.parent.time - n.time
+                        pop_i = getattr(n, 'population', 0)
+                        p_inv_t_i = sim.p_inv_func(0.5 * t_max, pop_i)
+                        if p_inv_t_i > 0:
+                            w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
+                        else:
+                            w = 1.0
+                        if n.branch_class == 'S':
+                            wL_S += bl * w
+                        else:
+                            wL_I += bl * w
+                    for ch in n.children:
+                        stack3.append(ch)
+                wL = wL_S + wL_I
                 if wL > 0:
-                    u = rng.random() * wL
-                    rc = 'S' if u < L_S * p_std_t else 'I'
+                    rc = 'S' if rng.random() * wL < wL_S else 'I'
                 else:
                     rc = 'S'
                 inv_pos = (new_pos - bp_l) / inv_len
@@ -179,9 +205,11 @@ def _rebuild_structured_from_leaves(sim, root, n_std, n_inv, bp_l, inv_len,
 
     t = 0.0
     p_inv_func = sim.p_inv_func
+    _n_pops_traj = getattr(p_inv_func, 'n_pops', 1)
     while len(active) > 1:
-        p_inv_t = p_inv_func(t)
-        if p_inv_t <= 0:
+        p_inv_global = max(
+            p_inv_func(t, pp) for pp in range(_n_pops_traj))
+        if p_inv_global <= 0:
             for e in active:
                 e[1] = 'S'
             while len(active) > 1:
@@ -190,14 +218,27 @@ def _rebuild_structured_from_leaves(sim, root, n_std, n_inv, bp_l, inv_len,
                 t += dt
                 _coalesce_pop(active, 'S', active[0][2], t, rng)
             break
-        p_std_t = 1.0 - p_inv_t
-        k_S = sum(1 for _, c, _ in active if c == 'S')
-        k_I = sum(1 for _, c, _ in active if c == 'I')
-        rc_S = k_S * (k_S - 1) / 2.0 / p_std_t if k_S >= 2 and p_std_t > 0 else 0
-        rc_I = k_I * (k_I - 1) / 2.0 / p_inv_t if k_I >= 2 and p_inv_t > 0 else 0
-        rf_SI = k_S * sim.c * (sim.rho / 2) * p_inv_t * phi_x if k_S > 0 else 0
-        rf_IS = k_I * sim.c * (sim.rho / 2) * p_std_t * phi_x if k_I > 0 else 0
-        total = rc_S + rc_I + rf_SI + rf_IS
+        # Build per-pop rate table
+        rates_ws = []
+        counts_ws = {}
+        for _, cls_w, pop_w in active:
+            key = (cls_w, pop_w)
+            counts_ws[key] = counts_ws.get(key, 0) + 1
+        for (cls_w, pop_w), k_w in counts_ws.items():
+            p_inv_t_w = max(p_inv_func(t, pop_w), 0)
+            p_std_t_w = 1.0 - p_inv_t_w
+            if p_inv_t_w > 0:
+                f_w = p_std_t_w if cls_w == 'S' else p_inv_t_w
+            else:
+                f_w = 1.0
+            if k_w >= 2 and f_w > 0:
+                rates_ws.append(('coal', cls_w, pop_w, k_w*(k_w-1)/2.0/f_w))
+            if k_w > 0 and p_inv_t_w > 0:
+                f_other_w = p_inv_t_w if cls_w == 'S' else p_std_t_w
+                rf_w = k_w * getattr(sim, 'gamma', sim.c * sim.rho / 2) * f_other_w * phi_x
+                if rf_w > 0:
+                    rates_ws.append(('flux', cls_w, pop_w, rf_w))
+        total = sum(r for _, _, _, r in rates_ws)
         if total <= 0:
             t_inv = getattr(p_inv_func, 't_inv', None)
             if t_inv and t < t_inv:
@@ -211,18 +252,14 @@ def _rebuild_structured_from_leaves(sim, root, n_std, n_inv, bp_l, inv_len,
             continue
         t += dt
         u = rng.random() * total
-        cum = rc_S
-        if u < cum:
-            _coalesce_pop(active, 'S', 0, t, rng)
-            continue
-        cum += rc_I
-        if u < cum:
-            _coalesce_pop(active, 'I', 0, t, rng)
-            continue
-        cum += rf_SI
-        if u < cum:
-            _flux_pop(active, 'S', 0, t, rng)
-            continue
-        _flux_pop(active, 'I', 0, t, rng)
+        cum = 0.0
+        for etype_w, cls_w, pop_w, r_w in rates_ws:
+            cum += r_w
+            if u < cum:
+                if etype_w == 'coal':
+                    _coalesce_pop(active, cls_w, pop_w, t, rng)
+                else:
+                    _flux_pop(active, cls_w, pop_w, t, rng)
+                break
 
     return active[0][0]

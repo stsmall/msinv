@@ -972,11 +972,32 @@ class MsinvSimulator:
                     # Panmictic prune-and-reattach
                     root = smc_prune_and_reattach_panmictic(root, rng)
             else:
-                # Hit region boundary: tree persists (no rebuild).
-                # The next loop iteration computes rates for the new
-                # region. The first recombination in the new region
-                # will use the appropriate reattachment rules.
-                pass
+                # Hit region boundary: force prune-and-reattach events
+                # to equilibrate the tree for the new region.
+                # Biologically motivated: inversion breakpoints are
+                # structural discontinuities where S-I pairing is
+                # disrupted, effectively forcing recombination.
+                n_boundary_events = self.nsam  # ~n events to turn over tree
+                if new_pos >= bp_l and pos < bp_l:
+                    # Entering inversion: structured reattachment
+                    inv_pos = 0.02
+                    phi_x = self.flux_model.phi(inv_pos)
+                    p_inv_t = self.p_inv_func(0.0)
+                    p_std_t = 1.0 - p_inv_t
+                    for _ in range(n_boundary_events):
+                        L_S, L_I = branch_lengths_by_class(root)
+                        wL = L_S * p_std_t + L_I * p_inv_t
+                        if wL <= 0:
+                            break
+                        u = rng.random() * wL
+                        rc = 'S' if u < L_S * p_std_t else 'I'
+                        root = smc_prune_and_reattach(
+                            root, rc, self.p_inv, self.c, self.rho,
+                            phi_x, rng, p_inv_func=self.p_inv_func)
+                elif new_pos >= bp_r and in_inv:
+                    # Leaving inversion: panmictic reattachment
+                    for _ in range(n_boundary_events):
+                        root = smc_prune_and_reattach_panmictic(root, rng)
 
             pos = new_pos
 

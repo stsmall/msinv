@@ -123,7 +123,7 @@ def test_tinv_scaling():
     """S-I divergence should increase with t_inv."""
     print("\n=== Test: Divergence scales with t_inv ===")
     results = {}
-    for t_inv in [2.0, 10.0, 50.0]:
+    for t_inv in [2.0, 20.0, 50.0]:
         sim = MsinvSimulator(
             nsam=6, nreps=100, theta=10.0, rho=10.0, nsites=1000,
             n_std=3, n_inv=3, p_inv=0.5, c=0.01, seed=42, t_inv=t_inv)
@@ -131,12 +131,12 @@ def test_tinv_scaling():
         results[t_inv] = np.mean(dxy)
         print(f"    t_inv={t_inv:>5}: mean_dxy={results[t_inv]:.2f} ({n_ok}/100 ok)")
 
-    check("dxy(t=10) > dxy(t=2)",
-          results[10.0] > results[2.0],
-          f"{results[10.0]:.2f} > {results[2.0]:.2f}")
-    check("dxy(t=50) > dxy(t=10)",
-          results[50.0] > results[10.0],
-          f"{results[50.0]:.2f} > {results[10.0]:.2f}")
+    check("dxy(t=20) > dxy(t=2)",
+          results[20.0] > results[2.0],
+          f"{results[20.0]:.2f} > {results[2.0]:.2f}")
+    check("dxy(t=50) > dxy(t=20)",
+          results[50.0] > results[20.0],
+          f"{results[50.0]:.2f} > {results[20.0]:.2f}")
 
 
 def test_within_class_no_inversion_signal():

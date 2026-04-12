@@ -237,7 +237,7 @@ def fig4_multiple_inversions():
 def fig5_trajectory():
     """Figure 5: Inversion frequency trajectories through time."""
     print("Fig 5: Trajectories...")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
     N = 10000
     gen_per_year = 10  # approximate for many organisms

@@ -28,9 +28,20 @@
 
 static uint64_t rng_s[2] = {12345678901234ULL, 98765432109876ULL};
 
+/* SplitMix64 for seed initialization (avoids correlated first outputs) */
+static uint64_t splitmix64(uint64_t *state) {
+    uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
 void smc_full_seed(uint64_t s0, uint64_t s1) {
-    rng_s[0] = s0 ? s0 : 1;
-    rng_s[1] = s1 ? s1 : 1;
+    uint64_t seed = s0 ^ (s1 * 0x9e3779b97f4a7c15ULL);
+    rng_s[0] = splitmix64(&seed);
+    rng_s[1] = splitmix64(&seed);
+    if (!rng_s[0]) rng_s[0] = 1;
+    if (!rng_s[1]) rng_s[1] = 1;
 }
 
 static inline double rng_uniform(void) {
@@ -2115,7 +2126,7 @@ static int mutation_cmp(const void *a, const void *b) {
 /* ----------------------------------------------------------------
  * run_single_walk — helper to set up a tree and run walk_segment
  *
- * If inv is non-NULL and gamma > 0, builds a structured tree;
+ * If inv is non-NULL and inv_len > 0, builds a structured tree;
  * otherwise builds a panmictic tree.
  * ---------------------------------------------------------------- */
 
@@ -2127,7 +2138,7 @@ static int run_single_walk(SimParams *sp, InversionSpec *inv,
                            EdgeRecorder *er) {
     Tree tree;
 
-    if (inv != NULL && inv->gamma > 0 && inv_len > 0) {
+    if (inv != NULL && inv_len > 0) {
         /* Structured tree */
         build_structured(&tree, sp, inv, phi_init);
     } else {

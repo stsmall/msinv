@@ -972,32 +972,43 @@ class MsinvSimulator:
                     # Panmictic prune-and-reattach
                     root = smc_prune_and_reattach_panmictic(root, rng)
             else:
-                # Hit region boundary: force prune-and-reattach events
-                # to equilibrate the tree for the new region.
-                # Biologically motivated: inversion breakpoints are
-                # structural discontinuities where S-I pairing is
-                # disrupted, effectively forcing recombination.
-                n_boundary_events = self.nsam  # ~n events to turn over tree
+                # Hit region boundary. Inversion breakpoints are
+                # structural discontinuities — build a new tree
+                # from the correct stationary distribution for the
+                # new region. This is like forced recombination at
+                # the breakpoint, giving independent genealogies
+                # across the breakpoint (LD drops to zero there).
                 if new_pos >= bp_l and pos < bp_l:
-                    # Entering inversion: structured reattachment
-                    inv_pos = 0.02
+                    # Entering inversion: build structured tree
+                    # from equilibrium distribution at bp_left.
+                    inv_pos = max(0.02, (new_pos - bp_l) / inv_len)
                     phi_x = self.flux_model.phi(inv_pos)
-                    p_inv_t = self.p_inv_func(0.0)
-                    p_std_t = 1.0 - p_inv_t
-                    for _ in range(n_boundary_events):
-                        L_S, L_I = branch_lengths_by_class(root)
-                        wL = L_S * p_std_t + L_I * p_inv_t
-                        if wL <= 0:
-                            break
-                        u = rng.random() * wL
-                        rc = 'S' if u < L_S * p_std_t else 'I'
-                        root = smc_prune_and_reattach(
-                            root, rc, self.p_inv, self.c, self.rho,
-                            phi_x, rng, p_inv_func=self.p_inv_func)
+                    root, _ = build_structured_tree(
+                        n_std, n_inv, self.p_inv, self.c, self.rho,
+                        phi_x, rng, p_inv_func=self.p_inv_func)
                 elif new_pos >= bp_r and in_inv:
-                    # Leaving inversion: panmictic reattachment
-                    for _ in range(n_boundary_events):
-                        root = smc_prune_and_reattach_panmictic(root, rng)
+                    # Leaving inversion: build panmictic tree
+                    all_leaves = get_all_nodes(root)
+                    sample_leaves = sorted(
+                        [n for n in all_leaves if n.is_leaf()],
+                        key=lambda n: n.sample_id)
+                    active = list(sample_leaves)
+                    for n in active:
+                        n.parent = None
+                        n.children = []
+                    t = 0.0
+                    while len(active) > 1:
+                        k = len(active)
+                        t += rng.exponential(2.0 / (k * (k - 1)))
+                        idx = rng.choice(k, size=2, replace=False)
+                        coal = Node(time=t, branch_class='S')
+                        coal.children = [active[idx[0]], active[idx[1]]]
+                        active[idx[0]].parent = coal
+                        active[idx[1]].parent = coal
+                        for ii in sorted(idx, reverse=True):
+                            active.pop(ii)
+                        active.append(coal)
+                    root = active[0]
 
             pos = new_pos
 

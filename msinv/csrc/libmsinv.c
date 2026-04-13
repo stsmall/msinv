@@ -29,6 +29,7 @@ typedef struct Demography Demography;
 static double demo_coal_rate_factor(Demography *d, int pop, double t);
 static double demo_next_event_time(Demography *d);
 static void demo_apply_events(Demography *d, double t);
+static void demo_copy(Demography *dst, const Demography *src);
 
 /* ================================================================
  * RNG (xorshift128+)
@@ -43,6 +44,8 @@ static uint64_t splitmix64(uint64_t *state) {
     z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
     return z ^ (z >> 31);
 }
+
+
 
 void smc_full_seed(uint64_t s0, uint64_t s1) {
     uint64_t seed = s0 ^ (s1 * 0x9e3779b97f4a7c15ULL);
@@ -401,128 +404,6 @@ static void smc_prune_reattach(Tree *t) {
     t->root = node;
 }
 
-/* Panmictic prune-and-reattach with demography-scaled coalescence rate */
-static void smc_prune_reattach_demo(Tree *t, Demography *demo) {
-    int br_idx[MAX_NODES];
-    double br_len[MAX_NODES];
-    int br_count = 0;
-    double total_L = 0;
-    for (int i = 0; i < t->n; i++) {
-        if (!t->active[i]) continue;
-        int p = t->parent[i];
-        if (p >= 0) {
-            double bl = t->time[p] - t->time[i];
-            if (bl > 0) { br_idx[br_count] = i; br_len[br_count] = bl; total_L += bl; br_count++; }
-        }
-    }
-    if (br_count == 0 || total_L <= 0) return;
-
-    double r = rng_uniform() * total_L;
-    double cum = 0;
-    int bi = br_count - 1;
-    for (int i = 0; i < br_count; i++) { cum += br_len[i]; if (r < cum) { bi = i; break; } }
-    int target = br_idx[bi];
-    double t_cut = t->time[target] + rng_uniform() * br_len[bi];
-
-    /* Prune */
-    int p = t->parent[target];
-    if (p < 0 || tree_num_children(t, p) != 2) return;
-    int sib = tree_get_sibling(t, target);
-    if (sib < 0) return;
-    int gp = t->parent[p];
-    tree_remove_child(t, p, target);
-    tree_remove_child(t, p, sib);
-    if (gp >= 0) { tree_remove_child(t, gp, p); tree_add_child(t, gp, sib); }
-    else { t->parent[sib] = NULL_NODE; }
-    if (t->root == p) t->root = sib;
-    t->parent[target] = NULL_NODE;
-    tree_free_node(t, p);
-
-    /* Coalescent-based reattach with demography */
-    double t_now = t_cut;
-    double times_above[MAX_NODES];
-    int n_times = 0;
-    for (int i = 0; i < t->n; i++) {
-        if (!t->active[i] || i == target) continue;
-        if (t->time[i] > t_now) {
-            int j = n_times;
-            while (j > 0 && times_above[j-1] > t->time[i]) { times_above[j] = times_above[j-1]; j--; }
-            times_above[j] = t->time[i];
-            n_times++;
-        }
-    }
-    if (n_times > 1) { int w=1; for(int i=1;i<n_times;i++) if(times_above[i]!=times_above[w-1]) times_above[w++]=times_above[i]; n_times=w; }
-
-    int reattached = 0;
-    for (int ti = 0; ti < n_times && !reattached; ti++) {
-        double t_next = times_above[ti];
-        int k = 0;
-        int candidates[MAX_NODES];
-        for (int i = 0; i < t->n; i++) {
-            if (!t->active[i] || i == target) continue;
-            int pi = t->parent[i];
-            if (pi >= 0 && t->time[i] <= t_now && t->time[pi] > t_now)
-                candidates[k++] = i;
-        }
-        if (k <= 0) { t_now = t_next; continue; }
-
-        /* Demography-scaled rate */
-        double sf = demo ? demo_coal_rate_factor(demo, 0, t_now) : 1.0;
-        double rate = (double)k * sf;
-        /* Check for demo events in this interval */
-        double next_demo = demo ? demo_next_event_time(demo) : 1e30;
-        if (next_demo < t_next && next_demo > t_now) {
-            /* Demo event before next node: use it as interval boundary */
-            double dt = rng_exponential(rate);
-            if (t_now + dt < next_demo) {
-                double t_a = t_now + dt;
-                int ci = (int)(rng_uniform() * k); if (ci >= k) ci = k - 1;
-                int attach = candidates[ci];
-                int ap = t->parent[attach];
-                int coal = tree_add_node(t, t_a, t->klass[attach], t->population[attach], NULL_NODE);
-                if (ap >= 0) { tree_remove_child(t, ap, attach); tree_add_child(t, ap, coal); }
-                tree_add_child(t, coal, attach);
-                tree_add_child(t, coal, target);
-                if (ap < 0) t->root = coal;
-                reattached = 1;
-            } else {
-                t_now = next_demo;
-                if (demo) demo_apply_events(demo, t_now);
-            }
-        } else {
-            double dt = rng_exponential(rate);
-            if (t_now + dt < t_next) {
-                double t_a = t_now + dt;
-                int ci = (int)(rng_uniform() * k); if (ci >= k) ci = k - 1;
-                int attach = candidates[ci];
-                int ap = t->parent[attach];
-                int coal = tree_add_node(t, t_a, t->klass[attach], t->population[attach], NULL_NODE);
-                if (ap >= 0) { tree_remove_child(t, ap, attach); tree_add_child(t, ap, coal); }
-                tree_add_child(t, coal, attach);
-                tree_add_child(t, coal, target);
-                if (ap < 0) t->root = coal;
-                reattached = 1;
-            } else {
-                t_now = t_next;
-            }
-        }
-    }
-
-    if (!reattached) {
-        double sf = demo ? demo_coal_rate_factor(demo, 0, t_now) : 1.0;
-        double dt = rng_exponential(sf);  /* rate = 1 pair * sf */
-        double t_c = (t_now > t->time[t->root]) ? t_now : t->time[t->root];
-        t_c += dt;
-        int coal = tree_add_node(t, t_c, CLASS_S, 0, NULL_NODE);
-        tree_add_child(t, coal, t->root);
-        tree_add_child(t, coal, target);
-        t->root = coal;
-    }
-
-    int nd = 0;
-    while (t->parent[nd] != NULL_NODE) nd = t->parent[nd];
-    t->root = nd;
-}
 
 /* ================================================================
  * Drop mutations on current tree for a segment
@@ -999,6 +880,142 @@ static void demo_apply_events(Demography *d, double t) {
         }
         d->next_event++;
     }
+}
+
+/* Panmictic prune-and-reattach with demography-scaled coalescence rate.
+ * Makes a local copy of demography and fast-forwards it to t_cut,
+ * since each reattach starts at a different backward time. */
+static void smc_prune_reattach_demo(Tree *t, Demography *demo_src) {
+    int br_idx[MAX_NODES];
+    double br_len[MAX_NODES];
+    int br_count = 0;
+    double total_L = 0;
+    for (int i = 0; i < t->n; i++) {
+        if (!t->active[i]) continue;
+        int p = t->parent[i];
+        if (p >= 0) {
+            double bl = t->time[p] - t->time[i];
+            if (bl > 0) { br_idx[br_count] = i; br_len[br_count] = bl; total_L += bl; br_count++; }
+        }
+    }
+    if (br_count == 0 || total_L <= 0) return;
+
+    double r = rng_uniform() * total_L;
+    double cum = 0;
+    int bi = br_count - 1;
+    for (int i = 0; i < br_count; i++) { cum += br_len[i]; if (r < cum) { bi = i; break; } }
+    int target = br_idx[bi];
+    double t_cut = t->time[target] + rng_uniform() * br_len[bi];
+
+    /* Prune */
+    int p = t->parent[target];
+    if (p < 0 || tree_num_children(t, p) != 2) return;
+    int sib = tree_get_sibling(t, target);
+    if (sib < 0) return;
+    int gp = t->parent[p];
+    tree_remove_child(t, p, target);
+    tree_remove_child(t, p, sib);
+    if (gp >= 0) { tree_remove_child(t, gp, p); tree_add_child(t, gp, sib); }
+    else { t->parent[sib] = NULL_NODE; }
+    if (t->root == p) t->root = sib;
+    t->parent[target] = NULL_NODE;
+    tree_free_node(t, p);
+
+    /* Coalescent-based reattach with demography.
+     * Make a fresh copy and fast-forward to t_cut, since each
+     * reattach starts at a different backward time. */
+    Demography demo_local;
+    Demography *demo = NULL;
+    if (demo_src) {
+        demo_copy(&demo_local, demo_src);
+        demo_local.next_event = 0;  /* reset to beginning */
+        demo_apply_events(&demo_local, t_cut); /* fast-forward */
+        demo = &demo_local;
+    }
+
+    double t_now = t_cut;
+    double times_above[MAX_NODES];
+    int n_times = 0;
+    for (int i = 0; i < t->n; i++) {
+        if (!t->active[i] || i == target) continue;
+        if (t->time[i] > t_now) {
+            int j = n_times;
+            while (j > 0 && times_above[j-1] > t->time[i]) { times_above[j] = times_above[j-1]; j--; }
+            times_above[j] = t->time[i];
+            n_times++;
+        }
+    }
+    if (n_times > 1) { int w=1; for(int i=1;i<n_times;i++) if(times_above[i]!=times_above[w-1]) times_above[w++]=times_above[i]; n_times=w; }
+
+    int reattached = 0;
+    for (int ti = 0; ti < n_times && !reattached; ti++) {
+        double t_next = times_above[ti];
+        int k = 0;
+        int candidates[MAX_NODES];
+        for (int i = 0; i < t->n; i++) {
+            if (!t->active[i] || i == target) continue;
+            int pi = t->parent[i];
+            if (pi >= 0 && t->time[i] <= t_now && t->time[pi] > t_now)
+                candidates[k++] = i;
+        }
+        if (k <= 0) { t_now = t_next; continue; }
+
+        /* Demography-scaled rate */
+        double sf = demo ? demo_coal_rate_factor(demo, 0, t_now) : 1.0;
+        double rate = (double)k * sf;
+        /* Check for demo events in this interval */
+        double next_demo = demo ? demo_next_event_time(demo) : 1e30;
+        if (next_demo < t_next && next_demo > t_now) {
+            /* Demo event before next node: use it as interval boundary */
+            double dt = rng_exponential(rate);
+            if (t_now + dt < next_demo) {
+                double t_a = t_now + dt;
+                int ci = (int)(rng_uniform() * k); if (ci >= k) ci = k - 1;
+                int attach = candidates[ci];
+                int ap = t->parent[attach];
+                int coal = tree_add_node(t, t_a, t->klass[attach], t->population[attach], NULL_NODE);
+                if (ap >= 0) { tree_remove_child(t, ap, attach); tree_add_child(t, ap, coal); }
+                tree_add_child(t, coal, attach);
+                tree_add_child(t, coal, target);
+                if (ap < 0) t->root = coal;
+                reattached = 1;
+            } else {
+                t_now = next_demo;
+                if (demo) demo_apply_events(demo, t_now);
+            }
+        } else {
+            double dt = rng_exponential(rate);
+            if (t_now + dt < t_next) {
+                double t_a = t_now + dt;
+                int ci = (int)(rng_uniform() * k); if (ci >= k) ci = k - 1;
+                int attach = candidates[ci];
+                int ap = t->parent[attach];
+                int coal = tree_add_node(t, t_a, t->klass[attach], t->population[attach], NULL_NODE);
+                if (ap >= 0) { tree_remove_child(t, ap, attach); tree_add_child(t, ap, coal); }
+                tree_add_child(t, coal, attach);
+                tree_add_child(t, coal, target);
+                if (ap < 0) t->root = coal;
+                reattached = 1;
+            } else {
+                t_now = t_next;
+            }
+        }
+    }
+
+    if (!reattached) {
+        double sf = demo ? demo_coal_rate_factor(demo, 0, t_now) : 1.0;
+        double dt = rng_exponential(sf);  /* rate = 1 pair * sf */
+        double t_c = (t_now > t->time[t->root]) ? t_now : t->time[t->root];
+        t_c += dt;
+        int coal = tree_add_node(t, t_c, CLASS_S, 0, NULL_NODE);
+        tree_add_child(t, coal, t->root);
+        tree_add_child(t, coal, target);
+        t->root = coal;
+    }
+
+    int nd = 0;
+    while (t->parent[nd] != NULL_NODE) nd = t->parent[nd];
+    t->root = nd;
 }
 
 /* ================================================================
@@ -2341,12 +2358,17 @@ int msinv_simulate_one(SimParams *sp, int8_t *out_haps,
     if (sp->n_inversions == 0) {
         /* ============================================================
          * No inversions: panmictic walk 0 -> 1.
-         * Build initial tree with demography via build_structured
-         * using a dummy inv (t_inv=0 → all panmictic).
-         * Walk uses structured reattach for demography support.
+         * Build initial tree WITH demography via build_structured
+         * using a dummy inv (t_inv=0 → p_inv=0 → all panmictic).
+         * This correctly handles population size changes and growth
+         * during the initial tree construction.
          * ============================================================ */
         Tree tree;
-        build_panmictic(&tree, nsam, 0);
+        InversionSpec dummy_inv;
+        memset(&dummy_inv, 0, sizeof(dummy_inv));
+        dummy_inv.flux_w = 0.3;
+        dummy_inv.traj.t_inv = 0.0;  /* p_inv = 0 always → panmictic */
+        build_structured(&tree, sp, &dummy_inv, 0.0);
 
         mut_count = walk_segment(&tree, sp, NULL, 0, 0, 0,
                                  0.0, 1.0,
@@ -2651,9 +2673,13 @@ int msinv_simulate_one_with_edges(SimParams *sp,
     int mut_count = 0;
 
     if (sp->n_inversions == 0) {
-        /* Simple panmictic walk with edge recording */
+        /* Panmictic walk with demography + edge recording */
         Tree tree;
-        build_panmictic(&tree, nsam, 0);
+        InversionSpec dummy_inv;
+        memset(&dummy_inv, 0, sizeof(dummy_inv));
+        dummy_inv.flux_w = 0.3;
+        dummy_inv.traj.t_inv = 0.0;
+        build_structured(&tree, sp, &dummy_inv, 0.0);
         edge_open_all(er, &tree, 0.0);
 
         mut_count = walk_segment(&tree, sp, NULL, 0, 0, 0,

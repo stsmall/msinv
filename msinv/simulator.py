@@ -2404,8 +2404,9 @@ class MsinvSimulator:
         with edge recording).
         Returns (positions, haplotypes) in ms format.
         """
-        # Try C path (unless sweep is requested, which is Python-only)
-        if self.sweep is None:
+        # C path is available but opt-in via use_c=True
+        # The pure Python path is the default and handles all cases correctly.
+        if getattr(self, 'use_c', False) and self.sweep is None:
             try:
                 result = self._simulate_one_c()
                 if result is not None:

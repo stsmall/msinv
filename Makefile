@@ -1,12 +1,27 @@
-.PHONY: test clean
+.PHONY: test test-hull test-smc bakeoff build clean install dev-install
 
 test:
-	cd tests && python test_standard_coalescent.py
-	cd tests && python test_msinv.py
-	cd tests && python test_ld.py
-	cd tests && python test_treeseq.py
-	cd tests && python test_stdpopsim.py
-	@echo "All tests passed."
+	pytest tests/
+
+test-hull:
+	pytest tests/hull/
+
+test-smc:
+	pytest tests/test_*.py
+
+bakeoff:
+	python examples/bakeoff.py
+
+build:
+	python -m build
+
+install:
+	pip install .
+
+dev-install:
+	pip install -e ".[test,plots]"
 
 clean:
-	rm -rf msinv/__pycache__ tests/__pycache__
+	rm -rf build/ dist/ *.egg-info/ msinv/__pycache__ tests/__pycache__
+	find . -name "__pycache__" -type d -exec rm -rf {} +
+	find . -name "*.pyc" -delete

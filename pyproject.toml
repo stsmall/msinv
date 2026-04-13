@@ -4,29 +4,51 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msinv"
-version = "0.1.0"
-description = "Coalescent simulator with chromosomal inversions"
-readme = "README_msinv.md"
+version = "0.2.0"
+description = "Coalescent simulator with chromosomal inversions (ARG-based hull + legacy SMC)"
+readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [
     { name = "Scott T. Small", email = "ssmall2@nd.edu" },
 ]
+keywords = [
+    "population-genetics",
+    "coalescent",
+    "chromosomal-inversions",
+    "msprime",
+    "tskit",
+    "anopheles",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
     "numpy>=1.20",
+    "tskit>=0.5",       # required for HullSimulator TreeSequence output
 ]
 
 [project.optional-dependencies]
 test = [
-    "msprime>=1.2",
-    "tskit>=0.5",
+    "pytest>=7.0",
+    "pytest-timeout",
+    "msprime>=1.2",     # required for the bake-off cross-validation
     "stdpopsim>=0.2",
 ]
-all = [
-    "msprime>=1.2",
-    "tskit>=0.5",
-    "stdpopsim>=0.2",
+plots = [
     "matplotlib>=3.5",
+    "PyPDF2",
+]
+all = [
+    "msinv[test,plots]",
 ]
 docs = [
     "sphinx>=7.0",
@@ -35,25 +57,62 @@ docs = [
     "sphinx-autodoc-typehints",
 ]
 
+[project.urls]
+Homepage = "https://github.com/stsmall/msinv"
+Documentation = "https://github.com/stsmall/msinv/tree/main/docs"
+Issues = "https://github.com/stsmall/msinv/issues"
+Changelog = "https://github.com/stsmall/msinv/blob/main/CHANGELOG.md"
+
 [tool.hatch.build.targets.wheel]
 packages = ["msinv"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/msinv",
+    "/tests",
+    "/examples",
+    "/docs/*.md",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/Makefile",
+    "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 600
+
+# ---------------------------------------------------------------------------
+# Pixi configuration (alternative to pip; reads the SAME pyproject.toml)
+# ---------------------------------------------------------------------------
+
 [tool.pixi.project]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = ["linux-64", "osx-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
 python = ">=3.9"
 numpy = ">=1.20"
+tskit = ">=0.5"
 
 [tool.pixi.feature.test.dependencies]
+pytest = ">=7.0"
+pytest-timeout = "*"
 msprime = ">=1.2"
-tskit = ">=0.5"
 stdpopsim = ">=0.2"
 
+[tool.pixi.feature.plots.dependencies]
+matplotlib = ">=3.5"
+
 [tool.pixi.feature.test.tasks]
-test = "cd tests && python test_standard_coalescent.py && python test_msinv.py && python test_ld.py && python test_treeseq.py && python test_stdpopsim.py"
+test = "pytest tests/"
+test-hull = "pytest tests/hull/"
+test-smc = "pytest tests/test_*.py"
+bakeoff = "python examples/bakeoff.py"
 
 [tool.pixi.environments]
 default = { features = [], solve-group = "default" }
 test = { features = ["test"], solve-group = "default" }
+all = { features = ["test", "plots"], solve-group = "default" }

@@ -7,12 +7,17 @@ different start positions and directions.
 
 
 def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
-                      bp_l, bp_r, inv_len):
+                      bp_l, bp_r, inv_len, flux_gamma=None):
     """
     Run a single left-to-right SMC walk from start_pos to end_pos.
 
     For leftward walks, the caller should mirror the chromosome:
     swap bp_l/bp_r and un-mirror mutation positions afterward.
+
+    flux_gamma: absolute gene-flux rate for SMC reattach inside the
+    inversion. If None, falls back to sim.gamma or sim.c*sim.rho/2.
+    Must match the gamma used to build the tree (otherwise the SMC
+    walk injects flux inconsistent with the initial tree).
 
     Returns (mutations, root) where mutations is list of (pos, leaf_ids).
     """
@@ -131,8 +136,21 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                 inv_pos = (new_pos - bp_l) / inv_len
                 inv_pos = max(0.02, min(0.98, inv_pos))
                 phi_x = sim.flux_model.phi(inv_pos)
+                # Use the caller-supplied flux_gamma (or sim.gamma) not
+                # sim.c*sim.rho/2. Passing c=gamma, rho=2 into
+                # smc_prune_and_reattach makes inner _flux_rate(c, rho) =
+                # c*rho/2 = gamma. Previously this path used sim.c*sim.rho/2
+                # which ignored gamma=0 and injected high flux during SMC
+                # walks, artificially mixing karyotype classes inside
+                # inversions (breaking the 4-walk vs multi-inv consistency).
+                if flux_gamma is not None:
+                    _gamma = flux_gamma
+                else:
+                    _gamma = getattr(sim, 'gamma', None)
+                    if _gamma is None:
+                        _gamma = sim.c * sim.rho / 2.0
                 root = smc_prune_and_reattach(
-                    root, rc, sim.p_inv, sim.c, sim.rho, phi_x, rng,
+                    root, rc, sim.p_inv, _gamma, 2.0, phi_x, rng,
                     p_inv_func=sim.p_inv_func)
                 root = find_root(root)
             else:
@@ -230,7 +248,10 @@ def _rebuild_structured_from_leaves(sim, root, n_std, n_inv, bp_l, inv_len,
                 rates_ws.append(('coal', cls_w, pop_w, k_w*(k_w-1)/2.0/f_w))
             if k_w > 0 and p_inv_t_w > 0:
                 f_other_w = p_inv_t_w if cls_w == 'S' else p_std_t_w
-                rf_w = k_w * getattr(sim, 'gamma', sim.c * sim.rho / 2) * f_other_w * phi_x
+                _g = getattr(sim, 'gamma', None)
+                if _g is None:
+                    _g = sim.c * sim.rho / 2.0
+                rf_w = k_w * _g * f_other_w * phi_x
                 if rf_w > 0:
                     rates_ws.append(('flux', cls_w, pop_w, rf_w))
         total = sum(r for _, _, _, r in rates_ws)

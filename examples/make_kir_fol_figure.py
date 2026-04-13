@@ -111,6 +111,7 @@ dxy_f_si = np.zeros(NW)
 dxy_kf_alt = np.zeros(NW)
 fst_kf_same = np.zeros(NW)
 fst_kf_alt = np.zeros(NW)
+fst_f_si = np.zeros(NW)
 n_ok = 0
 
 for rep in range(NR):
@@ -127,11 +128,13 @@ for rep in range(NR):
 
     sc = {('S', 0): n_kir, ('S', 1): n_fol_S, ('I', 1): n_fol_I}
 
+    # gamma=0 (no gene flux): with the walk_segment fix, this is now
+    # fully honored across both initial tree and SMC walks.
     inv1 = msinv.InversionSpec(
-        inv_3Ra[0], inv_3Ra[1], p_inv=p_inv_anc, c=0.01, gamma=0.0,
+        inv_3Ra[0], inv_3Ra[1], p_inv=p_inv_anc, c=0.0, gamma=0.0,
         t_inv=t_inv, trajectory=traj)
     inv2 = msinv.InversionSpec(
-        inv_3Rb[0], inv_3Rb[1], p_inv=p_inv_anc, c=0.01, gamma=0.0,
+        inv_3Rb[0], inv_3Rb[1], p_inv=p_inv_anc, c=0.0, gamma=0.0,
         t_inv=t_inv, trajectory=traj)
 
     sim = msinv.MsinvSimulator(
@@ -155,6 +158,7 @@ for rep in range(NR):
     dxy_kf_alt += compute_dxy(haps, kir, fol_alt, pa)
     fst_kf_same += compute_fst(haps, kir, fol_same, pa)
     fst_kf_alt += compute_fst(haps, kir, fol_alt, pa)
+    fst_f_si += compute_fst(haps, fol_same, fol_alt, pa)
     n_ok += 1
 
     if (rep + 1) % 50 == 0:
@@ -166,6 +170,7 @@ if n_ok > 0:
     dxy_kf_alt /= n_ok
     fst_kf_same /= n_ok
     fst_kf_alt /= n_ok
+    fst_f_si /= n_ok
 
 print(f"Completed: {n_ok}/{NR} replicates")
 
@@ -178,6 +183,7 @@ dxy_f_si_s = smooth(dxy_f_si)
 dxy_kf_alt_s = smooth(dxy_kf_alt)
 fst_kf_same_s = smooth(fst_kf_same)
 fst_kf_alt_s = smooth(fst_kf_alt)
+fst_f_si_s = smooth(fst_f_si)
 
 
 # ======================================================
@@ -220,9 +226,11 @@ ax1.tick_params(labelbottom=False)
 # --- Panel B: Fst ---
 ax2 = fig.add_subplot(gs[1])
 ax2.plot(mid, fst_kf_same_s, '-', color=c_kf_same, lw=2,
-         label=r'K vs F$_S$')
+         label=r'K vs F$_S$ (same karyotype)')
+ax2.plot(mid, fst_f_si_s, '-', color=c_f_si, lw=2,
+         label=r'F$_S$ vs F$_I$ (within Folonzo)')
 ax2.plot(mid, fst_kf_alt_s, '-', color=c_kf_alt, lw=2,
-         label=r'K vs F$_I$')
+         label=r'K vs F$_I$ (alt karyotype)')
 shade_inversions(ax2)
 ax2.set_ylabel('$F_{ST}$', fontsize=12)
 ax2.set_xlim(0, nsites)
@@ -288,7 +296,9 @@ for lbl, d in [('dxy K-F_same', dxy_kf_same), ('dxy F_S-F_I', dxy_f_si),
     i_m = np.mean([d[w] for w in inv_w])
     c_m = np.mean([d[w] for w in col_w])
     print(f"  {lbl}: inv={i_m:.2f} col={c_m:.2f} ratio={i_m/c_m:.2f}")
-for lbl, f in [('Fst K-F_same', fst_kf_same), ('Fst K-F_alt', fst_kf_alt)]:
+for lbl, f in [('Fst K-F_same', fst_kf_same),
+               ('Fst F_S-F_I ', fst_f_si),
+               ('Fst K-F_alt ', fst_kf_alt)]:
     i_m = np.mean([f[w] for w in inv_w])
     c_m = np.mean([f[w] for w in col_w])
     print(f"  {lbl}: inv={i_m:.3f} col={c_m:.3f}")

@@ -2360,7 +2360,11 @@ class MsinvSimulator:
         return self.nsam - ni, ni
 
     def _has_inversion(self):
-        return self.c > 0 and 0 < self.p_inv < 1
+        # Previously required c > 0, which silently disabled the inversion
+        # code path when users passed c=0 (or gamma=0, wanting no flux).
+        # Inversion activity is fully determined by 0 < p_inv < 1 — the
+        # recombination-suppression effect is active regardless of flux.
+        return 0 < self.p_inv < 1
 
     def apply_sweep(self, positions, haplotypes):
         """
@@ -2528,18 +2532,30 @@ class MsinvSimulator:
             center = (inv.bp_left + inv.bp_right) / 2.0
             inv_len = inv.bp_right - inv.bp_left
 
+            # Effective flux rate for this inversion. Must match between
+            # initial tree build AND subsequent SMC walk steps.
+            if inv.gamma is not None:
+                inv_flux_gamma = inv.gamma
+                tree_c = inv.gamma
+                tree_rho = 2.0  # so c*rho/2 = gamma
+            else:
+                inv_flux_gamma = inv.c * self.rho / 2.0
+                tree_c = inv.c
+                tree_rho = self.rho
+
             # Walk 1: bp_left -> center (structured at left breakpoint)
             phi_left = inv.flux_model.phi(0.02)
             demo1 = self.demography.copy()
             root1, _ = build_structured_tree(
-                n_std, n_inv, inv.p_inv, inv.gamma if inv.gamma is not None else inv.c, self.rho if inv.gamma is None else 2.0,
+                n_std, n_inv, inv.p_inv, tree_c, tree_rho,
                 phi_left, rng, p_inv_func=inv.p_inv_func,
                 sample_config=self.sample_config,
                 n_pops=self.n_pops, mig_rate=self.mig_rate,
                 demo_events=self.demo_events, demography=demo1)
             muts1, _ = run_walk_segment(
                 self, root1, inv.bp_left, center, rng, n_std, n_inv,
-                inv.bp_left, inv.bp_right, inv_len)
+                inv.bp_left, inv.bp_right, inv_len,
+                flux_gamma=inv_flux_gamma)
             for p, ids in muts1:
                 if inv.bp_left <= p < center:
                     all_mutations.append((p, ids))
@@ -2548,7 +2564,7 @@ class MsinvSimulator:
             phi_right = inv.flux_model.phi(0.98)
             demo2 = self.demography.copy()
             root2, _ = build_structured_tree(
-                n_std, n_inv, inv.p_inv, inv.gamma if inv.gamma is not None else inv.c, self.rho if inv.gamma is None else 2.0,
+                n_std, n_inv, inv.p_inv, tree_c, tree_rho,
                 phi_right, rng, p_inv_func=inv.p_inv_func,
                 sample_config=self.sample_config,
                 n_pops=self.n_pops, mig_rate=self.mig_rate,
@@ -2557,7 +2573,8 @@ class MsinvSimulator:
             m_bp_r = 1.0 - inv.bp_left
             muts2, _ = run_walk_segment(
                 self, root2, m_bp_l, 1.0 - center, rng, n_std, n_inv,
-                m_bp_l, m_bp_r, inv_len)
+                m_bp_l, m_bp_r, inv_len,
+                flux_gamma=inv_flux_gamma)
             for p, ids in muts2:
                 real_p = 1.0 - p
                 if center <= real_p < inv.bp_right:
@@ -2641,6 +2658,8 @@ class MsinvSimulator:
         all_mutations = []
 
         # Walk 1: bp_left → center (inversion, structured tree at bp_left)
+        # Use self.gamma for flux rate everywhere (initial tree + SMC walk)
+        # so user's gamma=0 is honored, not silently replaced by c*rho/2.
         phi_left = self.flux_model.phi(0.02)
         demo1 = self.demography.copy()
         root1, _ = build_structured_tree(
@@ -2650,7 +2669,7 @@ class MsinvSimulator:
             demo_events=self.demo_events, demography=demo1)
         muts1, _ = run_walk_segment(
             self, root1, bp_l, center, rng, n_std, n_inv,
-            bp_l, bp_r, inv_len)
+            bp_l, bp_r, inv_len, flux_gamma=self.gamma)
         for p, ids in muts1:
             if bp_l <= p < center:
                 all_mutations.append((p, ids))
@@ -2668,7 +2687,7 @@ class MsinvSimulator:
         m_bp_r = 1.0 - bp_l
         muts2, _ = run_walk_segment(
             self, root2, m_bp_l, 1.0 - center, rng, n_std, n_inv,
-            m_bp_l, m_bp_r, inv_len)
+            m_bp_l, m_bp_r, inv_len, flux_gamma=self.gamma)
         for p, ids in muts2:
             real_p = 1.0 - p
             if center <= real_p < bp_r:

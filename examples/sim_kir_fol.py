@@ -39,9 +39,20 @@ t_inv_gen = 385_000     # ~35,000 years (middle of Fig S11 range)
 t_split = t_split_gen / (2 * N0)       # 0.159
 t_inv = t_inv_gen / (2 * N0)           # 4.375
 
-# Relative pop sizes
+# Relative pop sizes (present-day)
 size_K = Ne_K / N0        # 1.59
 size_F = Ne_F / N0        # 68.18
+
+# Folonzo exponential growth from Ne_Anc at t_split to Ne_F at present.
+# Forward: N_F(t_fwd) = Ne_Anc * exp(g * t_fwd), t_fwd = gen since split
+# At t_fwd = t_split_gen: exp(g * t_split_gen) = Ne_F / Ne_Anc
+# g = ln(Ne_F/Ne_Anc) / t_split_gen per generation
+import math
+g_F_per_gen = math.log(Ne_F / Ne_Anc) / t_split_gen
+# In coalescent units (scaled by 2*N0):
+g_F_coal = g_F_per_gen * 2 * N0
+# For Kir, modest founding bottleneck then constant (roughly):
+g_K_coal = 0.0  # treat Kir as constant size
 
 # Scaled rates for a 100kb region of chr 3R
 L_bp = 100_000
@@ -167,12 +178,17 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
 
     traj = KirFolTrajectory(p_inv_fol, p_inv_anc, t_split, t_inv)
 
-    # Demography: asymmetric Ne, merge at t_split
+    # Demography: Folonzo exponentially grew from Ne_Anc at t_split
+    # to Ne_F = 3M present. Kir constant at Ne_K = 70k.
     demo = msinv.Demography(n_pops=2, mig_rate=mig_4Nm)
-    demo.add_event(('en', 0.0, 0, size_K))     # Kir Ne
-    demo.add_event(('en', 0.0, 1, size_F))     # Fol Ne (huge)
+    demo.pop_sizes[0] = size_K           # Kir constant
+    demo.pop_sizes[1] = size_F           # Fol present-day
+    demo.growth_rates[1] = g_F_coal      # Fol exponential growth
+    demo.growth_start[1] = 0.0
+    demo.snapshot_initial_state()
+    demo.add_event(('eg', t_split, 1, 0.0))    # Fol stops growing at split
+    demo.add_event(('en', t_split, 1, 1.0))    # Fol size = Ne_Anc at split
     demo.add_event(('ej', t_split, 0, 1))      # merge at split
-    demo.add_event(('en', t_split, 1, 1.0))    # ancestral Ne
 
     sc = {('S', 0): n_kir, ('S', 1): n_fol_S, ('I', 1): n_fol_I}
 

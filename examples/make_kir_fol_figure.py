@@ -35,6 +35,11 @@ p_inv_anc = 0.3
 size_K = Ne_K / N0
 size_F = Ne_F / N0
 
+# Folonzo exponential growth from Ne_Anc to Ne_F over t_split_gen
+import math
+t_split_gen = 14_000
+g_F_coal = math.log(Ne_F / Ne_Anc) / t_split_gen * 2 * N0
+
 # Two inversions on chr 3R
 inv_3Ra = (0.15, 0.45)
 inv_3Rb = (0.55, 0.85)
@@ -111,10 +116,14 @@ n_ok = 0
 for rep in range(NR):
     traj = KirFolTraj()
     demo = msinv.Demography(n_pops=2, mig_rate=0.0)
-    demo.add_event(('en', 0.0, 0, size_K))
-    demo.add_event(('en', 0.0, 1, size_F))
-    demo.add_event(('ej', t_split, 0, 1))
+    demo.pop_sizes[0] = size_K
+    demo.pop_sizes[1] = size_F
+    demo.growth_rates[1] = g_F_coal  # exponential growth in Fol
+    demo.growth_start[1] = 0.0
+    demo.snapshot_initial_state()
+    demo.add_event(('eg', t_split, 1, 0.0))
     demo.add_event(('en', t_split, 1, 1.0))
+    demo.add_event(('ej', t_split, 0, 1))
 
     sc = {('S', 0): n_kir, ('S', 1): n_fol_S, ('I', 1): n_fol_I}
 

@@ -1,36 +1,52 @@
 """
 msinv — Coalescent simulator with chromosomal inversions.
 
-A sequential Markov coalescent (SMC) simulator for modeling chromosomal
-inversions with structured coalescence, gene flux, and demographic history.
+Two simulator engines are available:
 
-Usage (msprime-compatible real units):
-    from msinv import MsinvSimulator
+* ``HullSimulator`` (recommended) — ARG-based per-position ancestral
+  material tracking. Architecturally correct: cross-karyotype barriers
+  preserved, multi-pop demographies match msprime, multiple
+  inversions (including nested/overlapping) supported.
 
-    sim = MsinvSimulator(
-        samples=10, population_size=10000,
-        mutation_rate=1e-8, recombination_rate=1e-8,
+* ``MsinvSimulator`` (legacy) — single-tree SMC implementation.
+  Faster for inversion-only single-pop scenarios but has a known
+  two-pop bug (Scenario 5 of ``examples/bakeoff.py`` shows
+  cross-pop dxy is ~half of the msprime ground truth). Kept for
+  backwards compatibility.
+
+Usage (HullSimulator, recommended):
+    from msinv import HullSimulator, InversionSpec, Sweep
+
+    sim = HullSimulator(
+        n_std=5, n_inv=5,
+        population_size=10000,
+        sequence_length=100_000,
+        p_inv=0.5, t_inv=200_000,
+        bp_left=30_000, bp_right=70_000,
         gene_conversion_rate=1e-9,
-        sequence_length=100000,
-        n_std=5, n_inv=5, p_inv=0.5,
-        t_inv=200000,  # inversion age in generations
-        bp_left=0.3, bp_right=0.7, seed=42)
-    positions, haplotypes = sim.simulate_one()
+        seed=42)
+    ts = sim.simulate()  # returns a tskit TreeSequence
 
-Usage (coalescent-scaled, ms-style):
-    sim = MsinvSimulator(nsam=10, theta=10, rho=50, nsites=1000,
-                         n_std=5, n_inv=5, p_inv=0.5, gamma=0.05,
-                         t_inv=10.0, seed=42)
+Usage (MsinvSimulator, legacy):
+    from msinv import MsinvSimulator
+    sim = MsinvSimulator(samples=10, population_size=10000, ...)
     positions, haplotypes = sim.simulate_one()
-
-Pure Python implementation. A C extension is available separately
-in c_extension/ for ~12x speedup on specific workloads.
 
 References:
-    Peischl S et al. (2013) Heredity 111:200–209
+    Kelleher J et al. (2016) PLOS Comp Bio 12:e1004842 (msprime hull algorithm)
+    Peischl S et al. (2013) Heredity 111:200–209 (gene flux model)
     Guerrero RF et al. (2012) Phil Trans R Soc B 367:430–438
 """
 
+# Hull simulator (recommended)
+from .hull import (
+    HullSimulator,
+    InversionSpec as HullInversionSpec,
+    Sweep,
+    Demography as HullDemography,
+)
+
+# Legacy SMC simulator
 from .simulator import (
     # Simulator
     MsinvSimulator,

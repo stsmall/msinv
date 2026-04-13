@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[test]"
+
+    - name: Run standard coalescent tests
+      working-directory: tests
+      run: python test_standard_coalescent.py
+
+    - name: Run inversion tests
+      working-directory: tests
+      run: python test_msinv.py
+
+    - name: Run LD tests
+      working-directory: tests
+      run: python test_ld.py
+
+    - name: Run tree sequence tests
+      working-directory: tests
+      run: python test_treeseq.py
+
+    - name: Run stdpopsim tests
+      working-directory: tests
+      run: python test_stdpopsim.py

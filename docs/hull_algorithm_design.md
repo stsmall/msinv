@@ -184,21 +184,116 @@ docs/
 
 ## Implementation order
 
-1. **Phase 1 — minimal panmictic hull (no class, no pop, no inv)**
-   - Verify tree-sequence output matches msprime's panmictic SMC' for
-     a simple chrom.
-2. **Phase 2 — add class barrier**
-   - Add `branch_class` to `Lineage`; coalescence filters by class;
-     class barrier lifts at t_inv.
-   - Verify cross-karyotype T_MRCA ≥ t_inv at every in-inv position.
-3. **Phase 3 — add gene flux events**
-   - Implement gene-flux event handler with tract-based class flip.
-   - Verify LD decay matches phi(x) prediction.
-4. **Phase 4 — add population structure + demographic events**
-   - Hook in demestats rate engine.
-   - Validate against demestats expected rates.
-5. **Phase 5 — Multi-inversion + nested inversions**
-6. **Phase 6 — Sweep model integration**
+1. **Phase 1 ✓ — minimal panmictic hull (no class, no pop, no inv)**
+   - Verifies tree-sequence output structure (1 tree, 2n-1 nodes, single
+     root) for the simplest case. 6 tests pass.
+2. **Phase 2 ✓ — class barrier (S/I, t_inv)**
+   - Lineages now carry `branch_class` ('S' or 'I') and `population`.
+     Coalescence rates split by class with structured-coalescent
+     scaling: S at k(k-1)/2 / (p_std·Ne), I at k(k-1)/2 / (p_inv·Ne).
+     Cross-class coalescence forbidden until t_inv; at t_inv all
+     lineages flip to a single class and continue panmictically.
+   - Validates: (1) cross-class T_MRCA ≥ t_inv at every position, (2)
+     within-class T_MRCA can be << t_inv, (3) rare class with
+     Ne·p_inv coalesces ~10× faster than panmictic. 9 tests pass.
+3. **Phase 3 ✓ — gene flux events with class flip**
+   - Per-lineage flux rate = γ × p_other × ∫_inv phi(x)·1_{lineage}(x) dx.
+     Closed-form ∫phi via the Peischl triangular-roof construction.
+   - Event handler: pick lineage by weight, sample event position by
+     phi-weighted rejection over the lineage's in-inv material, draw
+     tract via b1-uniform construction, split the tract out of the
+     lineage and FLIP its class.
+   - Validates: (1) γ=0 ⇒ single in-inv tree (perfect LD), (2) γ>0 ⇒
+     multiple trees (LD breaks down), (3) γ=0 strictly preserves the
+     class barrier at every position; γ>0 produces sub-t_inv cross-class
+     MRCAs ONLY at flux-affected positions (most positions still
+     respect the barrier), (4) phi(x) gradient gives more breakpoints
+     near the centre than near the edges. 21 tests pass.
+4. **Phase 4 ✓ — population structure + demography**
+   - Hull-native ``Demography`` class (in generations) with per-pop
+     sizes, growth rates, migration matrix, and ms-style events
+     (en/eN/eg/eG/em/eM/ej).
+   - ``HullSimulator`` accepts ``sample_config={(class, pop): n}``
+     and a ``Demography`` instance. Per-(class, pop) coalescence
+     rates use ``demography.size_at(pop, t)`` so growth-rate-aware.
+     Migration adds per-lineage rates ``M[dst][src]``. Demographic
+     events fire by advancing time to the next event boundary
+     (analogous to t_inv class-barrier handling).
+   - Validates: (1) sample_config dispatches samples to correct pops
+     (Demography unit tests), (2) cross-pop T_MRCA >= t_split with no
+     migration, (3) M > 0 produces sub-t_split cross-pop MRCAs,
+     (4) per-pop size scales coal rate (~10× ratio for Ne_big/Ne_small),
+     (5) inversion + multi-pop combined respects both t_split and t_inv
+     (Kir/Fol-style). 11 tests pass.
+   - **demestats integration:** demestats (jthlab/demestats) is now
+     installed and can be used as the analytical rate engine for
+     validation. Simple inversion/multi-pop scenarios use the direct
+     calc; the demestats hook is wired up in ``msinv/hull/rates.py``
+     for future arbitrary-demes-graph support.
+5. **Phase 5a ✓ — per-segment class (fix of Phase 4 limitation)**
+   - ``Segment`` now carries ``branch_class`` (``'S'``, ``'I'``, or
+     ``'P'`` for panmictic). Sample initialisation splits each sample
+     into outside-inv (``'P'``) and inside-inv (``'S'``/``'I'``) segments.
+   - ``Lineage.branch_class`` is now a derived summary that returns
+     the common class if homogeneous or ``'mixed'`` otherwise.
+   - Coalescence is now per-pair, per-event-type. Each pair has up to
+     three event kinds — ``'outside'`` (P-P, panmictic), ``'inside_S'``
+     (S-S, structured), ``'inside_I'`` (I-I, structured). When an event
+     fires, the pair coalesces ONLY at the matching-class overlap;
+     incompatible-class overlap stays on the original lineages
+     (``_coalesce_partial``). After ``t_inv`` the simulator falls back
+     to the bucket-by-pop panmictic event for efficiency.
+   - Validates: (1) sample segments split correctly at inv boundaries,
+     (2) cross-class T_MRCA ≥ t_inv inside-inv but free outside-inv,
+     (3) within-S T_MRCA ratio inside/outside ≈ p_std (panmictic
+     scaling outside, structured inside), (4) tree-sequence well-
+     formed. 8 new tests pass (55/55 hull total).
+   - SMC vs hull comparison with collinear flanks now matches on all
+     metrics (ratios 0.88-1.05, all near theoretical expectations).
+
+5b. **Phase 5b ✓ — Multiple non-overlapping inversions on one chromosome**
+   - New ``InversionSpec`` dataclass: per-inversion ``bp_left/right``,
+     ``p_inv``, ``t_inv``, ``gene_conversion_rate``, ``flux_window``.
+   - ``HullSimulator(inversions=[InversionSpec(...), ...])``. Legacy
+     single-inv args still work.
+   - Per-inversion class tags: segments inside inversion ``k`` use
+     class ``'S<k>'`` / ``'I<k>'``; gap segments and outside segments
+     are ``'P'``. Each inversion has its own class barrier that lifts
+     at its own ``t_inv``.
+   - Per-pair coalescence rates enumerate ``(1 + 2·n_inv)`` event
+     types: ``'outside'``, plus ``'inside_S_inv<k>'`` and
+     ``'inside_I_inv<k>'`` per inversion.
+   - Validates: (1) two inversions with different t_inv each respect
+     their own barrier (5 seeds × 4+4 samples), (2) the collinear gap
+     between inversions is panmictic (cross-class T_MRCA can be far
+     below either t_inv), (3) legacy single-inv API still works,
+     (4) overlapping inversions are rejected, (5) InversionSpec
+     validates its parameters. 10 new tests pass (65/65 hull tests).
+   - **Limitation:** karyotype is currently shared across inversions
+     ("linked karyotype" — one ``'S'`` or ``'I'`` per sample applies
+     to every inversion). Independent karyotype assignment per
+     inversion is left for future work.
+5c. **Nested / overlapping inversions** *(future work)*
+6. **Phase 6 ✓ — Selective sweep integration**
+   - New ``Sweep`` dataclass: ``(x_sel, t_event, target_class,
+     population, sweep_window)``.
+   - At ``t = sweep.t_event`` (going backward), the simulator
+     force-coalesces all qualifying lineages into a single sweep
+     ancestor. "Qualifying" = has ancestral material at ``x_sel`` of
+     class ``target_class`` (or 'any') in the right population.
+   - Sweeps are added via ``HullSimulator(sweeps=[Sweep(...), ...])``
+     and processed as scheduled events alongside demographic events
+     and inversion class barriers.
+   - Sequential pair-merges are nudged by an epsilon time per pair so
+     tskit's strict ``parent.time > child.time`` rule is honoured
+     while the sweep effectively happens at one point in time.
+   - Validates: (1) sweep at t_sweep gives T_MRCA = t_sweep at
+     x_sel for all target-class samples, (2) target-class restriction
+     respected (S-targeted sweep doesn't touch I samples), (3) class
+     barrier inside an inversion still respected post-sweep, (4)
+     positions far from x_sel are unaffected (no recombination yet),
+     (5) sweep with no qualifying lineages is a no-op (not a crash).
+     6 new tests pass (71/71 hull total).
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**
 
 ## Estimated effort

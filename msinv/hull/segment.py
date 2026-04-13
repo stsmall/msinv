@@ -7,11 +7,23 @@ Segments are kept sorted by ``left``.
 
 
 class Segment:
-    """One ancestral interval [left, right) referring to tskit node_id."""
+    """One ancestral interval [left, right) referring to tskit node_id.
 
-    __slots__ = ('left', 'right', 'node_id', 'prev', 'next')
+    branch_class:
+      'S' — standard arrangement (inside an inversion)
+      'I' — inverted arrangement (inside an inversion)
+      'P' — panmictic / outside any inversion (no karyotype constraint)
+
+    A panmictic segment can coalesce with any other panmictic segment
+    at the standard rate. An 'S' segment can only coalesce with another
+    'S' segment (same inversion); same for 'I'. The class barrier is
+    enforced per-position via the segment's class.
+    """
+
+    __slots__ = ('left', 'right', 'node_id', 'branch_class', 'prev', 'next')
 
     def __init__(self, left: float, right: float, node_id: int,
+                 branch_class: str = 'P',
                  prev: 'Segment' = None, next: 'Segment' = None):
         if right <= left:
             raise ValueError(
@@ -19,11 +31,13 @@ class Segment:
         self.left = left
         self.right = right
         self.node_id = node_id
+        self.branch_class = branch_class if branch_class is not None else 'P'
         self.prev = prev
         self.next = next
 
     def __repr__(self):
-        return f"Segment([{self.left:.4f}, {self.right:.4f}) -> n{self.node_id})"
+        return (f"Segment([{self.left:.4f}, {self.right:.4f}) "
+                f"-> n{self.node_id} cls={self.branch_class})")
 
 
 def make_segment_list(intervals, node_ids):
@@ -79,13 +93,17 @@ def split_segment_list(head, tail, x):
             right_tail = seg
         else:
             # Segment straddles x: split into two new segments.
-            left_part = Segment(seg.left, x, seg.node_id, prev=left_tail)
+            left_part = Segment(seg.left, x, seg.node_id,
+                                branch_class=seg.branch_class,
+                                prev=left_tail)
             if left_head is None:
                 left_head = left_part
             if left_tail is not None:
                 left_tail.next = left_part
             left_tail = left_part
-            right_part = Segment(x, seg.right, seg.node_id, prev=right_tail)
+            right_part = Segment(x, seg.right, seg.node_id,
+                                 branch_class=seg.branch_class,
+                                 prev=right_tail)
             if right_head is None:
                 right_head = right_part
             if right_tail is not None:
@@ -104,3 +122,51 @@ def total_length(head):
         s += seg.right - seg.left
         seg = seg.next
     return s
+
+
+def make_initial_segments(L: float, node_id: int,
+                          inversions=None, sample_class: str = None):
+    """Build the initial segment list for one sample lineage.
+
+    Parameters
+    ----------
+    L : sequence length.
+    node_id : tskit node id for the sample.
+    inversions : list of Inversion-like objects with ``bp_left`` and
+        ``bp_right`` attributes. Positions inside any inversion get
+        ``branch_class`` from ``sample_class`` (assumed shared across
+        inversions for now — multi-inversion-per-sample karyotype
+        assignments will be a future extension).
+    sample_class : 'S' or 'I' for the sample's karyotype inside any
+        inversion. ``None`` ⇒ sample is purely panmictic ('P').
+
+    Returns ``(head, tail)`` of the linked list.
+    """
+    if not inversions:
+        seg = Segment(0.0, L, node_id, branch_class='P')
+        return seg, seg
+    # Sort inversions by bp_left and split the chromosome into
+    # alternating outside / inside intervals.
+    sorted_invs = sorted(inversions, key=lambda inv: inv.bp_left)
+    intervals = []  # list of (left, right, class)
+    cursor = 0.0
+    for inv in sorted_invs:
+        if inv.bp_left > cursor:
+            intervals.append((cursor, inv.bp_left, 'P'))
+        # Inside the inversion
+        intervals.append((max(cursor, inv.bp_left), inv.bp_right,
+                          sample_class or 'P'))
+        cursor = inv.bp_right
+    if cursor < L:
+        intervals.append((cursor, L, 'P'))
+    head = tail = None
+    for (l, r, cls) in intervals:
+        if r <= l:
+            continue
+        seg = Segment(l, r, node_id, branch_class=cls, prev=tail)
+        if head is None:
+            head = seg
+        if tail is not None:
+            tail.next = seg
+        tail = seg
+    return head, tail

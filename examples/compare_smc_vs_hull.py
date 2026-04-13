@@ -37,14 +37,12 @@ n_S = 5
 n_I = 5
 nsam = n_S + n_I
 
-# NOTE: hull currently treats karyotype class as a global lineage
-# attribute. For positions OUTSIDE the inversion, that's wrong (no
-# karyotype barrier should apply). Setting bp_left=0, bp_right=1 means
-# the entire sequence is inside the inversion — where both simulators
-# should agree.  Per-segment class (proper per-position state) is
-# planned for Phase 5.
-bp_left = 0.0
-bp_right = 1.0
+# Phase 5 fix landed: hull's class is now per-segment, so collinear
+# flanks (positions outside the inversion) get panmictic treatment.
+# Use a sub-region inversion to verify both simulators agree on both
+# inside-inv and outside-inv stats.
+bp_left = 0.30
+bp_right = 0.70
 inv_len_bp = (bp_right - bp_left) * L
 
 p_inv = 0.5

@@ -81,6 +81,167 @@ def _phi_integral(a: float, b: float, w: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Per-pair overlap helpers (Phase 5)
+# ---------------------------------------------------------------------------
+
+def _overlap_by_class(lin_a, lin_b) -> dict:
+    """Total overlap length between lin_a and lin_b, bucketed by
+    matching segment class. Returns ``{'S': ..., 'I': ..., 'P': ...}``.
+
+    Only counts overlap at positions where BOTH lineages have ancestral
+    material AND their classes at that position match. This is the
+    mathematically correct compatibility filter for the per-pair
+    structured-coalescent rate.
+    """
+    out = {'S': 0.0, 'I': 0.0, 'P': 0.0}
+    sa = lin_a.head
+    sb = lin_b.head
+    while sa is not None and sb is not None:
+        if sa.right <= sb.left:
+            sa = sa.next
+            continue
+        if sb.right <= sa.left:
+            sb = sb.next
+            continue
+        l = max(sa.left, sb.left)
+        r = min(sa.right, sb.right)
+        if r > l and sa.branch_class == sb.branch_class:
+            out[sa.branch_class] = out.get(sa.branch_class, 0.0) + (r - l)
+        if sa.right < sb.right:
+            sa = sa.next
+        else:
+            sb = sb.next
+    return out
+
+
+def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
+    """Coalesce ``lin_a`` and ``lin_b`` ONLY at overlap positions where
+    BOTH segments have class ``allowed_class``. Other overlap and
+    non-overlap positions remain on the original lineages.
+
+    Returns the new internal node id.
+    """
+    from .events import Lineage as _Lineage  # avoid circular import
+    new_node = tables.add_internal(time=t, population=lin_a.population)
+    # Build new merged segment list (allowed-class overlap) + leftover
+    # segment lists (everything else for each lineage).
+    merged_head = merged_tail = None
+    a_remain_head = a_remain_tail = None
+    b_remain_head = b_remain_tail = None
+
+    def _append(head_attr, tail_attr, seg):
+        head, tail = head_attr
+        seg.prev = tail
+        seg.next = None
+        if head is None:
+            head = seg
+        if tail is not None:
+            tail.next = seg
+        return seg, seg if head is None else head, seg
+
+    def _emit_merged(l, r):
+        nonlocal merged_head, merged_tail
+        from .segment import Segment
+        seg = Segment(l, r, new_node, branch_class=allowed_class,
+                      prev=merged_tail)
+        if merged_head is None:
+            merged_head = seg
+        if merged_tail is not None:
+            merged_tail.next = seg
+        merged_tail = seg
+
+    def _emit_a(l, r, src_seg):
+        nonlocal a_remain_head, a_remain_tail
+        from .segment import Segment
+        seg = Segment(l, r, src_seg.node_id,
+                      branch_class=src_seg.branch_class,
+                      prev=a_remain_tail)
+        if a_remain_head is None:
+            a_remain_head = seg
+        if a_remain_tail is not None:
+            a_remain_tail.next = seg
+        a_remain_tail = seg
+
+    def _emit_b(l, r, src_seg):
+        nonlocal b_remain_head, b_remain_tail
+        from .segment import Segment
+        seg = Segment(l, r, src_seg.node_id,
+                      branch_class=src_seg.branch_class,
+                      prev=b_remain_tail)
+        if b_remain_head is None:
+            b_remain_head = seg
+        if b_remain_tail is not None:
+            b_remain_tail.next = seg
+        b_remain_tail = seg
+
+    sa = lin_a.head; sb = lin_b.head
+    while sa is not None or sb is not None:
+        if sa is None:
+            _emit_b(sb.left, sb.right, sb)
+            sb = sb.next; continue
+        if sb is None:
+            _emit_a(sa.left, sa.right, sa)
+            sa = sa.next; continue
+        if sa.right <= sb.left:
+            _emit_a(sa.left, sa.right, sa)
+            sa = sa.next; continue
+        if sb.right <= sa.left:
+            _emit_b(sb.left, sb.right, sb)
+            sb = sb.next; continue
+        # Some overlap.
+        l = max(sa.left, sb.left)
+        r = min(sa.right, sb.right)
+        # Bits before overlap stay on their lineage.
+        if sa.left < l:
+            _emit_a(sa.left, l, sa)
+        if sb.left < l:
+            _emit_b(sb.left, l, sb)
+        # Overlap: if classes match `allowed_class`, MERGE into new
+        # node; otherwise it stays on both lineages.
+        if (sa.branch_class == allowed_class and
+                sb.branch_class == allowed_class):
+            tables.add_edge(l, r, new_node, sa.node_id)
+            tables.add_edge(l, r, new_node, sb.node_id)
+            _emit_merged(l, r)
+        else:
+            _emit_a(l, r, sa)
+            _emit_b(l, r, sb)
+        # Advance.
+        if sa.right == r:
+            sa = sa.next
+        else:
+            from .segment import Segment as _S
+            sa = _S(r, sa.right, sa.node_id,
+                    branch_class=sa.branch_class, next=sa.next)
+            if sa.next is not None:
+                sa.next.prev = sa
+        if sb.right == r:
+            sb = sb.next
+        else:
+            from .segment import Segment as _S
+            sb = _S(r, sb.right, sb.node_id,
+                    branch_class=sb.branch_class, next=sb.next)
+            if sb.next is not None:
+                sb.next.prev = sb
+
+    # Replace lin_a, lin_b in active with whatever remains + the merged
+    # lineage, where each is non-empty.
+    from .lineage import Lineage as _L
+    active.remove(lin_a)
+    active.remove(lin_b)
+    if merged_head is not None:
+        active.append(_L(merged_head, merged_tail,
+                          population=lin_a.population))
+    if a_remain_head is not None:
+        active.append(_L(a_remain_head, a_remain_tail,
+                          population=lin_a.population))
+    if b_remain_head is not None:
+        active.append(_L(b_remain_head, b_remain_tail,
+                          population=lin_b.population))
+    return new_node
+
+
+# ---------------------------------------------------------------------------
 # Simulator
 # ---------------------------------------------------------------------------
 
@@ -227,58 +388,116 @@ class HullSimulator:
 
     # -- internal helpers --------------------------------------------------
 
+    @staticmethod
+    def _overlap_by_class_static(a, b):
+        return _overlap_by_class(a, b)
+
     def _initial_lineages(self, tables: TableBuilder):
         """Create one sample lineage per sample, honouring sample_config
         (per-(class, pop) initial sample counts). Iterates the dict in
-        insertion order so user controls sample-id mapping."""
+        insertion order so user controls sample-id mapping.
+
+        Phase 5: each sample's initial segments are split at inversion
+        boundaries — inside-inv segments carry the sample's karyotype
+        class ('S' or 'I'), outside-inv segments carry 'P' (panmictic).
+        """
+        from .segment import make_initial_segments
+
+        # Build a tiny "inversion" record for make_initial_segments.
+        inversions = []
+        if self.bp_left is not None and self.bp_right is not None:
+            class _InvSpec:
+                pass
+            inv = _InvSpec()
+            inv.bp_left = self.bp_left
+            inv.bp_right = self.bp_right
+            inversions.append(inv)
+
         active = []
         for (cls, pop), count in self.sample_config.items():
-            # Convert None class to 'S' for internal consistency
-            cls_eff = 'S' if cls is None else cls
+            # Sample has a karyotype assignment for the inversion.
+            # ``cls`` of None means "no inversion" → all segments 'P'.
+            sample_cls = cls if cls in ('S', 'I') else None
             for _ in range(count):
                 nid = tables.add_sample(time=0.0, population=pop)
-                seg = Segment(0.0, self.L, nid)
-                active.append(Lineage(seg, seg,
-                                       branch_class=cls_eff,
-                                       population=pop))
+                head, tail = make_initial_segments(
+                    self.L, nid, inversions=inversions,
+                    sample_class=sample_cls)
+                active.append(Lineage(head, tail, population=pop))
         return active
 
     # -- rate helpers ------------------------------------------------------
 
     def _coal_rates(self, active, t: float):
-        """Per-(class, pop) coalescence rates at time t.
+        """Coalescence rates at time t (Phase 5: per-pair, per-event-type).
 
-        Returns list of (kind, rate, pool_indices). Rate scales as
-        ``k(k-1)/2 / (p_class · 2 · Ne_pop(t))`` where Ne_pop(t)
-        respects the demography's size-at-time and growth.
+        Each pair (A, B) of same-pop lineages has up to three event
+        types:
 
-        ``kind`` is one of: 'coal_S_<pop>', 'coal_I_<pop>',
-        'coal_panmictic_<pop>'.
+          'outside'  — coalesce ONLY at outside-inv overlap (both 'P').
+                       Rate = 1/(2·Ne_pop(t)) if any 'P-P' overlap.
+          'inside_S' — coalesce ONLY at S-S overlap inside the inv.
+                       Rate = 1/(2·Ne_pop(t)·p_std) if any 'S-S' overlap.
+          'inside_I' — coalesce ONLY at I-I overlap inside the inv.
+                       Rate = 1/(2·Ne_pop(t)·p_inv) if any 'I-I' overlap.
+
+        Each event type's rate has the standard per-pair structured-
+        coalescent form (1/(2·Ne·p_class)). When an event fires, the
+        pair coalesces ONLY at overlap positions of that event type;
+        other positions stay separate.
+
+        After t_inv the class barrier lifts: every pair has a single
+        'panmictic' event with rate 1/(2·Ne_pop(t)).
+
+        Returns list of (kind, rate, payload) where payload =
+        ``(i, j, event_kind)`` for pair-events, or
+        ``(idx_list, panmictic_kind)`` for the post-t_inv catch-all.
         """
-        # Bucket lineages by (class, pop).
-        buckets = {}  # (cls, pop) -> [indices into active]
-        for i, lin in enumerate(active):
-            buckets.setdefault((lin.branch_class, lin.population), []).append(i)
-
         rates = []
-        # Whether the inversion is still active at time t
         inv_active = self.p_inv is not None and (
             self.t_inv is None or t < self.t_inv)
-        for (cls, pop), idx_list in buckets.items():
-            k = len(idx_list)
-            if k < 2:
-                continue
-            ne_pop = max(self.demography.size_at(pop, t), 1e-9)
-            if not inv_active:
-                # Panmictic within this pop.
-                p_class = 1.0
-                kind = f'coal_panmictic_{pop}'
-            else:
-                p_class = (1.0 - self.p_inv) if cls == 'S' else self.p_inv
-                kind = f'coal_{cls}_{pop}'
-            denom = 2.0 * ne_pop * max(p_class, 1e-12)
-            rate = k * (k - 1) / 2.0 / denom
-            rates.append((kind, rate, idx_list))
+
+        if not inv_active:
+            # Post-t_inv: panmictic-by-pop bucket.
+            buckets = {}
+            for i, lin in enumerate(active):
+                buckets.setdefault(lin.population, []).append(i)
+            for pop, idx_list in buckets.items():
+                k = len(idx_list)
+                if k < 2:
+                    continue
+                ne_pop = max(self.demography.size_at(pop, t), 1e-9)
+                rate = k * (k - 1) / 2.0 / (2.0 * ne_pop)
+                rates.append((f'coal_panmictic_{pop}', rate, idx_list))
+            return rates
+
+        # Inversion is still active: enumerate pairs in same-pop.
+        # Per-pair rate split by event type (outside / inside_S / inside_I).
+        p_std = 1.0 - self.p_inv
+        for i in range(len(active)):
+            lin_i = active[i]
+            for j in range(i + 1, len(active)):
+                lin_j = active[j]
+                if lin_i.population != lin_j.population:
+                    continue
+                ovl = _overlap_by_class(lin_i, lin_j)
+                ne_pop = max(
+                    self.demography.size_at(lin_i.population, t), 1e-9)
+                if ovl['P'] > 0:
+                    rates.append((
+                        'pair_outside',
+                        1.0 / (2.0 * ne_pop),
+                        (i, j, 'outside')))
+                if ovl['S'] > 0:
+                    rates.append((
+                        'pair_inside_S',
+                        1.0 / (2.0 * ne_pop * p_std),
+                        (i, j, 'inside_S')))
+                if ovl['I'] > 0:
+                    rates.append((
+                        'pair_inside_I',
+                        1.0 / (2.0 * ne_pop * self.p_inv),
+                        (i, j, 'inside_I')))
         return rates
 
     def _migration_rates(self, active, t: float):
@@ -515,10 +734,22 @@ class HullSimulator:
                 continue  # numerical-precision miss
 
             if chosen_kind.startswith('coal_'):
+                # Post-t_inv panmictic catch-all: payload is a list of
+                # lineage indices; pick two to coalesce.
                 pool = chosen_payload
                 ii, jj = self.rng.choice(len(pool), size=2, replace=False)
                 i, j = pool[ii], pool[jj]
                 apply_coalescence(active, active[i], active[j], t, tables)
+            elif chosen_kind.startswith('pair_'):
+                # Per-pair, per-event-type Phase-5 dispatch. Payload is
+                # ``(i, j, event_kind)`` with event_kind in
+                # {'outside', 'inside_S', 'inside_I'}.
+                i, j, ek = chosen_payload
+                allowed = {'outside': 'P',
+                           'inside_S': 'S',
+                           'inside_I': 'I'}[ek]
+                _coalesce_partial(active, active[i], active[j], t,
+                                   tables, allowed)
             elif chosen_kind == 'flux':
                 idx = chosen_payload
                 lineage = active[idx]

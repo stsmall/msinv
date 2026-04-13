@@ -2404,16 +2404,6 @@ class MsinvSimulator:
         with edge recording).
         Returns (positions, haplotypes) in ms format.
         """
-        # C path is available but opt-in via use_c=True
-        # The pure Python path is the default and handles all cases correctly.
-        if getattr(self, 'use_c', False) and self.sweep is None:
-            try:
-                result = self._simulate_one_c()
-                if result is not None:
-                    return result
-            except Exception:
-                pass  # fall through to Python
-
         if len(self.inversions) > 1:
             pos, haps = self._simulate_one_multi_inv()
         elif self._has_inversion():
@@ -2427,50 +2417,6 @@ class MsinvSimulator:
             pos, haps = self.apply_sweep(pos, haps)
 
         return pos, haps
-
-    def _simulate_one_c(self):
-        """Dispatch to C inner loop via msinv_bridge."""
-        try:
-            from . import _bridge as cb
-            if not cb.is_available():
-                return None
-        except ImportError:
-            return None
-
-        # C panmictic reattach doesn't handle multi-pop migration;
-        # fall back to Python for multi-pop without inversion
-        if self.n_pops > 1 and not self._has_inversion() and not self.inversions:
-            return None
-
-        # Seed the C RNG from our Python RNG
-        seed_val = int(self.rng.integers(0, 2**63))
-        cb.seed(seed_val)
-
-        # Determine inversions (up to 2 supported in C flat API)
-        inversions = self.inversions if self.inversions else None
-        if inversions and len(inversions) > 2:
-            return None  # fall back to Python for >2 inversions
-
-        return cb.simulate_one(
-            nsam=self.nsam,
-            n_std=self.n_std or self.nsam,
-            n_inv=self.n_inv or 0,
-            theta=self.theta,
-            rho=self.rho,
-            nsites=self.nsites,
-            p_inv=self.p_inv,
-            gamma=self.gamma,
-            flux_w=self.flux_model.w,
-            bp_left=self.bp_left,
-            bp_right=self.bp_right,
-            t_inv=getattr(self.p_inv_func, 't_inv', None) or 100.0,
-            p_inv_func=self.p_inv_func,
-            inversions=inversions,
-            n_pops=self.n_pops,
-            mig_rate=self.mig_rate,
-            demography=self.demography,
-            sample_config=self.sample_config,
-        )
 
     def _simulate_one_multi_inv(self):
         """

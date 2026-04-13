@@ -2,11 +2,76 @@
 
 All notable changes to msinv are documented here.
 
+## [0.2.0] - 2026-04-13
+
+### Added — Hull simulator (ARG-based, recommended)
+
+A new ``HullSimulator`` engine that tracks per-position ancestral
+material in an msprime-style hull. Architecturally correct: the
+karyotype-class barrier is preserved by construction (the ARG never
+modifies coalescence nodes after they're written), multi-population
+demographies match msprime ground truth, and every position has the
+correct structured-coalescent marginal.
+
+Phases:
+
+- **Phase 1** Panmictic ARG bookkeeping
+- **Phase 2** Karyotype class barrier (S/I, t_inv)
+- **Phase 3** Gene-flux events with class flip (Peischl phi(x))
+- **Phase 4** Multi-population structure + ms-style demography
+- **Phase 5a** Per-segment class (collinear flanks handled correctly)
+- **Phase 5b** Multiple non-overlapping inversions per chromosome
+- **Phase 5c.1** Independent karyotype assignment per inversion
+- **Phase 5c.2** Nested / overlapping inversions
+- **Phase 6** Selective sweep events (force-coalescence)
+
+89 new tests in ``tests/hull/``; 114/114 total tests pass on main.
+
+### Added — Bake-off
+
+``examples/bakeoff.py`` runs three-way comparison (msprime ↔ SMC ↔ hull)
+on six scenarios. Documents that:
+
+- Panmictic baseline: all three agree.
+- Single inversion γ=0: SMC ≈ Hull.
+- Two-population split: SMC has a bug (cross-pop dxy ~half of expected);
+  hull matches msprime ground truth.
+
+### Fixed (legacy SMC simulator)
+
+- Sample-ordering bug in ``build_structured_tree``: was
+  ``sorted(sample_config.items())``, silently re-ordered samples by
+  ``(class, pop)`` tuple (e.g. ``'I' < 'S'`` placed I samples before
+  S). Now iterates in insertion order.
+- Dispatch when ``c=0``: ``_has_inversion()`` previously required
+  ``c > 0``, silently routing legitimate gamma=0 inversion runs
+  through the no-inversion code path. Now checks only
+  ``0 < p_inv < 1``.
+- In-inv recombination is now gene-flux only (Option 3 model). The
+  prior in-inv SMC prune-reattach could not reliably preserve the
+  cross-karyotype T_MRCA constraint under repeated events.
+
+### Removed
+
+- ``c_extension/`` — the C inner-loop experiment is removed in favour
+  of a planned Rust port via PyO3 (Phase 7).
+- ``archive/`` — obsolete prototypes from the project's early phase.
+
+### Documentation
+
+- New ``docs/hull_algorithm_design.md`` describing the phased build,
+  references, and known gaps.
+- Updated ``docs/known_issues.md`` with the SMC fixes and the
+  remaining model-choice limitations.
+- Updated ``README.md`` to feature the hull simulator and document the
+  SMC-vs-hull tradeoffs.
+
 ## [0.1.0] - 2026-04-12
 
-### Initial release
+### Initial release (legacy SMC simulator)
 
 Features:
+
 - Sequential Markov coalescent (SMC) with chromosomal inversions
 - Structured coalescent with S/I karyotype classes
 - Position-dependent gene flux (Peischl et al. 2013 model)
@@ -14,24 +79,13 @@ Features:
 - Multiple inversions per chromosome (up to 4)
 - ms-compatible demography (eN, en, eG, eg, eM, em, ej, es)
 - Per-population inversion frequency trajectories
-  - ConstantFrequency
-  - DeterministicTrajectory (logistic sweep)
-  - StochasticTrajectory (WF diffusion with reflecting boundary)
-  - CoupledTrajectory (2D per-population with migration)
+  (Constant / Deterministic / Stochastic / Coupled)
 - Selective sweep inside inversion (for resistance allele studies)
-- Tree sequence output via tskit (single-root, 0/5981 multi-root validated)
+- Tree sequence output via tskit
 - msprime-compatible real-unit API
-- 4-walk strategy for symmetric phi(x) shape
 
 Validation:
-- 46/46 tests pass (standard, inversion, LD, tree seq, stdpopsim)
-- Matches msprime within ~10% on demographic models
-- Matches empirical data: Small 2023 (Kir/Fol), Grau-Bové 2020 (RDL),
-  2La Fst, MAPT dxy
-- Replicates Peischl 2013 T_SI ∝ 1/phi(x) prediction
 
-Package:
-- pip/pixi installable via pyproject.toml
-- GitHub Actions CI
-- Sphinx documentation
-- MIT licensed
+- 25/25 tests pass
+- Matches msprime within ~10% on simple demographic models
+- Replicates Peischl 2013 T_SI ∝ 1/phi(x) prediction

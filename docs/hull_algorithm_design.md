@@ -230,18 +230,28 @@ docs/
      validation. Simple inversion/multi-pop scenarios use the direct
      calc; the demestats hook is wired up in ``msinv/hull/rates.py``
      for future arbitrary-demes-graph support.
-**Known limitation discovered during cross-validation (see
-``examples/compare_smc_vs_hull.py``):** ``Lineage.branch_class`` is a
-GLOBAL attribute on the lineage, not per-segment. For sequences with
-positions OUTSIDE the inversion bounds, that's wrong — the karyotype
-class barrier should only apply inside the inversion, but the current
-implementation enforces it globally. Workaround: keep the entire
-sequence inside the inversion (``bp_left=0, bp_right=L``) and combine
-with a separate non-inv simulation if a collinear flank is needed.
-The principled fix (per-segment class) is part of Phase 5 (multi-
-inversion needs the same machinery).
+5. **Phase 5a ✓ — per-segment class (fix of Phase 4 limitation)**
+   - ``Segment`` now carries ``branch_class`` (``'S'``, ``'I'``, or
+     ``'P'`` for panmictic). Sample initialisation splits each sample
+     into outside-inv (``'P'``) and inside-inv (``'S'``/``'I'``) segments.
+   - ``Lineage.branch_class`` is now a derived summary that returns
+     the common class if homogeneous or ``'mixed'`` otherwise.
+   - Coalescence is now per-pair, per-event-type. Each pair has up to
+     three event kinds — ``'outside'`` (P-P, panmictic), ``'inside_S'``
+     (S-S, structured), ``'inside_I'`` (I-I, structured). When an event
+     fires, the pair coalesces ONLY at the matching-class overlap;
+     incompatible-class overlap stays on the original lineages
+     (``_coalesce_partial``). After ``t_inv`` the simulator falls back
+     to the bucket-by-pop panmictic event for efficiency.
+   - Validates: (1) sample segments split correctly at inv boundaries,
+     (2) cross-class T_MRCA ≥ t_inv inside-inv but free outside-inv,
+     (3) within-S T_MRCA ratio inside/outside ≈ p_std (panmictic
+     scaling outside, structured inside), (4) tree-sequence well-
+     formed. 8 new tests pass (55/55 hull total).
+   - SMC vs hull comparison with collinear flanks now matches on all
+     metrics (ratios 0.88-1.05, all near theoretical expectations).
 
-5. **Phase 5 — Multi-inversion + nested inversions + per-segment class**
+5b. **Phase 5b — Multi-inversion + nested inversions** *(future work)*
 6. **Phase 6 — Sweep model integration**
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**
 

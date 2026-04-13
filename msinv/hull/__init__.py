@@ -13,7 +13,7 @@ demography) is the current validated frontier — see ``__phase__`` and
 the design doc for which features are implemented.
 """
 
-__phase__ = 4  # last fully-validated phase
+__phase__ = 5  # last fully-validated phase
 
 from .segment import Segment
 from .lineage import Lineage

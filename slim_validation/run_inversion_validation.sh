@@ -20,8 +20,9 @@ bp_left=30000
 bp_right=70000
 p_init=0.5
 n_samp=10
-NREPS=30         # fewer reps since each takes longer with restarts
+NREPS=10         # reduced from 30 — SLiM with restarts is too expensive
 N_PARALLEL=4
+SLIM_TIMEOUT=10800   # 3h per SLiM rep (was 1800s → all reps timed out)
 
 echo "=== SLiM inversion + msinv validation ==="
 echo "Ne=$Ne, L=$L, mu=$mu, r=$r"
@@ -42,7 +43,7 @@ run_slim_inv() {
     local out="inversion/output/rep${seed}.txt"
     if [ -f "$out" ]; then return; fi
 
-    timeout 1800 slim -d "Ne=$Ne" -d "L=$L" -d "mu=$mu" -d "r=$r" \
+    timeout $SLIM_TIMEOUT slim -d "Ne=$Ne" -d "L=$L" -d "mu=$mu" -d "r=$r" \
         -d "INV_TICK=$INV_TICK" -d "END_TICK=$END_TICK" \
         -d "bp_left=$bp_left" -d "bp_right=$bp_right" \
         -d "p_init=$p_init" -d "n_samp=$n_samp" \
@@ -52,7 +53,7 @@ run_slim_inv() {
 }
 
 export -f run_slim_inv
-export Ne L mu r INV_TICK END_TICK bp_left bp_right p_init n_samp
+export Ne L mu r INV_TICK END_TICK bp_left bp_right p_init n_samp SLIM_TIMEOUT
 
 t_start=$(date +%s)
 for rep in $(seq 1 $NREPS); do

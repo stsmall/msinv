@@ -211,6 +211,7 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
     dxy2 = np.zeros(NW)
     dxy3 = np.zeros(NW)
     fst1 = np.zeros(NW)
+    fst2 = np.zeros(NW)  # F_S vs F_I
     fst3 = np.zeros(NW)
     n_ok = 0
 
@@ -246,6 +247,7 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
         dxy2 += compute_dxy_window(haps, fol_same, fol_alt, pos_arr)
         dxy3 += compute_dxy_window(haps, kir, fol_alt, pos_arr)
         fst1 += compute_fst_window(haps, kir, fol_same, pos_arr)
+        fst2 += compute_fst_window(haps, fol_same, fol_alt, pos_arr)
         fst3 += compute_fst_window(haps, kir, fol_alt, pos_arr)
         n_ok += 1
 
@@ -254,7 +256,7 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
 
     if n_ok > 0:
         dxy1 /= n_ok; dxy2 /= n_ok; dxy3 /= n_ok
-        fst1 /= n_ok; fst3 /= n_ok
+        fst1 /= n_ok; fst2 /= n_ok; fst3 /= n_ok
 
     # Region classification
     def region(x):
@@ -277,7 +279,7 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
 
     return dict(dxy_kir_fol_same=dxy1, dxy_fol_same_alt=dxy2,
                 dxy_kir_fol_alt=dxy3, fst_kir_fol_same=fst1,
-                fst_kir_fol_alt=fst3, n_ok=n_ok)
+                fst_fol_same_alt=fst2, fst_kir_fol_alt=fst3, n_ok=n_ok)
 
 
 # ======================================================
@@ -341,6 +343,8 @@ for col, (scenario_name, res) in enumerate(results.items()):
     # Fst
     ax_fst.plot(mid, res['fst_kir_fol_same'], '-o', color=c_same,
                 label='Kir vs Fol$_{same}$', ms=3, lw=1.5)
+    ax_fst.plot(mid, res['fst_fol_same_alt'], '-o', color=c_within,
+                label='Fol$_{same}$ vs Fol$_{alt}$', ms=3, lw=1.5)
     ax_fst.plot(mid, res['fst_kir_fol_alt'], '-o', color=c_alt,
                 label='Kir vs Fol$_{alt}$', ms=3, lw=1.5)
     ax_fst.set_xlabel('Position', fontsize=10)

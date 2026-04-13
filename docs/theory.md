@@ -1,101 +1,145 @@
 # Theory background
 
-msinv implements the sequential Markov coalescent (SMC) with chromosomal inversions, following Guerrero et al. (2012) and Peischl et al. (2013).
+msinv simulates the coalescent for chromosomes carrying inversions.
+It implements the structured coalescent of Guerrero et al. (2012) and
+the gene flux model of Peischl et al. (2013), in two engines:
 
-## Standard SMC
+- **`HullSimulator` (recommended)** — per-position ancestral material
+  tracking, msprime-style ARG. Architecturally correct.
+- **`MsinvSimulator` (legacy)** — single-tree SMC with prune-and-reattach.
+  Faster for simple inversion-only single-pop scenarios but less general.
 
-Going backward in time along the chromosome, the coalescent tree changes as recombination events are encountered. The SMC approximates this by doing prune-and-reattach operations:
+This document focuses on the model both engines implement; differences
+in how each engine *realizes* the model are noted in
+[`hull_algorithm_design.md`](hull_algorithm_design.md).
 
-1. Pick a branch proportional to its length
-2. Prune the branch at some time `t_cut`
-3. Reattach it via coalescent-based walking backward in time
+## The structured coalescent at one site
 
-msinv uses **coalescent-based reattachment** (not uniform-on-branch), which matches msprime within 2% for panmictic simulations.
+At a position INSIDE an inversion, chromosomes fall into two karyotype
+classes:
 
-## Structured coalescent
+- **S** — standard arrangement
+- **I** — inverted arrangement
 
-Inside an inversion, chromosomes fall into two karyotype classes:
-- **S** (standard orientation)
-- **I** (inverted orientation)
+Within a population of total size *Ne*, the S sub-population has size
+*Ne · p_std* and the I sub-population has size *Ne · p_inv*, where
+*p_inv* is the inversion's frequency and *p_std = 1 − p_inv*.
 
-Recombination is suppressed between heterokaryotypes. msinv models this as:
+Per-pair coalescence rate per generation:
 
-- **S-S coalescence rate**: `k_S(k_S - 1) / (2 × p_std)` per unit time
-- **I-I coalescence rate**: `k_I(k_I - 1) / (2 × p_inv)` per unit time
-- **S ↔ I exchange**: only via gene flux (see below)
+- **S–S pair (same pop)**: `1 / (2 · Ne · p_std)`
+- **I–I pair (same pop)**: `1 / (2 · Ne · p_inv)`
+- **S–I pair**: 0 — heterokaryotypes don't recombine inside the
+  inversion, so an S chromosome cannot share a recent parent with an
+  I chromosome at this site.
 
-Lineages in the rarer class coalesce faster because they see a smaller effective population.
+Lineages in the rarer class coalesce faster because they live in a
+smaller effective sub-population.
 
-## Gene flux (Peischl model)
+## The class barrier (t_inv)
 
-Gene flux models double crossovers (gene conversion tracts) that can transfer short segments between opposing karyotype orientations. The rate per lineage is:
+Inversions originated as a single new mutation at some time *t_inv*
+in the past. Before *t_inv*, the inversion didn't exist — every
+chromosome was on the same arrangement. Going BACKWARD in time:
+
+- For *t < t_inv*: structured coalescent (S/I separated).
+- For *t ≥ t_inv*: panmictic — all lineages can coalesce freely.
+
+The cross-class T_MRCA is bounded below by *t_inv*. At positions
+near the inversion's centre, the S and I sub-populations have
+effectively been isolated for the full inversion age, producing the
+characteristic "inversion-as-barrier-to-introgression" signal seen
+in empirical data.
+
+## Gene flux (Peischl 2013 model)
+
+Inside the inversion, gene conversion can transfer a small tract of
+DNA between an S chromosome and an I chromosome (going forward), even
+though crossing over is suppressed. Going backward, this means a
+position can have its karyotype-of-origin flip during a flux event.
+
+The per-position flux rate per lineage per generation:
 
 ```
-flux_rate = k × gamma × p_other × phi(x)
+flux_rate(x) = γ · phi(x) · p_other
 ```
 
-where:
-- `gamma = 4·N·g` is the scaled gene conversion rate (decoupled from recombination rate in msinv)
-- `p_other` is the frequency of the opposite arrangement (heterokaryotype frequency)
-- `phi(x) = min(x, 1-x, w) / (1 - w)` is the position-dependent factor
-  - `x` = position within inversion (fraction, 0 to 1)
-  - `w` = flux window width parameter (default 0.3)
-
-**phi(x) shape**: trapezoid peaking at center, zero at breakpoints. This creates the characteristic divergence gradient observed empirically: breakpoint regions have deeper S-I divergence than the center.
-
-## Correlated flux tracts (Peischl b2)
-
-Each gene flux event transfers a tract of DNA, not a single site. When a flux event fires at position x (drawn as `b1`), the right boundary `b2 = b1 + w` is also computed. Going backward in time along the chromosome:
-- At `x = b1`: class switches
-- At `x = b2`: class reverts
-
-This models the Peischl b2 tract-length dependence and produces realistic LD decay.
-
-## Recombination suppression
-
-Inside the inversion, effective recombination rate for a single lineage is:
+- *γ* = gene conversion rate (per bp per generation)
+- *p_other* = frequency of the OTHER karyotype (when gene conversion
+  can fire — i.e. heterokaryotype frequency)
+- *phi(x)* = position-dependent factor:
 
 ```
-effective_rate = rho × p_same
+phi(x) = min(x, 1−x, w) / (1 − w)
 ```
 
-where `p_same = p_std` for S lineages and `p_inv` for I lineages. This models the fact that crossovers inside the inversion only occur in homokaryotype matings (SS or II); heterokaryotype matings produce crossover products that are inviable (paracentric) or unbalanced (pericentric).
+with *x* the inversion-relative position (0 to 1) and *w* the tract
+window width (default 0.05 = 5% of inversion length).
 
-In homokaryotypes, recombination proceeds normally. In heterokaryotypes:
-- Crossovers inside the inversion → inviable gametes (no gene flow)
-- Gene conversion / double crossover → small tract transferred (gene flux)
+**Shape of phi(x):** triangular roof — zero at the breakpoints, peak
+in the middle. So gene flux concentrates in the centre of the
+inversion. This is why empirically we see the strongest cross-karyotype
+divergence near the breakpoints (less mixing there) and weaker
+divergence in the centre (more mixing).
 
-## Inversion age (t_inv)
+When a flux event fires at position *x*, a tract of length
+*w · inv_len* gets its karyotype flipped. The hull simulator handles
+this exactly via per-position class flips on the affected segment.
 
-Inversions are finite-age events. msinv bounds the maximum S-I divergence by `t_inv`:
-- At t < t_inv: full structured coalescent with flux
-- At t ≥ t_inv: inversion didn't exist, all lineages panmictic
+## Multiple populations
 
-Without a finite t_inv, S-I coalescence time diverges to infinity at breakpoints (where flux rate → 0).
+The structured coalescent extends naturally to multiple populations:
 
-## Frequency trajectories
+- A pair (A, B) can coalesce at a site only if they're in the SAME
+  population AND the SAME karyotype (inside an inversion).
+- Migration moves individual lineages between pops at rate
+  *M_ji* per source lineage per generation.
+- Population-merge events (`ej`) move all lineages of a source pop
+  into a destination pop in one bulk operation.
 
-Four trajectory types are supported:
+Combined with the karyotype barrier: cross-pop AND cross-class
+T_MRCA is bounded below by `max(t_split, t_inv)`. This produces the
+empirically-observed pattern that cross-karyotype divergence between
+two populations is much larger than same-karyotype divergence between
+the same pops.
 
-1. **ConstantFrequency**: fixed `p_inv`, with optional `t_inv` cutoff
-2. **DeterministicTrajectory**: logistic sweep from 1/(2N) to p_final under selection s
-3. **StochasticTrajectory**: WF diffusion backward in time with reflecting boundary at p=0 (models recurrent origins at the same breakpoints)
-4. **CoupledTrajectory**: per-population 2D diffusion with local selection and migration (for local adaptation scenarios)
+## Multiple inversions
 
-## 4-walk strategy
+Each inversion has its own bounds, frequency, age, and gene flux
+rate. Inversions on the same chromosome may overlap or nest. At any
+position, the karyotype state is a tuple (one entry per containing
+inversion); two lineages can coalesce at that position only if their
+states match across ALL containing inversions whose t_inv hasn't
+yet been crossed.
 
-To eliminate left-to-right asymmetry from the SMC walk, msinv uses a 4-walk strategy per inversion:
+In linked-karyotype mode (the default), each sample's `'S'` or `'I'`
+applies to every inversion. In independent-karyotype mode, samples
+can be S at one inversion and I at another.
 
-- Walk 1: `bp_left → center` (rightward, structured)
-- Walk 2: `bp_right → center` (leftward via mirror, structured)
-- Walk 3: `bp_left → 0` (leftward via mirror, collinear)
-- Walk 4: `bp_right → 1` (rightward, collinear)
+## Selective sweeps
 
-Each walk builds a fresh tree at the boundary and accumulates recombination events. Mutations are pooled from all four walks.
+A sweep is modeled as a forced-coalescence event at the selected
+position *x_sel* and time *t_event*: all lineages carrying the swept
+allele at *x_sel* are merged into a single sweep ancestor at
+*t_event*. Effects propagate to nearby positions via the existing
+recombination/coalescence machinery.
+
+For a within-inversion sweep that started on the S background and was
+later transferred to I via gene conversion, you can stack two sweep
+events (one targeting class S, one targeting class I, with the
+appropriate t_event for each).
 
 ## References
 
-- Guerrero, R. F., Rousset, F., & Kirkpatrick, M. (2012). *Coalescent patterns for chromosomal inversions in divergent populations.* Phil Trans R Soc B 367:430–438.
-- Peischl, S., Koch, E., Guerrero, R. F., & Kirkpatrick, M. (2013). *A sequential coalescent algorithm for chromosomal inversions.* Heredity 111:200–209.
-- Kirkpatrick, M., & Barton, N. (2006). *Chromosome inversions, local adaptation and speciation.* Genetics 173:419–434.
-- McVean, G. A., & Cardin, N. J. (2005). *Approximating the coalescent with recombination.* Phil Trans R Soc B 360:1387–1393.
+- Guerrero, R. F., Rousset, F., & Kirkpatrick, M. (2012). *Coalescent
+  patterns for chromosomal inversions in divergent populations.*
+  Phil Trans R Soc B 367:430–438.
+- Peischl, S., Koch, E., Guerrero, R. F., & Kirkpatrick, M. (2013).
+  *A sequential coalescent algorithm for chromosomal inversions.*
+  Heredity 111:200–209.
+- Kirkpatrick, M., & Barton, N. (2006). *Chromosome inversions, local
+  adaptation and speciation.* Genetics 173:419–434.
+- Kelleher, J., Etheridge, A. M., & McVean, G. (2016). *Efficient
+  coalescent simulation and genealogical analysis for large sample
+  sizes.* PLOS Comp Bio 12:e1004842. *(msprime hull algorithm — basis
+  for the* HullSimulator *implementation.)*

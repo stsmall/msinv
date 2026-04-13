@@ -230,7 +230,18 @@ docs/
      validation. Simple inversion/multi-pop scenarios use the direct
      calc; the demestats hook is wired up in ``msinv/hull/rates.py``
      for future arbitrary-demes-graph support.
-5. **Phase 5 — Multi-inversion + nested inversions**
+**Known limitation discovered during cross-validation (see
+``examples/compare_smc_vs_hull.py``):** ``Lineage.branch_class`` is a
+GLOBAL attribute on the lineage, not per-segment. For sequences with
+positions OUTSIDE the inversion bounds, that's wrong — the karyotype
+class barrier should only apply inside the inversion, but the current
+implementation enforces it globally. Workaround: keep the entire
+sequence inside the inversion (``bp_left=0, bp_right=L``) and combine
+with a separate non-inv simulation if a collinear flank is needed.
+The principled fix (per-segment class) is part of Phase 5 (multi-
+inversion needs the same machinery).
+
+5. **Phase 5 — Multi-inversion + nested inversions + per-segment class**
 6. **Phase 6 — Sweep model integration**
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**
 

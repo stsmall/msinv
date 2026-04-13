@@ -393,6 +393,14 @@ class HullSimulator:
             # supported (Phase 5c.2) via per-position tag sets in
             # ``Segment.branch_class``.
             self.inversions.sort(key=lambda inv: inv.bp_left)
+            # Validate every inversion fits within the sequence.
+            for inv in self.inversions:
+                if inv.bp_left < 0 or inv.bp_right > sequence_length + 1e-9:
+                    raise ValueError(
+                        f"Inversion {inv} extends outside the sequence "
+                        f"[0, {sequence_length}). Either widen "
+                        f"`sequence_length` or shrink the inversion "
+                        f"breakpoints.")
             # Back-compat single-inv attributes (used in some helpers).
             inv0 = self.inversions[0]
             self.p_inv = inv0.p_inv

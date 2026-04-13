@@ -235,7 +235,8 @@ def test_t_inv_and_demographic_event_at_same_time():
     should not crash; both must be applied (in some order)."""
     Ne = 1000
     t_event = 1000.0
-    inv = InversionSpec(bp_left=0.0, bp_right=100.0,
+    L = 100.0
+    inv = InversionSpec(bp_left=0.0, bp_right=L,
                         p_inv=0.5, t_inv=t_event)
     demo = Demography(pop_sizes=[Ne, Ne])
     demo.add_event(('ej', t_event, 1, 0))   # SAME time as t_inv
@@ -243,7 +244,7 @@ def test_t_inv_and_demographic_event_at_same_time():
         sample_config={('S', 0): 2, ('I', 0): 2,
                         ('S', 1): 2, ('I', 1): 2},
         demography=demo,
-        sequence_length=10.0,
+        sequence_length=L,
         inversions=[inv],
         seed=42)
     ts = sim.simulate()

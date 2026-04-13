@@ -1241,6 +1241,9 @@ class Demography:
                         self.mig_matrix[i][j] = mig_rate / max(1, n_pops - 1)
         self.events = []
         self._original_events = []
+        self._initial_pop_sizes = list(self.pop_sizes)
+        self._initial_growth_rates = list(self.growth_rates)
+        self._initial_growth_start = list(self.growth_start)
 
     def add_event(self, event):
         self.events.append(event)
@@ -1249,13 +1252,65 @@ class Demography:
         self._original_events.sort(key=lambda e: e[1])
 
     def get_size(self, pop, t):
+        """Get population size at time t, accounting for all events.
+
+        Replays events from the original event list up to time t
+        to compute the correct size, without modifying internal state.
+        """
         if pop >= len(self.pop_sizes):
             return 1.0
-        dt = t - self.growth_start[pop]
-        g = self.growth_rates[pop]
-        if g == 0:
-            return self.pop_sizes[pop]
-        return self.pop_sizes[pop] * np.exp(-g * dt)
+
+        # Start from initial state (at t=0)
+        N = self._initial_pop_sizes[pop]
+        g = self._initial_growth_rates[pop]
+        g_start = self._initial_growth_start[pop]
+
+        # Replay events in chronological order
+        events = self._original_events if hasattr(self, '_original_events') else self.events
+        for evt in events:
+            if evt[1] > t:
+                break
+            etype = evt[0]
+            if etype == 'eN':
+                _, _, x = evt
+                # Apply growth from previous epoch
+                if g != 0:
+                    dt = evt[1] - g_start
+                    N = N * np.exp(-g * dt)
+                N = x
+                g = 0.0
+                g_start = evt[1]
+            elif etype == 'en' and len(evt) >= 4:
+                _, _, p, x = evt
+                if p == pop:
+                    if g != 0:
+                        dt = evt[1] - g_start
+                        N = N * np.exp(-g * dt)
+                    N = x
+                    g = 0.0
+                    g_start = evt[1]
+            elif etype == 'eG':
+                _, _, alpha = evt
+                if g != 0:
+                    dt = evt[1] - g_start
+                    N = N * np.exp(-g * dt)
+                g = alpha
+                g_start = evt[1]
+            elif etype == 'eg' and len(evt) >= 4:
+                _, _, p, alpha = evt
+                if p == pop:
+                    if g != 0:
+                        dt = evt[1] - g_start
+                        N = N * np.exp(-g * dt)
+                    g = alpha
+                    g_start = evt[1]
+
+        # Apply remaining growth from last event to time t
+        if g != 0:
+            dt = t - g_start
+            N = N * np.exp(-g * dt)
+
+        return max(N, 1e-10)
 
     def coal_rate_factor(self, pop, t):
         """Returns 1/N(t) for scaling coalescence rate."""
@@ -1270,11 +1325,15 @@ class Demography:
     def copy(self):
         """Return a fresh copy with all events restored."""
         d = Demography(n_pops=self.n_pops)
-        d.pop_sizes = list(self.pop_sizes)
-        d.growth_rates = list(self.growth_rates)
-        d.growth_start = list(self.growth_start)
+        d.pop_sizes = list(self._initial_pop_sizes)
+        d.growth_rates = list(self._initial_growth_rates)
+        d.growth_start = list(self._initial_growth_start)
         d.mig_matrix = [list(row) for row in self.mig_matrix]
         d.events = list(self._original_events)
+        d._original_events = list(self._original_events)
+        d._initial_pop_sizes = list(self._initial_pop_sizes)
+        d._initial_growth_rates = list(self._initial_growth_rates)
+        d._initial_growth_start = list(self._initial_growth_start)
         return d
 
     def apply_events_at(self, t, active=None, rng=None):
@@ -1684,10 +1743,10 @@ def _migrate(active, klass, from_pop, n_pops, t, rng):
 # SMC: prune and reattach
 # ===================================================================
 
-def smc_prune_and_reattach_panmictic(root, rng):
+def smc_prune_and_reattach_panmictic(root, rng, demography=None):
     """
     SMC prune-and-reattach for panmictic regions.
-    Uses coalescent-based reattachment (matching _sim_standard).
+    Uses coalescent-based reattachment with optional demography scaling.
     """
     branches = get_branches(root)
     if not branches:
@@ -1717,13 +1776,16 @@ def smc_prune_and_reattach_panmictic(root, rng):
     target.parent = None
     p.children = []
 
-    # Coalescent-based reattach
+    # Coalescent-based reattach with demography
     t_now = t_cut
     all_nodes = get_all_nodes(root)
     times_above = sorted(set(n.time for n in all_nodes if n.time > t_now))
 
     reattached = False
     for t_next in times_above:
+        # Within each tree-node interval [t_now, t_next], the set of
+        # candidate branches is fixed. But demographic events can change
+        # the coalescence rate. Use inner loop to handle multiple events.
         candidates = [n for n in all_nodes
                       if n.parent is not None
                       and n.time <= t_now < n.parent.time]
@@ -1732,28 +1794,40 @@ def smc_prune_and_reattach_panmictic(root, rng):
             t_now = t_next
             continue
 
-        dt = rng.exponential(1.0 / k)
-        if t_now + dt < t_next:
-            t_a = t_now + dt
-            an = candidates[rng.integers(k)]
-            coal = Node(time=t_a, branch_class=an.branch_class,
-                       population=an.population)
-            old_p = an.parent
-            coal.parent = old_p
-            if old_p is not None:
-                old_p.children = [coal if ch is an else ch
-                                  for ch in old_p.children]
-            coal.children = [an, target]
-            an.parent = coal
-            target.parent = coal
-            root = find_root(root)
-            reattached = True
+        while t_now < t_next:
+            # Coalescence rate at current time
+            sf = demography.get_size(0, t_now) if demography is not None else 1.0
+            rate = k / sf if sf > 0 else k * 1e10
+
+            dt = rng.exponential(1.0 / rate) if rate > 0 else float('inf')
+
+            if t_now + dt < t_next:
+                # Coalescence within this interval
+                t_a = t_now + dt
+                an = candidates[rng.integers(k)]
+                coal = Node(time=t_a, branch_class=an.branch_class,
+                           population=an.population)
+                old_p = an.parent
+                coal.parent = old_p
+                if old_p is not None:
+                    old_p.children = [coal if ch is an else ch
+                                      for ch in old_p.children]
+                coal.children = [an, target]
+                an.parent = coal
+                target.parent = coal
+                root = find_root(root)
+                reattached = True
+                break
+            else:
+                t_now = t_next
+
+        if reattached:
             break
-        else:
-            t_now = t_next
 
     if not reattached:
-        dt = rng.exponential(1.0)
+        sf = demography.get_size(0, t_now) if demography is not None else 1.0
+        rate = 1.0 / sf if sf > 0 else 1.0
+        dt = rng.exponential(1.0 / rate)
         t_c = max(t_now, root.time) + dt
         coal = Node(time=t_c, branch_class='S')
         coal.children = [root, target]
@@ -2654,7 +2728,7 @@ class MsinvSimulator:
             bp_r = 0.0
         else:
             bp_l = self.bp_left
-        bp_r = self.bp_right
+            bp_r = self.bp_right
         inv_len = bp_r - bp_l
         p_inv_now = self.p_inv_func(0.0)
         p_std_now = 1.0 - p_inv_now
@@ -2731,6 +2805,11 @@ class MsinvSimulator:
                 continue
 
             rate = (self.rho / 2.0) * weighted_L
+            if rate <= 0:
+                _drop_muts_segment(root, pos, next_boundary,
+                                    self.theta, rng, mutations)
+                pos = next_boundary
+                continue
             dx = rng.exponential(1.0 / rate)
 
             extent = min(dx, next_boundary - pos, 1.0 - pos)
@@ -2825,7 +2904,8 @@ class MsinvSimulator:
                         recorder.update(root, new_pos)
                 else:
                     # Panmictic prune-and-reattach
-                    root = smc_prune_and_reattach_panmictic(root, rng)
+                    root = smc_prune_and_reattach_panmictic(
+                        root, rng, demography=self.demography)
                     # Ensure root is correct (walk up from any sample)
                     root = find_root(root)
                     if recorder is not None:

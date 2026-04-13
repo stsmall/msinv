@@ -13,7 +13,6 @@ We simulate n=2 (one S, one I chromosome) at high resolution to
 show the haplotype structure around RDL at different time points.
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import msinv
 import numpy as np
 import matplotlib

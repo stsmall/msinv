@@ -16,7 +16,6 @@ karyotype state in Kiribina?  Do the two inversions create a
 stronger barrier to introgression than one alone?
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import msinv
 import numpy as np
 import matplotlib

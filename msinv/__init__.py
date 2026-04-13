@@ -23,8 +23,8 @@ Usage (coalescent-scaled, ms-style):
                          t_inv=10.0, seed=42)
     positions, haplotypes = sim.simulate_one()
 
-If libmsinv.so is compiled and present, the C inner loop is used
-automatically for ~12x speedup. Otherwise, pure Python is used.
+Pure Python implementation. A C extension is available separately
+in c_extension/ for ~12x speedup on specific workloads.
 
 References:
     Peischl S et al. (2013) Heredity 111:200–209

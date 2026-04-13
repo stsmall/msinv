@@ -1,18 +1,12 @@
-.PHONY: build test clean
+.PHONY: test clean
 
-CC = gcc
-CFLAGS = -O3 -shared -fPIC -lm
-
-build:
-	$(CC) $(CFLAGS) -o msinv/libmsinv.so msinv/csrc/libmsinv.c
-	@echo "Built msinv/libmsinv.so"
-
-test: build
+test:
 	cd tests && python test_standard_coalescent.py
 	cd tests && python test_msinv.py
 	cd tests && python test_ld.py
 	cd tests && python test_treeseq.py
 	cd tests && python test_stdpopsim.py
+	@echo "All tests passed."
 
 clean:
-	rm -f msinv/libmsinv.so msinv/*.pyc msinv/__pycache__/*
+	rm -rf msinv/__pycache__ tests/__pycache__

@@ -149,16 +149,17 @@ def test_inversions_list_with_single_invspec():
 # Inversion validation
 # ---------------------------------------------------------------------------
 
-def test_overlapping_inversions_rejected():
-    """Phase 5b only supports non-overlapping inversions."""
+def test_overlapping_inversions_accepted():
+    """Phase 5c.2 supports overlapping/nested inversions."""
     a = InversionSpec(bp_left=0.0, bp_right=50.0, p_inv=0.5, t_inv=1000.0)
     b = InversionSpec(bp_left=40.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
-    with pytest.raises(ValueError, match="overlap"):
-        HullSimulator(
-            n_std=2, n_inv=2,
-            population_size=1000, sequence_length=100.0,
-            inversions=[a, b], seed=1,
-        )
+    sim = HullSimulator(
+        n_std=2, n_inv=2,
+        population_size=1000, sequence_length=100.0,
+        inversions=[a, b], seed=1,
+    )
+    ts = sim.simulate()
+    assert ts.num_samples == 4
 
 
 def test_invspec_validates_bounds():

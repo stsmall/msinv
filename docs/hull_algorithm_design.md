@@ -273,7 +273,31 @@ docs/
      ("linked karyotype" — one ``'S'`` or ``'I'`` per sample applies
      to every inversion). Independent karyotype assignment per
      inversion is left for future work.
-5c. **Nested / overlapping inversions** *(future work)*
+5c.1 ✓ — **Independent karyotype per inversion**
+   - ``sample_config`` keys now accept per-inversion karyotype:
+     ``{('S', 0): n}`` (linked, all invs same), ``{(('S','I'), 0): n}``
+     (independent: S at inv 0, I at inv 1), ``{('SI', 0): n}``
+     (multi-char shorthand). Mismatched lengths raise ValueError.
+   - 9 new tests (80/80 hull tests passing).
+
+5c.2 ✓ — **Nested / overlapping inversions**
+   - Inversions may now overlap or nest. ``Segment.branch_class``
+     becomes a ``frozenset`` of tags (e.g. ``frozenset({'S0', 'I1'})``)
+     at positions inside multiple inversions; non-nested positions
+     keep the cheap string representation. ``make_initial_segments``
+     auto-detects overlap and switches representation per chromosome.
+   - Per-pair coalescence rate at a multi-tag class uses the product
+     of per-inv sub-pop frequencies: ``1/(2·Ne · ∏ p_class_k)``.
+   - ``_flip_to_panmictic(inv_id)`` removes the inv_id's tag from
+     every segment's frozenset; if the result is empty → 'P', if
+     exactly one tag remains → collapse to a string.
+   - Validates: (1) nested-inv segments carry frozenset class with
+     correct outer/inner tags, (2) overlapping-inv segments carry
+     joint tags in the overlap region, (3) inner-inv class barrier
+     respected even when outer karyotype matches (5 seeds), (4) outer
+     class barrier doesn't impose its t_inv when all samples agree at
+     inner inv, (5) tree-sequence well-formed.
+   - 9 new tests (89/89 hull tests passing).
 6. **Phase 6 ✓ — Selective sweep integration**
    - New ``Sweep`` dataclass: ``(x_sel, t_event, target_class,
      population, sweep_window)``.

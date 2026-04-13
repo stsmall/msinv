@@ -29,6 +29,7 @@ from .tables import TableBuilder
 from .events import (apply_coalescence, apply_recombination,
                      apply_gene_flux, apply_migration)
 from .demography import Demography
+from .inversion import InversionSpec
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ class HullSimulator:
                  bp_right: float = None,
                  gene_conversion_rate: float = 0.0,
                  flux_window: float = 0.05,
+                 inversions: list = None,
                  seed: int = None):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
@@ -352,8 +354,44 @@ class HullSimulator:
         # Ne for backward compatibility (only meaningful when single pop).
         self.Ne = self.demography.pop_sizes[0]
 
-        # ---- Inversion ----
-        if self.n_inv > 0:
+        # ---- Inversions ----
+        # Two acceptable APIs:
+        # 1) inversions=[InversionSpec(...), ...]  — multi-inv (Phase 5b)
+        # 2) bp_left/bp_right/p_inv/t_inv/gene_conversion_rate +
+        #    flux_window — back-compat single-inv (Phases 2-5a)
+        if inversions:
+            if any(x is not None for x in (p_inv, t_inv, bp_left, bp_right)):
+                raise ValueError(
+                    "Pass either `inversions=[...]` OR the legacy "
+                    "single-inv args (bp_left/bp_right/p_inv/t_inv), "
+                    "not both.")
+            self.inversions = []
+            for i, spec in enumerate(inversions):
+                # Allow tuple shorthand or full InversionSpec.
+                if not isinstance(spec, InversionSpec):
+                    spec = InversionSpec(*spec) if isinstance(spec, tuple) \
+                        else InversionSpec(**dict(spec))
+                spec.inv_id = i
+                self.inversions.append(spec)
+            # Sort + sanity-check non-overlap
+            self.inversions.sort(key=lambda inv: inv.bp_left)
+            for a, b in zip(self.inversions, self.inversions[1:]):
+                if a.bp_right > b.bp_left:
+                    raise ValueError(
+                        f"Inversions overlap: {a} and {b}. "
+                        "Nested/overlapping inversions are not yet "
+                        "supported (Phase 5c).")
+            # Back-compat single-inv attributes (used in some helpers).
+            inv0 = self.inversions[0]
+            self.p_inv = inv0.p_inv
+            self.t_inv = inv0.t_inv
+            self.bp_left = inv0.bp_left
+            self.bp_right = inv0.bp_right
+            # Gene flux: use first inversion's γ for back-compat. Per-inv
+            # γ is read directly from each spec where it matters.
+            self.g_per_bp = float(inv0.gene_conversion_rate)
+            self.flux_window = inv0.flux_window
+        elif self.n_inv > 0:
             if p_inv is None or not (0.0 < p_inv < 1.0):
                 raise ValueError(
                     "p_inv must be in (0, 1) when n_inv > 0.")
@@ -371,19 +409,31 @@ class HullSimulator:
             self.t_inv = t_inv
             self.bp_left = bp_left
             self.bp_right = bp_right
+            self.g_per_bp = float(gene_conversion_rate)
+            if not (0.0 < flux_window < 1.0):
+                raise ValueError(
+                    f"flux_window must be in (0, 1), got {flux_window}.")
+            self.flux_window = flux_window
+            # Single-inv mode: build a single InversionSpec with inv_id=-1
+            # (sentinel) so initial-segment classes use plain 'S'/'I'
+            # without inv_id suffix — preserves Phase 1-5a semantics.
+            single = InversionSpec(
+                bp_left=bp_left, bp_right=bp_right,
+                p_inv=p_inv, t_inv=t_inv,
+                gene_conversion_rate=self.g_per_bp,
+                flux_window=flux_window, inv_id=-1)
+            self.inversions = [single]
         else:
             self.p_inv = None
             self.t_inv = None
             self.bp_left = None
             self.bp_right = None
+            self.g_per_bp = float(gene_conversion_rate)
+            self.flux_window = flux_window
+            self.inversions = []
 
         self.L = sequence_length
         self.r = recombination_rate
-        self.g_per_bp = float(gene_conversion_rate)
-        if not (0.0 < flux_window < 1.0):
-            raise ValueError(
-                f"flux_window must be in (0, 1), got {flux_window}.")
-        self.flux_window = flux_window
         self.rng = np.random.default_rng(seed)
 
     # -- internal helpers --------------------------------------------------
@@ -393,35 +443,23 @@ class HullSimulator:
         return _overlap_by_class(a, b)
 
     def _initial_lineages(self, tables: TableBuilder):
-        """Create one sample lineage per sample, honouring sample_config
-        (per-(class, pop) initial sample counts). Iterates the dict in
-        insertion order so user controls sample-id mapping.
+        """Create one sample lineage per sample, honouring sample_config.
 
-        Phase 5: each sample's initial segments are split at inversion
-        boundaries — inside-inv segments carry the sample's karyotype
-        class ('S' or 'I'), outside-inv segments carry 'P' (panmictic).
+        Per-segment class:
+          - Outside any inversion: 'P' (panmictic).
+          - Inside inversion ``k``: ``'S<k>'`` or ``'I<k>'`` (linked
+            karyotype across all inversions for now). For single-inv
+            (back-compat), inv_id is -1 and class is plain 'S' or 'I'.
         """
         from .segment import make_initial_segments
 
-        # Build a tiny "inversion" record for make_initial_segments.
-        inversions = []
-        if self.bp_left is not None and self.bp_right is not None:
-            class _InvSpec:
-                pass
-            inv = _InvSpec()
-            inv.bp_left = self.bp_left
-            inv.bp_right = self.bp_right
-            inversions.append(inv)
-
         active = []
         for (cls, pop), count in self.sample_config.items():
-            # Sample has a karyotype assignment for the inversion.
-            # ``cls`` of None means "no inversion" → all segments 'P'.
             sample_cls = cls if cls in ('S', 'I') else None
             for _ in range(count):
                 nid = tables.add_sample(time=0.0, population=pop)
                 head, tail = make_initial_segments(
-                    self.L, nid, inversions=inversions,
+                    self.L, nid, inversions=self.inversions,
                     sample_class=sample_cls)
                 active.append(Lineage(head, tail, population=pop))
         return active
@@ -429,36 +467,38 @@ class HullSimulator:
     # -- rate helpers ------------------------------------------------------
 
     def _coal_rates(self, active, t: float):
-        """Coalescence rates at time t (Phase 5: per-pair, per-event-type).
+        """Coalescence rates at time t (Phase 5b: multi-inversion).
 
-        Each pair (A, B) of same-pop lineages has up to three event
-        types:
+        Each pair (A, B) of same-pop lineages has up to (1 + 2·n_inv)
+        event types:
+          'outside' (P-P), and per-inversion ('S<k>'-'S<k>') and
+          ('I<k>'-'I<k>') events. Each event's rate uses standard
+          per-pair structured-coalescent scaling.
 
-          'outside'  — coalesce ONLY at outside-inv overlap (both 'P').
-                       Rate = 1/(2·Ne_pop(t)) if any 'P-P' overlap.
-          'inside_S' — coalesce ONLY at S-S overlap inside the inv.
-                       Rate = 1/(2·Ne_pop(t)·p_std) if any 'S-S' overlap.
-          'inside_I' — coalesce ONLY at I-I overlap inside the inv.
-                       Rate = 1/(2·Ne_pop(t)·p_inv) if any 'I-I' overlap.
+        After ALL inversions' barriers have lifted (their t_inv passed),
+        the simulator falls back to a single panmictic-by-pop bucket
+        for efficiency. While ANY inversion is still active we use the
+        per-pair, per-class enumeration.
 
-        Each event type's rate has the standard per-pair structured-
-        coalescent form (1/(2·Ne·p_class)). When an event fires, the
-        pair coalesces ONLY at overlap positions of that event type;
-        other positions stay separate.
-
-        After t_inv the class barrier lifts: every pair has a single
-        'panmictic' event with rate 1/(2·Ne_pop(t)).
-
-        Returns list of (kind, rate, payload) where payload =
-        ``(i, j, event_kind)`` for pair-events, or
-        ``(idx_list, panmictic_kind)`` for the post-t_inv catch-all.
+        Returns list of (kind, rate, payload).
         """
         rates = []
-        inv_active = self.p_inv is not None and (
-            self.t_inv is None or t < self.t_inv)
+        # Determine the set of currently active inversion classes.
+        active_inv_classes = set()
+        any_inv_active = False
+        for inv in self.inversions:
+            if t < inv.t_inv:
+                any_inv_active = True
+                active_inv_classes.add(inv.class_S())
+                active_inv_classes.add(inv.class_I())
+                # Single-inv back-compat alias
+                if inv.inv_id == -1:
+                    active_inv_classes.add('S')
+                    active_inv_classes.add('I')
 
-        if not inv_active:
-            # Post-t_inv: panmictic-by-pop bucket.
+        if not any_inv_active:
+            # All inversions retired → bucket by pop, single panmictic
+            # event per pop.
             buckets = {}
             for i, lin in enumerate(active):
                 buckets.setdefault(lin.population, []).append(i)
@@ -471,9 +511,7 @@ class HullSimulator:
                 rates.append((f'coal_panmictic_{pop}', rate, idx_list))
             return rates
 
-        # Inversion is still active: enumerate pairs in same-pop.
-        # Per-pair rate split by event type (outside / inside_S / inside_I).
-        p_std = 1.0 - self.p_inv
+        # Per-pair, per-class enumeration.
         for i in range(len(active)):
             lin_i = active[i]
             for j in range(i + 1, len(active)):
@@ -483,21 +521,54 @@ class HullSimulator:
                 ovl = _overlap_by_class(lin_i, lin_j)
                 ne_pop = max(
                     self.demography.size_at(lin_i.population, t), 1e-9)
-                if ovl['P'] > 0:
+                # Outside-inv: P-P overlap → panmictic rate.
+                if ovl.get('P', 0) > 0:
                     rates.append((
                         'pair_outside',
                         1.0 / (2.0 * ne_pop),
-                        (i, j, 'outside')))
-                if ovl['S'] > 0:
-                    rates.append((
-                        'pair_inside_S',
-                        1.0 / (2.0 * ne_pop * p_std),
-                        (i, j, 'inside_S')))
-                if ovl['I'] > 0:
-                    rates.append((
-                        'pair_inside_I',
-                        1.0 / (2.0 * ne_pop * self.p_inv),
-                        (i, j, 'inside_I')))
+                        (i, j, 'P')))
+                # Per-inversion S-S and I-I overlaps.
+                for inv in self.inversions:
+                    if t >= inv.t_inv:
+                        # This inversion's barrier has lifted; treat
+                        # its remaining same-class overlap as panmictic
+                        # (already covered by 'P' above if ground-truth;
+                        # the segments still carry old class tags but
+                        # rate-wise they should use 1/Ne not 1/(Ne·p_class)).
+                        # For simplicity, fold into 'pair_inside_S/I'
+                        # but use rate 1/(2·Ne) instead of structured.
+                        # In practice this is rare since t advances past
+                        # all t_inv quickly under finite γ.
+                        cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
+                        cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
+                        ov_S = ovl.get(cls_S, 0)
+                        ov_I = ovl.get(cls_I, 0)
+                        if ov_S > 0:
+                            rates.append((
+                                f'pair_inside_S_inv{inv.inv_id}_post',
+                                1.0 / (2.0 * ne_pop),
+                                (i, j, cls_S)))
+                        if ov_I > 0:
+                            rates.append((
+                                f'pair_inside_I_inv{inv.inv_id}_post',
+                                1.0 / (2.0 * ne_pop),
+                                (i, j, cls_I)))
+                        continue
+                    p_std = 1.0 - inv.p_inv
+                    cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
+                    cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
+                    ov_S = ovl.get(cls_S, 0)
+                    ov_I = ovl.get(cls_I, 0)
+                    if ov_S > 0:
+                        rates.append((
+                            f'pair_inside_S_inv{inv.inv_id}',
+                            1.0 / (2.0 * ne_pop * p_std),
+                            (i, j, cls_S)))
+                    if ov_I > 0:
+                        rates.append((
+                            f'pair_inside_I_inv{inv.inv_id}',
+                            1.0 / (2.0 * ne_pop * inv.p_inv),
+                            (i, j, cls_I)))
         return rates
 
     def _migration_rates(self, active, t: float):
@@ -571,14 +642,32 @@ class HullSimulator:
                 rates.append(('flux', rate, idx))
         return rates
 
-    def _flip_to_panmictic(self, active):
+    def _flip_to_panmictic(self, active, inv_id=None):
+        """Flip per-segment classes to 'P' for inversion ``inv_id`` (or
+        for ALL inversions if ``inv_id`` is None — used by the
+        legacy single-inv code path).
+        """
+        if inv_id is None:
+            # Legacy single-inv flip: every segment becomes 'P', and
+            # the back-compat single-inv attrs are zeroed.
+            for lin in active:
+                seg = lin.head
+                while seg is not None:
+                    seg.branch_class = 'P'
+                    seg = seg.next
+            self.p_inv = None
+            self.t_inv = None
+            self.g_per_bp = 0.0
+            return
+        # Multi-inv flip: only segments tagged for this inversion become 'P'.
+        cls_S = f'S{inv_id}' if inv_id != -1 else 'S'
+        cls_I = f'I{inv_id}' if inv_id != -1 else 'I'
         for lin in active:
-            lin.branch_class = 'S'
-        self.p_inv = None
-        self.t_inv = None
-        # Gene flux is also gone after t_inv (no class barrier → no
-        # heterokaryotypes → no gene-conversion events).
-        self.g_per_bp = 0.0
+            seg = lin.head
+            while seg is not None:
+                if seg.branch_class == cls_S or seg.branch_class == cls_I:
+                    seg.branch_class = 'P'
+                seg = seg.next
 
     # -- gene-flux event helper -------------------------------------------
 
@@ -665,7 +754,11 @@ class HullSimulator:
         active = self._initial_lineages(tables)
 
         t = 0.0
-        t_inv = self.t_inv
+        # Schedule of remaining inversion-barrier events: list of
+        # (t_inv, inv_id) sorted by time. Each fires once.
+        pending_barriers = sorted(
+            [(inv.t_inv, inv.inv_id) for inv in self.inversions],
+            key=lambda x: x[0])
 
         max_iters = 10_000_000
         for _ in range(max_iters):
@@ -683,7 +776,7 @@ class HullSimulator:
 
             # Time of the next demographic event (or +inf).
             t_demo = self.demography.next_event_time(t)
-            t_class = t_inv if t_inv is not None else float('inf')
+            t_class = pending_barriers[0][0] if pending_barriers else float('inf')
 
             # If no per-event rate, advance to the next scheduled
             # event boundary (demographic or class barrier).
@@ -696,8 +789,8 @@ class HullSimulator:
                         "active lineages.")
                 t = next_boundary
                 if next_boundary == t_class:
-                    self._flip_to_panmictic(active)
-                    t_inv = None
+                    _, inv_id = pending_barriers.pop(0)
+                    self._flip_to_panmictic(active, inv_id=inv_id)
                 else:
                     self.demography.apply_event_at(t, active)
                 continue
@@ -705,11 +798,11 @@ class HullSimulator:
             dt = self.rng.exponential(1.0 / total)
             t_event = t + dt
 
-            # Class-barrier crossing
+            # Class-barrier crossing (per-inversion barrier).
             if t_class < t_event:
                 t = t_class
-                self._flip_to_panmictic(active)
-                t_inv = None
+                _, inv_id = pending_barriers.pop(0)
+                self._flip_to_panmictic(active, inv_id=inv_id)
                 continue
             # Demographic event crossing
             if t_demo < t_event:
@@ -741,13 +834,12 @@ class HullSimulator:
                 i, j = pool[ii], pool[jj]
                 apply_coalescence(active, active[i], active[j], t, tables)
             elif chosen_kind.startswith('pair_'):
-                # Per-pair, per-event-type Phase-5 dispatch. Payload is
-                # ``(i, j, event_kind)`` with event_kind in
-                # {'outside', 'inside_S', 'inside_I'}.
-                i, j, ek = chosen_payload
-                allowed = {'outside': 'P',
-                           'inside_S': 'S',
-                           'inside_I': 'I'}[ek]
+                # Per-pair, per-class dispatch. Payload is
+                # ``(i, j, class_string)`` where class_string is the
+                # exact segment class to merge ('P', 'S', 'I', 'S0',
+                # 'I0', 'S1', 'I1', ...). Other classes' overlap
+                # remains on the original lineages.
+                i, j, allowed = chosen_payload
                 _coalesce_partial(active, active[i], active[j], t,
                                    tables, allowed)
             elif chosen_kind == 'flux':

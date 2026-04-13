@@ -163,7 +163,7 @@ def test_human_africa():
 
     ratio = mean_ms / mean_mp if mean_mp > 0 else 0
     check("Mean pi within 50% of stdpopsim",
-          0.5 < ratio < 1.5,
+          0.5 < ratio < 1.5  # SMC approximation + demography conversion gives ~10-30% variance,
           f"ratio={ratio:.2f}")
 
 
@@ -225,7 +225,7 @@ def test_drosophila_3epoch():
 
     ratio = mean_ms / mean_mp if mean_mp > 0 else 0
     check("Mean pi within 50% of stdpopsim",
-          0.5 < ratio < 1.5,
+          0.5 < ratio < 1.5  # SMC approximation + demography conversion gives ~10-30% variance,
           f"ratio={ratio:.2f}")
 
 

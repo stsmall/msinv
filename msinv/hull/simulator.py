@@ -30,6 +30,7 @@ from .events import (apply_coalescence, apply_recombination,
                      apply_gene_flux, apply_migration)
 from .demography import Demography
 from .inversion import InversionSpec
+from .sweep import Sweep
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +299,7 @@ class HullSimulator:
                  gene_conversion_rate: float = 0.0,
                  flux_window: float = 0.05,
                  inversions: list = None,
+                 sweeps: list = None,
                  seed: int = None):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
@@ -434,6 +436,14 @@ class HullSimulator:
 
         self.L = sequence_length
         self.r = recombination_rate
+        # Sweeps: list of Sweep objects, sorted by t_event.
+        self.sweeps = []
+        if sweeps:
+            for s in sweeps:
+                if not isinstance(s, Sweep):
+                    s = Sweep(*s) if isinstance(s, tuple) else Sweep(**dict(s))
+                self.sweeps.append(s)
+            self.sweeps.sort(key=lambda s: s.t_event)
         self.rng = np.random.default_rng(seed)
 
     # -- internal helpers --------------------------------------------------
@@ -642,6 +652,88 @@ class HullSimulator:
                 rates.append(('flux', rate, idx))
         return rates
 
+    def _apply_sweep(self, active, sweep, t, tables):
+        """Force-coalesce all qualifying lineages at sweep.x_sel.
+
+        A "qualifying" lineage is one with ancestral material at
+        ``sweep.x_sel`` whose class at that position matches
+        ``sweep.target_class`` (or any class if ``target_class``
+        is 'any'), and whose population matches ``sweep.population``
+        (or any pop if ``None``).
+
+        The merge happens at positions in
+        ``[x_sel - sweep_window, x_sel + sweep_window]``. Material
+        outside this window remains on the original lineages.
+        """
+        x_lo = sweep.x_sel - sweep.sweep_window
+        x_hi = sweep.x_sel + sweep.sweep_window
+        if x_hi <= x_lo:
+            # Single-point sweep: use a tiny epsilon window so we
+            # actually have something to merge.
+            eps = max(1e-9, self.L * 1e-12)
+            x_lo = sweep.x_sel
+            x_hi = sweep.x_sel + eps
+
+        qualifying = []
+        for lin in active:
+            if (sweep.population is not None
+                    and lin.population != sweep.population):
+                continue
+            cls_at_x = lin.class_at(sweep.x_sel)
+            if cls_at_x is None:
+                continue  # no material at x_sel
+            if (sweep.target_class != 'any'
+                    and cls_at_x != sweep.target_class):
+                continue
+            qualifying.append(lin)
+
+        if len(qualifying) < 2:
+            return None  # nothing to coalesce
+
+        # Force-coalesce all qualifying lineages into a single sweep
+        # ancestor at time t. We do this by sequentially merging via
+        # _coalesce_partial restricted to the sweep window.
+        # Simplification: we use the existing apply_coalescence (which
+        # merges all overlap), but first split each lineage at x_lo
+        # and x_hi so the merged piece is exactly the sweep window.
+        from .events import apply_coalescence
+
+        # Split each qualifying lineage at x_lo and x_hi so the sweep
+        # window is its own segment.
+        windowed_lineages = []
+        for lin in qualifying:
+            # Split at x_lo: (left of lo, rest)
+            a, rest = lin.split_at(x_lo)
+            if rest is None:
+                # Material doesn't extend to x_lo; restore lin
+                continue
+            # Split rest at x_hi: (window, right of hi)
+            window, b = rest.split_at(x_hi)
+            # Re-add the non-window pieces back to active as separate lineages
+            active.remove(lin)
+            if a is not None:
+                active.append(a)
+            if b is not None:
+                active.append(b)
+            if window is not None:
+                active.append(window)
+                windowed_lineages.append(window)
+
+        # Now sequentially coalesce all windowed lineages. Each
+        # successive pair-merge needs a strictly-greater time than the
+        # previous one (tskit requires parent.time > child.time);
+        # nudge by a tiny epsilon per merge so they're all "at" the
+        # sweep time but strictly ordered.
+        if len(windowed_lineages) < 2:
+            return None
+        eps = max(1e-9, t * 1e-12)
+        merged = windowed_lineages[0]
+        for k_idx, other in enumerate(windowed_lineages[1:], start=1):
+            t_merge = t + k_idx * eps
+            apply_coalescence(active, merged, other, t_merge, tables)
+            merged = active[-1]
+        return merged
+
     def _flip_to_panmictic(self, active, inv_id=None):
         """Flip per-segment classes to 'P' for inversion ``inv_id`` (or
         for ALL inversions if ``inv_id`` is None — used by the
@@ -759,6 +851,8 @@ class HullSimulator:
         pending_barriers = sorted(
             [(inv.t_inv, inv.inv_id) for inv in self.inversions],
             key=lambda x: x[0])
+        # Pending sweeps (already sorted by t_event in __init__).
+        pending_sweeps = list(self.sweeps)
 
         max_iters = 10_000_000
         for _ in range(max_iters):
@@ -777,11 +871,12 @@ class HullSimulator:
             # Time of the next demographic event (or +inf).
             t_demo = self.demography.next_event_time(t)
             t_class = pending_barriers[0][0] if pending_barriers else float('inf')
+            t_sweep = pending_sweeps[0].t_event if pending_sweeps else float('inf')
 
             # If no per-event rate, advance to the next scheduled
-            # event boundary (demographic or class barrier).
+            # event boundary.
             if total <= 0:
-                next_boundary = min(t_demo, t_class)
+                next_boundary = min(t_demo, t_class, t_sweep)
                 if next_boundary == float('inf'):
                     raise RuntimeError(
                         "No events possible and no scheduled boundaries "
@@ -791,6 +886,9 @@ class HullSimulator:
                 if next_boundary == t_class:
                     _, inv_id = pending_barriers.pop(0)
                     self._flip_to_panmictic(active, inv_id=inv_id)
+                elif next_boundary == t_sweep:
+                    sweep = pending_sweeps.pop(0)
+                    self._apply_sweep(active, sweep, t, tables)
                 else:
                     self.demography.apply_event_at(t, active)
                 continue
@@ -799,10 +897,16 @@ class HullSimulator:
             t_event = t + dt
 
             # Class-barrier crossing (per-inversion barrier).
-            if t_class < t_event:
+            if t_class < t_event and t_class <= t_sweep and t_class <= t_demo:
                 t = t_class
                 _, inv_id = pending_barriers.pop(0)
                 self._flip_to_panmictic(active, inv_id=inv_id)
+                continue
+            # Sweep crossing
+            if t_sweep < t_event and t_sweep <= t_demo:
+                t = t_sweep
+                sweep = pending_sweeps.pop(0)
+                self._apply_sweep(active, sweep, t, tables)
                 continue
             # Demographic event crossing
             if t_demo < t_event:

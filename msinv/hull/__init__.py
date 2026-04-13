@@ -13,13 +13,14 @@ demography) is the current validated frontier — see ``__phase__`` and
 the design doc for which features are implemented.
 """
 
-__phase__ = 5  # last fully-validated phase (5a + 5b)
+__phase__ = 6  # last fully-validated phase
 
 from .segment import Segment
 from .lineage import Lineage
 from .demography import Demography
 from .inversion import InversionSpec
+from .sweep import Sweep
 from .simulator import HullSimulator
 
 __all__ = ['Segment', 'Lineage', 'Demography', 'InversionSpec',
-           'HullSimulator', '__phase__']
+           'Sweep', 'HullSimulator', '__phase__']

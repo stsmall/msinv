@@ -274,7 +274,26 @@ docs/
      to every inversion). Independent karyotype assignment per
      inversion is left for future work.
 5c. **Nested / overlapping inversions** *(future work)*
-6. **Phase 6 — Sweep model integration**
+6. **Phase 6 ✓ — Selective sweep integration**
+   - New ``Sweep`` dataclass: ``(x_sel, t_event, target_class,
+     population, sweep_window)``.
+   - At ``t = sweep.t_event`` (going backward), the simulator
+     force-coalesces all qualifying lineages into a single sweep
+     ancestor. "Qualifying" = has ancestral material at ``x_sel`` of
+     class ``target_class`` (or 'any') in the right population.
+   - Sweeps are added via ``HullSimulator(sweeps=[Sweep(...), ...])``
+     and processed as scheduled events alongside demographic events
+     and inversion class barriers.
+   - Sequential pair-merges are nudged by an epsilon time per pair so
+     tskit's strict ``parent.time > child.time`` rule is honoured
+     while the sweep effectively happens at one point in time.
+   - Validates: (1) sweep at t_sweep gives T_MRCA = t_sweep at
+     x_sel for all target-class samples, (2) target-class restriction
+     respected (S-targeted sweep doesn't touch I samples), (3) class
+     barrier inside an inversion still respected post-sweep, (4)
+     positions far from x_sel are unaffected (no recombination yet),
+     (5) sweep with no qualifying lineages is a no-op (not a crash).
+     6 new tests pass (71/71 hull total).
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**
 
 ## Estimated effort

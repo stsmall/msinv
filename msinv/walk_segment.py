@@ -88,8 +88,34 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
         L_total = L_S + L_I
 
         if in_inv and inv_len > 0:
-            # Per-branch weighting by population frequency
-            weighted_L = 0.0
+            # Inside the inversion, per-position recombination is GENE
+            # CONVERSION ONLY (Option 3 model). Heterokaryotypes (S/I)
+            # do not undergo crossing-over within the inversion; their
+            # only sequence exchange is gene conversion at rate
+            # gamma * phi(x). Within homokaryotypes (S/S, I/I) standard
+            # crossing-over within the karyotype's sub-tree is captured
+            # in the sub-population's coalescent marginal, NOT as
+            # additional events here (those events are within-class and
+            # don't change the SMC tree's class structure).
+            #
+            # Result: the tree is mostly correlated across the inversion,
+            # broken only where flux fires. phi(x) controls where: phi
+            # peaks in the middle and drops to 0 at the breakpoints
+            # (Peischl 2013), so gene flux is concentrated in the centre
+            # and the breakpoints retain the strongest cross-karyotype
+            # divergence — matching empirical inversion LD patterns.
+            inv_pos_now = (pos - bp_l) / inv_len
+            inv_pos_now = max(0.02, min(0.98, inv_pos_now))
+            phi_now = sim.flux_model.phi(inv_pos_now)
+            # Use the caller-supplied flux_gamma (or sim.gamma).
+            _gamma_now = flux_gamma if flux_gamma is not None else getattr(
+                sim, 'gamma', None)
+            if _gamma_now is None:
+                _gamma_now = sim.c * sim.rho / 2.0
+            # Per-branch flux weight: probability that this lineage's
+            # current chromosome is in a heterokaryote (= p_other for
+            # this branch's class in this branch's pop).
+            weighted_L_flux = 0.0
             stack2 = [root]
             while stack2:
                 n = stack2.pop()
@@ -98,12 +124,18 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                     pop_i = getattr(n, 'population', 0)
                     p_inv_t_i = sim.p_inv_func(0.5 * t_max, pop_i)
                     if p_inv_t_i > 0:
-                        w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
+                        # p_other: prob the homologous chromosome is the
+                        # other karyotype, which is when gene conversion
+                        # can fire.
+                        p_other = (p_inv_t_i if n.branch_class == 'S'
+                                   else (1.0 - p_inv_t_i))
                     else:
-                        w = 1.0
-                    weighted_L += bl * w
+                        p_other = 0.0
+                    weighted_L_flux += bl * p_other
                 for ch in n.children:
                     stack2.append(ch)
+            # Effective rate per unit position summed across lineages.
+            weighted_L = _gamma_now * phi_now * weighted_L_flux
             next_boundary = min(bp_r, end_pos)
         else:
             weighted_L = L_total
@@ -128,7 +160,31 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                     root = _rebuild_panmictic(root, rng)
             continue
 
-        rate = (sim.rho / 2.0) * weighted_L
+        # Outside inv: standard panmictic SMC recombination = rho/2 per
+        # unit position summed over branches.
+        # Inside inv: weighted_L already includes gamma * phi(x) (Option 3);
+        # it's the per-position flux rate, not a recombination rate.
+        if in_inv and inv_len > 0:
+            rate = weighted_L
+        else:
+            rate = (sim.rho / 2.0) * weighted_L
+        if rate <= 0:
+            # No events possible (e.g. gamma=0 inside inv): just walk to
+            # the next boundary, drop mutations, and continue. The tree
+            # stays unchanged across the entire inv → strong LD inside,
+            # which is the biological reality at gamma=0.
+            _drop_muts_segment(root, pos, next_boundary,
+                                sim.theta, rng, mutations)
+            pos = next_boundary
+            if pos < end_pos:
+                entering_inv = pos >= bp_l and pos < bp_r and not in_inv
+                leaving_inv = pos >= bp_r and in_inv
+                if entering_inv and inv_len > 0:
+                    _rebuild_structured(sim, root, n_std, n_inv, bp_l, inv_len,
+                                         pos, rng)
+                elif leaving_inv:
+                    root = _rebuild_panmictic(root, rng)
+            continue
         dx = rng.exponential(1.0 / rate)
         extent = min(dx, next_boundary - pos, end_pos - pos)
         if extent <= 0:
@@ -142,8 +198,21 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
             new_in_inv = bp_l <= new_pos < bp_r
 
             if new_in_inv and inv_len > 0:
-                # Per-branch per-pop weighted class selection
-                wL_S = wL_I = 0.0
+                # Inside-inv event = gene-flux (Option 3 model).
+                # Pick a branch weighted by p_other (the probability that
+                # this lineage's homologous chromosome is the OTHER
+                # karyotype, which is when gene conversion can fire).
+                # The chosen lineage gets converted: at this position its
+                # ancestor is now in the OTHER karyotype's sub-tree.
+                # Going forward (in the SMC walk), the lineage's class
+                # is flipped — and it will coalesce with branches in the
+                # other-class sub-tree until/unless a future flux flips
+                # it back. This preserves the tree everywhere except the
+                # converted lineage's ancestry, giving the empirical
+                # gradient of LD breakdown from breakpoints inward
+                # (phi(x) peaks at centre, vanishes at breakpoints).
+                from .simulator import _reattach
+                wL_branches = []
                 stack3 = [root]
                 while stack3:
                     n = stack3.pop()
@@ -152,32 +221,50 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                         pop_i = getattr(n, 'population', 0)
                         p_inv_t_i = sim.p_inv_func(0.5 * t_max, pop_i)
                         if p_inv_t_i > 0:
-                            w = (1.0 - p_inv_t_i) if n.branch_class == 'S' else p_inv_t_i
+                            p_other_b = (p_inv_t_i if n.branch_class == 'S'
+                                         else (1.0 - p_inv_t_i))
                         else:
-                            w = 1.0
-                        if n.branch_class == 'S':
-                            wL_S += bl * w
-                        else:
-                            wL_I += bl * w
+                            p_other_b = 0.0
+                        if p_other_b > 0:
+                            wL_branches.append((n, bl * p_other_b))
                     for ch in n.children:
                         stack3.append(ch)
-                wL = wL_S + wL_I
-                if wL > 0:
-                    rc = 'S' if rng.random() * wL < wL_S else 'I'
-                else:
-                    rc = 'S'
-                inv_pos = (new_pos - bp_l) / inv_len
-                inv_pos = max(0.02, min(0.98, inv_pos))
-                phi_x = sim.flux_model.phi(inv_pos)
-                # Inside the inversion: full rebuild via the structured
-                # coalescent (build_structured_tree). The legacy
-                # smc_prune_and_reattach path here cannot maintain the
-                # cross-karyotype T_MRCA barrier under repeated events.
-                # Trade-off: per-position trees inside the inversion are
-                # independent (no LD inside inv) but each has the
-                # correct structured-coalescent marginal so dxy, Da, FST,
-                # PCA all reflect the model exactly.
-                root = _full_rebuild_inside_inv(phi_x, flux_gamma, rng)
+                if wL_branches:
+                    weights = np.array([w for _, w in wL_branches])
+                    probs = weights / weights.sum()
+                    bi = rng.choice(len(wL_branches), p=probs)
+                    target = wL_branches[bi][0]
+                    target_bl = target.parent.time - target.time
+                    t_cut = target.time + rng.random() * target_bl
+                    inv_pos = (new_pos - bp_l) / inv_len
+                    inv_pos = max(0.02, min(0.98, inv_pos))
+                    phi_x = sim.flux_model.phi(inv_pos)
+                    _gamma = flux_gamma if flux_gamma is not None else getattr(
+                        sim, 'gamma', None)
+                    if _gamma is None:
+                        _gamma = sim.c * sim.rho / 2.0
+
+                    # ---- Manual prune of `target` ----
+                    p = target.parent
+                    if p is not None and len(p.children) == 2:
+                        sibling = [ch for ch in p.children if ch is not target][0]
+                        gp = p.parent
+                        sibling.parent = gp
+                        if gp is not None:
+                            gp.children = [sibling if ch is p else ch
+                                           for ch in gp.children]
+                        # If parent was the root, sibling becomes new root
+                        new_root = sibling if root is p else root
+                        target.parent = None
+                        # ---- Flip class (gene conversion) ----
+                        new_cls = 'I' if target.branch_class == 'S' else 'S'
+                        target.branch_class = new_cls
+                        target_pop = getattr(target, 'population', 0)
+                        # ---- Reattach floating into other-class subtree ----
+                        root = _reattach(
+                            new_root, target, new_cls, t_cut,
+                            sim.p_inv, _gamma, 2.0, phi_x, rng,
+                            p_inv_func=sim.p_inv_func, pop=target_pop)
                 root = find_root(root)
             else:
                 root = smc_prune_and_reattach_panmictic(

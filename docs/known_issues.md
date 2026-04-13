@@ -66,16 +66,35 @@ inversion **cannot** reliably preserve the cross-karyotype T_MRCA
 constraint under repeated events — pruning a coalescent node above
 `t_inv` and reattaching the floating S subtree to a residual S branch
 can fire a coalescence below `t_inv`, eroding the karyotype barrier.
-**Replaced** the in-inv SMC prune-reattach with a full structured
-rebuild via `build_structured_tree` at each event. Each in-inv site now
-has the correct structured-coalescent marginal exactly.
 
-**Trade-off:** in-inv positions are now drawn from independent
-structured-coalescent trees, so there is no inversion-internal LD
-between adjacent positions. Single-site marginals — which `dxy`, `Da`,
-`FST`, and PCA all depend on — are correct. If users need accurate
-inversion-internal LD they should use a future per-position
-ancestral-material algorithm.
+**In-inv events are now gene-flux events only** (Option 3 model). This
+matches the biology: heterokaryotypes (S/I) do not undergo crossing-
+over within the inversion; their only sequence exchange is gene
+conversion at rate `gamma * phi(x)`. Within homokaryotypes (S/S, I/I)
+standard recombination is captured in each karyotype sub-population's
+coalescent marginal — no separate in-inv events needed.
+
+How it works:
+- In-inv per-position event rate = `gamma * phi(x) * sum(bl * p_other)`
+  (sum over branches; `p_other` is the prob the homologous chromosome
+  is the OTHER karyotype, when gene conversion can fire).
+- When an event fires, pick a branch by weight, prune it, FLIP its
+  class (gene conversion converts the karyotype-of-origin at this
+  position), reattach into the other-class sub-tree.
+- At `gamma=0`, no in-inv events fire → the tree stays constant across
+  the entire inversion → near-perfect in-inv LD (biological reality).
+- At `gamma>0`, occasional flux events break LD gradually. `phi(x)`
+  peaks at the centre and drops to 0 at the breakpoints (Peischl
+  2013), so flux is concentrated in the centre. The breakpoints retain
+  the strongest cross-karyotype divergence — matching empirical
+  inversion LD patterns.
+
+Single-site marginals (dxy, Da, FST, PCA) remain correct; in-inv LD is
+now also modelled correctly under the gene-conversion model. For users
+who need exact inversion-internal LD under a more general model
+(non-zero within-karyotype recombination on the ancestral graph), a
+per-position ancestral-material algorithm (msprime-style "hull") is
+under development on the `feature/hull-algorithm` branch.
 
 Verification (T_MRCA at end of SMC walk through 3Ra, n=30 reps):
 

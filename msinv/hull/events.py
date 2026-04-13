@@ -102,20 +102,75 @@ def apply_recombination(active, lineage, x):
     return left, right
 
 
-def apply_gene_flux(active, lineage, x, w):
-    """Split a small tract [x, x+w] out of ``lineage`` with class flipped.
+def apply_gene_flux(active, lineage, tract_left: float, tract_right: float):
+    """Split a tract [tract_left, tract_right) out of ``lineage`` and
+    flip the tract's class (gene-conversion event).
 
-    Models gene conversion: at this position the chromosome's
-    karyotype-of-origin is the OTHER karyotype for a tract of length w.
-    The tract becomes its own lineage in the other class; the
-    surrounding material stays on the original lineage.
+    Models gene conversion in a heterokaryote: at this tract, the
+    chromosome's karyotype-of-origin going BACKWARD in time is the
+    OTHER karyotype. The tract's ancestral material becomes a new
+    lineage in the flipped class; the lineage's other material
+    (everything outside the tract) stays in the original class on the
+    original lineage.
+
+    The lineage's segment list may end up with a "hole" where the
+    tract was — those positions are now traced by the flipped-class
+    lineage, not by this one.
+
+    Returns
+    -------
+    (outside_lineage, tract_lineage) : tuple
+        ``outside_lineage`` carries the original lineage's material
+        outside the tract (may be ``None`` if the tract covered all of
+        the lineage's material).
+        ``tract_lineage`` carries material inside the tract, in the
+        flipped class (may be ``None`` if the lineage didn't have any
+        ancestral material in the tract — in which case no flux event
+        happens; this is a no-op).
     """
-    # Phase 3 implementation. Sketch:
-    # 1. Split lineage at x → (A, BC)
-    # 2. Split BC at x+w → (B, C)
-    # 3. Reattach A and C to a single lineage in the original class
-    # 4. B becomes a new lineage in the OTHER class
-    raise NotImplementedError("gene flux: phase 3 work")
+    if tract_right <= tract_left:
+        raise ValueError(
+            f"Tract must have right > left, got [{tract_left}, "
+            f"{tract_right}).")
+
+    # Step 1: split lineage at tract_left → (A, BC)
+    A, BC = lineage.split_at(tract_left)
+    if BC is None:
+        # Lineage has no material at or after tract_left — no event.
+        return lineage, None
+    # Step 2: split BC at tract_right → (B, C)
+    B, C = BC.split_at(tract_right)
+    if B is None:
+        # No material inside the tract — re-merge A and C, no event.
+        if A is not None and C is not None:
+            A.tail.next = C.head
+            C.head.prev = A.tail
+            A.tail = C.tail
+            return A, None
+        return (A or C), None
+
+    # B is the converted tract — flip its class.
+    flipped = 'I' if lineage.branch_class == 'S' else 'S'
+    B.branch_class = flipped
+
+    # Re-merge A and C into the outside-tract lineage (same class as
+    # the original). The lineage now has a "hole" where the tract was.
+    if A is not None and C is not None:
+        A.tail.next = C.head
+        C.head.prev = A.tail
+        A.tail = C.tail
+        outside = A
+    elif A is not None:
+        outside = A
+    else:
+        outside = C  # may be None
+
+    # Update active list: remove original, add outside (if any) + tract.
+    active.remove(lineage)
+    if outside is not None:
+        active.append(outside)
+    active.append(B)
+    return outside, B
 
 
 def apply_migration(lineage, new_pop):

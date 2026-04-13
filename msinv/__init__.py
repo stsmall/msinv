@@ -5,20 +5,21 @@ A sequential Markov coalescent (SMC) simulator for modeling chromosomal
 inversions with structured coalescence, gene flux, and demographic history.
 
 Usage (msprime-compatible real units):
-    from msinv import MsinvSimulator, InversionSpec
+    from msinv import MsinvSimulator
 
     sim = MsinvSimulator(
         samples=10, population_size=10000,
         mutation_rate=1e-8, recombination_rate=1e-8,
+        gene_conversion_rate=1e-9,
         sequence_length=100000,
-        n_std=5, n_inv=5, p_inv=0.5, c=0.01,
-        t_inv=200000,  # generations
+        n_std=5, n_inv=5, p_inv=0.5,
+        t_inv=200000,  # inversion age in generations
         bp_left=0.3, bp_right=0.7, seed=42)
     positions, haplotypes = sim.simulate_one()
 
 Usage (coalescent-scaled, ms-style):
     sim = MsinvSimulator(nsam=10, theta=10, rho=50, nsites=1000,
-                         n_std=5, n_inv=5, p_inv=0.5, c=0.01,
+                         n_std=5, n_inv=5, p_inv=0.5, gamma=0.05,
                          t_inv=10.0, seed=42)
     positions, haplotypes = sim.simulate_one()
 

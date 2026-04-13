@@ -132,13 +132,13 @@ def make_initial_segments(L: float, node_id: int,
     ----------
     L : sequence length.
     node_id : tskit node id for the sample.
-    inversions : list of Inversion-like objects with ``bp_left`` and
-        ``bp_right`` attributes. Positions inside any inversion get
-        ``branch_class`` from ``sample_class`` (assumed shared across
-        inversions for now — multi-inversion-per-sample karyotype
-        assignments will be a future extension).
-    sample_class : 'S' or 'I' for the sample's karyotype inside any
-        inversion. ``None`` ⇒ sample is purely panmictic ('P').
+    inversions : list of objects with ``bp_left``, ``bp_right``, and
+        (for multi-inversion) ``inv_id`` attributes. If multi-inv,
+        each inversion's segment is tagged with class ``'S<inv_id>'``
+        or ``'I<inv_id>'`` so class barriers stay independent.
+    sample_class : 'S' or 'I' for the sample's karyotype, applied to
+        every inversion the sample crosses (linked karyotype). ``None``
+        ⇒ sample is purely panmictic ('P').
 
     Returns ``(head, tail)`` of the linked list.
     """
@@ -153,9 +153,16 @@ def make_initial_segments(L: float, node_id: int,
     for inv in sorted_invs:
         if inv.bp_left > cursor:
             intervals.append((cursor, inv.bp_left, 'P'))
-        # Inside the inversion
-        intervals.append((max(cursor, inv.bp_left), inv.bp_right,
-                          sample_class or 'P'))
+        # Inside-inv class is per-inversion when inv_id is set,
+        # otherwise plain 'S' or 'I' for back-compat with single-inv.
+        inv_id = getattr(inv, 'inv_id', -1)
+        if sample_class is None:
+            cls = 'P'
+        elif inv_id is None or inv_id < 0:
+            cls = sample_class  # 'S' or 'I'
+        else:
+            cls = f'{sample_class}{inv_id}'
+        intervals.append((max(cursor, inv.bp_left), inv.bp_right, cls))
         cursor = inv.bp_right
     if cursor < L:
         intervals.append((cursor, L, 'P'))

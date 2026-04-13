@@ -251,7 +251,29 @@ docs/
    - SMC vs hull comparison with collinear flanks now matches on all
      metrics (ratios 0.88-1.05, all near theoretical expectations).
 
-5b. **Phase 5b — Multi-inversion + nested inversions** *(future work)*
+5b. **Phase 5b ✓ — Multiple non-overlapping inversions on one chromosome**
+   - New ``InversionSpec`` dataclass: per-inversion ``bp_left/right``,
+     ``p_inv``, ``t_inv``, ``gene_conversion_rate``, ``flux_window``.
+   - ``HullSimulator(inversions=[InversionSpec(...), ...])``. Legacy
+     single-inv args still work.
+   - Per-inversion class tags: segments inside inversion ``k`` use
+     class ``'S<k>'`` / ``'I<k>'``; gap segments and outside segments
+     are ``'P'``. Each inversion has its own class barrier that lifts
+     at its own ``t_inv``.
+   - Per-pair coalescence rates enumerate ``(1 + 2·n_inv)`` event
+     types: ``'outside'``, plus ``'inside_S_inv<k>'`` and
+     ``'inside_I_inv<k>'`` per inversion.
+   - Validates: (1) two inversions with different t_inv each respect
+     their own barrier (5 seeds × 4+4 samples), (2) the collinear gap
+     between inversions is panmictic (cross-class T_MRCA can be far
+     below either t_inv), (3) legacy single-inv API still works,
+     (4) overlapping inversions are rejected, (5) InversionSpec
+     validates its parameters. 10 new tests pass (65/65 hull tests).
+   - **Limitation:** karyotype is currently shared across inversions
+     ("linked karyotype" — one ``'S'`` or ``'I'`` per sample applies
+     to every inversion). Independent karyotype assignment per
+     inversion is left for future work.
+5c. **Nested / overlapping inversions** *(future work)*
 6. **Phase 6 — Sweep model integration**
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**
 

@@ -5,3 +5,6 @@ __pycache__/
 *.nbi
 *.pyc
 __pycache__/
+slim_validation/output_*/
+slim_validation/*.log
+slim_validation/validation_results.txt

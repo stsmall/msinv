@@ -1253,7 +1253,11 @@ class Demography:
 
     def snapshot_initial_state(self):
         """Snapshot current pop_sizes/growth as the t=0 initial state.
-        Call this after modifying pop_sizes directly (outside add_event)."""
+
+        Called automatically by MsinvSimulator.__init__. Only needs
+        manual calling if you modify pop_sizes/growth_rates directly
+        AND use get_size() without going through MsinvSimulator.
+        """
         self._initial_pop_sizes = list(self.pop_sizes)
         self._initial_growth_rates = list(self.growth_rates)
         self._initial_growth_start = list(self.growth_start)
@@ -1261,13 +1265,11 @@ class Demography:
     def get_size(self, pop, t):
         """Get population size at time t, accounting for all events.
 
-        Replays events from the original event list up to time t
-        to compute the correct size, without modifying internal state.
+        Replays _original_events from t=0 to compute N(t) statelessly.
         """
         if pop >= len(self.pop_sizes):
             return 1.0
 
-        # Start from initial state (at t=0)
         N = self._initial_pop_sizes[pop]
         g = self._initial_growth_rates[pop]
         g_start = self._initial_growth_start[pop]

@@ -10,7 +10,6 @@ pooled simulation, then plots:
   Row 3: Empirical Fig S13 image (chromosome 3 only)
 """
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import msinv
 import numpy as np
 import matplotlib

@@ -196,9 +196,19 @@ docs/
    - Validates: (1) cross-class T_MRCA ≥ t_inv at every position, (2)
      within-class T_MRCA can be << t_inv, (3) rare class with
      Ne·p_inv coalesces ~10× faster than panmictic. 9 tests pass.
-3. **Phase 3 — add gene flux events**
-   - Implement gene-flux event handler with tract-based class flip.
-   - Verify LD decay matches phi(x) prediction.
+3. **Phase 3 ✓ — gene flux events with class flip**
+   - Per-lineage flux rate = γ × p_other × ∫_inv phi(x)·1_{lineage}(x) dx.
+     Closed-form ∫phi via the Peischl triangular-roof construction.
+   - Event handler: pick lineage by weight, sample event position by
+     phi-weighted rejection over the lineage's in-inv material, draw
+     tract via b1-uniform construction, split the tract out of the
+     lineage and FLIP its class.
+   - Validates: (1) γ=0 ⇒ single in-inv tree (perfect LD), (2) γ>0 ⇒
+     multiple trees (LD breaks down), (3) γ=0 strictly preserves the
+     class barrier at every position; γ>0 produces sub-t_inv cross-class
+     MRCAs ONLY at flux-affected positions (most positions still
+     respect the barrier), (4) phi(x) gradient gives more breakpoints
+     near the centre than near the edges. 21 tests pass.
 4. **Phase 4 — add population structure + demographic events**
    - Hook in demestats rate engine.
    - Validate against demestats expected rates.

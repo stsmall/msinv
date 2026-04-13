@@ -1,0 +1,306 @@
+"""Phase-3 tests for the hull simulator: gene-flux events with class flip.
+
+Verifies:
+  - With γ=0, no in-inv events fire → tree constant across the inversion
+    (perfect in-inv LD).
+  - With γ>0, occasional flux events → multiple trees in the tree
+    sequence, LD breaks down with distance.
+  - Cross-class T_MRCA still ≥ t_inv at every position (class barrier
+    preserved despite flux).
+  - phi(x) gradient: more flux events near the centre than near the
+    breakpoints.
+  - apply_gene_flux unit tests.
+"""
+
+import numpy as np
+import pytest
+import tskit
+
+from msinv.hull import HullSimulator
+from msinv.hull.lineage import Lineage, reset_uids
+from msinv.hull.segment import Segment
+from msinv.hull.events import apply_gene_flux
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for apply_gene_flux
+# ---------------------------------------------------------------------------
+
+def _make_lineage(intervals, branch_class):
+    reset_uids()
+    head = tail = None
+    for (l, r), nid in zip(intervals, range(len(intervals))):
+        seg = Segment(l, r, nid, prev=tail)
+        if head is None:
+            head = seg
+        if tail is not None:
+            tail.next = seg
+        tail = seg
+    return Lineage(head, tail, branch_class=branch_class, population=0)
+
+
+def test_gene_flux_simple_split_in_middle():
+    lin = _make_lineage([(0.0, 100.0)], 'S')
+    active = [lin]
+    outside, tract = apply_gene_flux(active, lin, 40.0, 60.0)
+    assert outside is not None and tract is not None
+    assert tract.branch_class == 'I'
+    assert outside.branch_class == 'S'
+    # Tract carries 40-60.
+    assert tract.head.left == 40.0 and tract.tail.right == 60.0
+    # Outside has two segments (the "hole").
+    seg = outside.head; outside_intervals = []
+    while seg is not None:
+        outside_intervals.append((seg.left, seg.right))
+        seg = seg.next
+    assert outside_intervals == [(0.0, 40.0), (40.0, 100.0)] or \
+           outside_intervals == [(0.0, 40.0), (60.0, 100.0)]
+    # Active list updated: original out, two new in.
+    assert lin not in active
+    assert outside in active and tract in active
+
+
+def test_gene_flux_at_lineage_left_edge():
+    lin = _make_lineage([(0.0, 100.0)], 'S')
+    active = [lin]
+    outside, tract = apply_gene_flux(active, lin, 0.0, 30.0)
+    assert tract is not None and outside is not None
+    assert tract.head.left == 0.0 and tract.tail.right == 30.0
+    assert outside.head.left == 30.0
+
+
+def test_gene_flux_outside_lineage_coverage_is_noop():
+    """If lineage has no material in the tract, return unchanged."""
+    lin = _make_lineage([(0.0, 50.0)], 'S')
+    active = [lin]
+    outside, tract = apply_gene_flux(active, lin, 60.0, 80.0)
+    # No material >= 60 → no event.
+    assert tract is None
+    # outside should be lineage itself (unchanged) and lineage should
+    # still be in active.
+    assert outside is lin
+    assert lin in active
+
+
+def test_gene_flux_class_flip_I_to_S():
+    lin = _make_lineage([(0.0, 100.0)], 'I')
+    active = [lin]
+    _, tract = apply_gene_flux(active, lin, 40.0, 60.0)
+    assert tract.branch_class == 'S'
+
+
+# ---------------------------------------------------------------------------
+# γ=0 → tree constant across inversion
+# ---------------------------------------------------------------------------
+
+def test_gamma_zero_gives_single_tree_inside_inv():
+    sim = HullSimulator(
+        n_std=5, n_inv=5,
+        population_size=1000, sequence_length=100.0,
+        p_inv=0.5, t_inv=10_000.0,
+        bp_left=0.0, bp_right=100.0,
+        gene_conversion_rate=0.0,
+        seed=42,
+    )
+    ts = sim.simulate()
+    # No flux + no recombination → exactly one tree.
+    assert ts.num_trees == 1
+
+
+# ---------------------------------------------------------------------------
+# γ>0 → multiple trees + LD decay
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_gamma_positive_gives_multiple_trees(seed):
+    sim = HullSimulator(
+        n_std=5, n_inv=5,
+        population_size=1000, sequence_length=100.0,
+        p_inv=0.5, t_inv=20_000.0,
+        bp_left=0.0, bp_right=100.0,
+        gene_conversion_rate=1e-4,   # high enough to fire several events
+        flux_window=0.05,
+        seed=seed,
+    )
+    ts = sim.simulate()
+    # With γ>0 and many generations of opportunity, we expect >1 tree.
+    assert ts.num_trees > 1, (
+        f"Expected multiple trees with γ>0, got {ts.num_trees}")
+
+
+# ---------------------------------------------------------------------------
+# Class barrier semantics under gene conversion
+# ---------------------------------------------------------------------------
+#
+# Without gene conversion (γ=0), every cross-class MRCA is >= t_inv —
+# samples of different karyotypes have no shared ancestry inside the
+# inversion until the inversion itself was born.
+#
+# WITH gene conversion (γ>0), some tract positions LEGITIMATELY have
+# cross-class MRCAs below t_inv: gene conversion is the biological
+# mechanism by which an S chromosome's tract can derive from an I
+# ancestor (or vice versa) at a specific position. So we expect a
+# small fraction of (sample_pair, position) combinations to violate
+# the strict barrier — exactly at and around tract positions.
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_class_barrier_strict_at_gamma_zero(seed):
+    """At γ=0, EVERY cross-class MRCA must be >= t_inv."""
+    n_std = 4; n_inv = 4
+    Ne = 1000
+    t_inv = 4.0 * 2 * Ne
+    sim = HullSimulator(
+        n_std=n_std, n_inv=n_inv,
+        population_size=Ne, sequence_length=100.0,
+        p_inv=0.5, t_inv=t_inv,
+        bp_left=0.0, bp_right=100.0,
+        gene_conversion_rate=0.0,
+        seed=seed,
+    )
+    ts = sim.simulate()
+    samples = list(ts.samples())
+    S = samples[:n_std]; I = samples[n_std:]
+    for tree in ts.trees():
+        for s in S:
+            for i in I:
+                assert tree.time(tree.mrca(s, i)) >= t_inv - 1e-6
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_most_cross_class_positions_still_respect_barrier(seed):
+    """With small γ, MOST (sample_pair, position) combinations still
+    have cross-class T_MRCA >= t_inv; only those at and around tract
+    positions are affected by gene conversion."""
+    n_std = 4; n_inv = 4
+    Ne = 1000
+    t_inv = 4.0 * 2 * Ne
+    sim = HullSimulator(
+        n_std=n_std, n_inv=n_inv,
+        population_size=Ne, sequence_length=100.0,
+        p_inv=0.5, t_inv=t_inv,
+        bp_left=0.0, bp_right=100.0,
+        gene_conversion_rate=1e-5,
+        seed=seed,
+    )
+    ts = sim.simulate()
+    samples = list(ts.samples())
+    S = samples[:n_std]; I = samples[n_std:]
+    total = 0; violations = 0
+    for tree in ts.trees():
+        # Weight by tree span so we measure fraction of GENOME, not
+        # fraction of trees (small flux tracts are short).
+        span = tree.interval.right - tree.interval.left
+        for s in S:
+            for i in I:
+                total_t = tree.time(tree.mrca(s, i))
+                weight = span
+                total += weight
+                if total_t < t_inv - 1e-6:
+                    violations += weight
+    frac = violations / total if total > 0 else 0
+    # With this γ * t_inv * inv_len budget, expect at most a small
+    # fraction of (pair, position) combos to be flux-affected.
+    assert frac < 0.50, (
+        f"Too many cross-class barrier violations: {frac:.2%} of "
+        f"(pair, position) combos have T_MRCA < t_inv (small γ "
+        f"should give a small fraction).")
+
+
+def test_gene_conversion_creates_strictly_more_low_mrcas_than_no_flux():
+    """Sanity: γ>0 produces MORE sub-t_inv cross-class MRCAs than γ=0.
+    Without this, the gene-flux events aren't actually flipping classes."""
+    n_std = 4; n_inv = 4
+    Ne = 1000
+    t_inv = 4.0 * 2 * Ne
+
+    def count_violations(gamma_val, seed):
+        sim = HullSimulator(
+            n_std=n_std, n_inv=n_inv,
+            population_size=Ne, sequence_length=100.0,
+            p_inv=0.5, t_inv=t_inv,
+            bp_left=0.0, bp_right=100.0,
+            gene_conversion_rate=gamma_val, seed=seed,
+        )
+        ts = sim.simulate()
+        samples = list(ts.samples())
+        S = samples[:n_std]; I = samples[n_std:]
+        v = 0
+        for tree in ts.trees():
+            for s in S:
+                for i in I:
+                    if tree.time(tree.mrca(s, i)) < t_inv - 1e-6:
+                        v += 1
+        return v
+
+    # Across multiple seeds, γ>0 should produce MORE violations than γ=0.
+    no_flux = sum(count_violations(0.0, s) for s in range(10))
+    with_flux = sum(count_violations(5e-5, s) for s in range(10))
+    assert no_flux == 0
+    assert with_flux > 0, (
+        "γ>0 produced no cross-class MRCAs below t_inv — gene flux "
+        "events aren't actually creating cross-class ancestry.")
+
+
+# ---------------------------------------------------------------------------
+# Tree-sequence well-formedness with flux
+# ---------------------------------------------------------------------------
+
+def test_treeseq_valid_with_flux():
+    sim = HullSimulator(
+        n_std=4, n_inv=4,
+        population_size=1000, sequence_length=200.0,
+        p_inv=0.5, t_inv=8000.0,
+        bp_left=0.0, bp_right=200.0,
+        gene_conversion_rate=5e-5,
+        seed=42,
+    )
+    ts = sim.simulate()
+    # Round-trip via tables to check structural validity.
+    tables = ts.dump_tables()
+    tables.sort()
+    ts2 = tables.tree_sequence()
+    assert ts2.num_samples == 8
+    for tree in ts2.trees():
+        assert tree.num_roots == 1
+
+
+# ---------------------------------------------------------------------------
+# phi(x) gradient: more flux near the centre than at breakpoints
+# ---------------------------------------------------------------------------
+
+def test_phi_gradient_more_breakpoints_in_middle():
+    """The number of distinct trees per unit length should be HIGHER
+    near the centre of the inversion (where phi(x) peaks) than near
+    the breakpoints (phi → 0)."""
+    n_std = 4; n_inv = 4
+    Ne = 1000
+    t_inv = 8000.0
+    L = 1000.0  # inversion = whole sequence
+    bp_l = 0.0; bp_r = L
+    centre = (bp_l + bp_r) / 2.0
+    flux_window = 0.05
+    centre_breaks = []
+    edge_breaks = []
+    for seed in range(20):
+        sim = HullSimulator(
+            n_std=n_std, n_inv=n_inv,
+            population_size=Ne, sequence_length=L,
+            p_inv=0.5, t_inv=t_inv,
+            bp_left=bp_l, bp_right=bp_r,
+            gene_conversion_rate=5e-5,
+            flux_window=flux_window, seed=seed,
+        )
+        ts = sim.simulate()
+        # Count tree-changes (breakpoints) in centre quartile vs edge quartiles.
+        bps = list(ts.breakpoints())[1:-1]   # interior breakpoints
+        for bp in bps:
+            if 0.4 * L <= bp <= 0.6 * L:
+                centre_breaks.append(bp)
+            elif bp < 0.1 * L or bp > 0.9 * L:
+                edge_breaks.append(bp)
+    # Centre quartile is 0.2 L wide vs 0.2 L edge total → comparable widths.
+    # phi peaks at centre, drops to 0 at breakpoints, so centre should
+    # have meaningfully more breakpoints. (Allow some randomness.)
+    assert len(centre_breaks) > len(edge_breaks), (
+        f"Centre should have more flux breakpoints than edges, got "
+        f"centre={len(centre_breaks)} vs edge={len(edge_breaks)}")

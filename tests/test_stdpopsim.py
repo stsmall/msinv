@@ -76,6 +76,9 @@ def convert_demography(demog, N_ref, mu, r, L):
                 demo.growth_rates[i] = pop.growth_rate * 2 * N_ref
                 demo.growth_start[i] = 0.0
 
+    # Snapshot initial state for stateless get_size()
+    demo.snapshot_initial_state()
+
     # Set initial migration matrix
     mig = demog.migration_matrix
     if mig is not None:
@@ -163,7 +166,7 @@ def test_human_africa():
 
     ratio = mean_ms / mean_mp if mean_mp > 0 else 0
     check("Mean pi within 50% of stdpopsim",
-          0.5 < ratio < 1.5  # SMC approximation + demography conversion gives ~10-30% variance,
+          0.5 < ratio < 1.5,
           f"ratio={ratio:.2f}")
 
 
@@ -225,7 +228,7 @@ def test_drosophila_3epoch():
 
     ratio = mean_ms / mean_mp if mean_mp > 0 else 0
     check("Mean pi within 50% of stdpopsim",
-          0.5 < ratio < 1.5  # SMC approximation + demography conversion gives ~10-30% variance,
+          0.5 < ratio < 1.5,
           f"ratio={ratio:.2f}")
 
 

@@ -1251,6 +1251,13 @@ class Demography:
         self._original_events.append(event)
         self._original_events.sort(key=lambda e: e[1])
 
+    def snapshot_initial_state(self):
+        """Snapshot current pop_sizes/growth as the t=0 initial state.
+        Call this after modifying pop_sizes directly (outside add_event)."""
+        self._initial_pop_sizes = list(self.pop_sizes)
+        self._initial_growth_rates = list(self.growth_rates)
+        self._initial_growth_start = list(self.growth_start)
+
     def get_size(self, pop, t):
         """Get population size at time t, accounting for all events.
 
@@ -2289,6 +2296,9 @@ class MsinvSimulator:
         # Demography: use provided or create from simple params
         if demography is not None:
             self.demography = demography
+            # Ensure initial state is snapshotted (in case user modified
+            # pop_sizes directly after construction)
+            self.demography.snapshot_initial_state()
         else:
             self.demography = Demography(n_pops=n_pops, mig_rate=mig_rate)
             # Add old-style demo_events as ej events

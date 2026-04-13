@@ -209,9 +209,27 @@ docs/
      MRCAs ONLY at flux-affected positions (most positions still
      respect the barrier), (4) phi(x) gradient gives more breakpoints
      near the centre than near the edges. 21 tests pass.
-4. **Phase 4 — add population structure + demographic events**
-   - Hook in demestats rate engine.
-   - Validate against demestats expected rates.
+4. **Phase 4 ✓ — population structure + demography**
+   - Hull-native ``Demography`` class (in generations) with per-pop
+     sizes, growth rates, migration matrix, and ms-style events
+     (en/eN/eg/eG/em/eM/ej).
+   - ``HullSimulator`` accepts ``sample_config={(class, pop): n}``
+     and a ``Demography`` instance. Per-(class, pop) coalescence
+     rates use ``demography.size_at(pop, t)`` so growth-rate-aware.
+     Migration adds per-lineage rates ``M[dst][src]``. Demographic
+     events fire by advancing time to the next event boundary
+     (analogous to t_inv class-barrier handling).
+   - Validates: (1) sample_config dispatches samples to correct pops
+     (Demography unit tests), (2) cross-pop T_MRCA >= t_split with no
+     migration, (3) M > 0 produces sub-t_split cross-pop MRCAs,
+     (4) per-pop size scales coal rate (~10× ratio for Ne_big/Ne_small),
+     (5) inversion + multi-pop combined respects both t_split and t_inv
+     (Kir/Fol-style). 11 tests pass.
+   - **demestats integration:** demestats (jthlab/demestats) is now
+     installed and can be used as the analytical rate engine for
+     validation. Simple inversion/multi-pop scenarios use the direct
+     calc; the demestats hook is wired up in ``msinv/hull/rates.py``
+     for future arbitrary-demes-graph support.
 5. **Phase 5 — Multi-inversion + nested inversions**
 6. **Phase 6 — Sweep model integration**
 7. **Phase 7 — Performance optimization (Cython/C inner loop)**

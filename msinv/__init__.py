@@ -38,7 +38,11 @@ References:
     Guerrero RF et al. (2012) Phil Trans R Soc B 367:430–438
 """
 
-# Hull simulator (recommended)
+# Hull simulator (recommended) — exposed under explicit Hull* prefixed
+# aliases so the legacy SMC ``InversionSpec`` / ``Demography`` (which
+# have a DIFFERENT API) remain accessible at their historical names.
+# The hull simulator itself is exposed unprefixed because there's no
+# legacy version of it.
 from .hull import (
     HullSimulator,
     InversionSpec as HullInversionSpec,
@@ -46,7 +50,8 @@ from .hull import (
     Demography as HullDemography,
 )
 
-# Legacy SMC simulator
+# Legacy SMC simulator (back-compat — InversionSpec/Demography here
+# match the older API used by examples/sim_kir_fol.py etc.)
 from .simulator import (
     # Simulator
     MsinvSimulator,

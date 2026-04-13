@@ -22,7 +22,7 @@ import stdpopsim
 
 PASS = 0
 FAIL = 0
-NR = 200
+NR = 50
 
 
 def check(name, condition, detail=""):

@@ -711,9 +711,25 @@ class HullSimulator:
             cls_at_x = lin.class_at(sweep.x_sel)
             if cls_at_x is None:
                 continue  # no material at x_sel
-            if (sweep.target_class != 'any'
-                    and cls_at_x != sweep.target_class):
-                continue
+            if sweep.target_class != 'any':
+                # The segment may carry a single string tag ('S0', 'S',
+                # 'P', ...) or a frozenset of tags (Phase 5c.2 nested
+                # inversions). For a string target_class, accept either
+                # equality with the segment class OR membership in the
+                # segment's frozenset. For a frozenset target_class,
+                # require subset. This lets sweeps targeting "S in
+                # inv 0" fire correctly at positions inside multiple
+                # nested inversions.
+                if isinstance(cls_at_x, frozenset):
+                    if isinstance(sweep.target_class, frozenset):
+                        if not sweep.target_class.issubset(cls_at_x):
+                            continue
+                    else:
+                        if sweep.target_class not in cls_at_x:
+                            continue
+                else:
+                    if cls_at_x != sweep.target_class:
+                        continue
             qualifying.append(lin)
 
         if len(qualifying) < 2:

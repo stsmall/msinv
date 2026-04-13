@@ -97,9 +97,16 @@ class Demography:
     # -- event application -------------------------------------------------
 
     def next_event_time(self, t_now: float) -> float:
-        """Time of the next event strictly after t_now (or +inf)."""
+        """Time of the next event at or after t_now (or +inf).
+
+        Uses ``>= t_now`` (with a tiny epsilon tolerance) so that
+        events scheduled at exactly the current time are still
+        returned — important when other event types (class barrier,
+        sweep) fire at the same time and advance ``t`` to that value
+        without consuming the demographic event.
+        """
         for ev in self.events:
-            if ev[1] > t_now:
+            if ev[1] >= t_now - 1e-9:
                 return ev[1]
         return float('inf')
 

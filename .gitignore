@@ -19,3 +19,8 @@ slim_validation/scenarios/
 slim_validation/demography/output/
 slim_validation/master.log
 slim_validation/final_results.txt
+slim_validation/inversion/output/
+slim_validation/inversion/msinv_output/
+slim_validation/inversion/*.state
+slim_validation/inversion_validation.log
+slim_validation/inversion_results.txt

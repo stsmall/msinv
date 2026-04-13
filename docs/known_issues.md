@@ -45,6 +45,40 @@ Verified: single-inv and multi-inv now produce identical dxy values for the
 same inversion when called with matching parameters (ratio = 1.00 across
 all comparisons).
 
+## Partially fixed (2026-04-13): SMC walk erodes the cross-karyotype barrier
+
+`_reattach` and `_coalesce_above_root` previously used **per-pop** `p_inv`
+for the panmictic-early-return check. A target lineage in a population with
+`p_inv=0` (e.g. Kiribina in Kir/Fol) would silently drop into the panmictic
+branch and coalesce across the class barrier, bypassing `t_inv`. Combined
+with the `sim.c*sim.rho/2` flux rate during SMC walks (used regardless of
+the user's `gamma=0` setting), these two bugs partially compensated and
+produced dxy patterns that looked roughly empirical but were masking a
+broken class barrier.
+
+Fixed (architectural):
+- Class barrier check now uses the **global** `max` of `p_inv` across pops,
+  so a Kir target still respects the barrier because Fol has the inversion.
+- Candidate branches are now filtered by **both** class and population.
+- `_coalesce_above_root` clips `t` to `root.time` (a floating lineage
+  cannot coalesce above a root that hasn't yet been created).
+
+**Remaining limitation:** a full diagnostic (T_MRCA inside the inversion
+at the end of an SMC walk) still shows partial decay of the K-Fi barrier
+at realistic `rho` values. The root cause is the single-tree SMC
+representation: repeated prune-and-reattach events can move the effective
+"above-root" lineage to low times, and the mini-coalescent in `_reattach`
+doesn't yet track population membership across demographic `ej` events
+during its backward walk. A proper fix requires either:
+- Rebuilding via `build_structured_tree` at each SMC event (slow but
+  guaranteed correct marginals); or
+- Tracking ancestral material per-position (msprime-style "hull"
+  algorithm) so every site has the correct structured-coalescent marginal.
+
+For now, simulations with active inversions + high `rho` will show
+attenuated cross-karyotype divergence relative to the true structured
+coalescent. FST patterns remain qualitatively correct.
+
 ## Remaining: dxy depression inside inversions with huge Ne asymmetry
 
 With structured coalescent and extreme Ne asymmetry (e.g., Ne_F=3M vs

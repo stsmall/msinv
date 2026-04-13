@@ -1913,21 +1913,35 @@ def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
     Reattach floating lineage. Walk backward in time through tree
     intervals, attempting coalescence or gene flux.
     Uses p_inv_func(t, pop) for time-varying, population-specific frequency.
+
+    Class barrier is enforced GLOBALLY: as long as any population still
+    segregates the inversion (p_inv_global > 0), the floating lineage can
+    only coalesce with same-class branches. Previously the check used the
+    target's per-pop p_inv, so a Kiribina sample (p_inv_pop=0) would drop
+    into the panmictic path and coalesce across the class barrier.
     """
     if p_inv_func is None:
         p_inv_func = ConstantFrequency(p_inv)
 
     _has_pop_freq = hasattr(p_inv_func, 'n_pops')
+    _n_pops_traj = getattr(p_inv_func, 'n_pops', 1)
     t = t_start
 
     def _get_p_inv(t_val):
         return p_inv_func(t_val, pop)
 
+    def _get_p_inv_global(t_val):
+        """Class barrier check uses max across pops so it's global."""
+        if _has_pop_freq:
+            return max(p_inv_func(t_val, pp) for pp in range(_n_pops_traj))
+        return p_inv_func(t_val, 0)
+
     for _safety in range(50000):
+        p_inv_t_global = _get_p_inv_global(t)
         p_inv_t = _get_p_inv(t)
 
-        # Beyond inversion age: panmictic, coalesce with any branch
-        if p_inv_t <= 0:
+        # Only drop to panmictic when NO pop still has the inversion
+        if p_inv_t_global <= 0:
             fclass = 'S'
             return _coalesce_above_root(root, floating, 'S', t,
                                         0.0, c, rho, phi_x, rng,
@@ -1939,23 +1953,36 @@ def _reattach(root, floating, fclass, t_start, p_inv, c, rho, phi_x, rng,
 
         went_above = True
         for t_next in times_above:
+            # Class barrier: global (any pop with p_inv>0)
+            p_inv_t_global = _get_p_inv_global(t)
             p_inv_t = _get_p_inv(t)
-            if p_inv_t <= 0:
+            if p_inv_t_global <= 0:
                 went_above = True
                 break
 
             p_std_t = 1.0 - p_inv_t
+            # Filter candidates by (class, pop) so floating only coalesces
+            # with same-pop same-class branches. Cross-pop requires
+            # demographic merges which aren't handled in this path.
             same = [n for n in all_nodes
                     if n.parent is not None
                     and n.time <= t < n.parent.time
-                    and n.branch_class == fclass]
+                    and n.branch_class == fclass
+                    and getattr(n, 'population', 0) == pop]
 
             k_same = len(same)
-            p_same = p_std_t if fclass == 'S' else p_inv_t
+            # Rate scaling: per-pop p_inv for effective sub-pop size.
+            # When pop has p_inv=0 there's no karyotype split in this pop,
+            # so same-class pairs coalesce panmictically within the pop.
+            if p_inv_t > 0:
+                p_same = p_std_t if fclass == 'S' else p_inv_t
+            else:
+                p_same = 1.0
             p_other = p_inv_t if fclass == 'S' else p_std_t
 
             rate_coal = k_same / p_same if k_same > 0 and p_same > 0 else 0.0
-            rate_flux = _flux_rate(c, rho) * p_other * phi_x if phi_x > 0 else 0.0
+            rate_flux = (_flux_rate(c, rho) * p_other * phi_x
+                         if phi_x > 0 and p_other > 0 else 0.0)
             total = rate_coal + rate_flux
 
             if total <= 0:
@@ -2027,17 +2054,30 @@ def _coalesce_above_root(root, floating, fclass, t, p_inv, c, rho, phi_x, rng,
         p_inv_func = ConstantFrequency(p_inv)
 
     _has_pop_freq = hasattr(p_inv_func, 'n_pops')
+    _n_pops_traj = getattr(p_inv_func, 'n_pops', 1)
 
     def _get_p_inv(t_val):
         return p_inv_func(t_val, pop)
 
+    def _get_p_inv_global(t_val):
+        if _has_pop_freq:
+            return max(p_inv_func(t_val, pp) for pp in range(_n_pops_traj))
+        return p_inv_func(t_val, 0)
+
     rclass = root.branch_class
 
+    # The root lineage only exists at times >= root.time. Coalescing
+    # before then is nonsensical and yields ancestors that precede the
+    # tree's root, which destroys the structured-coalescent marginals.
+    if t < root.time:
+        t = root.time
+
     for _ in range(100000):
+        p_inv_t_global = _get_p_inv_global(t)
         p_inv_t = _get_p_inv(t)
 
-        # Beyond inversion age: panmictic
-        if p_inv_t <= 0:
+        # Beyond inversion age: panmictic (use GLOBAL check)
+        if p_inv_t_global <= 0:
             fclass = 'S'
             rclass = 'S'
             dt = rng.exponential(1.0)

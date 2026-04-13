@@ -8,15 +8,16 @@ karyotype barrier and inversion-internal LD both fall out of the model.
 See ``docs/hull_algorithm_design.md`` for the full design.
 
 Status: phased implementation. The public entry point is
-:class:`HullSimulator`. Phase 3 (gene-flux events with class flip) is
-the current validated frontier — see ``__phase__`` and the design doc
-for which features are implemented.
+:class:`HullSimulator`. Phase 4 (multi-population structure +
+demography) is the current validated frontier — see ``__phase__`` and
+the design doc for which features are implemented.
 """
 
-__phase__ = 3  # last fully-validated phase
+__phase__ = 4  # last fully-validated phase
 
 from .segment import Segment
 from .lineage import Lineage
+from .demography import Demography
 from .simulator import HullSimulator
 
-__all__ = ['Segment', 'Lineage', 'HullSimulator', '__phase__']
+__all__ = ['Segment', 'Lineage', 'Demography', 'HullSimulator', '__phase__']

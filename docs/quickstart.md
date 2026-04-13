@@ -16,7 +16,7 @@ sim = MsinvSimulator(
     n_std=5, n_inv=5,            # karyotype composition
     p_inv=0.5,                   # inversion frequency
     t_inv=200_000,               # inversion age (generations)
-    bp_left=0.3, bp_right=0.7,   # breakpoints (fraction of chromosome)
+    bp_left=30_000, bp_right=70_000,  # breakpoints (bp)
     seed=42,
 )
 

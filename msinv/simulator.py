@@ -2256,9 +2256,11 @@ class MsinvSimulator:
             if t_inv is not None:
                 # Convert from generations to coalescent units
                 t_inv = t_inv / (2 * Ne)
-            # Convert demography times if provided in generations
-            # (user should use Demography with generation-based times
-            #  and set demography.generation_time_mode = True)
+            # Convert bp_left/bp_right from bp to fractions if > 1
+            if bp_left > 1:
+                bp_left = bp_left / L
+            if bp_right > 1:
+                bp_right = bp_right / L
         else:
             self._Ne = None
             if nsam is None and samples is not None:

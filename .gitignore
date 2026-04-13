@@ -15,3 +15,7 @@ docs/source/_build/
 build/
 dist/
 .pytest_cache/
+slim_validation/scenarios/
+slim_validation/demography/output/
+slim_validation/master.log
+slim_validation/final_results.txt

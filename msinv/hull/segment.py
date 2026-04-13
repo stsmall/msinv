@@ -10,20 +10,25 @@ class Segment:
     """One ancestral interval [left, right) referring to tskit node_id.
 
     branch_class:
-      'S' — standard arrangement (inside an inversion)
-      'I' — inverted arrangement (inside an inversion)
-      'P' — panmictic / outside any inversion (no karyotype constraint)
+      Phase 1-5c.1: a single string tag.
+        'S' / 'I'        — inside a single (back-compat) inversion.
+        'S<k>' / 'I<k>'  — inside inversion k of a multi-inversion list.
+        'P'              — panmictic / outside any inversion.
 
-    A panmictic segment can coalesce with any other panmictic segment
-    at the standard rate. An 'S' segment can only coalesce with another
-    'S' segment (same inversion); same for 'I'. The class barrier is
-    enforced per-position via the segment's class.
+      Phase 5c.2 (nested): a frozenset of string tags. A position
+      inside multiple inversions carries one tag per containing
+      inversion (e.g. ``frozenset({'S0', 'I1'})`` for S in inv 0 +
+      I in inv 1). Empty frozenset is equivalent to ``'P'``.
+
+    Compatibility (used by ``_overlap_by_class`` and the partial-coal
+    handler) requires EXACT equality of branch_class. Tags removed by
+    a class-barrier flip simply disappear from the frozenset.
     """
 
     __slots__ = ('left', 'right', 'node_id', 'branch_class', 'prev', 'next')
 
     def __init__(self, left: float, right: float, node_id: int,
-                 branch_class: str = 'P',
+                 branch_class='P',
                  prev: 'Segment' = None, next: 'Segment' = None):
         if right <= left:
             raise ValueError(
@@ -31,7 +36,10 @@ class Segment:
         self.left = left
         self.right = right
         self.node_id = node_id
-        self.branch_class = branch_class if branch_class is not None else 'P'
+        # Normalise None → 'P'. Preserve frozenset and string types.
+        if branch_class is None:
+            branch_class = 'P'
+        self.branch_class = branch_class
         self.prev = prev
         self.next = next
 
@@ -125,7 +133,7 @@ def total_length(head):
 
 
 def make_initial_segments(L: float, node_id: int,
-                          inversions=None, sample_class: str = None):
+                          inversions=None, sample_class=None):
     """Build the initial segment list for one sample lineage.
 
     Parameters
@@ -133,39 +141,92 @@ def make_initial_segments(L: float, node_id: int,
     L : sequence length.
     node_id : tskit node id for the sample.
     inversions : list of objects with ``bp_left``, ``bp_right``, and
-        (for multi-inversion) ``inv_id`` attributes. If multi-inv,
-        each inversion's segment is tagged with class ``'S<inv_id>'``
-        or ``'I<inv_id>'`` so class barriers stay independent.
-    sample_class : 'S' or 'I' for the sample's karyotype, applied to
-        every inversion the sample crosses (linked karyotype). ``None``
-        ⇒ sample is purely panmictic ('P').
+        (for multi-inversion) ``inv_id`` attributes. Each inversion
+        gets its own per-segment class tag ``'S<inv_id>'`` or
+        ``'I<inv_id>'`` so class barriers stay independent.
+    sample_class : per-inversion karyotype assignment. May be:
+
+        - ``None``: purely panmictic ('P' for every position).
+        - A single character ``'S'`` or ``'I'``: linked karyotype —
+          the sample is that karyotype at EVERY inversion it crosses
+          (Phase 5b semantics).
+        - A sequence (tuple/list/str of length n_inv) of ``'S'``,
+          ``'I'``, or ``None``: independent karyotype per inversion.
+          ``sample_class[k]`` is the karyotype for inversion ``k`` in
+          the (sorted-by-inv_id) inversions list. Length must match
+          the number of inversions.
 
     Returns ``(head, tail)`` of the linked list.
     """
     if not inversions:
         seg = Segment(0.0, L, node_id, branch_class='P')
         return seg, seg
-    # Sort inversions by bp_left and split the chromosome into
-    # alternating outside / inside intervals.
+
     sorted_invs = sorted(inversions, key=lambda inv: inv.bp_left)
-    intervals = []  # list of (left, right, class)
-    cursor = 0.0
-    for inv in sorted_invs:
-        if inv.bp_left > cursor:
-            intervals.append((cursor, inv.bp_left, 'P'))
-        # Inside-inv class is per-inversion when inv_id is set,
-        # otherwise plain 'S' or 'I' for back-compat with single-inv.
-        inv_id = getattr(inv, 'inv_id', -1)
-        if sample_class is None:
-            cls = 'P'
-        elif inv_id is None or inv_id < 0:
-            cls = sample_class  # 'S' or 'I'
-        else:
-            cls = f'{sample_class}{inv_id}'
-        intervals.append((max(cursor, inv.bp_left), inv.bp_right, cls))
-        cursor = inv.bp_right
-    if cursor < L:
-        intervals.append((cursor, L, 'P'))
+    per_inv_class = _resolve_per_inv_class(sample_class, sorted_invs)
+
+    # Detect nesting / overlap: if any inversion's [bp_left, bp_right)
+    # overlaps another's, we use the multi-tag (frozenset) class
+    # representation. Non-overlapping sticks with the cheaper string
+    # representation (back-compat with Phase 5b semantics).
+    has_overlap = False
+    for i, a in enumerate(sorted_invs):
+        for b in sorted_invs[i + 1:]:
+            if b.bp_left < a.bp_right:
+                has_overlap = True
+                break
+        if has_overlap:
+            break
+
+    if not has_overlap:
+        # Phase 5b path: alternating outside / inside intervals.
+        intervals = []
+        cursor = 0.0
+        for inv in sorted_invs:
+            inv_id = getattr(inv, 'inv_id', -1)
+            if inv.bp_left > cursor:
+                intervals.append((cursor, inv.bp_left, 'P'))
+            kary = per_inv_class.get(inv_id)
+            if kary is None:
+                cls = 'P'
+            elif inv_id is None or inv_id < 0:
+                cls = kary
+            else:
+                cls = f'{kary}{inv_id}'
+            intervals.append((max(cursor, inv.bp_left), inv.bp_right, cls))
+            cursor = inv.bp_right
+        if cursor < L:
+            intervals.append((cursor, L, 'P'))
+    else:
+        # Phase 5c.2 path: build per-position tag sets by scanning the
+        # union of all inversion breakpoints.
+        breakpoints = set([0.0, L])
+        for inv in sorted_invs:
+            breakpoints.add(inv.bp_left)
+            breakpoints.add(inv.bp_right)
+        sorted_bps = sorted(b for b in breakpoints if 0.0 <= b <= L)
+        intervals = []
+        for a, b in zip(sorted_bps, sorted_bps[1:]):
+            if b <= a:
+                continue
+            tags = []
+            for inv in sorted_invs:
+                if inv.bp_left <= a and b <= inv.bp_right:
+                    inv_id = getattr(inv, 'inv_id', -1)
+                    kary = per_inv_class.get(inv_id)
+                    if kary is None:
+                        continue
+                    tags.append(f'{kary}{inv_id}'
+                                if inv_id is not None and inv_id >= 0
+                                else kary)
+            if not tags:
+                cls = 'P'
+            elif len(tags) == 1:
+                cls = tags[0]
+            else:
+                cls = frozenset(tags)
+            intervals.append((a, b, cls))
+
     head = tail = None
     for (l, r, cls) in intervals:
         if r <= l:
@@ -177,3 +238,24 @@ def make_initial_segments(L: float, node_id: int,
             tail.next = seg
         tail = seg
     return head, tail
+
+
+def _resolve_per_inv_class(sample_class, sorted_invs) -> dict:
+    """Resolve a ``sample_class`` value to ``{inv_id: 'S'|'I'|None}``."""
+    if sample_class is None:
+        return {inv.inv_id: None for inv in sorted_invs}
+    # Single-character string: linked karyotype across all inversions.
+    if isinstance(sample_class, str) and len(sample_class) == 1:
+        return {inv.inv_id: sample_class for inv in sorted_invs}
+    # String or sequence of length n_inv: independent karyotype.
+    if (isinstance(sample_class, str) or
+            hasattr(sample_class, '__iter__')):
+        seq = list(sample_class)
+        if len(seq) != len(sorted_invs):
+            raise ValueError(
+                f"sample_class has {len(seq)} entries but there are "
+                f"{len(sorted_invs)} inversions; lengths must match.")
+        return {inv.inv_id: seq[i] for i, inv in enumerate(sorted_invs)}
+    raise TypeError(
+        f"sample_class must be None, 'S'/'I', or a sequence of "
+        f"karyotypes; got {type(sample_class).__name__} {sample_class!r}.")

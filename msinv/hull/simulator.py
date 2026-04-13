@@ -88,14 +88,14 @@ def _phi_integral(a: float, b: float, w: float) -> float:
 
 def _overlap_by_class(lin_a, lin_b) -> dict:
     """Total overlap length between lin_a and lin_b, bucketed by
-    matching segment class. Returns ``{'S': ..., 'I': ..., 'P': ...}``.
+    matching segment class. Returns a dict keyed by class.
 
     Only counts overlap at positions where BOTH lineages have ancestral
-    material AND their classes at that position match. This is the
-    mathematically correct compatibility filter for the per-pair
-    structured-coalescent rate.
+    material AND their classes at that position match (segment classes
+    compare with ``==``, which works for both string tags and
+    frozensets used by Phase 5c.2 nested inversions).
     """
-    out = {'S': 0.0, 'I': 0.0, 'P': 0.0}
+    out = {}
     sa = lin_a.head
     sb = lin_b.head
     while sa is not None and sb is not None:
@@ -108,7 +108,8 @@ def _overlap_by_class(lin_a, lin_b) -> dict:
         l = max(sa.left, sb.left)
         r = min(sa.right, sb.right)
         if r > l and sa.branch_class == sb.branch_class:
-            out[sa.branch_class] = out.get(sa.branch_class, 0.0) + (r - l)
+            key = sa.branch_class
+            out[key] = out.get(key, 0.0) + (r - l)
         if sa.right < sb.right:
             sa = sa.next
         else:
@@ -306,19 +307,32 @@ class HullSimulator:
         ``demography`` for multi-pop work).
         """
         # ---- Sample resolution ----
-        # sample_config: {(class_or_None, pop): n}
+        # sample_config: {(karyotype, pop): n} where karyotype is
+        # None, 'S', 'I', or a per-inv sequence.
         if sample_config is not None:
             if (samples is not None or n_std is not None or
                     n_inv is not None):
                 raise ValueError(
                     "Use either `sample_config` OR the simpler "
                     "`samples`/`n_std`/`n_inv` API, not both.")
-            # sample_config keys are tuples; first element class, second pop.
             self.sample_config = dict(sample_config)
+            # n_std/n_inv counts: a sample is "n_std"-counted if it is
+            # NOT 'I' at the FIRST inversion (back-compat heuristic for
+            # the n_std/n_inv accessors that single-inv code uses).
+            def _is_inv_sample(kary):
+                if kary is None or kary == 'S':
+                    return False
+                if kary == 'I':
+                    return True
+                # Sequence/multi-char string: look at first entry.
+                if hasattr(kary, '__iter__'):
+                    first = next(iter(kary), None)
+                    return first == 'I'
+                return False
             self.n_std = sum(c for (cls, _), c in self.sample_config.items()
-                             if cls in (None, 'S'))
+                             if not _is_inv_sample(cls))
             self.n_inv = sum(c for (cls, _), c in self.sample_config.items()
-                             if cls == 'I')
+                             if _is_inv_sample(cls))
         elif samples is not None:
             if n_std is not None or n_inv is not None:
                 raise ValueError(
@@ -375,14 +389,10 @@ class HullSimulator:
                         else InversionSpec(**dict(spec))
                 spec.inv_id = i
                 self.inversions.append(spec)
-            # Sort + sanity-check non-overlap
+            # Sort by bp_left; nested/overlapping inversions ARE
+            # supported (Phase 5c.2) via per-position tag sets in
+            # ``Segment.branch_class``.
             self.inversions.sort(key=lambda inv: inv.bp_left)
-            for a, b in zip(self.inversions, self.inversions[1:]):
-                if a.bp_right > b.bp_left:
-                    raise ValueError(
-                        f"Inversions overlap: {a} and {b}. "
-                        "Nested/overlapping inversions are not yet "
-                        "supported (Phase 5c).")
             # Back-compat single-inv attributes (used in some helpers).
             inv0 = self.inversions[0]
             self.p_inv = inv0.p_inv
@@ -455,17 +465,39 @@ class HullSimulator:
     def _initial_lineages(self, tables: TableBuilder):
         """Create one sample lineage per sample, honouring sample_config.
 
-        Per-segment class:
-          - Outside any inversion: 'P' (panmictic).
-          - Inside inversion ``k``: ``'S<k>'`` or ``'I<k>'`` (linked
-            karyotype across all inversions for now). For single-inv
-            (back-compat), inv_id is -1 and class is plain 'S' or 'I'.
+        sample_config keys are ``(karyotype, pop)`` tuples where
+        ``karyotype`` is:
+          - ``None``                 — purely panmictic (no inversion).
+          - ``'S'`` or ``'I'``       — linked karyotype across all invs.
+          - tuple/list of len n_inv  — independent karyotype per inv;
+            entries are ``'S'``, ``'I'``, or ``None``.
+
+        For multi-inversion linked-karyotype back-compat: a 2-character
+        string like ``'SI'`` is interpreted as a tuple ``('S', 'I')``
+        (i.e. S in inv 0, I in inv 1). Plain ``'S'`` / ``'I'`` remain
+        the linked-karyotype shorthand.
         """
         from .segment import make_initial_segments
 
+        n_inv_specs = len(self.inversions)
         active = []
-        for (cls, pop), count in self.sample_config.items():
-            sample_cls = cls if cls in ('S', 'I') else None
+        for (karyotype, pop), count in self.sample_config.items():
+            # Normalise the karyotype value.
+            if karyotype is None:
+                sample_cls = None
+            elif isinstance(karyotype, str) and len(karyotype) == 1:
+                # 'S' or 'I' — linked karyotype.
+                sample_cls = karyotype
+            elif (isinstance(karyotype, str)
+                    and len(karyotype) == n_inv_specs
+                    and n_inv_specs > 1):
+                # 'SI' / 'IS' / 'II' / 'SS' for multi-inv shorthand.
+                sample_cls = tuple(karyotype)
+            elif hasattr(karyotype, '__iter__'):
+                sample_cls = tuple(karyotype)
+            else:
+                raise ValueError(
+                    f"Unrecognized sample karyotype: {karyotype!r}")
             for _ in range(count):
                 nid = tables.add_sample(time=0.0, population=pop)
                 head, tail = make_initial_segments(
@@ -521,6 +553,35 @@ class HullSimulator:
                 rates.append((f'coal_panmictic_{pop}', rate, idx_list))
             return rates
 
+        # Build a tag → effective sub-pop frequency lookup for rate
+        # scaling. A position's class is a string tag (single inv) or
+        # a frozenset of tags (nested invs). The per-pair coal rate
+        # at that class is 1/(2·Ne·product_of_p_class).
+        inv_p_class = {}  # tag → p_class for currently-active inversions
+        for inv in self.inversions:
+            if t >= inv.t_inv:
+                continue  # barrier lifted, segments will be retagged
+            p_std = 1.0 - inv.p_inv
+            cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
+            cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
+            inv_p_class[cls_S] = p_std
+            inv_p_class[cls_I] = inv.p_inv
+
+        def _p_class_for(cls):
+            """Effective sub-pop frequency for a class (string or
+            frozenset). 'P' / empty / unknown → panmictic (1.0)."""
+            if cls == 'P' or cls is None:
+                return 1.0
+            if isinstance(cls, frozenset):
+                if not cls:
+                    return 1.0
+                p = 1.0
+                for tag in cls:
+                    p *= inv_p_class.get(tag, 1.0)
+                return p
+            # Single string tag
+            return inv_p_class.get(cls, 1.0)
+
         # Per-pair, per-class enumeration.
         for i in range(len(active)):
             lin_i = active[i]
@@ -531,54 +592,22 @@ class HullSimulator:
                 ovl = _overlap_by_class(lin_i, lin_j)
                 ne_pop = max(
                     self.demography.size_at(lin_i.population, t), 1e-9)
-                # Outside-inv: P-P overlap → panmictic rate.
-                if ovl.get('P', 0) > 0:
-                    rates.append((
-                        'pair_outside',
-                        1.0 / (2.0 * ne_pop),
-                        (i, j, 'P')))
-                # Per-inversion S-S and I-I overlaps.
-                for inv in self.inversions:
-                    if t >= inv.t_inv:
-                        # This inversion's barrier has lifted; treat
-                        # its remaining same-class overlap as panmictic
-                        # (already covered by 'P' above if ground-truth;
-                        # the segments still carry old class tags but
-                        # rate-wise they should use 1/Ne not 1/(Ne·p_class)).
-                        # For simplicity, fold into 'pair_inside_S/I'
-                        # but use rate 1/(2·Ne) instead of structured.
-                        # In practice this is rare since t advances past
-                        # all t_inv quickly under finite γ.
-                        cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
-                        cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
-                        ov_S = ovl.get(cls_S, 0)
-                        ov_I = ovl.get(cls_I, 0)
-                        if ov_S > 0:
-                            rates.append((
-                                f'pair_inside_S_inv{inv.inv_id}_post',
-                                1.0 / (2.0 * ne_pop),
-                                (i, j, cls_S)))
-                        if ov_I > 0:
-                            rates.append((
-                                f'pair_inside_I_inv{inv.inv_id}_post',
-                                1.0 / (2.0 * ne_pop),
-                                (i, j, cls_I)))
+                for cls_key, ov_len in ovl.items():
+                    if ov_len <= 0:
                         continue
-                    p_std = 1.0 - inv.p_inv
-                    cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
-                    cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
-                    ov_S = ovl.get(cls_S, 0)
-                    ov_I = ovl.get(cls_I, 0)
-                    if ov_S > 0:
-                        rates.append((
-                            f'pair_inside_S_inv{inv.inv_id}',
-                            1.0 / (2.0 * ne_pop * p_std),
-                            (i, j, cls_S)))
-                    if ov_I > 0:
-                        rates.append((
-                            f'pair_inside_I_inv{inv.inv_id}',
-                            1.0 / (2.0 * ne_pop * inv.p_inv),
-                            (i, j, cls_I)))
+                    p_class = _p_class_for(cls_key)
+                    if p_class <= 0:
+                        continue
+                    if cls_key == 'P':
+                        kind = 'pair_outside'
+                    elif isinstance(cls_key, frozenset):
+                        kind = 'pair_inside_nested'
+                    else:
+                        kind = f'pair_inside_{cls_key}'
+                    rates.append((
+                        kind,
+                        1.0 / (2.0 * ne_pop * p_class),
+                        (i, j, cls_key)))
         return rates
 
     def _migration_rates(self, active, t: float):
@@ -751,13 +780,28 @@ class HullSimulator:
             self.t_inv = None
             self.g_per_bp = 0.0
             return
-        # Multi-inv flip: only segments tagged for this inversion become 'P'.
+        # Multi-inv flip: drop the inv_id's tag from every segment.
+        # For a string tag exactly matching this inversion's S/I, the
+        # segment becomes 'P'. For a frozenset (nested inversions),
+        # remove just the matching tags; the segment retains other
+        # tags. If after removal the frozenset is empty → 'P'. If
+        # exactly one tag remains, collapse to a string.
         cls_S = f'S{inv_id}' if inv_id != -1 else 'S'
         cls_I = f'I{inv_id}' if inv_id != -1 else 'I'
+        targets = {cls_S, cls_I}
         for lin in active:
             seg = lin.head
             while seg is not None:
-                if seg.branch_class == cls_S or seg.branch_class == cls_I:
+                bc = seg.branch_class
+                if isinstance(bc, frozenset):
+                    new_bc = bc - targets
+                    if not new_bc:
+                        seg.branch_class = 'P'
+                    elif len(new_bc) == 1:
+                        seg.branch_class = next(iter(new_bc))
+                    else:
+                        seg.branch_class = new_bc
+                elif bc == cls_S or bc == cls_I:
                     seg.branch_class = 'P'
                 seg = seg.next
 

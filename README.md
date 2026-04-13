@@ -2,9 +2,59 @@
 
 **Coalescent simulator with chromosomal inversions**
 
-[![Tests](https://img.shields.io/badge/tests-114%2F114%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-123%2F123%20passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+## Explain like I'm 5
+
+Imagine every chromosome in a population is like a long string of
+beads. Most chromosomes have the beads in the **standard order**
+(call it **S**). But sometimes, a piece of the chromosome flips upside
+down — like grabbing a chunk of the bead-string, flipping it, and
+sewing it back. We call that flipped chromosome **I** (for inverted).
+
+Now here's the trick: when an S chromosome and an I chromosome live
+in the same person, that person can't easily mix the two during egg
+or sperm production at the flipped section. **The flipped piece is
+"locked"** — S beads stay with S beads going forward, I beads stay
+with I beads. (Outside the flipped section, life goes on normally.)
+
+If you wait long enough, the S and I chunks become quite different
+from each other — like two villages that stopped talking centuries
+ago. That's an **inversion polymorphism**.
+
+`msinv` is a program that says: **"Pretend you are running time
+backwards. Trace each chromosome's ancestors all the way back."** It
+honours the rules above:
+
+- Inside the flipped piece, an S chromosome can only have an S parent
+  (and same for I).
+- Outside the flipped piece, anyone can be anyone's parent.
+- Very rarely, a tiny piece of DNA *does* leak between S and I
+  through "gene conversion". `msinv` knows about that too.
+- Eventually you go far enough back in time that the inversion didn't
+  exist yet (the **t_inv age**). At that point, S and I were the same
+  thing — they merge.
+
+The output is a **tree of every chromosome's family history at every
+position along the genome**. From that tree you can compute things
+like "how different are S samples from I samples" — exactly what
+biologists measure when they study real inversions in mosquitoes,
+flies, or sticklebacks.
+
+There are TWO engines that do this:
+
+- The **hull simulator** (the new one, `HullSimulator`) tracks each
+  chromosome's family history *position by position*. This is the
+  exactly-correct way and is what you should use for any new work.
+- The **legacy SMC simulator** (`MsinvSimulator`) is faster but uses
+  shortcuts that can mess up multi-population scenarios. Kept around
+  for old code.
+
+That's it. The rest of this README is the technical version.
+
+---
 
 Two coalescent engines for modeling chromosomal inversions:
 

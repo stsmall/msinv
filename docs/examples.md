@@ -1,100 +1,103 @@
 # Example simulations
 
 All examples in `examples/` are validated against empirical data.
+The `_hull.py` examples use the recommended ARG-based simulator;
+the older non-suffixed examples use the legacy SMC simulator.
 
-## An. funestus Kiribina / Folonzo (Small et al. 2023)
+## An. funestus Kiribina / Folonzo
 
-Two An. funestus ecotypes in Burkina Faso split ~1,300 years ago. Kiribina is fixed for one homokaryotype of the 3Ra and 3Rb inversions; Folonzo is polymorphic.
+Two An. funestus ecotypes in Burkina Faso, split ~1,300 years ago.
+Kiribina (K) is fixed for one homokaryotype of the 3Ra and 3Rb
+inversions; Folonzo (Fol) is polymorphic.
 
-**Real parameters from Small et al. 2023 Table S8:**
-- Ne_K = 70,000 (Kiribina, rice ecotype)
-- Ne_F = 3,000,000 (Folonzo, pan-African)
-- Ne_Anc = 44,000 (ancestral)
-- T_split = 14,000 generations (~1,300 years)
-- μ = 3.55e-9 per bp per gen
-
-**Run:**
+**Hull version (recommended):**
 ```bash
-python examples/sim_kir_fol.py
+python examples/empirical_kir_fol_hull.py
 ```
 
-**Validated**: matches Fst/dxy pattern from Fig S13 (elevated divergence at 3Ra+3Rb, flat collinear).
+Output: `figures/empirical_kir_fol_hull.pdf` showing dxy and Da
+across the chromosome, with the cross-karyotype divergence elevated
+inside both inversions and same-karyotype Da flat — matching Small et
+al. 2023 Fig S13.
 
-See: `examples/make_kir_fol_figure.py` for side-by-side comparison with empirical.
+**Legacy SMC version:**
+```bash
+python examples/sim_kir_fol.py            # 4-scenario figure
+python examples/make_kir_fol_figure.py    # publication-style figure
+```
 
-## An. gambiae RDL insecticide resistance (Grau-Bové et al. 2020)
+## An. gambiae RDL insecticide resistance
 
-The RDL resistance allele (296G) arose on the 2L+a background and spread across karyotype boundaries via gene conversion under strong insecticide selection.
+The RDL resistance allele arose on the 2L+a background and spread
+across the karyotype boundary via gene conversion under strong
+insecticide selection (Grau-Bové et al. 2020 MBE).
 
-**Run:**
+**Hull version (recommended):**
+```bash
+python examples/empirical_rdl_sweep_hull.py
+```
+
+Output: `figures/empirical_rdl_sweep_hull.pdf` — three scenarios
+(neutral / S sweep only / S then I sweep) showing the dxy_SI and
+within-class pi signature.
+
+**Legacy SMC version:**
 ```bash
 python examples/sim_rdl_sweep.py
 ```
 
-**Validated**: reproduces the empirical haplotype asymmetry:
-- Longer swept haplotype on the originating background (2L+a)
-- Shorter, more eroded haplotype on the receiving background (2La)
-- Faster EHH decay on the receiving karyotype
+## Other applications (legacy SMC simulator)
 
-## An. gambiae 2La inversion
-
-**Run:**
 ```bash
-python examples/sim_2La.py
+python examples/sim_2La.py            # An. gambiae 2La (Fst ~0.53)
+python examples/sim_MAPT.py           # Human MAPT H1/H2 (dxy ~0.003)
+python examples/replicate_peischl.py  # Peischl 2013 T_SI ∝ 1/phi(x)
 ```
 
-**Validated**: Fst = 0.53 (empirical 0.57).
+## Three-way bake-off (msprime ↔ SMC ↔ hull)
 
-## Human MAPT H1/H2 (chromosome 17q21)
-
-**Run:**
 ```bash
-python examples/sim_MAPT.py
+python examples/bakeoff.py
 ```
 
-**Validated**: dxy/site = 0.0031 (empirical 0.0026).
+Six scenarios, head-to-head comparison. Highlights:
 
-## Peischl et al. 2013 replication
+- Panmictic baseline: all three engines agree.
+- Single inversion γ=0: SMC ≈ Hull (~1% diff).
+- Two-pop split: msprime/Hull agree; **SMC has a known bug** (cross-pop
+  dxy is ~half of expected).
+- Multi-inv: SMC ≈ Hull.
 
-Tests the T_SI ∝ 1/phi(x) relationship from the original Peischl paper.
+## Pure SMC ↔ hull comparison
 
-**Run:**
 ```bash
-python examples/replicate_peischl.py
+python examples/compare_smc_vs_hull.py
 ```
 
-**Validated**: T_SI ratio breakpoint/center = 29.5x (matches Peischl et al.).
+Side-by-side single-inversion comparison with mutations dropped via
+msprime on the hull TS so per-bp pi/dxy units are directly
+comparable. Demonstrates within ~5% agreement on inv-only single-pop
+scenarios.
 
-## Three-way comparison: msinv vs msprime
+## Tree topology diagnostic
 
-Comparison showing msinv's unique contribution:
-
-| Scenario                    | dxy inv | dxy col | ratio |
-|-----------------------------|---------|---------|-------|
-| msinv (with flux)           | 1.82    | 0.49    | 3.68  |
-| msinv (no flux)             | 1.65    | 0.48    | 3.41  |
-| msprime + migration matrix  | 0.51    | 0.50    | 1.02  |
-
-msprime's uniform migration matrix gives flat divergence across the chromosome. Only msinv produces the inversion-specific elevation that is observed empirically.
-
-## Testing gene flux / sweep interactions
-
-The simulator supports testing the "SS bridge" hypothesis for introgression:
-- A selected allele (e.g., RDL) arises on one karyotype background
-- Strong selection sweeps it to high frequency
-- Gene flux transfers it to the opposite background
-- Over time, selection spreads it on both backgrounds
-
-```python
-sim = MsinvSimulator(
-    samples=10, population_size=100_000,
-    mutation_rate=1e-8, recombination_rate=1e-8,
-    sequence_length=100_000,
-    n_std=5, n_inv=5, p_inv=0.5, t_inv=10.0,
-    sweep=(0.5, 0.1, 'S'),  # sweep at x=0.5, s=0.1, origin=S
-    gene_conversion_rate=1e-9,
-    seed=42,
-)
+```bash
+python examples/visualize_trees.py
 ```
 
-See `examples/sim_rdl_sweep.py` for the full RDL-inspired analysis.
+Output: `figures/tree_topology_diagnostic.pdf` — tree topology at
+five positions (outside, near each breakpoint, centre). Shows that
+inside the inversion S samples cluster cleanly with each other and
+only meet I samples above t_inv. Outside the inversion samples mix
+panmictically.
+
+## Balanced-Ne demonstration
+
+```bash
+python examples/demo_kir_fol_balanced_Ne.py
+```
+
+Output: `figures/demo_kir_fol_Ne_balance.pdf` — same Kir/Fol scenario
+but with constant Ne for both populations. Demonstrates that the dxy
+"depression" seen in the original Kir/Fol example with Ne_F=3M is a
+known structured-coal artifact at extreme Ne asymmetry, not a bug.

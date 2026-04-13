@@ -1,120 +1,184 @@
 # Quick start
 
-## Minimal example
+This guide walks through the recommended ARG-based **hull simulator**.
+For the legacy SMC simulator (kept for backwards compatibility), see
+the bottom of this page.
 
-Standard coalescent simulation with an inversion:
+## Install
 
-```python
-from msinv import MsinvSimulator
-
-sim = MsinvSimulator(
-    samples=10,                  # 10 haplotypes
-    population_size=10_000,      # Ne
-    mutation_rate=1e-8,          # per bp per generation
-    recombination_rate=1e-8,     # per bp per generation
-    sequence_length=100_000,     # chromosome length in bp
-    n_std=5, n_inv=5,            # karyotype composition
-    p_inv=0.5,                   # inversion frequency
-    t_inv=200_000,               # inversion age (generations)
-    bp_left=30_000, bp_right=70_000,  # breakpoints (bp)
-    seed=42,
-)
-
-# ms-format output: positions in [0,1], haplotype matrix (nsam × nsites)
-positions, haplotypes = sim.simulate_one()
-
-print(f"{len(positions)} segregating sites")
-print(f"Haplotype matrix: {haplotypes.shape}")
+```bash
+pip install msinv                    # core
+pip install "msinv[test,plots]"      # with msprime + matplotlib
 ```
 
-## Tree sequence output
+Or with [pixi](https://pixi.sh):
 
-For downstream analysis with tskit:
-
-```python
-ts = sim.simulate_one_ts()
-print(f"Trees: {ts.num_trees}")
-print(f"pi: {ts.diversity(mode='site'):.4f}")
-
-# Save to disk
-ts.dump("my_simulation.trees")
+```bash
+pixi install
+pixi run test
 ```
 
-## Per-population selection (local adaptation)
-
-The inversion is favored in one population but neutral in another:
+## Minimal example: one inversion, one population
 
 ```python
-from msinv import MsinvSimulator, CoupledTrajectory, Demography
-import numpy as np
+from msinv import HullSimulator
 
-rng = np.random.default_rng(42)
-
-# Trajectory: 2 pops, inversion favored in pop 0, neutral in pop 1
-traj = CoupledTrajectory(
-    p_final=[0.7, 0.1],    # present-day frequencies
-    N=[10_000, 10_000],    # population sizes
-    s=[0.01, 0.0],         # selection coefficients
-    m=0.001,               # migration rate
-    rng=rng,
-)
-
-# Demography: 2 pops that merge 1000 generations ago
-demo = Demography(n_pops=2, mig_rate=0.001 * 4 * 10000)  # 4Nm
-demo.add_event(('ej', 1000 / (2 * 10000), 0, 1))  # merge pop 0 → pop 1
-
-sim = MsinvSimulator(
-    samples=20, population_size=10_000,
-    mutation_rate=1e-8, recombination_rate=1e-8,
-    sequence_length=100_000,
-    n_std=10, n_inv=10, p_inv=0.5,
-    p_inv_func=traj,
-    demography=demo,
-    n_pops=2,
-    sample_config={('S', 0): 5, ('I', 0): 5, ('S', 1): 5, ('I', 1): 5},
+sim = HullSimulator(
+    n_std=5, n_inv=5,                # 5 standard + 5 inverted haplotypes
+    population_size=10_000,           # diploid Ne
+    sequence_length=100_000,          # chromosome length in bp
+    p_inv=0.5,                        # inversion frequency in the pop
+    t_inv=200_000,                    # inversion age in generations
+    bp_left=30_000, bp_right=70_000,  # breakpoints in bp
     seed=42,
 )
-pos, haps = sim.simulate_one()
+ts = sim.simulate()                   # returns a tskit TreeSequence
+print(ts.num_trees, "trees")
+```
+
+The output is a [tskit](https://tskit.dev) ``TreeSequence`` — directly
+usable for diversity stats, mutation dropping, and most downstream
+tools.
+
+## Add gene flux
+
+Inside an inversion, gene conversion can transfer alleles between the
+two karyotypes. Set ``gene_conversion_rate`` (per bp per generation):
+
+```python
+sim = HullSimulator(
+    n_std=5, n_inv=5, population_size=10_000, sequence_length=100_000,
+    p_inv=0.5, t_inv=200_000,
+    bp_left=30_000, bp_right=70_000,
+    gene_conversion_rate=1e-9,        # γ — Peischl 2013 phi(x) model
+    seed=42,
+)
+ts = sim.simulate()
 ```
 
 ## Multiple inversions
 
-```python
-from msinv import MsinvSimulator, InversionSpec
+Pass a list of ``HullInversionSpec`` objects:
 
-inv1 = InversionSpec(bp_left=0.1, bp_right=0.3,
-                     p_inv=0.5, c=0.01, t_inv=10.0)
-inv2 = InversionSpec(bp_left=0.6, bp_right=0.9,
-                     p_inv=0.3, c=0.02, t_inv=20.0)
+```python
+from msinv import HullSimulator, HullInversionSpec
+
+sim = HullSimulator(
+    n_std=5, n_inv=5,
+    population_size=10_000,
+    sequence_length=100_000,
+    inversions=[
+        HullInversionSpec(bp_left=10_000, bp_right=40_000,
+                          p_inv=0.5, t_inv=200_000),
+        HullInversionSpec(bp_left=60_000, bp_right=90_000,
+                          p_inv=0.3, t_inv=300_000,
+                          gene_conversion_rate=1e-9),
+    ],
+    seed=42,
+)
+ts = sim.simulate()
+```
+
+Inversions may overlap or be nested — each contributes its own class
+barrier independently.
+
+## Independent karyotype per inversion
+
+By default, a sample's ``'S'`` or ``'I'`` applies to every inversion
+("linked" karyotype). To assign karyotypes independently per inversion,
+pass a per-inv tuple:
+
+```python
+sim = HullSimulator(
+    sample_config={
+        # 5 samples that are S at inv 0 and S at inv 1 ('SS' linked)
+        ('SS', 0): 5,
+        # 3 samples that are S at inv 0 but I at inv 1 (recombinant)
+        (('S', 'I'), 0): 3,
+    },
+    population_size=10_000, sequence_length=100_000,
+    inversions=[...],   # as above
+    seed=42,
+)
+```
+
+## Two populations with a split
+
+```python
+from msinv import HullSimulator, HullInversionSpec, HullDemography
+
+demo = HullDemography(pop_sizes=[10_000, 10_000])
+demo.add_event(('ej', 14_000, 1, 0))   # at t=14k gen, pop 1 → pop 0
+
+sim = HullSimulator(
+    sample_config={('S', 0): 5, ('S', 1): 3, ('I', 1): 3},
+    demography=demo,
+    sequence_length=100_000,
+    inversions=[HullInversionSpec(bp_left=30_000, bp_right=70_000,
+                                    p_inv=0.3, t_inv=385_000)],
+    seed=42,
+)
+ts = sim.simulate()
+```
+
+This is the Kir/Fol scenario from Small et al. 2023 — see
+[``examples/empirical_kir_fol_hull.py``](../examples/empirical_kir_fol_hull.py).
+
+## Selective sweep
+
+A forced-coalescence sweep at a specific position and time:
+
+```python
+from msinv import HullSimulator, Sweep
+
+sweep = Sweep(
+    x_sel=50_000,            # genomic position of the selected site
+    t_event=300,             # sweep MRCA at 300 gen ago
+    target_class='S',        # carriers are on the S background
+    sweep_window=500.0,      # ±500 bp around x_sel
+)
+sim = HullSimulator(
+    n_std=5, n_inv=5, population_size=100_000, sequence_length=100_000,
+    p_inv=0.5, t_inv=80_000,
+    bp_left=30_000, bp_right=70_000,
+    sweeps=[sweep], seed=42,
+)
+ts = sim.simulate()
+```
+
+## Drop mutations + compute summary stats
+
+```python
+import msprime
+mts = msprime.sim_mutations(ts, rate=1e-8, random_seed=1,
+                              discrete_genome=False)
+G = mts.genotype_matrix()      # (n_sites, n_samples) — 0/1 matrix
+print(mts.diversity())         # tskit's pi
+print(mts.divergence([[0,1,2,3,4], [5,6,7,8,9]]))
+```
+
+## Legacy SMC simulator (back-compat)
+
+The original SMC engine remains available. New code should prefer
+``HullSimulator``; the SMC simulator has a known multi-pop bug
+(see [`docs/known_issues.md`](known_issues.md)).
+
+```python
+from msinv import MsinvSimulator   # legacy
 
 sim = MsinvSimulator(
     samples=10, population_size=10_000,
     mutation_rate=1e-8, recombination_rate=1e-8,
     sequence_length=100_000,
-    n_std=5, n_inv=5,
-    inversions=[inv1, inv2],
-    seed=42,
+    n_std=5, n_inv=5, p_inv=0.5, t_inv=200_000,
+    bp_left=30_000, bp_right=70_000, seed=42,
 )
-pos, haps = sim.simulate_one()
-```
-
-## Selective sweep inside inversion (RDL scenario)
-
-```python
-sim = MsinvSimulator(
-    samples=10, population_size=100_000,
-    mutation_rate=1e-8, recombination_rate=1e-8,
-    sequence_length=100_000,
-    n_std=5, n_inv=5, p_inv=0.5,
-    t_inv=10.0,
-    sweep=(0.5, 0.1, 'S'),  # selected site at x=0.5, s=0.1, on S background
-    seed=42,
-)
-pos, haps = sim.simulate_one()
+positions, haplotypes = sim.simulate_one()
 ```
 
 ## Next steps
 
-- Read the [theory background](theory.md)
-- See [examples](examples.md) for validated biological applications
-- Browse the [API reference](api.md)
+- [Theory background](theory.md) — what the simulator is doing under the hood
+- [Hull algorithm design](hull_algorithm_design.md) — implementation phases
+- [Known issues](known_issues.md) — the SMC bug history and current limitations
+- [Examples](examples.md) — Kir/Fol, RDL, 2La, MAPT validated applications

@@ -4,12 +4,22 @@ msinv — Coalescent simulator with chromosomal inversions.
 A sequential Markov coalescent (SMC) simulator for modeling chromosomal
 inversions with structured coalescence, gene flux, and demographic history.
 
-Usage:
-    from msinv import MsinvSimulator, InversionSpec, ConstantFrequency
+Usage (msprime-compatible real units):
+    from msinv import MsinvSimulator, InversionSpec
 
-    sim = MsinvSimulator(nsam=10, nreps=1, theta=10, rho=50, nsites=1000,
-                         n_std=5, n_inv=5, p_inv=0.5, c=0.01, t_inv=10.0,
-                         bp_left=0.3, bp_right=0.7, seed=42)
+    sim = MsinvSimulator(
+        samples=10, population_size=10000,
+        mutation_rate=1e-8, recombination_rate=1e-8,
+        sequence_length=100000,
+        n_std=5, n_inv=5, p_inv=0.5, c=0.01,
+        t_inv=200000,  # generations
+        bp_left=0.3, bp_right=0.7, seed=42)
+    positions, haplotypes = sim.simulate_one()
+
+Usage (coalescent-scaled, ms-style):
+    sim = MsinvSimulator(nsam=10, theta=10, rho=50, nsites=1000,
+                         n_std=5, n_inv=5, p_inv=0.5, c=0.01,
+                         t_inv=10.0, seed=42)
     positions, haplotypes = sim.simulate_one()
 
 If libmsinv.so is compiled and present, the C inner loop is used

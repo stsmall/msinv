@@ -2114,7 +2114,7 @@ def drop_mutations(trees_intervals, theta, nsam, rng):
 # ===================================================================
 
 class MsinvSimulator:
-    def __init__(self, nsam, nreps, theta, rho, nsites,
+    def __init__(self, nsam=None, nreps=1, theta=None, rho=None, nsites=None,
                  n_std=None, n_inv=None,
                  p_inv=0.0, c=0.0, gamma=None,
                  flux_window=0.3, seed=None,
@@ -2124,7 +2124,72 @@ class MsinvSimulator:
                  sample_config=None, demo_events=None,
                  demography=None,
                  inversions=None,
-                 sweep=None):
+                 sweep=None,
+                 # msprime-compatible real-unit parameters
+                 samples=None,
+                 population_size=None,
+                 mutation_rate=None,
+                 recombination_rate=None,
+                 sequence_length=None,
+                 gene_conversion_rate=None):
+        """
+        Initialize msinv simulator.
+
+        Accepts EITHER coalescent-scaled parameters (theta, rho, nsites)
+        OR msprime-compatible real-unit parameters (population_size,
+        mutation_rate, recombination_rate, sequence_length).
+
+        Coalescent-scaled (ms-style):
+            theta = 4 * Ne * mu * L
+            rho = 4 * Ne * r * L
+            nsites = number of discrete positions
+            Time in units of 2*Ne generations
+
+        Real units (msprime-style):
+            population_size = Ne (reference effective population size)
+            mutation_rate = mu per bp per generation
+            recombination_rate = r per bp per generation
+            sequence_length = L in base pairs
+            Time in generations (converted internally)
+        """
+        # Handle msprime-style parameters
+        if population_size is not None:
+            Ne = population_size
+            self._Ne = Ne  # store for time conversion
+            if mutation_rate is None:
+                raise ValueError("mutation_rate required with population_size")
+            if sequence_length is None:
+                raise ValueError("sequence_length required with population_size")
+            L = sequence_length
+            mu = mutation_rate
+            r = recombination_rate if recombination_rate is not None else mu
+            theta = 4 * Ne * mu * L
+            rho = 4 * Ne * r * L
+            nsites = int(L) if nsites is None else nsites
+            if gamma is None and gene_conversion_rate is not None:
+                gamma = 4 * Ne * gene_conversion_rate * L
+            if samples is not None:
+                nsam = samples if isinstance(samples, int) else sum(samples.values())
+            if t_inv is not None:
+                # Convert from generations to coalescent units
+                t_inv = t_inv / (2 * Ne)
+            # Convert demography times if provided in generations
+            # (user should use Demography with generation-based times
+            #  and set demography.generation_time_mode = True)
+        else:
+            self._Ne = None
+            if nsam is None and samples is not None:
+                nsam = samples if isinstance(samples, int) else sum(samples.values())
+
+        if nsam is None:
+            raise ValueError("nsam or samples required")
+        if theta is None:
+            raise ValueError("theta or population_size required")
+        if rho is None:
+            rho = 0.0
+        if nsites is None:
+            nsites = 1000
+
         self.nsam = nsam
         self.nreps = nreps
         self.theta = theta

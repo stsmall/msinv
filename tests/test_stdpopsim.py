@@ -127,9 +127,8 @@ def test_human_africa():
     mu = contig.mutation_rate
     r = contig.recombination_map.mean_rate
 
-    # Use ancestral N as reference
-    # Africa_1T12: ancestral N=7310 (last event)
-    N_ref = 7310  # ancestral size
+    # Use ancestral N as reference for msinv coalescent scaling
+    N_ref = 7310
     theta, rho, demo = convert_demography(demog, N_ref, mu, r, L)
 
     print(f"  N_ref={N_ref}, theta={theta:.1f}, rho={rho:.1f}")
@@ -142,10 +141,10 @@ def test_human_africa():
         ts = engine.simulate(model, contig, samples, seed=42 + rep)
         pi_mp.append(float(ts.diversity(mode="site")) * L)
 
-    # msinv
+    # msinv using coalescent-scaled interface (convert_demography handles scaling)
     sim = msinv.MsinvSimulator(
-        nsam=nsam, nreps=NR, theta=theta, rho=rho, nsites=L,
-        p_inv=0.0, c=0.0, seed=42, demography=demo)
+        nsam=nsam, theta=theta, rho=rho, nsites=L,
+        p_inv=0, c=0, seed=42, demography=demo)
     pi_ms = []
     for _ in range(NR):
         pos, haps = sim.simulate_one()

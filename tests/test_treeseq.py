@@ -54,13 +54,12 @@ def test_basic_validity():
     check("Has trees", ts.num_trees > 0, f"{ts.num_trees} trees")
     check("Has nodes", ts.num_nodes > 10, f"{ts.num_nodes} nodes")
 
-    # Some multi-root trees are expected from edge recording artifacts.
-    # Key requirement: statistics are still correct.
+    # Tree sequences should be single-root.
     multi_root = sum(1 for t in ts.trees() if t.num_roots > 1)
     total_trees = ts.num_trees
-    check("Tree sequence functional (stats computable)",
-          True,
-          f"{multi_root}/{total_trees} multi-root (edge recording known issue)")
+    check("Tree sequences are single-root",
+          multi_root == 0,
+          f"{multi_root}/{total_trees} multi-root")
 
 
 def test_inversion_signal():

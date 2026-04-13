@@ -136,7 +136,8 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                     p_inv_func=sim.p_inv_func)
                 root = find_root(root)
             else:
-                root = smc_prune_and_reattach_panmictic(root, rng)
+                root = smc_prune_and_reattach_panmictic(
+                    root, rng, demography=getattr(sim, 'demography', None))
                 root = find_root(root)
         else:
             # Boundary

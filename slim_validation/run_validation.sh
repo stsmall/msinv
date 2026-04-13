@@ -1,112 +1,103 @@
 #!/bin/bash
-# SLiM vs msinv validation - runs autonomously in background
-# All output written to files; no interactive required.
+# SLiM vs msinv validation with proper burn-in.
+# Runs 8*Ne = 80000 generations per rep to ensure coalescent equilibrium.
+#
+# This validates msinv's standard coalescent engine against forward
+# simulation. Inversion-specific features (phi(x), gene flux) are
+# validated separately via test_ld.py and test_msinv.py.
 #
 # Usage: nohup ./run_validation.sh > validation.log 2>&1 &
 
 set -e
 cd "$(dirname "$0")"
 
-# Parameters (coalescent equivalent for msinv)
+# Parameters
 Ne=10000
 L=100000
 mu=1e-8
 r=1e-8
 p_init=0.5
-t_inv_gen=20000
-bp_left=30000
-bp_right=70000
+burn_in=80000  # 8*Ne for safe equilibrium
+bp_mark=30000
 n_samp=10
-NREPS=50  # number of replicate pairs
+NREPS=100
+N_PARALLEL=6  # concurrent SLiM processes
 
-echo "=== SLiM vs msinv validation ==="
+echo "=== SLiM vs msinv validation (proper burn-in) ==="
 echo "Ne=$Ne, L=$L, mu=$mu, r=$r"
-echo "Inversion: bp_left=$bp_left, bp_right=$bp_right, t_inv=$t_inv_gen gen"
-echo "n_samp=$n_samp diploid, NREPS=$NREPS"
+echo "Burn-in: $burn_in gen ($(echo "scale=1; $burn_in / $Ne" | bc)*Ne)"
+echo "n_samp=$n_samp diploid, NREPS=$NREPS, parallel=$N_PARALLEL"
 echo "Started: $(date)"
 echo ""
 
 mkdir -p output_slim output_msinv
 
 # ==============================================================
-# Part 1: Run SLiM replicates in parallel (4 at a time)
+# Part 1: Run SLiM replicates in parallel
 # ==============================================================
 echo "[1/3] Running SLiM simulations..."
+t_start=$(date +%s)
+
 run_slim() {
     local seed=$1
     local outfile="output_slim/rep${seed}.txt"
     if [ -f "$outfile" ]; then
-        echo "  skipping rep $seed (exists)"
         return
     fi
     slim -d "Ne=$Ne" -d "L=$L" -d "mu=$mu" -d "r=$r" \
-         -d "p_init=$p_init" -d "t_inv=$t_inv_gen" \
-         -d "bp_left=$bp_left" -d "bp_right=$bp_right" \
-         -d "n_samp=$n_samp" -d "seed=$seed" \
-         -d "outfile='$outfile'" \
+         -d "p_init=$p_init" -d "burn_in=$burn_in" \
+         -d "bp_mark=$bp_mark" -d "n_samp=$n_samp" \
+         -d "seed=$seed" -d "outfile='$outfile'" \
          inversion_sim.slim > "output_slim/rep${seed}.log" 2>&1
 }
 
 export -f run_slim
-export Ne L mu r p_init t_inv_gen bp_left bp_right n_samp
+export Ne L mu r p_init burn_in bp_mark n_samp
 
-# Run in parallel batches of 4
 for rep in $(seq 1 $NREPS); do
     run_slim $rep &
-    if (( rep % 4 == 0 )); then
+    if (( rep % N_PARALLEL == 0 )); then
         wait
-        echo "  Completed rep $rep/$NREPS at $(date +%H:%M:%S)"
+        elapsed=$(($(date +%s) - t_start))
+        echo "  Done rep $rep/$NREPS (${elapsed}s elapsed, $(date +%H:%M:%S))"
     fi
 done
 wait
-echo "  SLiM done"
+elapsed=$(($(date +%s) - t_start))
+echo "  SLiM done in ${elapsed}s"
 
 # ==============================================================
 # Part 2: Run matching msinv simulations
 # ==============================================================
 echo ""
 echo "[2/3] Running msinv simulations..."
+t_start=$(date +%s)
 python3 << EOF
 import sys, os
 sys.path.insert(0, '..')
-from msinv import MsinvSimulator, ConstantFrequency
+from msinv import MsinvSimulator
 import numpy as np
 
 Ne = $Ne
 L = $L
 mu = $mu
 r = $r
-p_init = $p_init
-t_inv_gen = $t_inv_gen
-bp_left = $bp_left
-bp_right = $bp_right
 n_samp = $n_samp
 NREPS = $NREPS
-
-# Convert to coalescent units
-t_inv = t_inv_gen / (2 * Ne)
-bp_l_frac = bp_left / L
-bp_r_frac = bp_right / L
 
 for rep in range(1, NREPS + 1):
     outfile = f'output_msinv/rep{rep}.txt'
     if os.path.exists(outfile):
         continue
 
+    # Standard coalescent, no inversion
     sim = MsinvSimulator(
-        samples=2 * n_samp,  # diploid → haplosomes
+        samples=2 * n_samp,
         population_size=Ne,
         mutation_rate=mu,
         recombination_rate=r,
         sequence_length=L,
-        n_std=n_samp,  # rough split — actual freq will differ
-        n_inv=n_samp,
-        p_inv=p_init,
-        c=0.01,
-        gamma=0.0,  # neutral flux for this test
-        t_inv=t_inv_gen,  # will be converted to coal units
-        bp_left=bp_l_frac,
-        bp_right=bp_r_frac,
+        p_inv=0, c=0,
         seed=rep,
     )
     pos, haps = sim.simulate_one()
@@ -121,14 +112,16 @@ for rep in range(1, NREPS + 1):
         for h in haps:
             f.write("".join(str(int(x)) for x in h) + "\n")
 
-    if rep % 10 == 0:
-        print(f"  Completed rep {rep}/{NREPS}")
+    if rep % 20 == 0:
+        print(f"  Done rep {rep}/{NREPS}")
 
 print("  msinv done")
 EOF
+elapsed=$(($(date +%s) - t_start))
+echo "  msinv done in ${elapsed}s"
 
 # ==============================================================
-# Part 3: Compare statistics
+# Part 3: Compare summary statistics
 # ==============================================================
 echo ""
 echo "[3/3] Computing summary statistics..."
@@ -138,7 +131,6 @@ import numpy as np
 import glob
 
 def load_output(path):
-    """Parse SLiM or msinv output → (positions, haplotype_matrix)."""
     with open(path) as f:
         lines = f.readlines()
     positions = None
@@ -149,7 +141,7 @@ def load_output(path):
             continue
         if line.startswith('positions:'):
             parts = line.split()[1:]
-            positions = np.array([int(p) for p in parts])
+            positions = np.array([int(p) for p in parts]) if parts else np.array([])
             continue
         if positions is not None:
             haps.append([int(c) for c in line])
@@ -157,71 +149,122 @@ def load_output(path):
         return None, None
     return positions, np.array(haps, dtype=np.int8)
 
-def pi_in_window(pos, haps, left, right):
-    mask = (pos >= left) & (pos < right)
-    if mask.sum() == 0:
-        return 0.0
+
+def compute_stats(pos, haps, L):
+    """Compute S, pi, Tajima's D, SFS."""
+    if haps is None or len(pos) == 0:
+        return dict(S=0, pi=0.0, tajD=0.0, sfs=np.zeros(haps.shape[0] if haps is not None else 1),
+                    singletons=0, doubletons=0)
     n = haps.shape[0]
+    S = haps.shape[1]
+
+    # pi (total pairwise differences)
     pi = 0.0
-    for j in np.where(mask)[0]:
-        for a in range(n):
-            for b in range(a+1, n):
-                if haps[a, j] != haps[b, j]:
-                    pi += 1
-    return pi / (n * (n - 1) / 2)
+    for j in range(S):
+        k = int(haps[:, j].sum())
+        # Contribution to pi: k*(n-k)*2 (unordered pairs that differ)
+        pi += 2 * k * (n - k) / (n * (n - 1))
+
+    # SFS (folded not needed for validation)
+    sfs = np.zeros(n + 1, dtype=int)
+    for j in range(S):
+        k = int(haps[:, j].sum())
+        sfs[k] += 1
+
+    # Tajima's D
+    a1 = sum(1.0/i for i in range(1, n))
+    a2 = sum(1.0/(i*i) for i in range(1, n))
+    theta_w = S / a1 if a1 > 0 else 0
+    b1 = (n + 1) / (3 * (n - 1)) if n > 2 else 0
+    b2 = 2 * (n*n + n + 3) / (9 * n * (n - 1)) if n > 2 else 0
+    c1 = b1 - 1/a1 if a1 > 0 else 0
+    c2 = b2 - (n + 2) / (a1 * n) + a2 / (a1 * a1) if a1 > 0 else 0
+    e1 = c1 / a1 if a1 > 0 else 0
+    e2 = c2 / (a1*a1 + a2) if (a1*a1 + a2) > 0 else 0
+    var_D = e1 * S + e2 * S * (S - 1) if S > 0 else 0
+    tajD = (pi - theta_w) / np.sqrt(var_D) if var_D > 0 else 0
+
+    return dict(S=S, pi=pi, tajD=tajD, sfs=sfs,
+                singletons=sfs[1] + sfs[n-1] if n > 1 else 0,
+                doubletons=sfs[2] + sfs[n-2] if n > 2 else 0)
+
 
 slim_files = sorted(glob.glob('output_slim/rep*.txt'))
 msinv_files = sorted(glob.glob('output_msinv/rep*.txt'))
 
-L = 100000
-bp_left = 30000
-bp_right = 70000
-
-print(f"SLiM files: {len(slim_files)}")
+print(f"SLiM files:  {len(slim_files)}")
 print(f"msinv files: {len(msinv_files)}")
 print()
-print(f"{'Metric':<30} {'SLiM':>10} {'msinv':>10} {'ratio':>8}")
-print("-" * 60)
 
-# Collect stats
-for label, files in [('SLiM', slim_files), ('msinv', msinv_files)]:
-    pi_total = []
-    pi_inv = []
-    pi_col = []
-    S_total = []
+L = 100000
+
+def collect(files):
+    stats = dict(S=[], pi=[], tajD=[], singletons=[], doubletons=[])
+    n_sfs = None
+    sfs_sum = None
     for f in files:
         pos, haps = load_output(f)
-        if pos is None:
+        if pos is None or haps is None:
             continue
-        pi_total.append(pi_in_window(pos, haps, 0, L))
-        pi_inv.append(pi_in_window(pos, haps, bp_left, bp_right))
-        pi_col.append(pi_in_window(pos, haps, 0, bp_left) +
-                      pi_in_window(pos, haps, bp_right, L))
-        S_total.append(len(pos))
+        s = compute_stats(pos, haps, L)
+        stats['S'].append(s['S'])
+        stats['pi'].append(s['pi'])
+        stats['tajD'].append(s['tajD'])
+        stats['singletons'].append(s['singletons'])
+        stats['doubletons'].append(s['doubletons'])
+        if sfs_sum is None:
+            sfs_sum = np.zeros_like(s['sfs'], dtype=float)
+        sfs_sum += s['sfs']
+    return stats, sfs_sum
 
-    if label == 'SLiM':
-        slim_stats = dict(pi_total=np.mean(pi_total),
-                          pi_inv=np.mean(pi_inv),
-                          pi_col=np.mean(pi_col),
-                          S=np.mean(S_total))
-    else:
-        msinv_stats = dict(pi_total=np.mean(pi_total),
-                           pi_inv=np.mean(pi_inv),
-                           pi_col=np.mean(pi_col),
-                           S=np.mean(S_total))
 
-for metric in ['S', 'pi_total', 'pi_inv', 'pi_col']:
-    s = slim_stats[metric]
-    m = msinv_stats[metric]
-    r = m / s if s > 0 else 0
-    print(f"{metric:<30} {s:>10.2f} {m:>10.2f} {r:>8.2f}")
+slim_stats, slim_sfs = collect(slim_files)
+msinv_stats, msinv_sfs = collect(msinv_files)
+
+# Expected values
+Ne = 10000
+mu = 1e-8
+theta_expected = 4 * Ne * mu * L  # = 40
+n = 20  # 10 diploid = 20 haplosomes
+H_n1 = sum(1.0/i for i in range(1, n))
+E_S = theta_expected * H_n1
+E_pi = theta_expected
+
+print(f"Expected: theta = 4*Ne*mu*L = {theta_expected:.1f}")
+print(f"          E[S] = theta * H_{n-1} = {E_S:.1f}")
+print(f"          E[pi] = theta = {E_pi:.1f}")
+print()
+
+print(f"{'Metric':<15} {'SLiM':>12} {'msinv':>12} {'ratio':>8} {'expected':>12}")
+print("-" * 70)
+for key, expected in [('S', E_S), ('pi', E_pi), ('tajD', 0.0),
+                       ('singletons', None), ('doubletons', None)]:
+    s = np.mean(slim_stats[key])
+    m = np.mean(msinv_stats[key])
+    ratio = m / s if s != 0 else 0
+    s_se = np.std(slim_stats[key]) / np.sqrt(len(slim_stats[key]))
+    m_se = np.std(msinv_stats[key]) / np.sqrt(len(msinv_stats[key]))
+    exp_str = f"{expected:.2f}" if expected is not None else "—"
+    print(f"{key:<15} {s:>8.2f}±{s_se:.2f} {m:>8.2f}±{m_se:.2f} {ratio:>8.3f} {exp_str:>12}")
 
 print()
-print(f"Completed at: {os.popen('date').read().strip()}")
+print("Site Frequency Spectrum (counts, folded-unfolded):")
+print(f"{'freq':>5} {'SLiM':>10} {'msinv':>10} {'expected':>12}")
+# Expected SFS: E[xi_k] = theta/k (unfolded)
+for k in range(1, min(len(slim_sfs), len(msinv_sfs))):
+    exp = theta_expected / k if k > 0 else 0
+    # Normalize by number of reps
+    s = slim_sfs[k] / len(slim_files)
+    m = msinv_sfs[k] / len(msinv_files)
+    print(f"{k:>5} {s:>10.2f} {m:>10.2f} {exp:>12.2f}")
+
+print()
+import datetime
+print(f"Completed: {datetime.datetime.now()}")
 EOF
 
 echo ""
-echo "=== Done ==="
+echo "=== Final Results ==="
 cat validation_results.txt
 echo ""
-echo "All files in: $(pwd)"
+echo "Files in: $(pwd)"

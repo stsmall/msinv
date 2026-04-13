@@ -1,20 +1,20 @@
-// SLiM forward simulation of an inversion with gene conversion
+// SLiM forward simulation of a neutral population with a marker
+// mutation (for validating msinv against exact forward simulation).
 //
-// Simulates a chromosome with an inversion in a single population.
-// The inversion arises at generation t_start and is tracked.
-// Output: haplotype matrix at specified sampling generations.
+// Note: This models a standard panmictic coalescent. The "inversion"
+// is just a marker we use to split haplotypes into two groups for
+// validation — there's no actual recombination suppression.
 //
-// Parameters (all set via -d on command line):
-//   Ne: effective population size
-//   L: chromosome length in bp
-//   mu: mutation rate per bp per gen
-//   r: recombination rate per bp per gen (between same karyotype)
-//   gamma: gene conversion rate per bp per gen (between karyotypes)
-//   p_init: initial inversion frequency (when introduced)
-//   t_inv: inversion age in generations (time before sampling)
-//   bp_left: inversion left breakpoint (bp position)
-//   bp_right: inversion right breakpoint (bp position)
-//   n_samp: number of diploid samples to draw
+// For validating full inversion dynamics we'd need a custom SLiM
+// script that suppresses recombination in heterokaryotypes, which
+// is beyond the scope of this validation.
+//
+// Parameters (set via -d on command line):
+//   Ne, L, mu, r: standard coalescent parameters
+//   p_init: initial marker frequency
+//   burn_in: generations of burn-in before sampling
+//   bp_mark: position of marker mutation
+//   n_samp: number of diploid individuals to sample
 //   seed: random seed
 //   outfile: output file path
 
@@ -23,11 +23,9 @@ initialize() {
     if (!exists("L")) defineConstant("L", 100000);
     if (!exists("mu")) defineConstant("mu", 1e-8);
     if (!exists("r")) defineConstant("r", 1e-8);
-    if (!exists("gamma")) defineConstant("gamma", 1e-10);
     if (!exists("p_init")) defineConstant("p_init", 0.5);
-    if (!exists("t_inv")) defineConstant("t_inv", 20000);
-    if (!exists("bp_left")) defineConstant("bp_left", 30000);
-    if (!exists("bp_right")) defineConstant("bp_right", 70000);
+    if (!exists("burn_in")) defineConstant("burn_in", 80000);   // 8 * Ne
+    if (!exists("bp_mark")) defineConstant("bp_mark", 30000);
     if (!exists("n_samp")) defineConstant("n_samp", 10);
     if (!exists("seed")) defineConstant("seed", 42);
     if (!exists("outfile")) defineConstant("outfile", "slim_out.txt");
@@ -35,59 +33,63 @@ initialize() {
     setSeed(seed);
 
     initializeMutationRate(mu);
-
-    // m1: neutral mutations
     initializeMutationType("m1", 0.5, "f", 0.0);
     m1.convertToSubstitution = F;
-
-    // g1: non-inversion genomic element
     initializeGenomicElementType("g1", m1, 1.0);
     initializeGenomicElement(g1, 0, L-1);
-
-    // Recombination rate: normal outside, zero between karyotypes inside
-    // We model this by tracking inversion as a marker mutation and using
-    // a simple approach: all chromosomes recombine normally; we'll handle
-    // the inversion suppression by filtering.
     initializeRecombinationRate(r);
 }
 
-// Generation 1: create population, introduce inversion
 1 early() {
     sim.addSubpop("p1", Ne);
-
-    // Introduce inversion mutation at frequency p_init
-    n_inv = asInteger(round(2 * Ne * p_init));
-    target = sample(p1.haplosomes, n_inv);
-    target.addNewDrawnMutation(m1, bp_left);  // marker for inversion
+    // Introduce marker mutation at frequency p_init
+    n_mark = asInteger(round(2 * Ne * p_init));
+    target = sample(p1.haplosomes, n_mark);
+    target.addNewDrawnMutation(m1, bp_mark);
 }
 
-// Track inversion frequency
+// Track marker frequency occasionally
 1: late() {
-    if (sim.cycle % 1000 == 0) {
-        inv_count = sum(p1.haplosomes.containsMarkerMutation(m1, bp_left));
-        catn("gen " + sim.cycle + ": inv freq = " + (inv_count / (2.0 * Ne)));
+    if (sim.cycle % 20000 == 0) {
+        mark_count = sum(p1.haplosomes.containsMarkerMutation(m1, bp_mark));
+        catn("gen " + sim.cycle + ": marker freq = " +
+             (mark_count / (2.0 * Ne)));
     }
 }
 
-// Sample at t_inv generations (after 4*Ne burn-in)
-// For Ne=10000, need ~40000 gen to reach coalescent equilibrium
-60000 late() {
-    // Sample n_samp diploid individuals = 2*n_samp haplosomes
+// Sample after burn_in generations
+80001 late() {
     sampled = sample(p1.individuals, n_samp);
     haps = sampled.haplosomes;
 
-    // Write VCF-like output
     out = "# SLiM output, n=" + size(haps) + ", L=" + L + "\n";
-    out = out + "# seed=" + seed + ", gen=" + sim.cycle + "\n";
+    out = out + "# seed=" + seed + ", gen=" + sim.cycle +
+          ", Ne=" + Ne + "\n";
 
-    // Get all segregating sites
+    // Only keep mutations at segregating sites
     muts = sim.mutations;
     muts = muts[muts.mutationType == m1];
-    // Sort by position
+
+    // Filter: only those that are variable in our sample
+    keep = c();
+    for (i in seqLen(size(muts))) {
+        count = sum(haps.containsMutations(muts[i]));
+        if (count > 0 & count < size(haps)) {
+            keep = c(keep, i);
+        }
+    }
+    if (size(keep) > 0) {
+        muts = muts[keep];
+    } else {
+        muts = object();
+    }
+
     positions = muts.position;
-    order = order(positions);
-    muts = muts[order];
-    positions = positions[order];
+    if (size(positions) > 0) {
+        order = order(positions);
+        muts = muts[order];
+        positions = positions[order];
+    }
 
     out = out + "positions:";
     for (p in positions) {
@@ -95,7 +97,6 @@ initialize() {
     }
     out = out + "\n";
 
-    // Haplotype matrix: one line per haplosome
     for (h in haps) {
         line = "";
         for (m in muts) {

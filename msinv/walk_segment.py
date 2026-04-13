@@ -27,6 +27,39 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                             smc_prune_and_reattach, smc_prune_and_reattach_panmictic,
                             build_structured_tree, ConstantFrequency, Node)
 
+    def _full_rebuild_inside_inv(_phi_x, _flux_gamma, _rng):
+        """Full structured-coalescent rebuild via build_structured_tree.
+
+        Replaces the in-inv SMC prune-reattach. The single-tree SMC
+        prune-reattach cannot reliably preserve the cross-karyotype
+        T_MRCA constraint (T_MRCA_KFi >= t_inv) under repeated events:
+        pruning a coalescent node above t_inv and reattaching the
+        floating S subtree to a residual S branch can silently fire a
+        coalescence below t_inv, eroding the karyotype barrier.
+
+        Trade-off: full rebuild loses inversion-internal LD between
+        adjacent positions (each in-inv site has an independent tree
+        from the structured coalescent). Single-site marginals — which
+        dxy, Da, FST, and PCA all depend on — remain correct.
+
+        Uses the simulator's stored sample_config + a fresh demography
+        copy so per-(class, pop) rates, demography, and ej events all
+        match the initial-tree build at this position.
+        """
+        _gamma = _flux_gamma if _flux_gamma is not None else getattr(sim, 'gamma', None)
+        if _gamma is None:
+            _gamma = sim.c * sim.rho / 2.0
+        # demo events get consumed by apply_events_at — copy each call.
+        _demo = sim.demography.copy() if getattr(sim, 'demography', None) is not None else None
+        new_root, _ = build_structured_tree(
+            n_std, n_inv, sim.p_inv, _gamma, 2.0, _phi_x, _rng,
+            p_inv_func=sim.p_inv_func,
+            sample_config=sim.sample_config,
+            n_pops=sim.n_pops, mig_rate=sim.mig_rate,
+            demo_events=getattr(sim, 'demo_events', None),
+            demography=_demo)
+        return new_root
+
     mutations = []
     pos = start_pos
 
@@ -136,22 +169,15 @@ def run_walk_segment(sim, root, start_pos, end_pos, rng, n_std, n_inv,
                 inv_pos = (new_pos - bp_l) / inv_len
                 inv_pos = max(0.02, min(0.98, inv_pos))
                 phi_x = sim.flux_model.phi(inv_pos)
-                # Use the caller-supplied flux_gamma (or sim.gamma) not
-                # sim.c*sim.rho/2. Passing c=gamma, rho=2 into
-                # smc_prune_and_reattach makes inner _flux_rate(c, rho) =
-                # c*rho/2 = gamma. Previously this path used sim.c*sim.rho/2
-                # which ignored gamma=0 and injected high flux during SMC
-                # walks, artificially mixing karyotype classes inside
-                # inversions (breaking the 4-walk vs multi-inv consistency).
-                if flux_gamma is not None:
-                    _gamma = flux_gamma
-                else:
-                    _gamma = getattr(sim, 'gamma', None)
-                    if _gamma is None:
-                        _gamma = sim.c * sim.rho / 2.0
-                root = smc_prune_and_reattach(
-                    root, rc, sim.p_inv, _gamma, 2.0, phi_x, rng,
-                    p_inv_func=sim.p_inv_func)
+                # Inside the inversion: full rebuild via the structured
+                # coalescent (build_structured_tree). The legacy
+                # smc_prune_and_reattach path here cannot maintain the
+                # cross-karyotype T_MRCA barrier under repeated events.
+                # Trade-off: per-position trees inside the inversion are
+                # independent (no LD inside inv) but each has the
+                # correct structured-coalescent marginal so dxy, Da, FST,
+                # PCA all reflect the model exactly.
+                root = _full_rebuild_inside_inv(phi_x, flux_gamma, rng)
                 root = find_root(root)
             else:
                 root = smc_prune_and_reattach_panmictic(

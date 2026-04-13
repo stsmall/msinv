@@ -1461,11 +1461,14 @@ def build_structured_tree(n_std, n_inv, p_inv, c, rho, phi_x, rng,
     if p_inv_func is None:
         p_inv_func = ConstantFrequency(p_inv)
 
-    # Create leaves
+    # Create leaves — iterate in insertion order so user controls sample_id
+    # mapping. (Previously used sorted() which reordered samples by (cls, pop)
+    # tuple and silently broke downstream analyses that assumed insertion
+    # order, e.g. Kir/Fol where 'I' < 'S' placed inverted-class samples first.)
     leaves = []
     sid = 0
     if sample_config is not None:
-        for (cls, pop), count in sorted(sample_config.items()):
+        for (cls, pop), count in sample_config.items():
             for _ in range(count):
                 leaves.append(Node(time=0.0, sample_id=sid,
                                    branch_class=cls, population=pop))

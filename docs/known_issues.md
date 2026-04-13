@@ -45,7 +45,7 @@ Verified: single-inv and multi-inv now produce identical dxy values for the
 same inversion when called with matching parameters (ratio = 1.00 across
 all comparisons).
 
-## Partially fixed (2026-04-13): SMC walk erodes the cross-karyotype barrier
+## Fixed (2026-04-13): SMC walk erodes the cross-karyotype barrier
 
 `_reattach` and `_coalesce_above_root` previously used **per-pop** `p_inv`
 for the panmictic-early-return check. A target lineage in a population with
@@ -57,27 +57,45 @@ produced dxy patterns that looked roughly empirical but were masking a
 broken class barrier.
 
 Fixed (architectural):
-- Class barrier check now uses the **global** `max` of `p_inv` across pops,
-  so a Kir target still respects the barrier because Fol has the inversion.
-- Candidate branches are now filtered by **both** class and population.
-- `_coalesce_above_root` clips `t` to `root.time` (a floating lineage
-  cannot coalesce above a root that hasn't yet been created).
+- Class barrier check now uses the **global** `max` of `p_inv` across pops.
+- Candidate branches are filtered by **both** class and population.
+- `_coalesce_above_root` clips `t` to `root.time`.
 
-**Remaining limitation:** a full diagnostic (T_MRCA inside the inversion
-at the end of an SMC walk) still shows partial decay of the K-Fi barrier
-at realistic `rho` values. The root cause is the single-tree SMC
-representation: repeated prune-and-reattach events can move the effective
-"above-root" lineage to low times, and the mini-coalescent in `_reattach`
-doesn't yet track population membership across demographic `ej` events
-during its backward walk. A proper fix requires either:
-- Rebuilding via `build_structured_tree` at each SMC event (slow but
-  guaranteed correct marginals); or
-- Tracking ancestral material per-position (msprime-style "hull"
-  algorithm) so every site has the correct structured-coalescent marginal.
+Fixed (the real bug): the single-tree SMC prune-reattach inside an
+inversion **cannot** reliably preserve the cross-karyotype T_MRCA
+constraint under repeated events — pruning a coalescent node above
+`t_inv` and reattaching the floating S subtree to a residual S branch
+can fire a coalescence below `t_inv`, eroding the karyotype barrier.
+**Replaced** the in-inv SMC prune-reattach with a full structured
+rebuild via `build_structured_tree` at each event. Each in-inv site now
+has the correct structured-coalescent marginal exactly.
 
-For now, simulations with active inversions + high `rho` will show
-attenuated cross-karyotype divergence relative to the true structured
-coalescent. FST patterns remain qualitatively correct.
+**Trade-off:** in-inv positions are now drawn from independent
+structured-coalescent trees, so there is no inversion-internal LD
+between adjacent positions. Single-site marginals — which `dxy`, `Da`,
+`FST`, and PCA all depend on — are correct. If users need accurate
+inversion-internal LD they should use a future per-position
+ancestral-material algorithm.
+
+Verification (T_MRCA at end of SMC walk through 3Ra, n=30 reps):
+
+| rho   | K-Fs | K-Fi | Fs-Fi | K-Fi/K-Fs |
+|-------|------|------|-------|-----------|
+| 0.1   | 0.88 | 5.62 | 5.62  | 6.41      |
+| 10    | 0.88 | 5.62 | 5.62  | 6.41      |
+| 100   | 0.88 | 5.62 | 5.62  | 6.41      |
+| 704   | 0.88 | 5.62 | 5.62  | 6.41      |
+
+Cross-karyotype T_MRCA (~5.6) stays at the expected `t_inv + 1` value
+across all `rho`. Empirical dxy ratios (Kir/Fol with constant Ne):
+
+| Scenario       | K-Fs | Fs-Fi | K-Fi |
+|----------------|------|-------|------|
+| 3Ra+3Rb        | 0.53 | 3.32  | 3.33 |
+| 3Ra only       | 0.75 | 2.14  | 2.14 |
+
+Cross-karyotype dxy is now correctly elevated ~2-3× inside the
+inversion, matching empirical Fig S13.
 
 ## Remaining: dxy depression inside inversions with huge Ne asymmetry
 

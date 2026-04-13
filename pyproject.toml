@@ -28,6 +28,12 @@ all = [
     "stdpopsim>=0.2",
     "matplotlib>=3.5",
 ]
+docs = [
+    "sphinx>=7.0",
+    "furo",
+    "myst-parser",
+    "sphinx-autodoc-typehints",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["msinv"]

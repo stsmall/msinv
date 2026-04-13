@@ -8,3 +8,10 @@ __pycache__/
 slim_validation/output_*/
 slim_validation/*.log
 slim_validation/validation_results.txt
+docs/_build/
+docs/source/_build/
+.egg-info/
+*.egg-info/
+build/
+dist/
+.pytest_cache/

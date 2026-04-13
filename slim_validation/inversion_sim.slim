@@ -69,8 +69,9 @@ initialize() {
     }
 }
 
-// Sample at t_inv generations
-20000 late() {
+// Sample at t_inv generations (after 4*Ne burn-in)
+// For Ne=10000, need ~40000 gen to reach coalescent equilibrium
+60000 late() {
     // Sample n_samp diploid individuals = 2*n_samp haplosomes
     sampled = sample(p1.individuals, n_samp);
     haps = sampled.haplosomes;

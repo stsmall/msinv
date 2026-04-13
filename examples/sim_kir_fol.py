@@ -177,11 +177,14 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
     sc = {('S', 0): n_kir, ('S', 1): n_fol_S, ('I', 1): n_fol_I}
 
     if use_both_inv:
+        # gamma=0: no gene flux (inversions act purely as recombination
+        # barriers, matching the empirical Kir/Fol pattern where S/I
+        # classes are cleanly separated)
         inv1 = msinv.InversionSpec(
-            inv_3Ra_left, inv_3Ra_right, p_inv=p_inv_fol, c=c,
+            inv_3Ra_left, inv_3Ra_right, p_inv=p_inv_fol, c=c, gamma=0.0,
             t_inv=t_inv, trajectory=traj)
         inv2 = msinv.InversionSpec(
-            inv_3Rb_left, inv_3Rb_right, p_inv=p_inv_fol, c=c,
+            inv_3Rb_left, inv_3Rb_right, p_inv=p_inv_fol, c=c, gamma=0.0,
             t_inv=t_inv, trajectory=traj)
         inversions = [inv1, inv2]
     else:
@@ -207,7 +210,7 @@ def run_scenario(label, mig_4Nm, use_both_inv=True):
             sim = msinv.MsinvSimulator(
                 nsam=nsam, nreps=1, theta=theta, rho=rho, nsites=nsites,
                 n_std=n_kir + n_fol_S, n_inv=n_fol_I,
-                p_inv=p_inv_fol, c=c,
+                p_inv=p_inv_fol, c=c, gamma=0.0,
                 bp_left=inv_3Ra_left, bp_right=inv_3Ra_right,
                 p_inv_func=traj, seed=SEED + rep,
                 n_pops=2, mig_rate=mig_4Nm,

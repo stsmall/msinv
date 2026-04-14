@@ -46,10 +46,13 @@ class InversionSpec:
         return self.bp_right - self.bp_left
 
     def class_S(self) -> str:
-        return f'S{self.inv_id}'
+        # inv_id == -1 is the legacy single-inversion sentinel: use
+        # plain 'S' (Phases 2-5a) so segment class tags don't carry
+        # an id suffix. Multi-inversion (inversions=[...]) uses 'S0'/'S1'/...
+        return 'S' if self.inv_id < 0 else f'S{self.inv_id}'
 
     def class_I(self) -> str:
-        return f'I{self.inv_id}'
+        return 'I' if self.inv_id < 0 else f'I{self.inv_id}'
 
     def __post_init__(self):
         if self.bp_right <= self.bp_left:

@@ -102,20 +102,47 @@ def apply_recombination(active, lineage, x):
     return left, right
 
 
-def apply_gene_flux(active, lineage, tract_left: float, tract_right: float):
+def _flip_class_tag(bc, cls_S: str, cls_I: str):
+    """Return a new branch_class with the S/I tag for one inversion
+    flipped. Handles both string tags ('S0', 'I', ...) and frozenset
+    tags (nested inversions, where a segment carries multiple tags).
+    Tags for OTHER inversions are left alone.
+    """
+    if isinstance(bc, frozenset):
+        new = set(bc)
+        if cls_S in new:
+            new.remove(cls_S); new.add(cls_I)
+        elif cls_I in new:
+            new.remove(cls_I); new.add(cls_S)
+        if len(new) == 1:
+            return next(iter(new))
+        return frozenset(new)
+    if bc == cls_S:
+        return cls_I
+    if bc == cls_I:
+        return cls_S
+    return bc  # not in this inversion (e.g., 'P' or another inv's tag)
+
+
+def apply_gene_flux(active, lineage, tract_left: float, tract_right: float,
+                     inv=None):
     """Split a tract [tract_left, tract_right) out of ``lineage`` and
-    flip the tract's class (gene-conversion event).
+    flip the tract's class for the given ``inv`` (gene-conversion event).
 
     Models gene conversion in a heterokaryote: at this tract, the
     chromosome's karyotype-of-origin going BACKWARD in time is the
     OTHER karyotype. The tract's ancestral material becomes a new
-    lineage in the flipped class; the lineage's other material
-    (everything outside the tract) stays in the original class on the
-    original lineage.
+    lineage with that inversion's class flipped; tags for other
+    inversions (in the nested case) are preserved. The lineage's
+    other material (outside the tract) stays in the original class on
+    the original lineage.
 
-    The lineage's segment list may end up with a "hole" where the
-    tract was — those positions are now traced by the flipped-class
-    lineage, not by this one.
+    Parameters
+    ----------
+    inv : InversionSpec, optional
+        The inversion whose class tag this conversion event flips.
+        If ``None``, falls back to the legacy single-inv behaviour
+        (flip the lineage's branch_class between 'S' and 'I').
 
     Returns
     -------
@@ -123,10 +150,9 @@ def apply_gene_flux(active, lineage, tract_left: float, tract_right: float):
         ``outside_lineage`` carries the original lineage's material
         outside the tract (may be ``None`` if the tract covered all of
         the lineage's material).
-        ``tract_lineage`` carries material inside the tract, in the
-        flipped class (may be ``None`` if the lineage didn't have any
-        ancestral material in the tract — in which case no flux event
-        happens; this is a no-op).
+        ``tract_lineage`` carries material inside the tract, with
+        ``inv``'s S/I tag flipped (may be ``None`` if the lineage
+        didn't have any ancestral material in the tract — no-op).
     """
     if tract_right <= tract_left:
         raise ValueError(
@@ -149,9 +175,23 @@ def apply_gene_flux(active, lineage, tract_left: float, tract_right: float):
             return A, None
         return (A or C), None
 
-    # B is the converted tract — flip its class.
-    flipped = 'I' if lineage.branch_class == 'S' else 'S'
-    B.branch_class = flipped
+    # B is the converted tract — flip its class for `inv`.
+    if inv is None:
+        # Legacy single-inv path: flip 'S' <-> 'I' at the lineage level.
+        flipped = 'I' if lineage.branch_class == 'S' else 'S'
+        B.branch_class = flipped
+    else:
+        # Multi-inv (or single-inv via inversions=[...]): flip just
+        # this inversion's tag on each segment of B, leaving any other
+        # inversion's tags intact.
+        cls_S = inv.class_S()
+        cls_I = inv.class_I()
+        seg = B.head
+        while seg is not None:
+            seg.branch_class = _flip_class_tag(seg.branch_class, cls_S, cls_I)
+            seg = seg.next
+        # Reset the lineage-level summary so it recomputes from segments.
+        B._branch_class_override = None
 
     # Re-merge A and C into the outside-tract lineage (same class as
     # the original). The lineage now has a "hole" where the tract was.

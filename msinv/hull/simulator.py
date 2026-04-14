@@ -639,54 +639,97 @@ class HullSimulator:
                     rates.append(('mig', m, (i, dst)))
         return rates
 
-    def _flux_lineage_weight(self, lineage):
-        """Per-lineage gene-flux weight: ∫_inv phi(x) dx over the
-        lineage's in-inv ancestral material, in inversion-relative
-        coordinates (so the resulting weight × g_per_bp × inv_len ×
-        p_other gives a per-generation rate in 1/gen).
+    def _flux_lineage_weight(self, lineage, inv):
+        """Per-lineage gene-flux weight under one ``InversionSpec``:
+        ∫_inv phi(x) dx over the lineage's in-inv ancestral material,
+        in inversion-relative coordinates. Multiplying this weight by
+        ``inv.gene_conversion_rate`` and ``p_other`` gives a rate in
+        events/generation.
         """
-        if self.bp_left is None:
+        if inv.bp_left is None:
             return 0.0
-        inv_len = self.bp_right - self.bp_left
+        inv_len = inv.bp_right - inv.bp_left
         if inv_len <= 0:
             return 0.0
-        w = self.flux_window
+        w = inv.flux_window
         weight = 0.0
         seg = lineage.head
         while seg is not None:
-            l = max(seg.left, self.bp_left)
-            r = min(seg.right, self.bp_right)
+            l = max(seg.left, inv.bp_left)
+            r = min(seg.right, inv.bp_right)
             if r > l:
-                a = (l - self.bp_left) / inv_len
-                b = (r - self.bp_left) / inv_len
+                a = (l - inv.bp_left) / inv_len
+                b = (r - inv.bp_left) / inv_len
                 weight += _phi_integral(a, b, w) * inv_len
             seg = seg.next
         return weight
 
-    def _flux_rates(self, active):
-        """List of (kind, rate, lineage_idx) for gene-flux events.
-
-        Each entry corresponds to ONE lineage's gene-flux rate.
+    def _lineage_class_for_inv(self, lineage, inv):
+        """Return 'S', 'I', or None for the lineage's karyotype at
+        inversion ``inv``. Inspects each in-inv segment's class tag
+        (a string like 'S0' or a frozenset for nested inversions).
+        Returns None if the lineage has no in-inv material, has been
+        flipped to panmictic ('P'), or carries inconsistent classes
+        across its segments (shouldn't normally happen mid-sim, but
+        is treated as "no flux event possible" if it does).
         """
-        if self.p_inv is None or self.g_per_bp <= 0:
-            return []
-        p_std = 1.0 - self.p_inv
+        cls_S = inv.class_S()
+        cls_I = inv.class_I()
+        seen = set()
+        seg = lineage.head
+        while seg is not None:
+            l = max(seg.left, inv.bp_left)
+            r = min(seg.right, inv.bp_right)
+            if r > l:
+                bc = seg.branch_class
+                if isinstance(bc, frozenset):
+                    if cls_S in bc:
+                        seen.add('S')
+                    if cls_I in bc:
+                        seen.add('I')
+                else:
+                    if bc == cls_S:
+                        seen.add('S')
+                    elif bc == cls_I:
+                        seen.add('I')
+            seg = seg.next
+        if len(seen) == 1:
+            return next(iter(seen))
+        return None
+
+    def _flux_rates(self, active):
+        """List of (kind, rate, payload) for gene-flux events.
+
+        One entry per (lineage, inversion) combination with non-zero
+        flux rate. Payload is ``(lineage_idx, inv_id)`` so the
+        executor knows which inversion's class to flip.
+        """
         rates = []
-        for idx, lin in enumerate(active):
-            if lin.branch_class == 'S':
-                p_other = self.p_inv
-            elif lin.branch_class == 'I':
-                p_other = p_std
-            else:
+        for inv in self.inversions:
+            if inv.gene_conversion_rate <= 0:
                 continue
-            if p_other <= 0:
+            if inv.bp_left is None or inv.bp_right <= inv.bp_left:
                 continue
-            w_lin = self._flux_lineage_weight(lin)
-            if w_lin <= 0:
+            if inv.p_inv is None:
                 continue
-            rate = self.g_per_bp * p_other * w_lin
-            if rate > 0:
-                rates.append(('flux', rate, idx))
+            p_inv_v = inv.p_inv
+            p_std_v = 1.0 - p_inv_v
+            for idx, lin in enumerate(active):
+                cls = self._lineage_class_for_inv(lin, inv)
+                if cls == 'S':
+                    p_other = p_inv_v
+                elif cls == 'I':
+                    p_other = p_std_v
+                else:
+                    continue
+                if p_other <= 0:
+                    continue
+                w_lin = self._flux_lineage_weight(lin, inv)
+                if w_lin <= 0:
+                    continue
+                rate = inv.gene_conversion_rate * p_other * w_lin
+                if rate > 0:
+                    rates.append(('flux', rate, (idx, inv.inv_id)))
         return rates
 
     def _apply_sweep(self, active, sweep, t, tables):
@@ -831,33 +874,29 @@ class HullSimulator:
 
     # -- gene-flux event helper -------------------------------------------
 
-    def _sample_flux_position(self, lineage):
-        """Sample a gene-flux event position uniformly weighted by
-        phi(x) over ``lineage``'s in-inv ancestral material.
+    def _sample_flux_position(self, lineage, inv):
+        """Sample a gene-flux event position weighted by phi(x) over
+        ``lineage``'s in-inv ancestral material under inversion ``inv``.
 
-        Returns the genomic position where the conversion CENTRES
-        (call it x_event). The tract is then drawn around it via the
-        Peischl b1-uniform construction.
+        Returns the genomic position where the conversion centres.
         """
-        inv_len = self.bp_right - self.bp_left
-        w = self.flux_window
-        # Walk segments, build CDF over phi-weighted in-inv material.
+        inv_len = inv.bp_right - inv.bp_left
+        w = inv.flux_window
         intervals = []
         cum = 0.0
         seg = lineage.head
         while seg is not None:
-            l = max(seg.left, self.bp_left)
-            r = min(seg.right, self.bp_right)
+            l = max(seg.left, inv.bp_left)
+            r = min(seg.right, inv.bp_right)
             if r > l:
-                a = (l - self.bp_left) / inv_len
-                b = (r - self.bp_left) / inv_len
+                a = (l - inv.bp_left) / inv_len
+                b = (r - inv.bp_left) / inv_len
                 weight = _phi_integral(a, b, w) * inv_len
                 intervals.append((l, r, a, b, weight))
                 cum += weight
             seg = seg.next
         if cum <= 0.0:
             return None
-        # Pick an interval by weight.
         u = self.rng.random() * cum
         running = 0.0
         chosen = intervals[-1]
@@ -867,41 +906,30 @@ class HullSimulator:
                 chosen = entry
                 break
         l, r, a, b, weight = chosen
-        # Within this interval, sample x by phi-density via rejection.
-        # Triangular bound for phi: max value is min(1, w/(1-w)).
         phi_max = w / (1.0 - w) if w < 1.0 else 1.0
         for _ in range(1000):
             xx = self.rng.uniform(a, b)
             if self.rng.random() * phi_max < _phi(xx, w):
-                # Convert back to genomic coords.
-                return self.bp_left + xx * inv_len
-        # Fallback — sample uniformly in the chosen segment.
+                return inv.bp_left + xx * inv_len
         return self.rng.uniform(l, r)
 
-    def _draw_tract(self, x_event):
-        """Given a conversion-event centre ``x_event`` in genomic
-        coords, draw a tract [tract_left, tract_right) in genomic
-        coords using the Peischl b1-uniform construction.
-
-        b1 is uniform in [max(0, x-w_g), min(L_inv-w_g, x)] (with
-        w_g = flux_window * inv_len). Tract is [b1, b1 + w_g] within
-        the inversion, clipped to inv bounds.
+    def _draw_tract(self, x_event, inv):
+        """Draw a gene-conversion tract centred at ``x_event`` for
+        inversion ``inv``, using the Peischl b1-uniform construction.
         """
-        inv_len = self.bp_right - self.bp_left
-        w_g = self.flux_window * inv_len
-        x_rel = x_event - self.bp_left
+        inv_len = inv.bp_right - inv.bp_left
+        w_g = inv.flux_window * inv_len
+        x_rel = x_event - inv.bp_left
         b1_lo = max(0.0, x_rel - w_g)
         b1_hi = min(inv_len - w_g, x_rel)
         if b1_hi <= b1_lo:
-            # x_event near edge — clip
             b1 = max(0.0, min(inv_len - w_g, x_rel - w_g / 2.0))
         else:
             b1 = self.rng.uniform(b1_lo, b1_hi)
-        tract_left = self.bp_left + b1
+        tract_left = inv.bp_left + b1
         tract_right = tract_left + w_g
-        # Clip to inversion bounds.
-        tract_left = max(self.bp_left, tract_left)
-        tract_right = min(self.bp_right, tract_right)
+        tract_left = max(inv.bp_left, tract_left)
+        tract_right = min(inv.bp_right, tract_right)
         return tract_left, tract_right
 
     # -- main loop ---------------------------------------------------------
@@ -1015,15 +1043,21 @@ class HullSimulator:
                 _coalesce_partial(active, active[i], active[j], t,
                                    tables, allowed)
             elif chosen_kind == 'flux':
-                idx = chosen_payload
+                idx, inv_id = chosen_payload
                 lineage = active[idx]
-                x_event = self._sample_flux_position(lineage)
+                # Find the InversionSpec for this event.
+                inv = next((iv for iv in self.inversions
+                            if iv.inv_id == inv_id), None)
+                if inv is None:
+                    continue
+                x_event = self._sample_flux_position(lineage, inv)
                 if x_event is None:
                     continue
-                tract_left, tract_right = self._draw_tract(x_event)
+                tract_left, tract_right = self._draw_tract(x_event, inv)
                 if tract_right <= tract_left:
                     continue
-                apply_gene_flux(active, lineage, tract_left, tract_right)
+                apply_gene_flux(active, lineage, tract_left,
+                                 tract_right, inv=inv)
             elif chosen_kind == 'mig':
                 idx, dst = chosen_payload
                 apply_migration(active[idx], dst)

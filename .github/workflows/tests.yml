@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, feature/*]
   pull_request:
     branches: [main, master]
 
@@ -26,22 +26,5 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[test]"
 
-    - name: Run standard coalescent tests
-      working-directory: tests
-      run: python test_standard_coalescent.py
-
-    - name: Run inversion tests
-      working-directory: tests
-      run: python test_msinv.py
-
-    - name: Run LD tests
-      working-directory: tests
-      run: python test_ld.py
-
-    - name: Run tree sequence tests
-      working-directory: tests
-      run: python test_treeseq.py
-
-    - name: Run stdpopsim tests
-      working-directory: tests
-      run: python test_stdpopsim.py
+    - name: Run hull tests
+      run: pytest tests/hull/ -v

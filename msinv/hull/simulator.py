@@ -265,7 +265,8 @@ class HullSimulator:
         Sequence length, in the same units as ``bp_left`` and
         ``bp_right``.
     recombination_rate : float
-        Per-bp per-generation recombination rate. (Phase 4+; not yet
+        Per-bp per-generation recombination rate. Fires recombination
+        events in the main loop alongside coalescence/flux/migration (
         used here.)
     p_inv : float, optional
         Inverted-arrangement frequency in (0, 1). Required when

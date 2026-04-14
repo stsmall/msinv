@@ -535,7 +535,7 @@ def fig7_performance():
     L = 100_000
     NREPS = 20
 
-    rho_vals = [10, 50, 100, 500, 1000]
+    rho_vals = [5, 10, 20, 40]
     times_inv = []
     times_no = []
     for rho in rho_vals:

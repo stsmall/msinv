@@ -208,11 +208,13 @@ impl HullSimulator {
             // Next demographic event boundary.
             let t_demo = demo.next_event_time(t);
 
-            // --- Compute rates ---
-            // Coalescence: interval-scan approach — O(S log S) where S
-            // is total segment count, not O(n^2) pairs.
-            let coal_rate = compute_total_coal_rate(
-                active, arena, demo, t, &self.inversions, &barrier_active);
+            // --- Compute all event rates ---
+            let mut all_events: Vec<(f64, Event)> = Vec::new();
+
+            // Coalescence.
+            compute_coal_events(
+                active, arena, demo, t, &self.inversions, &barrier_active,
+                &mut all_events);
 
             // Recombination.
             let recomb_rate: f64 = if self.recombination_rate > 0.0 {
@@ -222,21 +224,23 @@ impl HullSimulator {
             } else {
                 0.0
             };
+            if recomb_rate > 0.0 {
+                all_events.push((recomb_rate, Event::Recombination));
+            }
 
-            // Gene flux + migration → event list for per-lineage dispatch.
-            let mut extra_events: Vec<(f64, Event)> = Vec::new();
+            // Gene flux.
             if any_barrier {
                 self.compute_flux_rates(
-                    active, arena, &barrier_active, &mut extra_events);
+                    active, arena, &barrier_active, &mut all_events);
             }
+            // Migration.
             for (rate, lin_idx, dst) in demo.migration_rates(active) {
-                extra_events.push((rate, Event::Migration {
+                all_events.push((rate, Event::Migration {
                     lineage_idx: lin_idx, dst_pop: dst,
                 }));
             }
 
-            let extra_rate: f64 = extra_events.iter().map(|(r, _)| *r).sum();
-            let total_rate = coal_rate + recomb_rate + extra_rate;
+            let total_rate: f64 = all_events.iter().map(|(r, _)| *r).sum();
 
             // Next sweep boundary.
             let t_sweep = pending_sweeps.first()
@@ -285,19 +289,47 @@ impl HullSimulator {
 
             // Pick which event fires.
             let u2: f64 = rng.random::<f64>() * total_rate;
+            let mut cum = 0.0;
+            let mut chosen_event = None;
+            for (rate, event) in &all_events {
+                cum += rate;
+                if u2 < cum {
+                    chosen_event = Some(event);
+                    break;
+                }
+            }
+            let chosen_event = match chosen_event {
+                Some(e) => e,
+                None => continue,
+            };
 
-            if u2 < coal_rate {
-                // Coalescence: sample a position weighted by per-position
-                // rate, find all lineages at that position with matching
-                // class, pick two.
-                sample_and_coalesce(active, arena, demo, t,
-                    &self.inversions, &barrier_active, rng, tables, next_uid);
-            } else if u2 < coal_rate + recomb_rate {
-                // Recombination: pick lineage weighted by material.
-                let u_lin: f64 = rng.random::<f64>();
-                let total_mat: f64 = active.iter()
-                    .map(|l| l.cached_len).sum();
-                let target = u_lin * total_mat;
+            match chosen_event {
+                Event::CoalPair { i, j, class } => {
+                    let (i, j) = (*i, *j);
+                    let cls = *class;
+                    apply_coalescence_partial(
+                        active, i, j, t, arena, tables, next_uid,
+                        Some(cls));
+                }
+                Event::CoalPanmicticPop { pop } => {
+                    let pop = *pop;
+                    let pool: Vec<usize> = active.iter().enumerate()
+                        .filter(|(_, l)| l.population == pop)
+                        .map(|(i, _)| i).collect();
+                    if pool.len() >= 2 {
+                        let ii = rng.random_range(0..pool.len());
+                        let mut jj = rng.random_range(0..pool.len() - 1);
+                        if jj >= ii { jj += 1; }
+                        apply_coalescence(
+                            active, pool[ii], pool[jj], t, arena,
+                            tables, next_uid);
+                    }
+                }
+                Event::Recombination => {
+                    let u_lin: f64 = rng.random::<f64>();
+                    let total_mat: f64 = active.iter()
+                        .map(|l| l.cached_len).sum();
+                    let target = u_lin * total_mat;
                     let mut cum_len = 0.0;
                     let mut chosen_idx = 0;
                     for (idx, lin) in active.iter().enumerate() {
@@ -309,43 +341,28 @@ impl HullSimulator {
                     }
                     let lin_len = active[chosen_idx].cached_len;
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
-                    let x = find_position(active, chosen_idx, x_offset, arena,
-                                           self.sequence_length);
-                    apply_recombination(active, chosen_idx, x, arena, next_uid);
-            } else {
-                // Flux or migration from extra_events.
-                let u3 = u2 - coal_rate - recomb_rate;
-                let mut cum = 0.0;
-                let mut chosen = None;
-                for (rate, event) in &extra_events {
-                    cum += rate;
-                    if u3 < cum {
-                        chosen = Some(event);
-                        break;
+                    let x = find_position(active, chosen_idx, x_offset,
+                                           arena, self.sequence_length);
+                    apply_recombination(active, chosen_idx, x, arena,
+                                         next_uid);
+                }
+                Event::Flux { lineage_idx, inv_idx } => {
+                    let (li, ii) = (*lineage_idx, *inv_idx);
+                    let inv = &self.inversions[ii];
+                    if let Some(x_event) = self.sample_flux_position(
+                        active, li, inv, arena, rng)
+                    {
+                        let (tl, tr) = self.draw_tract(x_event, inv, rng);
+                        if tr > tl {
+                            apply_gene_flux(active, li, tl, tr, inv,
+                                             arena, next_uid);
+                        }
                     }
                 }
-                if let Some(ev) = chosen {
-                    match ev {
-                        Event::Flux { lineage_idx, inv_idx } => {
-                            let (li, ii) = (*lineage_idx, *inv_idx);
-                            let inv = &self.inversions[ii];
-                            if let Some(x_event) = self.sample_flux_position(
-                                active, li, inv, arena, rng)
-                            {
-                                let (tl, tr) = self.draw_tract(x_event, inv, rng);
-                                if tr > tl {
-                                    apply_gene_flux(active, li, tl, tr,
-                                                     inv, arena, next_uid);
-                                }
-                            }
-                        }
-                        Event::Migration { lineage_idx, dst_pop } => {
-                            let idx = *lineage_idx;
-                            if idx < active.len() {
-                                active[idx].population = *dst_pop;
-                            }
-                        }
-                        _ => {}
+                Event::Migration { lineage_idx, dst_pop } => {
+                    let idx = *lineage_idx;
+                    if idx < active.len() {
+                        active[idx].population = *dst_pop;
                     }
                 }
             }
@@ -620,48 +637,42 @@ fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
     }
 }
 
-/// Compute total coalescence rate — O(n) per pop bucket.
-///
-/// In the full ARG model, the rate for any pair in the same population
-/// to coalesce is 1/(2*Ne) regardless of overlap. For structured
-/// (inversion) scenarios, we bucket lineages by their dominant class
-/// at the first inversion-internal segment and apply the per-class rate.
-///
-/// For panmictic-only (no active inversions): rate = k*(k-1)/(4*Ne).
-fn compute_total_coal_rate(
+/// Compute coal events list. Post-t_inv: Hudson per-pop buckets, O(n).
+/// Active inversions: per-pair overlap-by-class, O(n^2).
+fn compute_coal_events(
     active: &[Lineage],
     arena: &SegmentArena,
     demo: &Demography,
     t: f64,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
-) -> f64 {
+    events: &mut Vec<(f64, Event)>,
+) {
     let any_inv_active = barrier_active.iter().any(|&b| b);
 
     if !any_inv_active {
-        // Panmictic: bucket by pop. O(n).
-        let mut counts: Vec<(u32, usize)> = Vec::new();
-        for lin in active {
-            if let Some(e) = counts.iter_mut().find(|(p, _)| *p == lin.population) {
-                e.1 += 1;
+        // Hudson per-pop buckets.
+        let mut buckets: Vec<(u32, Vec<usize>)> = Vec::new();
+        for (i, lin) in active.iter().enumerate() {
+            if let Some(e) = buckets.iter_mut().find(|(p, _)| *p == lin.population) {
+                e.1.push(i);
             } else {
-                counts.push((lin.population, 1));
+                buckets.push((lin.population, vec![i]));
             }
         }
-        let mut total = 0.0;
-        for (pop, k) in &counts {
-            if *k < 2 { continue; }
+        for (pop, indices) in &buckets {
+            let k = indices.len();
+            if k < 2 { continue; }
             let ne = demo.size_at(*pop, t).max(1e-9);
-            let kf = *k as f64;
-            total += kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+            let kf = k as f64;
+            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+            events.push((rate, Event::CoalPanmicticPop { pop: *pop }));
         }
-        return total;
+        return;
     }
 
-    // Structured: per-pair overlap-by-class enumeration. O(n^2) but
-    // n stays bounded (GC removes non-overlapping fragments).
+    // Structured: per-pair overlap-by-class.
     let n = active.len();
-    let mut total = 0.0;
     for i in 0..n {
         for j in (i + 1)..n {
             if active[i].population != active[j].population { continue; }
@@ -670,11 +681,11 @@ fn compute_total_coal_rate(
             for (cls, _ov_len) in &overlaps {
                 let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
                 if p_class <= 0.0 { continue; }
-                total += 1.0 / (2.0 * ne * p_class);
+                let rate = 1.0 / (2.0 * ne * p_class);
+                events.push((rate, Event::CoalPair { i, j, class: *cls }));
             }
         }
     }
-    total
 }
 
 /// Effective sub-population frequency for a BranchClass tag.
@@ -860,8 +871,8 @@ fn overlap_by_class(
         }
         let l = a.left.max(b.left);
         let r = a.right.min(b.right);
-        if r > l && a.branch_class.can_coalesce(b.branch_class) {
-            let cls = a.branch_class; // they match
+        if r > l && a.branch_class == b.branch_class {
+            let cls = a.branch_class;
             // Accumulate into result.
             if let Some(entry) = result.iter_mut().find(|(c, _)| *c == cls) {
                 entry.1 += r - l;

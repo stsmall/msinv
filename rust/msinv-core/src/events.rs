@@ -34,6 +34,14 @@ pub fn apply_coalescence(
                                next_uid, None)
 }
 
+/// Coalesce two lineages with optional class restriction.
+///
+/// When `allowed_class` is `Some(cls)`: only merge at overlap positions
+/// where both segments' class can_coalesce with `cls`. Non-matching
+/// overlap stays on separate remainder lineages (A-remain, B-remain).
+/// Solo (non-overlapping) material goes to the merged lineage.
+///
+/// When `allowed_class` is `None`: full merge (all overlap coalesces).
 pub fn apply_coalescence_partial(
     active: &mut Vec<Lineage>,
     idx_a: usize,
@@ -50,79 +58,80 @@ pub fn apply_coalescence_partial(
     let mut sa = active[idx_a].head;
     let mut sb = active[idx_b].head;
 
-    // Build merged chain.
+    // Three output chains.
     let mut merged_head: SegIdx = SEG_NIL;
     let mut merged_tail: SegIdx = SEG_NIL;
+    let mut a_rem_head: SegIdx = SEG_NIL;
+    let mut a_rem_tail: SegIdx = SEG_NIL;
+    let mut b_rem_head: SegIdx = SEG_NIL;
+    let mut b_rem_tail: SegIdx = SEG_NIL;
 
-    let mut append = |arena: &mut SegmentArena, left: f64, right: f64,
-                       node_id: i32, bc: BranchClass| {
-        let idx = arena.alloc(left, right, node_id, bc);
-        if merged_head == SEG_NIL {
-            merged_head = idx;
-        } else {
-            arena.get_mut(merged_tail).next = idx;
-        }
-        merged_tail = idx;
-    };
+    macro_rules! chain_append {
+        ($head:expr, $tail:expr, $arena:expr, $l:expr, $r:expr, $nid:expr, $bc:expr) => {{
+            let idx = $arena.alloc($l, $r, $nid, $bc);
+            if $head == SEG_NIL {
+                $head = idx;
+            } else {
+                $arena.get_mut($tail).next = idx;
+            }
+            $tail = idx;
+        }};
+    }
 
     while sa != SEG_NIL && sb != SEG_NIL {
         let a = arena.get(sa);
+        let (a_left, a_right, a_node, a_bc, a_next) =
+            (a.left, a.right, a.node_id, a.branch_class, a.next);
         let b = arena.get(sb);
-        let a_left = a.left;
-        let a_right = a.right;
-        let a_node = a.node_id;
-        let a_bc = a.branch_class;
-        let a_next = a.next;
-        let b_left = b.left;
-        let b_right = b.right;
-        let b_node = b.node_id;
-        let b_bc = b.branch_class;
-        let b_next = b.next;
+        let (b_left, b_right, b_node, b_bc, b_next) =
+            (b.left, b.right, b.node_id, b.branch_class, b.next);
 
         if a_right <= b_left {
-            // a entirely before b — pass through a
-            append(arena, a_left, a_right, a_node, a_bc);
+            chain_append!(merged_head, merged_tail, arena,
+                           a_left, a_right, a_node, a_bc);
             arena.free(sa);
             sa = a_next;
         } else if b_right <= a_left {
-            // b entirely before a — pass through b
-            append(arena, b_left, b_right, b_node, b_bc);
+            chain_append!(merged_head, merged_tail, arena,
+                           b_left, b_right, b_node, b_bc);
             arena.free(sb);
             sb = b_next;
         } else {
-            // Overlap exists
             let l = a_left.max(b_left);
             let r = a_right.min(b_right);
 
-            // Pre-overlap solo bits
+            // Pre-overlap solo bits → merged.
             if a_left < l {
-                append(arena, a_left, l, a_node, a_bc);
+                chain_append!(merged_head, merged_tail, arena,
+                               a_left, l, a_node, a_bc);
             }
             if b_left < l {
-                append(arena, b_left, l, b_node, b_bc);
+                chain_append!(merged_head, merged_tail, arena,
+                               b_left, l, b_node, b_bc);
             }
 
-            // Overlap → coalescence if class matches (or no class filter).
             let class_ok = match allowed_class {
                 None => true,
-                Some(cls) => a_bc.can_coalesce(cls) && b_bc.can_coalesce(cls),
+                Some(cls) => a_bc == cls && b_bc == cls,
             };
             if class_ok {
                 tables.add_edge(l, r, new_node, a_node);
                 tables.add_edge(l, r, new_node, b_node);
-                append(arena, l, r, new_node, a_bc);
+                chain_append!(merged_head, merged_tail, arena,
+                               l, r, new_node, a_bc);
             } else {
-                // Class doesn't match — keep both segments separate.
-                append(arena, l, r, a_node, a_bc);
-                append(arena, l, r, b_node, b_bc);
+                // Class mismatch: A's segment → A-remainder,
+                // B's segment → B-remainder.
+                chain_append!(a_rem_head, a_rem_tail, arena,
+                               l, r, a_node, a_bc);
+                chain_append!(b_rem_head, b_rem_tail, arena,
+                               l, r, b_node, b_bc);
             }
 
-            // Advance: consume the side that ended at r, keep tail of the other
             if a_right == r {
                 arena.free(sa);
                 sa = a_next;
             } else {
-                // a extends past r — truncate a's left to r
                 arena.get_mut(sa).left = r;
             }
             if b_right == r {
@@ -133,42 +142,44 @@ pub fn apply_coalescence_partial(
             }
         }
     }
-    // Drain remaining segments from whichever side is left
     while sa != SEG_NIL {
         let a = arena.get(sa);
-        let a_left = a.left;
-        let a_right = a.right;
-        let a_node = a.node_id;
-        let a_bc = a.branch_class;
-        let a_next = a.next;
-        append(arena, a_left, a_right, a_node, a_bc);
+        let (a_left, a_right, a_node, a_bc, a_next) =
+            (a.left, a.right, a.node_id, a.branch_class, a.next);
+        chain_append!(merged_head, merged_tail, arena,
+                       a_left, a_right, a_node, a_bc);
         arena.free(sa);
         sa = a_next;
     }
     while sb != SEG_NIL {
         let b = arena.get(sb);
-        let b_left = b.left;
-        let b_right = b.right;
-        let b_node = b.node_id;
-        let b_bc = b.branch_class;
-        let b_next = b.next;
-        append(arena, b_left, b_right, b_node, b_bc);
+        let (b_left, b_right, b_node, b_bc, b_next) =
+            (b.left, b.right, b.node_id, b.branch_class, b.next);
+        chain_append!(merged_head, merged_tail, arena,
+                       b_left, b_right, b_node, b_bc);
         arena.free(sb);
         sb = b_next;
     }
 
-    // Remove both from active (remove higher index first to avoid shift)
+    // Remove both originals.
     let (lo, hi) = if idx_a < idx_b { (idx_a, idx_b) } else { (idx_b, idx_a) };
     active.swap_remove(hi);
     if lo < active.len() {
         active.swap_remove(lo);
     }
 
-    // Add merged lineage if it has material
+    // Add output lineages.
     if merged_head != SEG_NIL {
-        let uid = *next_uid;
-        *next_uid += 1;
+        let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
+    }
+    if a_rem_head != SEG_NIL {
+        let uid = *next_uid; *next_uid += 1;
+        active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
+    }
+    if b_rem_head != SEG_NIL {
+        let uid = *next_uid; *next_uid += 1;
+        active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
     }
 
     new_node

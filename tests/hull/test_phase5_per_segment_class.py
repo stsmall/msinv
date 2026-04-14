@@ -25,18 +25,19 @@ from msinv.hull import HullSimulator
 # ---------------------------------------------------------------------------
 
 def test_sample_segments_split_at_inv_bounds():
-    """A sample with bp_left=30, bp_right=70 in L=100 should have 3
+    """A sample with bp_left=3000, bp_right=7000 in L=10000 should have 3
     initial segments: outside-left ('P'), inside-inv ('S' or 'I'),
     outside-right ('P')."""
     sim = HullSimulator(
         n_std=2, n_inv=2,
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         p_inv=0.5, t_inv=10_000.0,
-        bp_left=30.0, bp_right=70.0,
+        bp_left=3000.0, bp_right=7000.0,
+        recombination_rate=1e-8,
         seed=42,
     )
     from msinv.hull.tables import TableBuilder
-    tables = TableBuilder(sequence_length=100.0, num_populations=1)
+    tables = TableBuilder(sequence_length=10000.0, num_populations=1)
     active = sim._initial_lineages(tables)
     # First lineage is class S
     lin = active[0]
@@ -45,7 +46,7 @@ def test_sample_segments_split_at_inv_bounds():
     while seg is not None:
         classes.append((seg.left, seg.right, seg.branch_class))
         seg = seg.next
-    assert classes == [(0.0, 30.0, 'P'), (30.0, 70.0, 'S'), (70.0, 100.0, 'P')]
+    assert classes == [(0.0, 3000.0, 'P'), (3000.0, 7000.0, 'S'), (7000.0, 10000.0, 'P')]
 
 
 # ---------------------------------------------------------------------------
@@ -59,15 +60,16 @@ def test_inside_class_barrier_outside_panmictic(seed):
     n_std = 4; n_inv = 4
     Ne = 1000
     t_inv = 4.0 * 2 * Ne  # 8000 gen
-    L = 100.0
-    bp_left = 30.0
-    bp_right = 70.0
+    L = 10000.0
+    bp_left = 3000.0
+    bp_right = 7000.0
 
     sim = HullSimulator(
         n_std=n_std, n_inv=n_inv,
         population_size=Ne, sequence_length=L,
         p_inv=0.5, t_inv=t_inv,
         bp_left=bp_left, bp_right=bp_right,
+        recombination_rate=1e-8,
         seed=seed,
     )
     ts = sim.simulate()
@@ -120,9 +122,9 @@ def test_within_class_outside_panmictic():
     T_MRCA should be ~2× inside T_MRCA when p_std=0.5."""
     n_std = 5; n_inv = 5
     Ne = 1000
-    t_inv = 50_000.0  # very deep; class barrier doesn't constrain S-S
-    L = 100.0
-    bp_left = 25.0; bp_right = 75.0
+    t_inv = 8_000.0  # 4*Ne; deep enough that class barrier doesn't constrain S-S
+    L = 10000.0
+    bp_left = 2500.0; bp_right = 7500.0
 
     inside_T = []; outside_T = []
     for seed in range(15):
@@ -131,6 +133,7 @@ def test_within_class_outside_panmictic():
             population_size=Ne, sequence_length=L,
             p_inv=0.5, t_inv=t_inv,
             bp_left=bp_left, bp_right=bp_right,
+            recombination_rate=1e-8,
             seed=seed,
         )
         ts = sim.simulate()
@@ -166,9 +169,10 @@ def test_within_class_outside_panmictic():
 def test_treeseq_valid_with_inv_subregion():
     sim = HullSimulator(
         n_std=4, n_inv=4,
-        population_size=1000, sequence_length=200.0,
+        population_size=1000, sequence_length=20000.0,
         p_inv=0.5, t_inv=8000.0,
-        bp_left=50.0, bp_right=150.0,
+        bp_left=5000.0, bp_right=15000.0,
+        recombination_rate=1e-8,
         gene_conversion_rate=0.0,
         seed=42,
     )

@@ -70,7 +70,8 @@ def test_no_migration_cross_pop_mrca_at_least_t_split(seed):
     sim = HullSimulator(
         sample_config={(None, 0): n_each, (None, 1): n_each},
         demography=demo,
-        sequence_length=100.0,
+        sequence_length=10_000.0,
+        recombination_rate=1e-8,
         seed=seed,
     )
     ts = sim.simulate()
@@ -105,7 +106,8 @@ def test_migration_allows_cross_pop_mrca_below_t_split():
         sim = HullSimulator(
             sample_config={(None, 0): n_each, (None, 1): n_each},
             demography=demo,
-            sequence_length=10.0,
+            sequence_length=10_000.0,
+            recombination_rate=1e-8,
             seed=seed,
         )
         ts = sim.simulate()
@@ -133,7 +135,7 @@ def test_per_pop_size_scales_coal_rate():
     small_Ne = 1000
     demo = Demography([big_Ne, small_Ne])
     # No migration, very deep ej so within-pop dominates
-    demo.add_event(('ej', 1e9, 1, 0))
+    demo.add_event(('ej', 200_000.0, 1, 0))
 
     big_mrca = []
     small_mrca = []
@@ -141,7 +143,8 @@ def test_per_pop_size_scales_coal_rate():
         sim = HullSimulator(
             sample_config={(None, 0): n_each, (None, 1): n_each},
             demography=demo,
-            sequence_length=1.0,
+            sequence_length=10_000.0,
+            recombination_rate=1e-8,
             seed=seed,
         )
         ts = sim.simulate()
@@ -165,7 +168,7 @@ def test_inversion_with_two_pops():
     """Kir/Fol-style mini: 2 pops, ej at t_split, inversion shared."""
     Ne = 10000
     t_split = 14_000.0   # 14k gen
-    t_inv = 80_000.0     # 80k gen, very old
+    t_inv = 40_000.0     # 4*Ne gen
     p_inv_anc = 0.5
 
     demo = Demography([Ne, Ne])
@@ -180,10 +183,11 @@ def test_inversion_with_two_pops():
     sim = HullSimulator(
         sample_config=sample_config,
         demography=demo,
-        sequence_length=100.0,
+        sequence_length=10_000.0,
         p_inv=p_inv_anc, t_inv=t_inv,
-        bp_left=0.0, bp_right=100.0,
+        bp_left=0.0, bp_right=10_000.0,
         gene_conversion_rate=0.0,
+        recombination_rate=1e-8,
         seed=42,
     )
     ts = sim.simulate()

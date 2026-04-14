@@ -86,10 +86,10 @@ def test_nested_invs_each_barrier_independent(seed):
     samples differing at the inner inv must wait for the inner t_inv
     to coalesce (regardless of outer karyotype agreement)."""
     Ne = 1000
-    L = 100.0
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    L = 10000.0
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=1000.0)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=5000.0)
 
     # 4 samples: SS (S in outer + S in inner), SI (S in outer, I in inner)
@@ -99,12 +99,13 @@ def test_nested_invs_each_barrier_independent(seed):
             (('S', 'I'), 0): 2,
         },
         population_size=Ne, sequence_length=L,
-        inversions=[inv_outer, inv_inner], seed=seed)
+        inversions=[inv_outer, inv_inner],
+        recombination_rate=1e-8, seed=seed)
     ts = sim.simulate()
     samples = list(ts.samples())
     SS = samples[:2]; SI = samples[2:]
 
-    # Inside the inner inv (30,70), SS samples carry frozenset({S0, S1})
+    # Inside the inner inv (3000,7000), SS samples carry frozenset({S0, S1})
     # and SI samples carry frozenset({S0, I1}). They differ at inv 1
     # → can't coalesce until inv 1's t_inv = 5000.
     inner_violations = 0
@@ -125,17 +126,18 @@ def test_nested_outer_only_barrier_when_inner_karyotypes_match():
     outer t_inv constrains them. Inside the outer-only region (not
     overlapping the inner), normal structured-coal applies."""
     Ne = 1000
-    L = 100.0
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    L = 10000.0
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=10_000.0)  # very deep
-    inv_inner = InversionSpec(bp_left=40.0, bp_right=60.0,
+    inv_inner = InversionSpec(bp_left=4000.0, bp_right=6000.0,
                               p_inv=0.5, t_inv=1000.0)
 
     # All samples 'SS' (S in both invs)
     sim = HullSimulator(
         sample_config={(('S', 'S'), 0): 5},
         population_size=Ne, sequence_length=L,
-        inversions=[inv_outer, inv_inner], seed=42)
+        inversions=[inv_outer, inv_inner],
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     samples = list(ts.samples())
     # All samples can coalesce in the outer-only region (not in the
@@ -161,16 +163,17 @@ def test_nested_outer_only_barrier_when_inner_karyotypes_match():
 # ---------------------------------------------------------------------------
 
 def test_treeseq_valid_with_nested_invs():
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=2000.0)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=3000.0)
     sim = HullSimulator(
         sample_config={(('S', 'S'), 0): 2,
                         (('I', 'I'), 0): 2,
                         (('S', 'I'), 0): 2},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv_outer, inv_inner], seed=42)
+        population_size=1000, sequence_length=10000.0,
+        inversions=[inv_outer, inv_inner],
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     tables = ts.dump_tables()
     tables.sort()

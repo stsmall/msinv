@@ -129,8 +129,9 @@ def fig1_inversion_signal():
     n = len(reps)
     dxy /= n; pi_S /= n; pi_I /= n
     da = dxy - (pi_S + pi_I) / 2
+    fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 9.5), sharex=True)
 
     ax1.plot(mid, smooth(dxy), '-', color='#C62828', lw=2.2,
              label=r'$d_{XY}$ (S vs I)')
@@ -147,20 +148,26 @@ def fig1_inversion_signal():
         f'(Ne={Ne:,}, t_inv=200k gen, n_S={n_S}, n_I={n_I}, {n} reps)',
         fontsize=11, loc='left')
 
-    # Da on its own panel — same y-scale as panel A so the magnitude
-    # difference (Da << dxy outside the inv) is visually obvious.
     ax2.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2.2,
              label=r'$D_a = d_{XY} - (\pi_S+\pi_I)/2$')
     ax2.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
     ax2.axhline(0, color='gray', ls=':', lw=0.7)
-    ax2.set_ylim(ax1.get_ylim())   # share y-scale → magnitude visible
     ax2.set_ylabel(r'$D_a$', fontsize=11)
-    ax2.set_xlabel('Chromosome position (bp)', fontsize=10)
     ax2.legend(loc='upper right', fontsize=9)
     ax2.set_title('B. Net divergence (isolates the inversion barrier)',
                    fontsize=11, loc='left')
 
-    for ax in (ax1, ax2):
+    ax3.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
+             label=r'$F_{ST}$ (Hudson)')
+    ax3.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
+    ax3.axhline(0, color='gray', ls=':', lw=0.7)
+    ax3.set_ylabel(r'$F_{ST}$', fontsize=11)
+    ax3.set_xlabel('Chromosome position (bp)', fontsize=10)
+    ax3.legend(loc='upper right', fontsize=9)
+    ax3.set_title(r'C. Hudson $F_{ST}$ (relative differentiation)',
+                   fontsize=11, loc='left')
+
+    for ax in (ax1, ax2, ax3):
         ax.axvline(bp_l, color='red', ls=':', lw=1, alpha=0.5)
         ax.axvline(bp_r, color='red', ls=':', lw=1, alpha=0.5)
 
@@ -169,20 +176,20 @@ def fig1_inversion_signal():
         f'(A) Per-bp absolute divergence ($d_{{XY}}$) between Standard (S) and Inverted (I) '
         f'karyotypes is elevated inside the inversion (grey shading, {bp_l/1e3:.0f}–{bp_r/1e3:.0f} kb), '
         f'while within-class diversity ($\\pi_S$, $\\pi_I$) remains at background levels. '
-        f'(B) Net divergence $D_a = d_{{XY}} - (\\pi_S + \\pi_I)/2$ isolates the barrier signal; '
-        f'the shared-y-axis shows that $D_a$ is a small fraction of $d_{{XY}}$ '
-        f'— most apparent divergence is ancestral polymorphism, not fixed differences. '
+        f'(B) Net divergence $D_a = d_{{XY}} - (\\pi_S + \\pi_I)/2$ isolates the barrier signal. '
+        f'(C) Hudson $F_{{ST}} = 1 - \\pi_W / d_{{XY}}$ shows relative differentiation — elevated '
+        f'inside the inversion where the recombination barrier concentrates divergence. '
         f'Parameters: Ne={Ne:,}, t_inv=200,000 gen, $\\rho$=200, $\\gamma$=1e-9, L={L/1e3:.0f} kb, '
         f'r=1e-8 bp$^{{-1}}$ gen$^{{-1}}$, $\\mu$=1e-8, n_S={n_S}, n_I={n_I}, {n} replicates.\n'
         f'Command: pixi run -e all python examples/make_figures.py'
     )
-    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+    fig.text(0.5, -0.01, caption, ha='center', fontsize=7, wrap=True,
              fontstyle='italic', color='#333',
              bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
                        edgecolor='#BDBDBD', alpha=0.9))
 
     plt.tight_layout()
-    fig.subplots_adjust(bottom=0.22)
+    fig.subplots_adjust(bottom=0.17)
     plt.savefig(os.path.join(OUTDIR, 'fig1_inversion_signal.pdf'),
                 bbox_inches='tight')
     plt.close()
@@ -277,24 +284,24 @@ def fig3_real_inversions():
     print("Fig 3: Real inversions...")
     NREPS = 80
     NW = 25
-    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex='col')
 
-    configs = {
-        'An. funestus 3Ra–like\n(Ne=44k, t_inv=385k gen)': dict(
+    configs = [
+        ('An. funestus 3Ra–like\n(Ne=44k, t_inv=385k gen)', dict(
             Ne=44_000, mu=3.55e-9, L=100_000,
             bp_l=20_000, bp_r=80_000,
             p_inv=0.3, t_inv=385_000,
             gamma=1e-9,
-            n_S=10, n_I=10),
-        'Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)': dict(
+            n_S=10, n_I=10)),
+        ('Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)', dict(
             Ne=10_000, mu=1.2e-8, L=100_000,
             bp_l=20_000, bp_r=80_000,
             p_inv=0.2, t_inv=100_000,
             gamma=1e-9,
-            n_S=16, n_I=4),
-    }
+            n_S=16, n_I=4)),
+    ]
 
-    for ax, (name, p) in zip(axes, configs.items()):
+    for col, (name, p) in enumerate(configs):
         wins = np.linspace(0, p['L'], NW + 1)
         mid = (wins[:-1] + wins[1:]) / 2
 
@@ -321,7 +328,10 @@ def fig3_real_inversions():
         n = max(len(reps), 1)
         dxy /= n; pi_S /= n; pi_I /= n
         da = dxy - (pi_S + pi_I) / 2
+        fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
 
+        # Top row: dxy, pi, Da
+        ax = axes[0, col]
         ax.plot(mid, smooth(dxy), '-', color='#C62828', lw=2,
                  label=r'$d_{XY}$')
         ax.plot(mid, smooth((pi_S + pi_I) / 2), '-', color='#1565C0', lw=2,
@@ -331,17 +341,28 @@ def fig3_real_inversions():
         ax.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
         ax.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
         ax.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
-        ax.set_xlabel('Position (bp)')
-        ax.set_ylabel('Per-bp')
+        ax.set_ylabel('Per-bp' if col == 0 else '')
         ax.set_title(name, fontsize=10)
         ax.legend(loc='upper right', fontsize=8)
+
+        # Bottom row: FST
+        ax_f = axes[1, col]
+        ax_f.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
+                   label=r'$F_{ST}$ (Hudson)')
+        ax_f.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
+        ax_f.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
+        ax_f.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
+        ax_f.axhline(0, color='gray', ls=':', lw=0.7)
+        ax_f.set_xlabel('Position (bp)')
+        ax_f.set_ylabel(r'$F_{ST}$' if col == 0 else '')
+        ax_f.legend(loc='upper right', fontsize=8)
 
     caption = (
         'Figure 3. msinv reproduces divergence patterns of real chromosomal inversions. '
         'Left: An. funestus 3Ra-like inversion (Ne=44,000, $\\mu$=3.55e-9, t_inv=385,000 gen, p_inv=0.3). '
         'Right: Human MAPT H1/H2-like inversion (Ne=10,000, $\\mu$=1.2e-8, t_inv=100,000 gen, p_inv=0.2). '
-        'Both show elevated $d_{XY}$ and $D_a$ inside the inversion (grey shading) '
-        'with $\\bar\\pi$ remaining at background levels outside. '
+        'Top: $d_{XY}$, $\\bar\\pi$, and $D_a$ show elevated divergence inside the inversion. '
+        'Bottom: Hudson $F_{ST}$ shows relative differentiation. '
         'The deeper barrier and older age of 3Ra produce a stronger signal than MAPT. '
         f'Parameters: L=100 kb, r=1e-8, $\\gamma$=1e-9, {NREPS} replicates per scenario.\n'
         'Command: pixi run -e all python examples/make_figures.py'
@@ -410,36 +431,61 @@ def fig4_multiple_inversions():
 
     dxy_A = np.zeros(NW)   # S-at-A vs I-at-A across the chromosome
     dxy_B = np.zeros(NW)   # S-at-B vs I-at-B
+    piA_S = np.zeros(NW); piA_I = np.zeros(NW)
+    piB_S = np.zeros(NW); piB_I = np.zeros(NW)
     for haps, pos in reps:
         gA_S = SS + SI; gA_I = II + IS
         gB_S = SS + IS; gB_I = II + SI
         dxy_A += windowed_dxy(haps, pos, gA_S, gA_I, wins)
         dxy_B += windowed_dxy(haps, pos, gB_S, gB_I, wins)
+        piA_S += windowed_pi(haps, pos, gA_S, wins)
+        piA_I += windowed_pi(haps, pos, gA_I, wins)
+        piB_S += windowed_pi(haps, pos, gB_S, wins)
+        piB_I += windowed_pi(haps, pos, gB_I, wins)
     n = len(reps)
     dxy_A /= n; dxy_B /= n
+    piA_S /= n; piA_I /= n; piB_S /= n; piB_I /= n
+    fst_A = 1.0 - (piA_S + piA_I) / 2 / np.maximum(dxy_A, 1e-20)
+    fst_B = 1.0 - (piB_S + piB_I) / 2 / np.maximum(dxy_B, 1e-20)
 
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(mid, smooth(dxy_A), '-', color='#C62828', lw=2,
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
+
+    # Panel A: dxy
+    ax1.plot(mid, smooth(dxy_A), '-', color='#C62828', lw=2,
              label='Inv A axis (S vs I at A)')
-    ax.plot(mid, smooth(dxy_B), '-', color='#1565C0', lw=2,
+    ax1.plot(mid, smooth(dxy_B), '-', color='#1565C0', lw=2,
              label='Inv B axis (S vs I at B)')
-    ax.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828',
+    ax1.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828',
                 label='Inv A (t=100k, p=0.5)')
-    ax.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0',
+    ax1.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0',
                 label='Inv B (t=300k, p=0.3)')
-    ax.set_xlabel('Position (bp)')
-    ax.set_ylabel(r'$d_{XY}$ between karyotypes')
-    ax.set_title('Two independent inversions — each gives its own '
-                  'cross-karyotype barrier signal')
-    ax.legend(loc='upper right', fontsize=9)
+    ax1.set_ylabel(r'$d_{XY}$ between karyotypes')
+    ax1.set_title('A. Two independent inversions — cross-karyotype $d_{XY}$',
+                   fontsize=11, loc='left')
+    ax1.legend(loc='upper right', fontsize=9)
+
+    # Panel B: FST
+    ax2.plot(mid, smooth(fst_A), '-', color='#C62828', lw=2,
+             label='Inv A axis $F_{ST}$')
+    ax2.plot(mid, smooth(fst_B), '-', color='#1565C0', lw=2,
+             label='Inv B axis $F_{ST}$')
+    ax2.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828')
+    ax2.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0')
+    ax2.axhline(0, color='gray', ls=':', lw=0.7)
+    ax2.set_xlabel('Position (bp)')
+    ax2.set_ylabel(r'$F_{ST}$ (Hudson)')
+    ax2.set_title(r'B. Hudson $F_{ST}$ — each inversion elevates its own axis',
+                   fontsize=11, loc='left')
+    ax2.legend(loc='upper right', fontsize=9)
 
     caption = (
         'Figure 4. Two independent inversions on the same chromosome, each generating its own '
         'cross-karyotype divergence barrier. Inv A (10–35 kb; t_inv=100,000 gen, p_inv=0.5, red shading) '
-        'and Inv B (60–90 kb; t_inv=300,000 gen, p_inv=0.3, blue shading) show elevated $d_{XY}$ '
-        'along their respective S-vs-I axes. Inv B is older and produces a stronger signal. '
-        'The collinear gap between inversions shows background-level divergence on both axes. '
-        'Sample configuration: 5 SS + 5 II + 4 SI + 4 IS (18 haplotypes, all four karyotype combinations). '
+        'and Inv B (60–90 kb; t_inv=300,000 gen, p_inv=0.3, blue shading). '
+        '(A) $d_{XY}$ elevated along each S-vs-I axis inside its respective inversion. '
+        '(B) Hudson $F_{ST}$ shows the same pattern as relative differentiation. '
+        'Inv B is older and produces a stronger signal. '
+        'Sample configuration: 5 SS + 5 II + 4 SI + 4 IS (18 haplotypes). '
         f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, r=1e-8, $\\gamma$=1e-9, {n} replicates.\n'
         'Command: pixi run -e all python examples/make_figures.py'
     )

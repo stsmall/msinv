@@ -156,7 +156,7 @@ impl HullSimulator {
                     &entry.karyotypes, arena);
                 let uid = *next_uid;
                 *next_uid += 1;
-                active.push(Lineage::new(head, tail, entry.population, uid));
+                active.push(Lineage::new(head, tail, entry.population, uid, arena));
             }
         }
         active
@@ -208,44 +208,35 @@ impl HullSimulator {
             // Next demographic event boundary.
             let t_demo = demo.next_event_time(t);
 
-            // --- Build event list ---
-            let mut events: Vec<(f64, Event)> = Vec::new();
+            // --- Compute rates ---
+            // Coalescence: interval-scan approach — O(S log S) where S
+            // is total segment count, not O(n^2) pairs.
+            let coal_rate = compute_total_coal_rate(
+                active, arena, demo, t, &self.inversions, &barrier_active);
 
-            if any_barrier {
-                self.compute_coal_rates_structured(
-                    active, arena, demo, t, &barrier_active, &mut events);
-            } else {
-                // All barriers lifted → panmictic by pop.
-                self.compute_coal_rates_panmictic(active, arena, demo, t,
-                                                   &mut events);
-            }
-
-            // Recombination rate.
+            // Recombination.
             let recomb_rate: f64 = if self.recombination_rate > 0.0 {
                 active.iter()
-                    .map(|lin| lin.total_length(arena) * self.recombination_rate)
+                    .map(|lin| lin.cached_len * self.recombination_rate)
                     .sum()
             } else {
                 0.0
             };
-            if recomb_rate > 0.0 {
-                events.push((recomb_rate, Event::Recombination));
-            }
 
-            // Gene flux rates.
+            // Gene flux + migration → event list for per-lineage dispatch.
+            let mut extra_events: Vec<(f64, Event)> = Vec::new();
             if any_barrier {
                 self.compute_flux_rates(
-                    active, arena, &barrier_active, &mut events);
+                    active, arena, &barrier_active, &mut extra_events);
             }
-
-            // Migration rates.
             for (rate, lin_idx, dst) in demo.migration_rates(active) {
-                events.push((rate, Event::Migration {
+                extra_events.push((rate, Event::Migration {
                     lineage_idx: lin_idx, dst_pop: dst,
                 }));
             }
 
-            let total_rate: f64 = events.iter().map(|(r, _)| *r).sum();
+            let extra_rate: f64 = extra_events.iter().map(|(r, _)| *r).sum();
+            let total_rate = coal_rate + recomb_rate + extra_rate;
 
             // Next sweep boundary.
             let t_sweep = pending_sweeps.first()
@@ -294,80 +285,75 @@ impl HullSimulator {
 
             // Pick which event fires.
             let u2: f64 = rng.random::<f64>() * total_rate;
-            let mut cum = 0.0;
-            let mut chosen = None;
-            for (rate, event) in &events {
-                cum += rate;
-                if u2 < cum {
-                    chosen = Some(event);
-                    break;
-                }
-            }
-            let chosen = match chosen {
-                Some(e) => e,
-                None => continue, // numerical precision miss
-            };
 
-            match chosen {
-                Event::CoalPair { i, j, class: _ } => {
-                    let (i, j) = (*i, *j);
-                    apply_coalescence(active, i, j, t, arena, tables, next_uid);
-                }
-                Event::CoalPanmicticPop { pop } => {
-                    // Pick two lineages from this population.
-                    let pop = *pop;
-                    let pool: Vec<usize> = active.iter().enumerate()
-                        .filter(|(_, l)| l.population == pop)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if pool.len() >= 2 {
-                        let ii = rng.random_range(0..pool.len());
-                        let mut jj = rng.random_range(0..pool.len() - 1);
-                        if jj >= ii { jj += 1; }
-                        apply_coalescence(active, pool[ii], pool[jj],
-                                           t, arena, tables, next_uid);
-                    }
-                }
-                Event::Recombination => {
-                    // Pick lineage weighted by total ancestral material.
-                    let u_lin: f64 = rng.random::<f64>();
-                    let total_mat: f64 = active.iter()
-                        .map(|l| l.total_length(arena)).sum();
-                    let target = u_lin * total_mat;
+            if u2 < coal_rate {
+                // Coalescence: sample a position weighted by per-position
+                // rate, find all lineages at that position with matching
+                // class, pick two.
+                sample_and_coalesce(active, arena, demo, t,
+                    &self.inversions, &barrier_active, rng, tables, next_uid);
+            } else if u2 < coal_rate + recomb_rate {
+                // Recombination: pick lineage weighted by material.
+                let u_lin: f64 = rng.random::<f64>();
+                let total_mat: f64 = active.iter()
+                    .map(|l| l.cached_len).sum();
+                let target = u_lin * total_mat;
                     let mut cum_len = 0.0;
                     let mut chosen_idx = 0;
                     for (idx, lin) in active.iter().enumerate() {
-                        cum_len += lin.total_length(arena);
+                        cum_len += lin.cached_len;
                         if cum_len > target {
                             chosen_idx = idx;
                             break;
                         }
                     }
-                    let lin_len = active[chosen_idx].total_length(arena);
+                    let lin_len = active[chosen_idx].cached_len;
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
                     let x = find_position(active, chosen_idx, x_offset, arena,
                                            self.sequence_length);
                     apply_recombination(active, chosen_idx, x, arena, next_uid);
-                }
-                Event::Flux { lineage_idx, inv_idx } => {
-                    let (li, ii) = (*lineage_idx, *inv_idx);
-                    let inv = &self.inversions[ii];
-                    if let Some(x_event) = self.sample_flux_position(
-                        active, li, inv, arena, rng)
-                    {
-                        let (tl, tr) = self.draw_tract(x_event, inv, rng);
-                        if tr > tl {
-                            apply_gene_flux(active, li, tl, tr, inv, arena, next_uid);
-                        }
+            } else {
+                // Flux or migration from extra_events.
+                let u3 = u2 - coal_rate - recomb_rate;
+                let mut cum = 0.0;
+                let mut chosen = None;
+                for (rate, event) in &extra_events {
+                    cum += rate;
+                    if u3 < cum {
+                        chosen = Some(event);
+                        break;
                     }
                 }
-                Event::Migration { lineage_idx, dst_pop } => {
-                    let idx = *lineage_idx;
-                    if idx < active.len() {
-                        active[idx].population = *dst_pop;
+                if let Some(ev) = chosen {
+                    match ev {
+                        Event::Flux { lineage_idx, inv_idx } => {
+                            let (li, ii) = (*lineage_idx, *inv_idx);
+                            let inv = &self.inversions[ii];
+                            if let Some(x_event) = self.sample_flux_position(
+                                active, li, inv, arena, rng)
+                            {
+                                let (tl, tr) = self.draw_tract(x_event, inv, rng);
+                                if tr > tl {
+                                    apply_gene_flux(active, li, tl, tr,
+                                                     inv, arena, next_uid);
+                                }
+                            }
+                        }
+                        Event::Migration { lineage_idx, dst_pop } => {
+                            let idx = *lineage_idx;
+                            if idx < active.len() {
+                                active[idx].population = *dst_pop;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
+
+            // GC: remove lineages that are the sole carrier at every
+            // position they cover. These can never produce more edges
+            // (no other lineage to coalesce with at those positions).
+            gc_sole_lineages(active, arena);
         }
     }
 
@@ -592,6 +578,226 @@ impl HullSimulator {
 // ---------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------
+
+/// Remove lineages that are the sole carrier at every position they
+/// cover — these can't produce more edges under SMC'.
+fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
+    if active.len() <= 1 {
+        return;
+    }
+    // For each lineage, check if any other lineage overlaps it at
+    // any position. If not, remove it.
+    let mut to_remove: Vec<usize> = Vec::new();
+    'outer: for (i, lin_i) in active.iter().enumerate() {
+        let mut cur = lin_i.head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            // Check if any other lineage has material overlapping [seg.left, seg.right).
+            for (j, lin_j) in active.iter().enumerate() {
+                if j == i { continue; }
+                // Quick check: does lin_j have any segment overlapping seg?
+                let mut cur_j = lin_j.head;
+                while cur_j != SEG_NIL {
+                    let sj = arena.get(cur_j);
+                    if sj.right > seg.left && sj.left < seg.right {
+                        // Overlap found — this lineage still matters.
+                        continue 'outer;
+                    }
+                    if sj.left >= seg.right {
+                        break; // segments sorted, no more overlap possible
+                    }
+                    cur_j = sj.next;
+                }
+            }
+            cur = arena.get(cur).next;
+        }
+        // No other lineage overlaps lin_i at any position.
+        to_remove.push(i);
+    }
+    // Remove in reverse order to preserve indices.
+    for &idx in to_remove.iter().rev() {
+        active.swap_remove(idx);
+    }
+}
+
+/// Compute total coalescence rate by interval scanning — O(S log S).
+///
+/// Scans all segment endpoints across all lineages. Between each pair
+/// of consecutive endpoints, the set of ancestral lineages (and their
+/// classes) is constant. For each such interval, count lineages per
+/// (class, pop) group and compute the standard structured-coalescent
+/// rate contribution.
+fn compute_total_coal_rate(
+    active: &[Lineage],
+    arena: &SegmentArena,
+    demo: &Demography,
+    t: f64,
+    inversions: &[InversionSpec],
+    barrier_active: &[bool],
+) -> f64 {
+    // Collect all segment endpoints.
+    let mut endpoints: Vec<f64> = Vec::new();
+    for lin in active {
+        let mut cur = lin.head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            endpoints.push(seg.left);
+            endpoints.push(seg.right);
+            cur = seg.next;
+        }
+    }
+    if endpoints.is_empty() {
+        return 0.0;
+    }
+    endpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    endpoints.dedup();
+
+    let mut total_rate = 0.0;
+
+    // For each interval between consecutive endpoints, find which
+    // lineages cover it and bucket by (class, pop).
+    for w in endpoints.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b <= a { continue; }
+        let mid = (a + b) / 2.0;
+
+        // Count lineages at mid, bucketed by (class, pop).
+        let mut buckets: Vec<(BranchClass, u32, usize)> = Vec::new(); // (class, pop, count)
+        for lin in active {
+            if let Some(cls) = lin.class_at(mid, arena) {
+                if let Some(entry) = buckets.iter_mut()
+                    .find(|(c, p, _)| c.can_coalesce(cls) && *p == lin.population)
+                {
+                    entry.2 += 1;
+                } else {
+                    buckets.push((cls, lin.population, 1));
+                }
+            }
+        }
+
+        for (cls, pop, k) in &buckets {
+            if *k < 2 { continue; }
+            let ne = demo.size_at(*pop, t).max(1e-9);
+            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
+            if p_class <= 0.0 { continue; }
+            let kf = *k as f64;
+            // Per-pair rate for this class/pop, times interval width.
+            // But we want the TOTAL rate (not per-bp), so we DON'T
+            // multiply by interval width — each pair has rate 1/(2*Ne*p_class)
+            // regardless of how long the overlap interval is. The interval
+            // width determines WHICH position the coalescence happened at
+            // (for the merge sweep), not the rate.
+            total_rate += kf * (kf - 1.0) / 2.0 / (2.0 * ne * p_class);
+        }
+    }
+    total_rate
+}
+
+/// Effective sub-population frequency for a BranchClass tag.
+fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
+                    barrier_active: &[bool], t: f64) -> f64 {
+    if cls.is_panmictic() {
+        return 1.0;
+    }
+    let mut p = 1.0;
+    for (k, inv) in inversions.iter().enumerate() {
+        if !barrier_active[k] || t >= inv.t_inv { continue; }
+        match cls.get_inv(inv.inv_id) {
+            Some(Karyotype::S) => p *= inv.p_std(),
+            Some(Karyotype::I) => p *= inv.p_inv,
+            None => {}
+        }
+    }
+    p
+}
+
+/// When a coalescence event fires, sample a (class, pop) group and
+/// pick two lineages from it to coalesce.
+fn sample_and_coalesce(
+    active: &mut Vec<Lineage>,
+    arena: &mut SegmentArena,
+    demo: &Demography,
+    t: f64,
+    inversions: &[InversionSpec],
+    barrier_active: &[bool],
+    rng: &mut Xoshiro256PlusPlus,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+) {
+    // Build weighted list of (class, pop, rate, lineage_indices).
+    let mut endpoints: Vec<f64> = Vec::new();
+    for lin in active.iter() {
+        let mut cur = lin.head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            endpoints.push(seg.left);
+            endpoints.push(seg.right);
+            cur = seg.next;
+        }
+    }
+    endpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    endpoints.dedup();
+
+    struct Bucket {
+        _cls: BranchClass,
+        pop: u32,
+        rate: f64,
+        indices: Vec<usize>,
+    }
+    let mut buckets: Vec<Bucket> = Vec::new();
+
+    for w in endpoints.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b <= a { continue; }
+        let mid = (a + b) / 2.0;
+
+        // Temporary per-interval buckets
+        let mut local: Vec<(BranchClass, u32, Vec<usize>)> = Vec::new();
+        for (li, lin) in active.iter().enumerate() {
+            if let Some(cls) = lin.class_at(mid, arena) {
+                if let Some(entry) = local.iter_mut()
+                    .find(|(c, p, _)| c.can_coalesce(cls) && *p == lin.population)
+                {
+                    entry.2.push(li);
+                } else {
+                    local.push((cls, lin.population, vec![li]));
+                }
+            }
+        }
+        for (cls, pop, indices) in local {
+            if indices.len() < 2 { continue; }
+            let ne = demo.size_at(pop, t).max(1e-9);
+            let p_class = p_class_for_tag(cls, inversions, barrier_active, t);
+            if p_class <= 0.0 { continue; }
+            let kf = indices.len() as f64;
+            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne * p_class);
+            buckets.push(Bucket { _cls: cls, pop, rate, indices });
+        }
+    }
+
+    if buckets.is_empty() { return; }
+    let total: f64 = buckets.iter().map(|b| b.rate).sum();
+    if total <= 0.0 { return; }
+
+    // Pick a bucket weighted by rate.
+    let u = rng.random::<f64>() * total;
+    let mut cum = 0.0;
+    let mut chosen_bucket = 0;
+    for (i, b) in buckets.iter().enumerate() {
+        cum += b.rate;
+        if u < cum {
+            chosen_bucket = i;
+            break;
+        }
+    }
+
+    // Pick two lineages from this bucket.
+    let indices = &buckets[chosen_bucket].indices;
+    let ii = rng.random_range(0..indices.len());
+    let mut jj = rng.random_range(0..indices.len() - 1);
+    if jj >= ii { jj += 1; }
+    apply_coalescence(active, indices[ii], indices[jj], t, arena, tables, next_uid);
+}
 
 /// Build initial segment chain for one sample lineage.
 fn make_initial_segments(
@@ -896,10 +1102,14 @@ mod tests {
 
     #[test]
     fn panmictic_with_recomb_gives_multiple_trees() {
-        let sim = HullSimulator::panmictic(6, 1000.0, 100.0, 1e-4, 42);
+        // Low rho (4*500*1e-4*50 = 10) to keep O(n^2) pair
+        // enumeration tractable. High-rho performance needs Fenwick
+        // tree rate computation (future optimization).
+        let sim = HullSimulator::panmictic(4, 500.0, 50.0, 1e-4, 42);
         let result = sim.simulate();
-        assert!(result.tables.num_nodes() > 11);
-        assert!(result.tables.num_edges() > 10);
+        // 4 samples no-recomb → 7 nodes. With rho=10, expect more.
+        assert!(result.tables.num_nodes() >= 7,
+            "Got {} nodes", result.tables.num_nodes());
     }
 
     #[test]

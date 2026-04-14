@@ -249,8 +249,8 @@ mod tests {
         let seg1 = arena.alloc(0.0, 100.0, 1,
             crate::class_tag::BranchClass::PANMICTIC);
         let mut active = vec![
-            Lineage::new(seg0, seg0, 0, 0),
-            Lineage::new(seg1, seg1, 1, 1),
+            Lineage::new(seg0, seg0, 0, 0, &arena),
+            Lineage::new(seg1, seg1, 1, 1, &arena),
         ];
 
         d.apply_events_at(100.0, &mut active);

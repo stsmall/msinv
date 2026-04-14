@@ -1,0 +1,10 @@
+[package]
+name = "msinv-core"
+version = "0.3.0"
+edition = "2021"
+description = "ARG-based coalescent simulator with chromosomal inversions"
+license = "MIT"
+
+[dependencies]
+rand = "0.9"
+rand_xoshiro = "0.7"

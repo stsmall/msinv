@@ -2,25 +2,37 @@
 
 A sweep at position ``x_sel`` reaching fixation at time
 ``t_event`` (in generations going backward) is modelled by
-force-coalescing all lineages carrying ancestral material at ``x_sel``
+force-coalescing lineages carrying ancestral material near ``x_sel``
 that are of a specified target class into a single sweep ancestor at
 ``t_event``.
 
-This is the standard "Hudson-Kaplan-style" approximation for a hard
-sweep in a structured coalescent: within a tiny sweep window, a
-single ancestor founded the carrier sub-population. Going forward,
-the sweep took the carriers from one chromosome to fixation; going
-backward, all carriers collapse to that single ancestor at
-``t_event``.
+Two modes are supported:
+
+1. **Hitchhiking mode** (``selection_coefficient > 0``): each lineage's
+   inclusion in the sweep is probabilistic, with probability decaying
+   exponentially with recombination distance from ``x_sel``::
+
+       P(linked) = exp(-r * |x - x_sel| * t_dur)
+
+   where ``t_dur = ln(2*Ne*s) / s`` is the sweep duration.  This
+   produces the classic Maynard Smith & Haigh hitchhiking valley — deep
+   at ``x_sel``, eroding with distance.  Requires
+   ``recombination_rate`` and ``Ne`` to be set on the simulator.
+
+2. **Window mode** (``selection_coefficient == 0``): all lineages with
+   material in ``[x_sel - sweep_window, x_sel + sweep_window]`` are
+   deterministically coalesced (the original Hudson-Kaplan
+   approximation).
 
 For a sweep that started on the S background, transferred to I via
-gene conversion, and fixed on both — model with a single sweep event
-that targets both classes (or with two events, one per class). The
-gene-flux machinery on the hull (Phase 3) handles the S↔I transfer
-naturally.
+gene conversion, and fixed on both — model with two sweep events, one
+per class, at different times.  Use a ``FluxTransfer`` to explicitly
+model the S→I transfer event at a specific time.
 """
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -46,11 +58,42 @@ class Sweep:
         Half-width of the sweep window in genomic coordinates. The
         force-coalescence is applied to ancestral material in
         [x_sel - sweep_window, x_sel + sweep_window]. Default 0
-        (single-point coalescence at exactly x_sel).
+        (single-point coalescence at exactly x_sel).  Ignored when
+        ``selection_coefficient > 0`` (hitchhiking mode).
+    selection_coefficient : float
+        Selection coefficient for the swept allele.  When > 0,
+        enables hitchhiking mode: inclusion probability decays with
+        recombination distance from x_sel.  Default 0 (window mode).
     """
 
     x_sel: float
     t_event: float
     target_class: str = 'any'
-    population: int = None
+    population: Optional[int] = None
     sweep_window: float = 0.0
+    selection_coefficient: float = 0.0
+
+    def hitchhiking_probability(self, x: float, r: float, Ne: float) -> float:
+        """Probability that position *x* is linked to the sweep.
+
+        Parameters
+        ----------
+        x : float
+            Genomic position to test.
+        r : float
+            Per-bp per-generation recombination rate.
+        Ne : float
+            Effective population size (for sweep duration).
+
+        Returns
+        -------
+        float
+            Probability in [0, 1].
+        """
+        s = self.selection_coefficient
+        if s <= 0 or r <= 0:
+            return 1.0
+        # Sweep duration: time for allele to go from 1/(2N) to fixation
+        t_dur = math.log(max(2 * Ne * s, 2.0)) / s
+        dist = abs(x - self.x_sel)
+        return math.exp(-r * dist * t_dur)

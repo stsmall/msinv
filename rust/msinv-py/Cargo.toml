@@ -1,0 +1,15 @@
+[package]
+name = "msinv-py"
+version = "0.3.0"
+edition = "2021"
+description = "PyO3 bindings for msinv-core"
+license = "MIT"
+
+[lib]
+name = "_msinv_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+msinv-core = { path = "../msinv-core" }
+pyo3 = { version = "0.24", features = ["extension-module"] }
+numpy = "0.24"

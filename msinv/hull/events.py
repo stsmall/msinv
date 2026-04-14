@@ -5,8 +5,6 @@ keeping the ARG state consistent. SMC' is correct by construction in
 this representation (Kelleher, Etheridge, McVean 2016).
 """
 
-import numpy as np
-
 from .lineage import Lineage
 from .segment import Segment
 

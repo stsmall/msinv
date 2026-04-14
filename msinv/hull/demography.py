@@ -21,10 +21,8 @@ Event types
                               both populations' migration is zeroed
                               afterward (standard ms convention).
 
-Note: future Phase 4 work can hook in demestats (Ragsdale 2026) as the
-analytical rate engine for arbitrary demes graphs. Until that's
-available, this class provides direct rate computations sufficient
-for the inversion-modelling use cases.
+Future work: demestats (Ragsdale 2026) integration as the analytical
+rate engine for arbitrary demes graphs.
 """
 
 import math

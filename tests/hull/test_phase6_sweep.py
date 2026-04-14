@@ -12,7 +12,6 @@ coalesce into a single ancestor at t_event. Verifies:
   - Sweep targeting one class doesn't force-merge other-class samples.
 """
 
-import numpy as np
 import pytest
 
 from msinv.hull import HullSimulator, InversionSpec

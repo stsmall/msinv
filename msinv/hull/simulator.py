@@ -191,16 +191,6 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
     a_remain_head = a_remain_tail = None
     b_remain_head = b_remain_tail = None
 
-    def _append(head_attr, tail_attr, seg):
-        head, tail = head_attr
-        seg.prev = tail
-        seg.next = None
-        if head is None:
-            head = seg
-        if tail is not None:
-            tail.next = seg
-        return seg, seg if head is None else head, seg
-
     def _emit_merged(l, r):
         nonlocal merged_head, merged_tail
         from .segment import Segment
@@ -576,16 +566,10 @@ class HullSimulator:
 
     # -- rate helpers ------------------------------------------------------
 
-    # Threshold: below this rho, use exact per-pair overlap-by-class
-    # (O(n^2), correct per-position rates). Above, use Hudson per-
-    # class buckets (O(n), slightly overestimates collinear-flank
-    # coalescence rate for class-restricted lineages but tractable
-    # at any rho).
-    # Threshold: below this rho, use exact per-pair overlap-by-class
-    # coalescence rates (O(n^2)).  Above this, use Hudson-style (class,
-    # pop) buckets (O(n)).  The bucket classification walks ALL segments
-    # to find inversion-class material (not just the midpoint), so it
-    # correctly handles lineage fragments created by recombination.
+    # Below this rho, use exact per-pair overlap-by-class coalescence
+    # rates (O(n^2)).  Above, use Hudson-style (class, pop) buckets
+    # (O(n)) with segment-walking classification and non-overlapping
+    # pair rejection (skip_if_no_overlap in apply_coalescence).
     _RHO_THRESHOLD = 100.0
 
     def _coal_rates(self, active, t: float):
@@ -916,7 +900,7 @@ class HullSimulator:
             swept_lineages = []
             for lin in qualifying:
                 swept_segs = []
-                unsswept_segs = []
+                unswept_segs = []
                 seg = lin.head
                 while seg is not None:
                     mid = (seg.left + seg.right) / 2.0
@@ -924,7 +908,7 @@ class HullSimulator:
                     if self.rng.random() < p:
                         swept_segs.append(seg)
                     else:
-                        unsswept_segs.append(seg)
+                        unswept_segs.append(seg)
                     seg = seg.next
                 if not swept_segs:
                     continue
@@ -946,9 +930,9 @@ class HullSimulator:
                 active.append(swept_lin)
                 swept_lineages.append(swept_lin)
                 # Build lineage from unswept segments (if any)
-                if unsswept_segs:
+                if unswept_segs:
                     u_head = u_tail = None
-                    for s in unsswept_segs:
+                    for s in unswept_segs:
                         ns = Seg(s.left, s.right, s.node_id,
                                  branch_class=s.branch_class, prev=u_tail)
                         if u_head is None:

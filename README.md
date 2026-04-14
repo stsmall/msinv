@@ -57,8 +57,7 @@ ARG-based coalescent simulator for chromosomes with inversions:
 - **Per-position ancestral material tracking.** Each lineage carries
   the genomic intervals it's ancestral to; recombination splits
   intervals, coalescence merges them.
-- **Cross-karyotype barriers** preserved exactly (no SMC-style
-  prune-and-reattach approximations).
+- **Cross-karyotype barriers** preserved exactly.
 - **Multi-population demographies** match msprime ground truth.
 - **Multiple inversions** (including nested / overlapping) supported.
 
@@ -66,7 +65,7 @@ Features:
 
 - Structured coalescent between karyotype classes (S/I) with t_inv barrier
 - Position-dependent gene flux (Peischl et al. 2013, *phi(x)* model)
-- Multiple inversions per chromosome (hull also supports nested/overlapping)
+- Multiple inversions per chromosome (supports nested/overlapping)
 - ms-style demography (size changes, growth, migration, merges)
 - Per-population inversion frequency trajectories
 - Selective sweep events (force-coalescence)
@@ -138,7 +137,7 @@ the chromosome. Inside an inversion, recombination is suppressed in
 heterokaryotypes; gene conversion occasionally transfers tracts between
 karyotypes (modulated by the *phi(x)* function from Peischl et al. 2013).
 The hull algorithm implements this exactly via per-position ancestral
-material tracking — no single-tree SMC approximations.
+material tracking.
 
 In the no-inversion limit, `msinv` reproduces msprime ground truth.
 With one or more inversions it adds the karyotype barrier (`t_inv`)

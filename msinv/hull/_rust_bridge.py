@@ -104,4 +104,5 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         child=raw['edge_child'],
     )
     tc.sort()
-    return tc.tree_sequence()
+    ts = tc.tree_sequence()
+    return ts.simplify()

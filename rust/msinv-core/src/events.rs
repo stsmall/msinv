@@ -140,7 +140,7 @@ pub fn apply_coalescence(
     if merged_head != SEG_NIL {
         let uid = *next_uid;
         *next_uid += 1;
-        active.push(Lineage::new(merged_head, merged_tail, pop, uid));
+        active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
     }
 
     new_node
@@ -184,7 +184,7 @@ mod tests {
             }
             tail = idx;
         }
-        Lineage::new(head, tail, 0, uid)
+        Lineage::new(head, tail, 0, uid, arena)
     }
 
     #[test]
@@ -198,26 +198,22 @@ mod tests {
         let s1 = tables.add_sample(0.0, 0);
         let lin_a = {
             let idx = arena.alloc(0.0, 100.0, s0, BranchClass::PANMICTIC);
-            Lineage::new(idx, idx, 0, 0)
+            Lineage::new(idx, idx, 0, 0, &arena)
         };
         let lin_b = {
             let idx = arena.alloc(0.0, 100.0, s1, BranchClass::PANMICTIC);
-            Lineage::new(idx, idx, 0, 1)
+            Lineage::new(idx, idx, 0, 1, &arena)
         };
         let mut active = vec![lin_a, lin_b];
 
         let new_node = apply_coalescence(
             &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
 
-        // Should produce one merged lineage
         assert_eq!(active.len(), 1);
-        // New node at time 5
         assert_eq!(tables.node_time[new_node as usize], 5.0);
-        // Two edges: new_node -> s0, new_node -> s1
         assert_eq!(tables.num_edges(), 2);
         assert_eq!(tables.edge_parent[0], new_node);
         assert_eq!(tables.edge_parent[1], new_node);
-        // Merged lineage covers [0, 100)
         assert!((active[0].total_length(&arena) - 100.0).abs() < 1e-12);
     }
 
@@ -229,14 +225,13 @@ mod tests {
 
         let s0 = tables.add_sample(0.0, 0);
         let s1 = tables.add_sample(0.0, 0);
-        // a: [0, 60), b: [40, 100)
         let lin_a = {
             let idx = arena.alloc(0.0, 60.0, s0, BranchClass::PANMICTIC);
-            Lineage::new(idx, idx, 0, 0)
+            Lineage::new(idx, idx, 0, 0, &arena)
         };
         let lin_b = {
             let idx = arena.alloc(40.0, 100.0, s1, BranchClass::PANMICTIC);
-            Lineage::new(idx, idx, 0, 1)
+            Lineage::new(idx, idx, 0, 1, &arena)
         };
         let mut active = vec![lin_a, lin_b];
 

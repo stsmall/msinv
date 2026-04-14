@@ -3,6 +3,9 @@
 /// Each lineage carries a chain of segments representing the genomic
 /// intervals it is ancestral to. The segment chain is stored in the
 /// shared `SegmentArena`; the lineage only holds the head index.
+///
+/// `cached_len` is maintained incrementally so that `total_length()`
+/// is O(1) instead of O(segments).
 
 use crate::class_tag::BranchClass;
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
@@ -15,21 +18,34 @@ pub struct Lineage {
     pub tail: SegIdx,
     pub population: u32,
     pub uid: LinUid,
+    /// Cached total ancestral material length. Kept in sync by
+    /// `new_with_len`, `split_at`, and the event handlers.
+    pub cached_len: f64,
 }
 
 impl Lineage {
-    pub fn new(head: SegIdx, tail: SegIdx, population: u32, uid: LinUid) -> Self {
-        Self { head, tail, population, uid }
+    /// Create a lineage and compute its length from the arena.
+    pub fn new(head: SegIdx, tail: SegIdx, population: u32, uid: LinUid,
+               arena: &SegmentArena) -> Self {
+        let cached_len = arena.total_length(head);
+        Self { head, tail, population, uid, cached_len }
     }
 
-    /// Total length of ancestral material.
-    pub fn total_length(&self, arena: &SegmentArena) -> f64 {
-        arena.total_length(self.head)
+    /// Create a lineage with a pre-computed length (avoids the walk
+    /// when the caller already knows the length).
+    pub fn new_with_len(head: SegIdx, tail: SegIdx, population: u32,
+                         uid: LinUid, cached_len: f64) -> Self {
+        Self { head, tail, population, uid, cached_len }
+    }
+
+    /// Total length of ancestral material (O(1) — cached).
+    #[inline]
+    pub fn total_length(&self, _arena: &SegmentArena) -> f64 {
+        self.cached_len
     }
 
     /// The branch class of this lineage. If all segments have the same
-    /// class, returns that class; otherwise returns None (mixed-class
-    /// lineage, which can happen transiently after a gene-flux event).
+    /// class, returns that class; otherwise returns None.
     pub fn branch_class(&self, arena: &SegmentArena) -> Option<BranchClass> {
         if self.head == SEG_NIL {
             return None;
@@ -52,7 +68,7 @@ impl Lineage {
         while cur != SEG_NIL {
             let seg = arena.get(cur);
             if pos < seg.left {
-                return None; // past all segments that could contain pos
+                return None;
             }
             if pos < seg.right {
                 return Some(seg.branch_class);
@@ -65,6 +81,7 @@ impl Lineage {
     /// Split this lineage at genomic position `x`. Returns the right
     /// half as a new Lineage (with a new uid); this lineage is
     /// truncated to [head, x). Returns None if x is past the end.
+    /// Both lineages' cached_len are updated.
     pub fn split_at(&mut self, x: f64, arena: &mut SegmentArena,
                      new_uid: LinUid) -> Option<Lineage> {
         let (left_head, right_head) = arena.split_at(self.head, x);
@@ -72,7 +89,9 @@ impl Lineage {
             return None;
         }
         let right_tail = arena.find_tail(right_head);
-        let right = Lineage::new(right_head, right_tail, self.population, new_uid);
+        let right_len = arena.total_length(right_head);
+        let right = Lineage::new_with_len(
+            right_head, right_tail, self.population, new_uid, right_len);
 
         // Update self to be the left portion.
         self.head = left_head;
@@ -81,6 +100,8 @@ impl Lineage {
         } else {
             arena.find_tail(left_head)
         };
+        self.cached_len -= right_len;
+        if self.cached_len < 0.0 { self.cached_len = 0.0; }
         Some(right)
     }
 }
@@ -103,7 +124,7 @@ mod tests {
             }
             tail = idx;
         }
-        Lineage::new(head, tail, 0, uid)
+        Lineage::new(head, tail, 0, uid, arena)
     }
 
     #[test]
@@ -140,5 +161,16 @@ mod tests {
         let right = lin.split_at(30.0, &mut arena, 1).unwrap();
         assert!((lin.total_length(&arena) - 30.0).abs() < 1e-12);
         assert!((right.total_length(&arena) - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cached_len_consistent_after_split() {
+        let mut arena = SegmentArena::new();
+        let mut lin = build_lineage(&mut arena,
+            &[(0.0, 100.0)], BranchClass::PANMICTIC, 0);
+        assert!((lin.cached_len - 100.0).abs() < 1e-12);
+        let right = lin.split_at(40.0, &mut arena, 1).unwrap();
+        assert!((lin.cached_len - 40.0).abs() < 1e-12);
+        assert!((right.cached_len - 60.0).abs() < 1e-12);
     }
 }

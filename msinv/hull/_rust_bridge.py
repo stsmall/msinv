@@ -8,10 +8,14 @@ conditionally imports from here when the Rust extension is available.
 import tskit
 
 try:
-    from _msinv_core import simulate_raw as _simulate_raw
+    from msinv._msinv_core import simulate_raw as _simulate_raw
     RUST_AVAILABLE = True
 except ImportError:
-    RUST_AVAILABLE = False
+    try:
+        from _msinv_core import simulate_raw as _simulate_raw
+        RUST_AVAILABLE = True
+    except ImportError:
+        RUST_AVAILABLE = False
 
 
 def rust_simulate(simulator) -> 'tskit.TreeSequence':

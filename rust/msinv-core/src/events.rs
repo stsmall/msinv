@@ -16,6 +16,11 @@ use crate::tables::TableBuilder;
 /// The merged lineage replaces both in `active`.
 ///
 /// Returns the new node id of the coalescence.
+/// Coalesce two lineages, optionally restricted to a specific class.
+///
+/// `allowed_class`: if `Some(cls)`, only merge at positions where both
+/// segments' class `can_coalesce` with `cls`. Non-matching overlap stays
+/// on the original lineages. If `None`, merge all overlap (panmictic).
 pub fn apply_coalescence(
     active: &mut Vec<Lineage>,
     idx_a: usize,
@@ -25,10 +30,23 @@ pub fn apply_coalescence(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
 ) -> i32 {
+    apply_coalescence_partial(active, idx_a, idx_b, t, arena, tables,
+                               next_uid, None)
+}
+
+pub fn apply_coalescence_partial(
+    active: &mut Vec<Lineage>,
+    idx_a: usize,
+    idx_b: usize,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    allowed_class: Option<BranchClass>,
+) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
 
-    // Extract heads (we'll consume both chains).
     let mut sa = active[idx_a].head;
     let mut sb = active[idx_b].head;
 
@@ -84,10 +102,20 @@ pub fn apply_coalescence(
                 append(arena, b_left, l, b_node, b_bc);
             }
 
-            // Overlap → coalescence: edges from new_node to both
-            tables.add_edge(l, r, new_node, a_node);
-            tables.add_edge(l, r, new_node, b_node);
-            append(arena, l, r, new_node, a_bc);
+            // Overlap → coalescence if class matches (or no class filter).
+            let class_ok = match allowed_class {
+                None => true,
+                Some(cls) => a_bc.can_coalesce(cls) && b_bc.can_coalesce(cls),
+            };
+            if class_ok {
+                tables.add_edge(l, r, new_node, a_node);
+                tables.add_edge(l, r, new_node, b_node);
+                append(arena, l, r, new_node, a_bc);
+            } else {
+                // Class doesn't match — keep both segments separate.
+                append(arena, l, r, a_node, a_bc);
+                append(arena, l, r, b_node, b_bc);
+            }
 
             // Advance: consume the side that ended at r, keep tail of the other
             if a_right == r {

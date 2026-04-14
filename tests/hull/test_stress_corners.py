@@ -32,17 +32,17 @@ from msinv.hull.sweep import Sweep
 def test_flux_in_nested_inv_runs_without_crashing():
     """Gene flux event inside a nested inversion should not crash and
     must produce a valid tree-sequence."""
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=10_000.0,
                               gene_conversion_rate=1e-5)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=10_000.0,
                               gene_conversion_rate=1e-5)
     sim = HullSimulator(
         sample_config={(('S', 'S'), 0): 3, (('I', 'I'), 0): 3},
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[inv_outer, inv_inner],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     assert ts.num_samples == 6
     for tree in ts.trees():
@@ -58,10 +58,10 @@ def test_flux_in_nested_inv_only_flips_one_inv_class():
     can coalesce with same-outer-class lineages), even if the inner
     karyotype now differs.
     """
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=20_000.0,
                               gene_conversion_rate=0.0)  # no outer flux
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=5_000.0,
                               gene_conversion_rate=5e-4)  # high inner flux
     # All samples 'S' at outer; mixed at inner
@@ -70,9 +70,9 @@ def test_flux_in_nested_inv_only_flips_one_inv_class():
             (('S', 'S'), 0): 3,
             (('S', 'I'), 0): 3,
         },
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[inv_outer, inv_inner],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     samples = list(ts.samples())
     # Inside the inner inv: SS-vs-SI cross-class T_MRCA usually >=
@@ -91,22 +91,22 @@ def test_flux_in_nested_inv_only_flips_one_inv_class():
 
 def test_sweep_with_nested_invs_runs():
     """Sweep at a position inside both the outer and inner inversion."""
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=20_000.0)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=20_000.0)
-    sweep = Sweep(x_sel=50.0, t_event=500.0,
+    sweep = Sweep(x_sel=5000.0, t_event=500.0,
                   target_class='any')   # any class — fires for all
     sim = HullSimulator(
         sample_config={(('S', 'S'), 0): 5},
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[inv_outer, inv_inner],
         sweeps=[sweep],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     # All samples should coalesce by t_sweep at x_sel.
     for tree in ts.trees():
-        if tree.interval.left <= 50.0 < tree.interval.right:
+        if tree.interval.left <= 5000.0 < tree.interval.right:
             samples = list(ts.samples())
             tmrca = tree.time(tree.mrca(*samples))
             assert tmrca <= sweep.t_event + 10.0
@@ -121,18 +121,18 @@ def test_sweep_with_target_class_in_frozenset_position():
     Currently: ``Lineage.class_at(x)`` returns the segment's class
     directly. If that's a frozenset and target_class is 'S0', the
     sweep won't match. We test this scenario."""
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=20_000.0)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=20_000.0)
-    sweep = Sweep(x_sel=50.0, t_event=300.0,
+    sweep = Sweep(x_sel=5000.0, t_event=300.0,
                   target_class='S0')   # only S in outer inv
     sim = HullSimulator(
         sample_config={(('S', 'S'), 0): 5},   # all S at both invs
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[inv_outer, inv_inner],
         sweeps=[sweep],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     # Currently this may NOT actually fire because lineages at x_sel
     # have class frozenset({'S0','S1'}), not 'S0'. If the sweep
@@ -140,7 +140,7 @@ def test_sweep_with_target_class_in_frozenset_position():
     # the tree to see what actually happens — this test is exploratory.
     samples = list(ts.samples())
     for tree in ts.trees():
-        if tree.interval.left <= 50.0 < tree.interval.right:
+        if tree.interval.left <= 5000.0 < tree.interval.right:
             tmrca = tree.time(tree.mrca(*samples))
             # If sweep fired: tmrca <= 300. If silently no-op: ~2*Ne = 2000.
             # We document either outcome with a clear assertion.
@@ -159,8 +159,8 @@ def test_continuous_migration_with_inversion():
     """Two pops with continuous migration AND an active inversion.
     Simulator must not crash and must respect the class barrier."""
     Ne = 1000
-    L = 100.0
-    inv = InversionSpec(bp_left=20.0, bp_right=80.0,
+    L = 10000.0
+    inv = InversionSpec(bp_left=2000.0, bp_right=8000.0,
                         p_inv=0.5, t_inv=8000.0)
     demo = Demography(
         pop_sizes=[Ne, Ne],
@@ -171,7 +171,7 @@ def test_continuous_migration_with_inversion():
         demography=demo,
         sequence_length=L,
         inversions=[inv],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     samples = list(ts.samples())
     p0_S = samples[:3]
@@ -201,8 +201,8 @@ def test_high_migration_homogenizes_pops():
     sim = HullSimulator(
         sample_config={(None, 0): 5, (None, 1): 5},
         demography=demo,
-        sequence_length=10.0,
-        seed=1)
+        sequence_length=10000.0,
+        recombination_rate=1e-8, seed=1)
     ts = sim.simulate()
     samples = list(ts.samples())
     p0 = samples[:5]; p1 = samples[5:]
@@ -235,7 +235,7 @@ def test_t_inv_and_demographic_event_at_same_time():
     should not crash; both must be applied (in some order)."""
     Ne = 1000
     t_event = 1000.0
-    L = 100.0
+    L = 10000.0
     inv = InversionSpec(bp_left=0.0, bp_right=L,
                         p_inv=0.5, t_inv=t_event)
     demo = Demography(pop_sizes=[Ne, Ne])
@@ -246,7 +246,7 @@ def test_t_inv_and_demographic_event_at_same_time():
         demography=demo,
         sequence_length=L,
         inversions=[inv],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     assert ts.num_samples == 8
 
@@ -256,29 +256,29 @@ def test_two_sweeps_at_same_time():
     Ne = 1000
     t = 500.0
     sweeps = [
-        Sweep(x_sel=20.0, t_event=t, target_class='any'),
-        Sweep(x_sel=80.0, t_event=t, target_class='any'),
+        Sweep(x_sel=2000.0, t_event=t, target_class='any'),
+        Sweep(x_sel=8000.0, t_event=t, target_class='any'),
     ]
     sim = HullSimulator(
         samples=10,
-        population_size=Ne, sequence_length=100.0,
+        population_size=Ne, sequence_length=10000.0,
         sweeps=sweeps,
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     assert ts.num_samples == 10
 
 
 def test_sweep_at_exact_t_inv():
     """Sweep firing at the exact moment of t_inv class-barrier flip."""
-    inv = InversionSpec(bp_left=0.0, bp_right=100.0,
+    inv = InversionSpec(bp_left=0.0, bp_right=10000.0,
                         p_inv=0.5, t_inv=500.0)
-    sweep = Sweep(x_sel=50.0, t_event=500.0, target_class='any')
+    sweep = Sweep(x_sel=5000.0, t_event=500.0, target_class='any')
     sim = HullSimulator(
         n_std=3, n_inv=3,
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         bp_left=inv.bp_left, bp_right=inv.bp_right,
         p_inv=inv.p_inv, t_inv=inv.t_inv,
         sweeps=[sweep],
-        seed=42)
+        recombination_rate=1e-8, seed=42)
     ts = sim.simulate()
     assert ts.num_samples == 6

@@ -141,10 +141,10 @@ def test_independent_karyotype_each_inv_barrier_independent(seed):
     >= inv 1's t_inv.
     """
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=2000.0)
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=4000.0)
 
     # 4 samples, all 'S' at inv 0, but split S/I at inv 1.
@@ -154,7 +154,8 @@ def test_independent_karyotype_each_inv_barrier_independent(seed):
             (('S', 'I'), 0): 2,   # SI samples (S at inv 0, I at inv 1)
         },
         population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=seed)
+        inversions=[inv0, inv1], seed=seed,
+        recombination_rate=1e-8)
     ts = sim.simulate()
     samples = list(ts.samples())
     SS = samples[:2]
@@ -179,10 +180,10 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
     """When all samples are 'S' at inv 0, inv 0's barrier is moot —
     cross-class T_MRCA at inv 0 should be ≪ inv 0's t_inv."""
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=10_000.0)  # very deep
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=2000.0)
 
     sim = HullSimulator(
@@ -191,7 +192,8 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
             (('S', 'I'), 0): 3,
         },
         population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=42)
+        inversions=[inv0, inv1], seed=42,
+        recombination_rate=1e-8)
     ts = sim.simulate()
     samples = list(ts.samples())
     # Inside inv 0, ALL samples are S → SS pair MRCA should follow

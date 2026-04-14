@@ -576,13 +576,23 @@ class HullSimulator:
 
     # -- rate helpers ------------------------------------------------------
 
+    # Threshold: below this rho, use exact per-pair overlap-by-class
+    # (O(n^2), correct per-position rates). Above, use Hudson per-
+    # class buckets (O(n), slightly overestimates collinear-flank
+    # coalescence rate for class-restricted lineages but tractable
+    # at any rho).
+    _RHO_THRESHOLD = 100.0
+
     def _coal_rates(self, active, t: float):
         """Coalescence rates at time t.
 
-        After all inversions' barriers have lifted: Hudson model with
-        per-pop buckets, O(n). While any inversion is active: per-pair
-        overlap-by-class enumeration, O(n^2). Lineage GC keeps n
-        bounded so O(n^2) is tractable up to rho ~ 100.
+        Three regimes:
+        1. No active inversions → Hudson per-pop buckets, O(n).
+        2. Active inversions + low rho (≤ 100) → per-pair
+           overlap-by-class with _coalesce_partial, O(n^2). Exact.
+        3. Active inversions + high rho (> 100) → Hudson per-
+           (class, pop) buckets with full merge, O(n). Slightly
+           overestimates collinear-flank coalescence rate.
 
         Returns list of (kind, rate, payload).
         """
@@ -603,8 +613,9 @@ class HullSimulator:
                 rates.append((f'coal_{pop}', rate, idx_list))
             return rates
 
-        # Structured: per-pair overlap-by-class.
+        # Build p_class lookup for active inversions.
         inv_p_class = {}
+        sample_positions = []
         for inv in self.inversions:
             if t >= inv.t_inv:
                 continue
@@ -613,6 +624,8 @@ class HullSimulator:
             cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
             inv_p_class[cls_S] = p_std
             inv_p_class[cls_I] = inv.p_inv
+            sample_positions.append(
+                ((inv.bp_left + inv.bp_right) / 2.0, inv))
 
         def _p_class_for(cls):
             if cls == 'P' or cls is None:
@@ -626,25 +639,64 @@ class HullSimulator:
                 return p
             return inv_p_class.get(cls, 1.0)
 
-        for i in range(len(active)):
-            lin_i = active[i]
-            for j in range(i + 1, len(active)):
-                lin_j = active[j]
-                if lin_i.population != lin_j.population:
+        # Compute rho to decide which algorithm to use.
+        rho = 4.0 * self.demography.pop_sizes[0] * self.r * self.L
+
+        if rho > self._RHO_THRESHOLD and self.r > 0:
+            # HIGH RHO: Hudson per-(class, pop) buckets + full merge.
+            def _classify(lin):
+                """Classify lineage by segment class at centre of each
+                active inversion."""
+                tags = []
+                for mid, inv in sample_positions:
+                    tag = 'P'
+                    seg = lin.head
+                    while seg is not None:
+                        if seg.left <= mid < seg.right:
+                            tag = seg.branch_class
+                            break
+                        seg = seg.next
+                    tags.append(tag)
+                return tuple(tags) if tags else ('P',)
+
+            buckets = {}
+            for i, lin in enumerate(active):
+                key = (_classify(lin), lin.population)
+                buckets.setdefault(key, []).append(i)
+            for (cls_tuple, pop), idx_list in buckets.items():
+                k = len(idx_list)
+                if k < 2:
                     continue
-                ovl = _overlap_by_class(lin_i, lin_j)
-                ne_pop = max(
-                    self.demography.size_at(lin_i.population, t), 1e-9)
-                for cls_key, ov_len in ovl.items():
-                    if ov_len <= 0:
+                ne_pop = max(self.demography.size_at(pop, t), 1e-9)
+                p_class = 1.0
+                for tag in cls_tuple:
+                    p_class *= _p_class_for(tag)
+                if p_class <= 0:
+                    continue
+                rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
+                rates.append((f'coal_{pop}', rate, idx_list))
+        else:
+            # LOW RHO: exact per-pair overlap-by-class.
+            for i in range(len(active)):
+                lin_i = active[i]
+                for j in range(i + 1, len(active)):
+                    lin_j = active[j]
+                    if lin_i.population != lin_j.population:
                         continue
-                    p_class = _p_class_for(cls_key)
-                    if p_class <= 0:
-                        continue
-                    rates.append((
-                        f'coal_{cls_key}_{lin_i.population}',
-                        1.0 / (2.0 * ne_pop * p_class),
-                        (i, j, cls_key)))
+                    ovl = _overlap_by_class(lin_i, lin_j)
+                    ne_pop = max(
+                        self.demography.size_at(lin_i.population, t),
+                        1e-9)
+                    for cls_key, ov_len in ovl.items():
+                        if ov_len <= 0:
+                            continue
+                        p_class = _p_class_for(cls_key)
+                        if p_class <= 0:
+                            continue
+                        rates.append((
+                            f'coal_{cls_key}_{lin_i.population}',
+                            1.0 / (2.0 * ne_pop * p_class),
+                            (i, j, cls_key)))
         return rates
 
     def _migration_rates(self, active, t: float):

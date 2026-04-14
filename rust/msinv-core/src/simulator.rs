@@ -8,6 +8,7 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::class_tag::{BranchClass, Karyotype};
+use crate::demography::{DemoEvent, Demography};
 use crate::events::{apply_coalescence, apply_recombination};
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
@@ -41,6 +42,7 @@ enum Event {
     CoalPanmicticPop { pop: u32 },
     Recombination,
     Flux { lineage_idx: usize, inv_idx: usize },
+    Migration { lineage_idx: usize, dst_pop: u32 },
 }
 
 // ---------------------------------------------------------------
@@ -48,7 +50,7 @@ enum Event {
 // ---------------------------------------------------------------
 pub struct HullSimulator {
     pub samples: Vec<SampleEntry>,
-    pub population_size: f64,
+    pub demography: Demography,
     pub sequence_length: f64,
     pub recombination_rate: f64,
     pub inversions: Vec<InversionSpec>,
@@ -83,7 +85,7 @@ impl HullSimulator {
         }
         Self {
             samples,
-            population_size,
+            demography: Demography::single_pop(population_size),
             sequence_length,
             recombination_rate,
             inversions,
@@ -105,7 +107,7 @@ impl HullSimulator {
                 population: 0,
                 count: n_samples,
             }],
-            population_size,
+            demography: Demography::single_pop(population_size),
             sequence_length,
             recombination_rate,
             inversions: vec![],
@@ -116,14 +118,16 @@ impl HullSimulator {
     pub fn simulate(&self) -> SimResult {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
         let mut arena = SegmentArena::new();
-        let mut tables = TableBuilder::new(self.sequence_length, 1);
+        let mut tables = TableBuilder::new(
+            self.sequence_length, self.demography.n_pops);
         let mut next_uid: LinUid = 0;
+        let mut demo = self.demography.clone();
 
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
         self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng);
+                       &mut next_uid, &mut rng, &mut demo);
 
         SimResult { tables }
     }
@@ -164,8 +168,8 @@ impl HullSimulator {
         tables: &mut TableBuilder,
         next_uid: &mut LinUid,
         rng: &mut Xoshiro256PlusPlus,
+        demo: &mut Demography,
     ) {
-        let ne = self.population_size;
         let mut t: f64 = 0.0;
 
         // Track which inversions' barriers are still active.
@@ -193,20 +197,19 @@ impl HullSimulator {
                 }
             }
 
+            // Next demographic event boundary.
+            let t_demo = demo.next_event_time(t);
+
             // --- Build event list ---
             let mut events: Vec<(f64, Event)> = Vec::new();
 
             if any_barrier {
-                // Per-pair, per-class coalescence rates.
                 self.compute_coal_rates_structured(
-                    active, arena, ne, t, &barrier_active, &mut events);
+                    active, arena, demo, t, &barrier_active, &mut events);
             } else {
                 // All barriers lifted → panmictic by pop.
-                let k = n as f64;
-                let rate = k * (k - 1.0) / 2.0 / (2.0 * ne);
-                if rate > 0.0 {
-                    events.push((rate, Event::CoalPanmicticPop { pop: 0 }));
-                }
+                self.compute_coal_rates_panmictic(active, arena, demo, t,
+                                                   &mut events);
             }
 
             // Recombination rate.
@@ -221,19 +224,29 @@ impl HullSimulator {
                 events.push((recomb_rate, Event::Recombination));
             }
 
-            // Gene flux rates (per lineage, per inversion).
+            // Gene flux rates.
             if any_barrier {
                 self.compute_flux_rates(
                     active, arena, &barrier_active, &mut events);
             }
 
+            // Migration rates.
+            for (rate, lin_idx, dst) in demo.migration_rates(active) {
+                events.push((rate, Event::Migration {
+                    lineage_idx: lin_idx, dst_pop: dst,
+                }));
+            }
+
             let total_rate: f64 = events.iter().map(|(r, _)| *r).sum();
+
+            // Next deterministic boundary.
+            let next_boundary = earliest_barrier.min(t_demo);
+
             if total_rate <= 0.0 {
-                // No events possible — jump to next barrier.
-                if earliest_barrier < f64::INFINITY {
-                    t = earliest_barrier;
-                    self.cross_barriers(
-                        active, arena, &mut barrier_active, t);
+                if next_boundary < f64::INFINITY {
+                    t = next_boundary;
+                    self.cross_barriers(active, arena, &mut barrier_active, t);
+                    demo.apply_events_at(t, active);
                     continue;
                 }
                 return;
@@ -244,10 +257,11 @@ impl HullSimulator {
             let dt = -u.ln() / total_rate;
             let t_event = t + dt;
 
-            // Check if a barrier crossing happens first.
-            if earliest_barrier <= t_event {
-                t = earliest_barrier;
+            // Check if a deterministic boundary happens first.
+            if next_boundary <= t_event {
+                t = next_boundary;
                 self.cross_barriers(active, arena, &mut barrier_active, t);
+                demo.apply_events_at(t, active);
                 continue;
             }
             t = t_event;
@@ -273,11 +287,20 @@ impl HullSimulator {
                     let (i, j) = (*i, *j);
                     apply_coalescence(active, i, j, t, arena, tables, next_uid);
                 }
-                Event::CoalPanmicticPop { pop: _ } => {
-                    let i = rng.random_range(0..n);
-                    let mut j = rng.random_range(0..n - 1);
-                    if j >= i { j += 1; }
-                    apply_coalescence(active, i, j, t, arena, tables, next_uid);
+                Event::CoalPanmicticPop { pop } => {
+                    // Pick two lineages from this population.
+                    let pop = *pop;
+                    let pool: Vec<usize> = active.iter().enumerate()
+                        .filter(|(_, l)| l.population == pop)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if pool.len() >= 2 {
+                        let ii = rng.random_range(0..pool.len());
+                        let mut jj = rng.random_range(0..pool.len() - 1);
+                        if jj >= ii { jj += 1; }
+                        apply_coalescence(active, pool[ii], pool[jj],
+                                           t, arena, tables, next_uid);
+                    }
                 }
                 Event::Recombination => {
                     let target = (u2 - (total_rate - recomb_rate))
@@ -300,7 +323,6 @@ impl HullSimulator {
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
                     let inv = &self.inversions[ii];
-                    // Sample flux position.
                     if let Some(x_event) = self.sample_flux_position(
                         active, li, inv, arena, rng)
                     {
@@ -308,6 +330,12 @@ impl HullSimulator {
                         if tr > tl {
                             apply_gene_flux(active, li, tl, tr, inv, arena, next_uid);
                         }
+                    }
+                }
+                Event::Migration { lineage_idx, dst_pop } => {
+                    let idx = *lineage_idx;
+                    if idx < active.len() {
+                        active[idx].population = *dst_pop;
                     }
                 }
             }
@@ -321,30 +349,57 @@ impl HullSimulator {
         &self,
         active: &[Lineage],
         arena: &SegmentArena,
-        ne: f64,
+        demo: &Demography,
         t: f64,
         barrier_active: &[bool],
         events: &mut Vec<(f64, Event)>,
     ) {
-        // Build p_class lookup per inversion tag.
         let n = active.len();
         for i in 0..n {
             for j in (i + 1)..n {
                 if active[i].population != active[j].population {
                     continue;
                 }
-                // Compute overlap bucketed by matching class.
+                let ne_pop = demo.size_at(active[i].population, t).max(1e-9);
                 let overlaps = overlap_by_class(
                     active[i].head, active[j].head, arena);
                 for (cls, ov_len) in &overlaps {
                     if *ov_len <= 0.0 { continue; }
                     let p_class = self.p_class_for(*cls, t, barrier_active);
                     if p_class <= 0.0 { continue; }
-                    let rate = 1.0 / (2.0 * ne * p_class);
+                    let rate = 1.0 / (2.0 * ne_pop * p_class);
                     events.push((rate, Event::CoalPair {
                         i, j, class: *cls,
                     }));
                 }
+            }
+        }
+    }
+
+    fn compute_coal_rates_panmictic(
+        &self,
+        active: &[Lineage],
+        _arena: &SegmentArena,
+        demo: &Demography,
+        t: f64,
+        events: &mut Vec<(f64, Event)>,
+    ) {
+        // Bucket lineages by population.
+        let mut buckets: Vec<(u32, usize)> = Vec::new(); // (pop, count)
+        for lin in active.iter() {
+            if let Some(entry) = buckets.iter_mut().find(|(p, _)| *p == lin.population) {
+                entry.1 += 1;
+            } else {
+                buckets.push((lin.population, 1));
+            }
+        }
+        for (pop, k) in &buckets {
+            if *k < 2 { continue; }
+            let ne = demo.size_at(*pop, t).max(1e-9);
+            let kf = *k as f64;
+            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+            if rate > 0.0 {
+                events.push((rate, Event::CoalPanmicticPop { pop: *pop }));
             }
         }
     }
@@ -362,7 +417,7 @@ impl HullSimulator {
             match cls.get_inv(inv.inv_id) {
                 Some(Karyotype::S) => p *= inv.p_std(),
                 Some(Karyotype::I) => p *= inv.p_inv,
-                None => {} // this inv not present at this position
+                None => {}
             }
         }
         p
@@ -806,5 +861,101 @@ mod tests {
         assert!(r_yes.tables.num_nodes() >= r_no.tables.num_nodes(),
             "flux={} vs no_flux={}", r_yes.tables.num_nodes(),
             r_no.tables.num_nodes());
+    }
+
+    #[test]
+    fn two_pop_with_merge() {
+        use crate::demography::{Demography, DemoEvent};
+        let mut demo = Demography::new(vec![1000.0, 1000.0]);
+        demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
+
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry {
+                    karyotypes: vec![], population: 0, count: 5,
+                },
+                SampleEntry {
+                    karyotypes: vec![], population: 1, count: 5,
+                },
+            ],
+            demography: demo,
+            sequence_length: 100.0,
+            recombination_rate: 0.0,
+            inversions: vec![],
+            seed: 42,
+        };
+        let result = sim.simulate();
+        // 10 samples + at least 9 internal = 19 nodes.
+        // With pop split, T_MRCA >= 500 for cross-pop pairs.
+        assert!(result.tables.num_nodes() >= 19,
+            "Got {} nodes", result.tables.num_nodes());
+        // All internal node times should be positive.
+        for i in 10..result.tables.num_nodes() {
+            assert!(result.tables.node_time[i] > 0.0);
+        }
+    }
+
+    #[test]
+    fn two_pop_with_migration() {
+        use crate::demography::Demography;
+        let mut demo = Demography::new(vec![1000.0, 1000.0]);
+        // Symmetric migration at 0.001 per gen.
+        demo.migration_matrix[0][1] = 0.001;
+        demo.migration_matrix[1][0] = 0.001;
+
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry {
+                    karyotypes: vec![], population: 0, count: 3,
+                },
+                SampleEntry {
+                    karyotypes: vec![], population: 1, count: 3,
+                },
+            ],
+            demography: demo,
+            sequence_length: 100.0,
+            recombination_rate: 0.0,
+            inversions: vec![],
+            seed: 42,
+        };
+        let result = sim.simulate();
+        // Should produce a valid tree with migration allowing
+        // cross-pop coalescence.
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn two_pop_inversion_with_merge() {
+        use crate::demography::{Demography, DemoEvent};
+        let mut demo = Demography::new(vec![1000.0, 1000.0]);
+        demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
+
+        let inv = InversionSpec {
+            bp_left: 30.0, bp_right: 70.0,
+            p_inv: 0.5, t_inv: 5000.0,
+            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+        };
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry {
+                    karyotypes: vec![Some(Karyotype::S)],
+                    population: 0, count: 3,
+                },
+                SampleEntry {
+                    karyotypes: vec![Some(Karyotype::I)],
+                    population: 1, count: 3,
+                },
+            ],
+            demography: demo,
+            sequence_length: 100.0,
+            recombination_rate: 0.0,
+            inversions: vec![inv],
+            seed: 42,
+        };
+        let result = sim.simulate();
+        // Should complete. Cross-pop + cross-karyotype TMRCA >=
+        // max(t_split=500, t_inv=5000) = 5000.
+        assert!(result.tables.num_nodes() >= 11);
     }
 }

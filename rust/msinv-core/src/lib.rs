@@ -5,4 +5,5 @@ pub mod inversion;
 pub mod tables;
 pub mod events;
 pub mod phi;
+pub mod demography;
 pub mod simulator;

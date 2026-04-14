@@ -83,6 +83,65 @@ def _phi_integral(a: float, b: float, w: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Lineage GC — remove "fully coalesced" lineages
+# ---------------------------------------------------------------------------
+
+def _gc_sole_lineages(active):
+    """Remove lineages whose material doesn't overlap with any other
+    lineage at any position (endpoint-sweep, O(S log S)).
+
+    Collects all segment start/end events, sweeps left-to-right
+    tracking per-position coverage count. A lineage is "sole" if
+    every position it covers has coverage == 1. Sole lineages can
+    never produce more edges and are removed.
+    """
+    if len(active) <= 1:
+        return
+
+    # Build sweep events: (position, +1/-1, lineage_index).
+    events = []
+    for i, lin in enumerate(active):
+        seg = lin.head
+        while seg is not None:
+            events.append((seg.left, 1, i))
+            events.append((seg.right, -1, i))
+            seg = seg.next
+    if not events:
+        return
+    # Sort by position; at ties, ends (-1) before starts (+1) so
+    # count drops before it rises at the same coordinate.
+    events.sort(key=lambda e: (e[0], e[1]))
+
+    # Sweep: track which lineages have overlap (coverage > 1 at
+    # any of their positions).
+    n = len(active)
+    has_overlap = [False] * n  # True if lineage i shares a position
+    coverage = 0               # current total coverage count
+    # Also track which lineages are currently active at this position.
+    active_set = set()
+
+    prev_pos = events[0][0]
+    for pos, delta, lin_idx in events:
+        if pos > prev_pos and coverage > 1:
+            # The interval [prev_pos, pos) has coverage > 1 —
+            # every lineage active in this interval has overlap.
+            for idx in active_set:
+                has_overlap[idx] = True
+        prev_pos = pos
+        if delta > 0:
+            active_set.add(lin_idx)
+            coverage += 1
+        else:
+            active_set.discard(lin_idx)
+            coverage -= 1
+
+    # Remove lineages with no overlap (in reverse order).
+    to_remove = [i for i in range(n) if not has_overlap[i]]
+    for idx in reversed(to_remove):
+        active.pop(idx)
+
+
+# ---------------------------------------------------------------------------
 # Per-pair overlap helpers (Phase 5)
 # ---------------------------------------------------------------------------
 
@@ -1101,6 +1160,14 @@ class HullSimulator:
                 apply_migration(active[idx], dst)
             else:
                 raise RuntimeError(f"Unknown event kind: {chosen_kind}")
+
+            # GC after every Nth recombination to bound fragment count
+            # without paying O(S log S) per event.
+            if chosen_kind == 'recomb':
+                gc_counter = getattr(self, '_gc_counter', 0) + 1
+                self._gc_counter = gc_counter
+                if gc_counter % 10 == 0:
+                    _gc_sole_lineages(active)
         else:
             raise RuntimeError(
                 f"max_iters ({max_iters}) exceeded — likely a runaway "

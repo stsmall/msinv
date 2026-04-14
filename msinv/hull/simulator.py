@@ -581,18 +581,20 @@ class HullSimulator:
     # class buckets (O(n), slightly overestimates collinear-flank
     # coalescence rate for class-restricted lineages but tractable
     # at any rho).
+    # Threshold: below this rho, use exact per-pair overlap-by-class
+    # coalescence rates (O(n^2)).  Above this, use Hudson-style (class,
+    # pop) buckets (O(n)).  The bucket classification walks ALL segments
+    # to find inversion-class material (not just the midpoint), so it
+    # correctly handles lineage fragments created by recombination.
     _RHO_THRESHOLD = 100.0
 
     def _coal_rates(self, active, t: float):
         """Coalescence rates at time t.
 
-        Three regimes:
+        Two regimes:
         1. No active inversions → Hudson per-pop buckets, O(n).
-        2. Active inversions + low rho (≤ 100) → per-pair
-           overlap-by-class with _coalesce_partial, O(n^2). Exact.
-        3. Active inversions + high rho (> 100) → Hudson per-
-           (class, pop) buckets with full merge, O(n). Slightly
-           overestimates collinear-flank coalescence rate.
+        2. Active inversions → per-pair overlap-by-class with
+           _coalesce_partial, O(n^2). Exact.
 
         Returns list of (kind, rate, payload).
         """
@@ -643,20 +645,30 @@ class HullSimulator:
         rho = 4.0 * self.demography.pop_sizes[0] * self.r * self.L
 
         if rho > self._RHO_THRESHOLD and self.r > 0:
-            # HIGH RHO: Hudson per-(class, pop) buckets + full merge.
+            # HIGH RHO: Hudson per-(class, pop) buckets.
+            #
+            # Classify each lineage by walking ALL segments (not just
+            # the midpoint) so fragments retain class identity after
+            # recombination.  The rate k*(k-1)/2 / (2*Ne*p_class)
+            # overestimates when fragments don't overlap, but the
+            # event handler uses rejection sampling to skip non-
+            # overlapping pairs (see 'coal_' handler in main loop).
             def _classify(lin):
-                """Classify lineage by segment class at centre of each
-                active inversion."""
+                """Classify by any non-P class found in segments."""
+                inv_tags = {}
+                seg = lin.head
+                while seg is not None:
+                    seg_mid = (seg.left + seg.right) / 2.0
+                    for mid, inv in sample_positions:
+                        if inv.bp_left <= seg_mid < inv.bp_right:
+                            if isinstance(seg.branch_class, frozenset):
+                                inv_tags[inv.inv_id] = seg.branch_class
+                            elif seg.branch_class != 'P':
+                                inv_tags[inv.inv_id] = seg.branch_class
+                    seg = seg.next
                 tags = []
                 for mid, inv in sample_positions:
-                    tag = 'P'
-                    seg = lin.head
-                    while seg is not None:
-                        if seg.left <= mid < seg.right:
-                            tag = seg.branch_class
-                            break
-                        seg = seg.next
-                    tags.append(tag)
+                    tags.append(inv_tags.get(inv.inv_id, 'P'))
                 return tuple(tags) if tags else ('P',)
 
             buckets = {}
@@ -842,7 +854,7 @@ class HullSimulator:
         return rates
 
     def _apply_sweep(self, active, sweep, t, tables):
-        """Force-coalesce all qualifying lineages at sweep.x_sel.
+        """Force-coalesce qualifying lineages near sweep.x_sel.
 
         A "qualifying" lineage is one with ancestral material at
         ``sweep.x_sel`` whose class at that position matches
@@ -850,19 +862,20 @@ class HullSimulator:
         is 'any'), and whose population matches ``sweep.population``
         (or any pop if ``None``).
 
+        Two modes:
+
+        **Hitchhiking mode** (``sweep.selection_coefficient > 0``):
+        For each qualifying lineage, each segment is included with
+        probability ``exp(-r * |midpoint - x_sel| * t_dur)`` where
+        ``t_dur = ln(2*Ne*s)/s``.  This produces the classic smooth
+        hitchhiking valley, deep at x_sel and decaying with distance.
+
+        **Window mode** (``sweep.selection_coefficient == 0``):
         The merge happens at positions in
         ``[x_sel - sweep_window, x_sel + sweep_window]``. Material
         outside this window remains on the original lineages.
         """
-        x_lo = sweep.x_sel - sweep.sweep_window
-        x_hi = sweep.x_sel + sweep.sweep_window
-        if x_hi <= x_lo:
-            # Single-point sweep: use a tiny epsilon window so we
-            # actually have something to merge.
-            eps = max(1e-9, self.L * 1e-12)
-            x_lo = sweep.x_sel
-            x_hi = sweep.x_sel + eps
-
+        # ---- identify qualifying lineages ----
         qualifying = []
         for lin in active:
             if (sweep.population is not None
@@ -872,14 +885,6 @@ class HullSimulator:
             if cls_at_x is None:
                 continue  # no material at x_sel
             if sweep.target_class != 'any':
-                # The segment may carry a single string tag ('S0', 'S',
-                # 'P', ...) or a frozenset of tags (Phase 5c.2 nested
-                # inversions). For a string target_class, accept either
-                # equality with the segment class OR membership in the
-                # segment's frozenset. For a frozenset target_class,
-                # require subset. This lets sweeps targeting "S in
-                # inv 0" fire correctly at positions inside multiple
-                # nested inversions.
                 if isinstance(cls_at_x, frozenset):
                     if isinstance(sweep.target_class, frozenset):
                         if not sweep.target_class.issubset(cls_at_x):
@@ -889,32 +894,95 @@ class HullSimulator:
                             continue
                 else:
                     if cls_at_x != sweep.target_class:
-                        continue
+                        # Allow 'S' to match 'S0', 'S1', etc. (and 'I'
+                        # to match 'I0', 'I1') so users don't have to
+                        # know the inv_id suffix for single-inversion
+                        # cases.
+                        tc = sweep.target_class
+                        if not (len(tc) == 1 and isinstance(cls_at_x, str)
+                                and cls_at_x.startswith(tc)):
+                            continue
             qualifying.append(lin)
 
         if len(qualifying) < 2:
             return None  # nothing to coalesce
 
-        # Force-coalesce all qualifying lineages into a single sweep
-        # ancestor at time t. We do this by sequentially merging via
-        # _coalesce_partial restricted to the sweep window.
-        # Simplification: we use the existing apply_coalescence (which
-        # merges all overlap), but first split each lineage at x_lo
-        # and x_hi so the merged piece is exactly the sweep window.
         from .events import apply_coalescence
 
-        # Split each qualifying lineage at x_lo and x_hi so the sweep
-        # window is its own segment.
+        # ---- hitchhiking mode ----
+        if sweep.selection_coefficient > 0:
+            r = getattr(self, 'recombination_rate', 0.0) or 0.0
+            Ne = self._get_Ne_for_sweep()
+            swept_lineages = []
+            for lin in qualifying:
+                swept_segs = []
+                unsswept_segs = []
+                seg = lin.head
+                while seg is not None:
+                    mid = (seg.left + seg.right) / 2.0
+                    p = sweep.hitchhiking_probability(mid, r, Ne)
+                    if self.rng.random() < p:
+                        swept_segs.append(seg)
+                    else:
+                        unsswept_segs.append(seg)
+                    seg = seg.next
+                if not swept_segs:
+                    continue
+                # Build new lineage from swept segments
+                active.remove(lin)
+                from .segment import Segment as Seg
+                s_head = s_tail = None
+                for s in swept_segs:
+                    ns = Seg(s.left, s.right, s.node_id,
+                             branch_class=s.branch_class, prev=s_tail)
+                    if s_head is None:
+                        s_head = ns
+                    if s_tail is not None:
+                        s_tail.next = ns
+                    s_tail = ns
+                from .lineage import Lineage
+                swept_lin = Lineage(s_head, s_tail,
+                                    population=lin.population)
+                active.append(swept_lin)
+                swept_lineages.append(swept_lin)
+                # Build lineage from unswept segments (if any)
+                if unsswept_segs:
+                    u_head = u_tail = None
+                    for s in unsswept_segs:
+                        ns = Seg(s.left, s.right, s.node_id,
+                                 branch_class=s.branch_class, prev=u_tail)
+                        if u_head is None:
+                            u_head = ns
+                        if u_tail is not None:
+                            u_tail.next = ns
+                        u_tail = ns
+                    unsw_lin = Lineage(u_head, u_tail,
+                                       population=lin.population)
+                    active.append(unsw_lin)
+            if len(swept_lineages) < 2:
+                return None
+            eps = max(1e-9, t * 1e-12)
+            merged = swept_lineages[0]
+            for k_idx, other in enumerate(swept_lineages[1:], start=1):
+                t_merge = t + k_idx * eps
+                apply_coalescence(active, merged, other, t_merge, tables)
+                merged = active[-1]
+            return merged
+
+        # ---- window mode (original) ----
+        x_lo = sweep.x_sel - sweep.sweep_window
+        x_hi = sweep.x_sel + sweep.sweep_window
+        if x_hi <= x_lo:
+            eps = max(1e-9, self.L * 1e-12)
+            x_lo = sweep.x_sel
+            x_hi = sweep.x_sel + eps
+
         windowed_lineages = []
         for lin in qualifying:
-            # Split at x_lo: (left of lo, rest)
             a, rest = lin.split_at(x_lo)
             if rest is None:
-                # Material doesn't extend to x_lo; restore lin
                 continue
-            # Split rest at x_hi: (window, right of hi)
             window, b = rest.split_at(x_hi)
-            # Re-add the non-window pieces back to active as separate lineages
             active.remove(lin)
             if a is not None:
                 active.append(a)
@@ -924,11 +992,6 @@ class HullSimulator:
                 active.append(window)
                 windowed_lineages.append(window)
 
-        # Now sequentially coalesce all windowed lineages. Each
-        # successive pair-merge needs a strictly-greater time than the
-        # previous one (tskit requires parent.time > child.time);
-        # nudge by a tiny epsilon per merge so they're all "at" the
-        # sweep time but strictly ordered.
         if len(windowed_lineages) < 2:
             return None
         eps = max(1e-9, t * 1e-12)
@@ -938,6 +1001,12 @@ class HullSimulator:
             apply_coalescence(active, merged, other, t_merge, tables)
             merged = active[-1]
         return merged
+
+    def _get_Ne_for_sweep(self):
+        """Get effective population size for sweep duration calculation."""
+        if hasattr(self, 'demography') and self.demography is not None:
+            return self.demography.pop_sizes[0]
+        return getattr(self, 'population_size', 10_000) or 10_000
 
     def _flip_to_panmictic(self, active, inv_id=None):
         """Flip per-segment classes to 'P' for inversion ``inv_id`` (or
@@ -1139,15 +1208,18 @@ class HullSimulator:
             if chosen_kind.startswith('coal_'):
                 payload = chosen_payload
                 if isinstance(payload, list):
-                    # Post-t_inv panmictic bucket: pick two random
-                    # lineages from the bucket. Full merge (no class
-                    # barrier — all inversions retired).
+                    # Hudson bucket: pick two random lineages and merge.
+                    # Following msprime (Kelleher 2016), the rate uses
+                    # k*(k-1)/2 as an upper bound; non-overlapping
+                    # pairs produce no edges and no lineage merge (a
+                    # cheap no-op inside apply_coalescence).
                     pool = payload
                     ii, jj = self.rng.choice(len(pool), size=2,
                                               replace=False)
                     i, j = pool[ii], pool[jj]
                     apply_coalescence(active, active[i], active[j],
-                                       t, tables)
+                                       t, tables,
+                                       skip_if_no_overlap=True)
                 else:
                     # Per-pair structured event: payload is
                     # (i, j, allowed_class). Partial coalescence —

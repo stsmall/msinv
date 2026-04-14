@@ -26,7 +26,7 @@ from msinv import HullSimulator, InversionSpec, Demography
 # --- Parameters ---
 Ne = 44_000
 mu = 3.55e-9
-r = 4.0e-8
+r = 1e-9   # reduced from 4e-8 for computational feasibility (rho≈18)
 L = 100_000
 t_split_gen = 14_000     # ~1300 yr at 11 gen/yr
 t_inv_gen = 385_000      # ~35 kyr — 3Ra age (Small 2023)

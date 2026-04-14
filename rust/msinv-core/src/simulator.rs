@@ -329,8 +329,11 @@ impl HullSimulator {
                     }
                 }
                 Event::Recombination => {
-                    let target = (u2 - (total_rate - recomb_rate))
-                        .max(0.0) / self.recombination_rate;
+                    // Pick lineage weighted by total ancestral material.
+                    let u_lin: f64 = rng.random::<f64>();
+                    let total_mat: f64 = active.iter()
+                        .map(|l| l.total_length(arena)).sum();
+                    let target = u_lin * total_mat;
                     let mut cum_len = 0.0;
                     let mut chosen_idx = 0;
                     for (idx, lin) in active.iter().enumerate() {

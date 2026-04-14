@@ -577,38 +577,20 @@ class HullSimulator:
     # -- rate helpers ------------------------------------------------------
 
     def _coal_rates(self, active, t: float):
-        """Coalescence rates at time t (Phase 5b: multi-inversion).
+        """Coalescence rates at time t.
 
-        Each pair (A, B) of same-pop lineages has up to (1 + 2·n_inv)
-        event types:
-          'outside' (P-P), and per-inversion ('S<k>'-'S<k>') and
-          ('I<k>'-'I<k>') events. Each event's rate uses standard
-          per-pair structured-coalescent scaling.
-
-        After ALL inversions' barriers have lifted (their t_inv passed),
-        the simulator falls back to a single panmictic-by-pop bucket
-        for efficiency. While ANY inversion is still active we use the
-        per-pair, per-class enumeration.
+        After all inversions' barriers have lifted: Hudson model with
+        per-pop buckets, O(n). While any inversion is active: per-pair
+        overlap-by-class enumeration, O(n^2). Lineage GC keeps n
+        bounded so O(n^2) is tractable up to rho ~ 100.
 
         Returns list of (kind, rate, payload).
         """
         rates = []
-        # Determine the set of currently active inversion classes.
-        active_inv_classes = set()
-        any_inv_active = False
-        for inv in self.inversions:
-            if t < inv.t_inv:
-                any_inv_active = True
-                active_inv_classes.add(inv.class_S())
-                active_inv_classes.add(inv.class_I())
-                # Single-inv back-compat alias
-                if inv.inv_id == -1:
-                    active_inv_classes.add('S')
-                    active_inv_classes.add('I')
+        any_inv_active = any(t < inv.t_inv for inv in self.inversions)
 
         if not any_inv_active:
-            # All inversions retired → bucket by pop, single panmictic
-            # event per pop.
+            # All inversions retired → Hudson per-pop buckets.
             buckets = {}
             for i, lin in enumerate(active):
                 buckets.setdefault(lin.population, []).append(i)
@@ -618,17 +600,14 @@ class HullSimulator:
                     continue
                 ne_pop = max(self.demography.size_at(pop, t), 1e-9)
                 rate = k * (k - 1) / 2.0 / (2.0 * ne_pop)
-                rates.append((f'coal_panmictic_{pop}', rate, idx_list))
+                rates.append((f'coal_{pop}', rate, idx_list))
             return rates
 
-        # Build a tag → effective sub-pop frequency lookup for rate
-        # scaling. A position's class is a string tag (single inv) or
-        # a frozenset of tags (nested invs). The per-pair coal rate
-        # at that class is 1/(2·Ne·product_of_p_class).
-        inv_p_class = {}  # tag → p_class for currently-active inversions
+        # Structured: per-pair overlap-by-class.
+        inv_p_class = {}
         for inv in self.inversions:
             if t >= inv.t_inv:
-                continue  # barrier lifted, segments will be retagged
+                continue
             p_std = 1.0 - inv.p_inv
             cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
             cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
@@ -636,8 +615,6 @@ class HullSimulator:
             inv_p_class[cls_I] = inv.p_inv
 
         def _p_class_for(cls):
-            """Effective sub-pop frequency for a class (string or
-            frozenset). 'P' / empty / unknown → panmictic (1.0)."""
             if cls == 'P' or cls is None:
                 return 1.0
             if isinstance(cls, frozenset):
@@ -647,10 +624,8 @@ class HullSimulator:
                 for tag in cls:
                     p *= inv_p_class.get(tag, 1.0)
                 return p
-            # Single string tag
             return inv_p_class.get(cls, 1.0)
 
-        # Per-pair, per-class enumeration.
         for i in range(len(active)):
             lin_i = active[i]
             for j in range(i + 1, len(active)):
@@ -666,14 +641,8 @@ class HullSimulator:
                     p_class = _p_class_for(cls_key)
                     if p_class <= 0:
                         continue
-                    if cls_key == 'P':
-                        kind = 'pair_outside'
-                    elif isinstance(cls_key, frozenset):
-                        kind = 'pair_inside_nested'
-                    else:
-                        kind = f'pair_inside_{cls_key}'
                     rates.append((
-                        kind,
+                        f'coal_{cls_key}_{lin_i.population}',
                         1.0 / (2.0 * ne_pop * p_class),
                         (i, j, cls_key)))
         return rates
@@ -1116,21 +1085,25 @@ class HullSimulator:
                 continue  # numerical-precision miss
 
             if chosen_kind.startswith('coal_'):
-                # Post-t_inv panmictic catch-all: payload is a list of
-                # lineage indices; pick two to coalesce.
-                pool = chosen_payload
-                ii, jj = self.rng.choice(len(pool), size=2, replace=False)
-                i, j = pool[ii], pool[jj]
-                apply_coalescence(active, active[i], active[j], t, tables)
-            elif chosen_kind.startswith('pair_'):
-                # Per-pair, per-class dispatch. Payload is
-                # ``(i, j, class_string)`` where class_string is the
-                # exact segment class to merge ('P', 'S', 'I', 'S0',
-                # 'I0', 'S1', 'I1', ...). Other classes' overlap
-                # remains on the original lineages.
-                i, j, allowed = chosen_payload
-                _coalesce_partial(active, active[i], active[j], t,
-                                   tables, allowed)
+                payload = chosen_payload
+                if isinstance(payload, list):
+                    # Post-t_inv panmictic bucket: pick two random
+                    # lineages from the bucket. Full merge (no class
+                    # barrier — all inversions retired).
+                    pool = payload
+                    ii, jj = self.rng.choice(len(pool), size=2,
+                                              replace=False)
+                    i, j = pool[ii], pool[jj]
+                    apply_coalescence(active, active[i], active[j],
+                                       t, tables)
+                else:
+                    # Per-pair structured event: payload is
+                    # (i, j, allowed_class). Partial coalescence —
+                    # only merge at positions where both segments
+                    # have this class.
+                    i, j, allowed = payload
+                    _coalesce_partial(active, active[i], active[j],
+                                       t, tables, allowed)
             elif chosen_kind == 'flux':
                 idx, inv_id = chosen_payload
                 lineage = active[idx]
@@ -1161,13 +1134,10 @@ class HullSimulator:
             else:
                 raise RuntimeError(f"Unknown event kind: {chosen_kind}")
 
-            # GC after every Nth recombination to bound fragment count
-            # without paying O(S log S) per event.
+            # GC after recombination: remove sole-carrier lineages
+            # to bound n for the O(n^2) structured rate computation.
             if chosen_kind == 'recomb':
-                gc_counter = getattr(self, '_gc_counter', 0) + 1
-                self._gc_counter = gc_counter
-                if gc_counter % 10 == 0:
-                    _gc_sole_lineages(active)
+                _gc_sole_lineages(active)
         else:
             raise RuntimeError(
                 f"max_iters ({max_iters}) exceeded — likely a runaway "

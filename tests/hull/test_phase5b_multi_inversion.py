@@ -9,7 +9,6 @@ correctly:
   - Between the two inversions (collinear gap): also panmictic.
 """
 
-import numpy as np
 import pytest
 
 from msinv.hull import HullSimulator

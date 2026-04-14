@@ -304,3 +304,103 @@ def test_phi_gradient_more_breakpoints_in_middle():
     assert len(centre_breaks) > len(edge_breaks), (
         f"Centre should have more flux breakpoints than edges, got "
         f"centre={len(centre_breaks)} vs edge={len(edge_breaks)}")
+
+
+# ---------------------------------------------------------------------------
+# Regression: flux must fire when single-inv is given via inversions=[]
+# ---------------------------------------------------------------------------
+#
+# Pre-fix bug: passing one inversion via the multi-inv API tagged its
+# class segments as 'S0'/'I0' (because inv_id=0), but _flux_rates only
+# matched plain 'S'/'I'. Result: gene flux silently fired zero events
+# under the inversions=[InversionSpec(γ>0)] API even though the same
+# parameters via the legacy bp_left/p_inv/... args worked correctly.
+
+def test_single_inv_via_inversions_api_fires_flux():
+    """Same parameters via two APIs should fire flux events at the
+    same rate. Pre-fix the multi-inv API silently produced 0 events."""
+    from msinv.hull import InversionSpec
+    import msinv.hull.simulator as hs
+
+    flux_counts = {'multi_api': 0, 'legacy_api': 0}
+
+    orig = hs.apply_gene_flux
+
+    for label, builder in [
+        ('multi_api', lambda seed: HullSimulator(
+            n_std=4, n_inv=4, population_size=1_000,
+            sequence_length=200.0,
+            inversions=[InversionSpec(bp_left=0.0, bp_right=200.0,
+                                       p_inv=0.5, t_inv=8_000.0,
+                                       gene_conversion_rate=5e-5,
+                                       flux_window=0.05)],
+            seed=seed)),
+        ('legacy_api', lambda seed: HullSimulator(
+            n_std=4, n_inv=4, population_size=1_000,
+            sequence_length=200.0,
+            bp_left=0.0, bp_right=200.0,
+            p_inv=0.5, t_inv=8_000.0,
+            gene_conversion_rate=5e-5, flux_window=0.05,
+            seed=seed)),
+    ]:
+        def counted(*args, _label=label, **kwargs):
+            flux_counts[_label] += 1
+            return orig(*args, **kwargs)
+        hs.apply_gene_flux = counted
+        try:
+            for seed in range(5):
+                builder(seed).simulate()
+        finally:
+            hs.apply_gene_flux = orig
+
+    assert flux_counts['multi_api'] > 0, (
+        "Single-inv via inversions=[InversionSpec(...)] should fire "
+        "flux events but didn't (regression of the 'S0'/'I0' tag bug).")
+    assert flux_counts['legacy_api'] > 0
+    # The two APIs are deterministic-equivalent given the same seed →
+    # event counts should match exactly.
+    assert flux_counts['multi_api'] == flux_counts['legacy_api'], (
+        f"Multi-API ({flux_counts['multi_api']}) and legacy-API "
+        f"({flux_counts['legacy_api']}) flux event counts diverged.")
+
+
+def test_multi_inv_per_inversion_gamma():
+    """Two inversions with different gammas should fire flux events
+    at independently-controlled rates. Inversion with γ=0 should fire
+    no events, the other should fire many."""
+    from msinv.hull import InversionSpec
+    import msinv.hull.simulator as hs
+
+    counts_per_inv = {0: 0, 1: 0}
+    orig = hs.apply_gene_flux
+
+    def counted(active, lin, tl, tr, inv=None):
+        if inv is not None:
+            counts_per_inv[inv.inv_id] = counts_per_inv.get(
+                inv.inv_id, 0) + 1
+        return orig(active, lin, tl, tr, inv=inv)
+    hs.apply_gene_flux = counted
+
+    try:
+        for seed in range(5):
+            HullSimulator(
+                n_std=4, n_inv=4, population_size=1_000,
+                sequence_length=200.0,
+                inversions=[
+                    InversionSpec(bp_left=0.0, bp_right=80.0,
+                                   p_inv=0.5, t_inv=8_000.0,
+                                   gene_conversion_rate=5e-5,
+                                   flux_window=0.05),
+                    InversionSpec(bp_left=120.0, bp_right=200.0,
+                                   p_inv=0.5, t_inv=8_000.0,
+                                   gene_conversion_rate=0.0,
+                                   flux_window=0.05),
+                ],
+                seed=seed,
+            ).simulate()
+    finally:
+        hs.apply_gene_flux = orig
+
+    assert counts_per_inv[0] > 0, "inv 0 (γ=1e-4) should fire flux"
+    assert counts_per_inv[1] == 0, (
+        f"inv 1 (γ=0) should fire NO flux events, got {counts_per_inv[1]}")

@@ -108,12 +108,28 @@ ts = sim.simulate()
 
 ## Installation
 
+### Via pip
+
 ```bash
-pip install -e .
+git clone https://github.com/stsmall/msinv.git
+cd msinv
+pip install -e .                    # core
+pip install -e ".[test,plots]"      # with msprime + matplotlib + pytest
 ```
 
-Requires Python ≥ 3.9, numpy, tskit. Optional: msprime for the bake-off
-comparison, matplotlib for figure-generating examples.
+### Via [pixi](https://pixi.sh)
+
+```bash
+git clone https://github.com/stsmall/msinv.git
+cd msinv
+pixi install
+pixi run test       # runs the hull test suite (98 tests)
+pixi run figures    # regenerates the presentation PDFs in figures/
+```
+
+Requires Python ≥ 3.9, numpy, tskit. Optional: msprime (for mutation
+dropping in the figure examples) and matplotlib. See
+[`docs/installation.md`](docs/installation.md) for full details.
 
 ## What msinv uniquely provides
 

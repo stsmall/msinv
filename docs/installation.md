@@ -4,12 +4,12 @@
 
 - Python ≥ 3.9
 - numpy ≥ 1.20
-
-Optional for tests and examples:
-- msprime ≥ 1.2
 - tskit ≥ 0.5
-- stdpopsim ≥ 0.2
+
+Optional for tests and figure-generating examples:
+- msprime ≥ 1.2  (for mutation dropping + ground-truth comparison)
 - matplotlib ≥ 3.5
+- pytest, pytest-timeout
 
 ## Install via pip
 
@@ -19,10 +19,9 @@ cd msinv
 pip install -e .
 ```
 
-For development (tests, examples):
+For development (tests + plots):
 ```bash
-pip install -e ".[test]"
-pip install -e ".[all]"  # includes matplotlib
+pip install -e ".[test,plots]"
 ```
 
 ## Install via pixi
@@ -37,19 +36,24 @@ pixi run test    # runs the full test suite
 ## Verify installation
 
 ```python
-from msinv import MsinvSimulator
-sim = MsinvSimulator(
-    nsam=6, theta=10, rho=10, nsites=1000,
-    n_std=3, n_inv=3, p_inv=0.5, c=0.01, t_inv=10.0,
-    seed=42)
-pos, haps = sim.simulate_one()
-print(f"Got {len(pos)} segregating sites")
+from msinv import HullSimulator, InversionSpec
+
+sim = HullSimulator(
+    n_std=5, n_inv=5,
+    population_size=10_000,
+    sequence_length=100_000,
+    inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
+                               p_inv=0.5, t_inv=200_000)],
+    seed=42,
+)
+ts = sim.simulate()
+print(f"Simulated TreeSequence with {ts.num_trees} trees")
 ```
 
 ## Running tests
 
 ```bash
-make test
+pytest tests/hull/
 ```
 
-All 46 tests should pass in ~2 minutes.
+98 tests should pass in a few seconds.

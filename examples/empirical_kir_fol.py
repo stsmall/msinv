@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Empirical Kir/Fol simulation using the HullSimulator.
+"""Empirical Kir/Fol simulation.
 
 Reproduces the An. funestus 3Ra/3Rb cross-karyotype divergence pattern
-(Small et al. 2023 Fig. S13) using the ARG-based hull simulator
-released in v0.2.0.
+(Small et al. 2023 Fig. S13) using msinv's hull simulator.
 
 Outputs:
-  figures/empirical_kir_fol_hull.pdf
+  figures/empirical_kir_fol.pdf
 
-Constant Ne for both pops (avoids the structured-coalescent
-artifact at extreme Ne_F that affected earlier SMC runs — see
-docs/known_issues.md).
+Constant Ne for both pops (avoids the structured-coalescent dxy
+depression at extreme Ne asymmetry — see docs/known_issues.md).
 """
 import math
 import time
@@ -22,7 +20,7 @@ from matplotlib.gridspec import GridSpec
 
 import msprime  # for mutation dropping on the hull TreeSequence
 
-from msinv import HullSimulator, HullInversionSpec, HullDemography
+from msinv import HullSimulator, InversionSpec, Demography
 
 
 # --- Parameters ---
@@ -97,7 +95,7 @@ n_ok = 0
 mut_rng = np.random.default_rng(2026)
 
 for rep in range(NREPS):
-    demo = HullDemography(pop_sizes=[Ne, Ne])
+    demo = Demography(pop_sizes=[Ne, Ne])
     demo.add_event(('ej', t_split_gen, 1, 0))   # Fol → Kir at t_split
 
     sim = HullSimulator(
@@ -109,9 +107,9 @@ for rep in range(NREPS):
         demography=demo,
         sequence_length=L,
         inversions=[
-            HullInversionSpec(bp_left=inv_3Ra[0], bp_right=inv_3Ra[1],
+            InversionSpec(bp_left=inv_3Ra[0], bp_right=inv_3Ra[1],
                               p_inv=p_inv_anc, t_inv=t_inv_gen),
-            HullInversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
+            InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
                               p_inv=p_inv_anc, t_inv=t_inv_gen),
         ],
         seed=SEED_BASE + rep,
@@ -158,7 +156,7 @@ wins = np.linspace(0, L, NW + 1)
 mid = (wins[:-1] + wins[1:]) / 2
 
 fig = plt.figure(figsize=(12, 8))
-gs = GridSpec(2, 1, hspace=0.35)
+gs = GridSpec(2, 1, hspace=0.30)
 
 c_kf_same = '#2E7D32'   # K vs F-same (greenish)
 c_fs_fi = '#FF8F00'      # Fol within (orange)
@@ -192,8 +190,12 @@ ax_dxy.set_title(
     fontsize=11, fontweight='bold', loc='left')
 ax_dxy.tick_params(labelbottom=False)
 
-# Panel B: Da (the cleaner inversion signal)
-ax_da = fig.add_subplot(gs[1])
+# Panel B: Da on the SAME y-axis as Panel A so the magnitude
+# difference (Da is dxy minus avg pi → much smaller absolute value)
+# is visually obvious. This avoids the autoscale trap where Da and
+# dxy can look "the same magnitude" just because each panel
+# auto-fits its own range.
+ax_da = fig.add_subplot(gs[1], sharey=ax_dxy)
 ax_da.plot(mid, smooth(da_kf_same), '-', color=c_kf_same, lw=2,
            label=r'K vs F$_S$')
 ax_da.plot(mid, smooth(da_fs_fi), '-', color=c_fs_fi, lw=2,
@@ -202,16 +204,17 @@ ax_da.plot(mid, smooth(da_kf_alt), '-', color=c_kf_alt, lw=2,
            label=r'K vs F$_I$')
 shade_inv(ax_da)
 ax_da.axhline(0, color='#555', ls=':', lw=0.8)
-ax_da.set_ylabel(r'$D_a = d_{XY} - (\pi_A + \pi_B)/2$', fontsize=11)
+ax_da.set_ylabel(r'$D_a = d_{XY} - (\pi_A + \pi_B)/2$ (per bp)',
+                  fontsize=11)
 ax_da.set_xlabel('Position (bp)', fontsize=10)
 ax_da.set_xlim(0, L)
 ax_da.legend(fontsize=9, loc='upper right')
 ax_da.set_title(
-    r'B.  Net divergence $D_a$ (isolates the inversion signal)',
+    r'B.  Net divergence $D_a$ (same y-axis as A → magnitude visible)',
     fontsize=11, fontweight='bold', loc='left')
 
 annot = (
-    f'Hull simulator (msinv v0.2.0).  '
+    f'msinv v0.3.0 (hull algorithm).  '
     f'Ne_K = Ne_F = Ne_Anc = {Ne:,}, '
     f'T$_{{split}}$ = {t_split_gen:,} gen, '
     f'T$_{{inv}}$ = {t_inv_gen:,} gen.  '
@@ -227,9 +230,9 @@ fig.suptitle(
     'An. funestus Kir/Fol — 3Ra + 3Rb inversion divergence (hull simulator)',
     fontsize=12, fontweight='bold', y=0.99)
 
-fig.savefig('figures/empirical_kir_fol_hull.pdf',
+fig.savefig('figures/empirical_kir_fol.pdf',
             bbox_inches='tight', dpi=150)
-print('Saved: figures/empirical_kir_fol_hull.pdf')
+print('Saved: figures/empirical_kir_fol.pdf')
 
 # ---- Summary table ----
 print('\nIn-inv vs collinear ratios:')

@@ -2,15 +2,13 @@
 
 msinv simulates the coalescent for chromosomes carrying inversions.
 It implements the structured coalescent of Guerrero et al. (2012) and
-the gene flux model of Peischl et al. (2013), in two engines:
+the gene flux model of Peischl et al. (2013) on top of the msprime
+ARG hull algorithm (Kelleher et al. 2016). Each lineage carries the
+genomic intervals it is ancestral to; recombination splits intervals,
+coalescence merges them, gene conversion flips the karyotype label
+on a tract.
 
-- **`HullSimulator` (recommended)** — per-position ancestral material
-  tracking, msprime-style ARG. Architecturally correct.
-- **`MsinvSimulator` (legacy)** — single-tree SMC with prune-and-reattach.
-  Faster for simple inversion-only single-pop scenarios but less general.
-
-This document focuses on the model both engines implement; differences
-in how each engine *realizes* the model are noted in
+Implementation notes are in
 [`hull_algorithm_design.md`](hull_algorithm_design.md).
 
 ## The structured coalescent at one site
@@ -83,8 +81,8 @@ divergence near the breakpoints (less mixing there) and weaker
 divergence in the centre (more mixing).
 
 When a flux event fires at position *x*, a tract of length
-*w · inv_len* gets its karyotype flipped. The hull simulator handles
-this exactly via per-position class flips on the affected segment.
+*w · inv_len* gets its karyotype flipped — implemented exactly via
+per-position class flips on the affected segment.
 
 ## Multiple populations
 

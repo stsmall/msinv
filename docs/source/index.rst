@@ -1,18 +1,19 @@
 msinv documentation
 ===================
 
-**msinv** is a Python coalescent simulator for chromosomal inversions.
+**msinv** is a Python coalescent simulator for chromosomal inversions
+built on the msprime hull algorithm (per-position ancestral material
+tracking).
 
 Features:
 
-* Sequential Markov coalescent (SMC) with inversions
-* Structured coalescent between karyotype classes (S/I)
+* ARG-based per-position simulation
+* Cross-karyotype barrier (S vs I) with inversion-age (t_inv) cutoff
 * Position-dependent gene flux (Peischl et al. 2013)
-* Multiple inversions per chromosome
-* Per-population inversion frequency trajectories
-* ms-compatible demography
-* Tree sequence output (tskit)
-* msprime-compatible real-unit API
+* Multiple inversions per chromosome (overlapping / nested OK)
+* ms-style demography (size changes, growth, migration, merges)
+* Selective sweeps (force-coalescence)
+* Tree sequence (tskit) output
 
 .. toctree::
    :maxdepth: 2
@@ -29,17 +30,17 @@ Quick start
 
 .. code-block:: python
 
-   from msinv import MsinvSimulator
+   from msinv import HullSimulator, InversionSpec
 
-   sim = MsinvSimulator(
-       samples=10, population_size=10_000,
-       mutation_rate=1e-8, recombination_rate=1e-8,
+   sim = HullSimulator(
+       n_std=5, n_inv=5,
+       population_size=10_000,
        sequence_length=100_000,
-       n_std=5, n_inv=5, p_inv=0.5,
-       t_inv=200_000, bp_left=0.3, bp_right=0.7,
+       inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
+                                  p_inv=0.5, t_inv=200_000)],
        seed=42,
    )
-   positions, haplotypes = sim.simulate_one()
+   ts = sim.simulate()
 
 Indices
 =======

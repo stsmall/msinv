@@ -1,8 +1,7 @@
 # Example simulations
 
-All examples in `examples/` are validated against empirical data.
-The `_hull.py` examples use the recommended ARG-based simulator;
-the older non-suffixed examples use the legacy SMC simulator.
+All example scripts in `examples/` use the `HullSimulator` and are
+validated against empirical data or msprime ground truth.
 
 ## An. funestus Kiribina / Folonzo
 
@@ -10,21 +9,14 @@ Two An. funestus ecotypes in Burkina Faso, split ~1,300 years ago.
 Kiribina (K) is fixed for one homokaryotype of the 3Ra and 3Rb
 inversions; Folonzo (Fol) is polymorphic.
 
-**Hull version (recommended):**
 ```bash
-python examples/empirical_kir_fol_hull.py
+python examples/empirical_kir_fol.py
 ```
 
-Output: `figures/empirical_kir_fol_hull.pdf` showing dxy and Da
-across the chromosome, with the cross-karyotype divergence elevated
+Output: `figures/empirical_kir_fol.pdf` showing dxy and Da
+across the chromosome, with cross-karyotype divergence elevated
 inside both inversions and same-karyotype Da flat — matching Small et
 al. 2023 Fig S13.
-
-**Legacy SMC version:**
-```bash
-python examples/sim_kir_fol.py            # 4-scenario figure
-python examples/make_kir_fol_figure.py    # publication-style figure
-```
 
 ## An. gambiae RDL insecticide resistance
 
@@ -32,72 +24,27 @@ The RDL resistance allele arose on the 2L+a background and spread
 across the karyotype boundary via gene conversion under strong
 insecticide selection (Grau-Bové et al. 2020 MBE).
 
-**Hull version (recommended):**
 ```bash
-python examples/empirical_rdl_sweep_hull.py
+python examples/empirical_rdl_sweep.py
 ```
 
-Output: `figures/empirical_rdl_sweep_hull.pdf` — three scenarios
+Output: `figures/empirical_rdl_sweep.pdf` — three scenarios
 (neutral / S sweep only / S then I sweep) showing the dxy_SI and
 within-class pi signature.
 
-**Legacy SMC version:**
-```bash
-python examples/sim_rdl_sweep.py
-```
-
-## Other applications (legacy SMC simulator)
+## Presentation figures (1-8)
 
 ```bash
-python examples/sim_2La.py            # An. gambiae 2La (Fst ~0.53)
-python examples/sim_MAPT.py           # Human MAPT H1/H2 (dxy ~0.003)
-python examples/replicate_peischl.py  # Peischl 2013 T_SI ∝ 1/phi(x)
+python examples/make_figures.py
 ```
 
-## Three-way bake-off (msprime ↔ SMC ↔ hull)
+Produces 8 figures in `figures/` for talks and papers:
 
-```bash
-python examples/bakeoff.py
-```
-
-Six scenarios, head-to-head comparison. Highlights:
-
-- Panmictic baseline: all three engines agree.
-- Single inversion γ=0: SMC ≈ Hull (~1% diff).
-- Two-pop split: msprime/Hull agree; **SMC has a known bug** (cross-pop
-  dxy is ~half of expected).
-- Multi-inv: SMC ≈ Hull.
-
-## Pure SMC ↔ hull comparison
-
-```bash
-python examples/compare_smc_vs_hull.py
-```
-
-Side-by-side single-inversion comparison with mutations dropped via
-msprime on the hull TS so per-bp pi/dxy units are directly
-comparable. Demonstrates within ~5% agreement on inv-only single-pop
-scenarios.
-
-## Tree topology diagnostic
-
-```bash
-python examples/visualize_trees.py
-```
-
-Output: `figures/tree_topology_diagnostic.pdf` — tree topology at
-five positions (outside, near each breakpoint, centre). Shows that
-inside the inversion S samples cluster cleanly with each other and
-only meet I samples above t_inv. Outside the inversion samples mix
-panmictically.
-
-## Balanced-Ne demonstration
-
-```bash
-python examples/demo_kir_fol_balanced_Ne.py
-```
-
-Output: `figures/demo_kir_fol_Ne_balance.pdf` — same Kir/Fol scenario
-but with constant Ne for both populations. Demonstrates that the dxy
-"depression" seen in the original Kir/Fol example with Ne_F=3M is a
-known structured-coal artifact at extreme Ne asymmetry, not a bug.
+1. `fig1_inversion_signal.pdf` — dxy / pi / Da across an inversion
+2. `fig2_msprime_comparison.pdf` — msinv ↔ msprime in the no-inv limit
+3. `fig3_real_inversions.pdf` — An. funestus 3Ra-like + Human MAPT-like
+4. `fig4_multiple_inversions.pdf` — two inversions, two karyotype axes
+5. `fig5_trajectories.pdf` — Wright-Fisher origin trajectories + age dist
+6. `fig6_phi_profile.pdf` — Peischl phi(x) + cross-class T_MRCA
+7. `fig7_performance.pdf` — hull timing across rho with/without inv
+8. `fig8_feature_summary.pdf` — feature comparison vs msprime/discoal/SLiM

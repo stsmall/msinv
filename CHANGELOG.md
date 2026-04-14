@@ -2,6 +2,45 @@
 
 All notable changes to msinv are documented here.
 
+## [0.3.0] - 2026-04-13
+
+### Removed — Legacy SMC engine
+
+The single-tree SMC simulator (``MsinvSimulator``) is removed. The
+hull engine supersedes it on every axis (cross-karyotype barriers,
+multi-pop demographies, nested / overlapping inversions, sweeps,
+TreeSequence output) and the SMC engine had a known multi-pop bug
+that produced ~½ the expected cross-pop dxy. Anyone who needs the
+old engine can pin to v0.2.0.
+
+Removed:
+
+- ``msinv/simulator.py`` (~3500 lines)
+- ``msinv/walk_segment.py``
+- All 5 SMC test files (~1500 lines)
+- All SMC-only example scripts (``sim_*.py``,
+  ``make_kir_fol_figure.py``, ``replicate_peischl.py``,
+  ``visualize_trees.py``, ``demo_kir_fol_balanced_Ne.py``,
+  ``bakeoff.py``, ``compare_smc_vs_hull.py``,
+  ``make_flux_transfer_figure.py``)
+- ``slim_validation/`` (validation harness for the SMC engine)
+
+### Changed
+
+- ``msinv.InversionSpec`` and ``msinv.Demography`` now refer to the
+  hull versions (the SMC versions are gone). The Hull-prefixed
+  back-compat aliases (``HullInversionSpec``, ``HullDemography``)
+  introduced in v0.2.0 are also removed.
+- ``examples/empirical_kir_fol_hull.py`` → ``empirical_kir_fol.py``
+- ``examples/empirical_rdl_sweep_hull.py`` → ``empirical_rdl_sweep.py``
+- ``examples/make_figures.py`` rewritten to use the hull simulator;
+  fig 8 (feature table) updated accordingly.
+- Kir/Fol Da panel now shares the y-axis with the dxy panel so the
+  magnitude difference (Da << dxy) is visually obvious — addresses
+  the autoscale trap that made Da look "the same magnitude" as dxy.
+- Test suite: 98/98 hull tests pass (down from 123 because the SMC
+  tests are gone).
+
 ## [0.2.0] - 2026-04-13
 
 ### Added — Hull simulator (ARG-based, recommended)

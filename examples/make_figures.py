@@ -112,6 +112,7 @@ def fig1_inversion_signal():
             sequence_length=L,
             inversions=[InversionSpec(bp_left=bp_l, bp_right=bp_r,
                                        p_inv=0.5, t_inv=200_000)],
+            recombination_rate=1e-8,
             seed=4242 + rep,
         )
 
@@ -266,6 +267,7 @@ def fig3_real_inversions():
                 inversions=[InversionSpec(
                     bp_left=p['bp_l'], bp_right=p['bp_r'],
                     p_inv=p['p_inv'], t_inv=p['t_inv'])],
+                recombination_rate=1e-8,
                 seed=7000 + rep,
             )
 
@@ -334,6 +336,7 @@ def fig4_multiple_inversions():
                 InversionSpec(bp_left=inv_B[0], bp_right=inv_B[1],
                                p_inv=inv_B[2], t_inv=inv_B[3]),
             ],
+            recombination_rate=1e-8,
             seed=9000 + rep,
         )
 
@@ -502,6 +505,7 @@ def fig6_phi_profile():
                     bp_left=bp_l, bp_right=bp_r,
                     p_inv=0.5, t_inv=4 * Ne,
                     gene_conversion_rate=1e-7)],
+                recombination_rate=1e-8,
                 seed=20000 + rep,
             )
             ts = sim.simulate()

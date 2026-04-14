@@ -32,4 +32,5 @@ class TableBuilder:
 
     def finalize(self) -> tskit.TreeSequence:
         self.tc.sort()
-        return self.tc.tree_sequence()
+        ts = self.tc.tree_sequence()
+        return ts.simplify()

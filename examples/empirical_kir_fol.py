@@ -112,6 +112,7 @@ for rep in range(NREPS):
             InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
                               p_inv=p_inv_anc, t_inv=t_inv_gen),
         ],
+        recombination_rate=r,
         seed=SEED_BASE + rep,
     )
     try:

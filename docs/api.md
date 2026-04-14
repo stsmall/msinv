@@ -78,14 +78,20 @@ population merges.
 ```python
 demo = Demography(pop_sizes=[10_000, 10_000])
 
-# Events (time in generations):
-demo.add_event(('en', t, pop_i, x))      # set one pop's size to x*N0
-demo.add_event(('eg', t, pop_i, alpha))  # exponential growth
-demo.add_event(('em', t, i, j, M))       # migration rate from j into i
-demo.add_event(('ej', t, src, dst))      # merge src → dst
+# msprime-style named methods (recommended):
+demo.add_population_split(time=14_000, derived=[1], ancestral=0)
+demo.add_population_size_change(time=5_000, population=0, new_size=50_000)
+demo.add_growth_rate_change(time=1_000, population=0, growth_rate=0.005)
+demo.add_migration_rate_change(time=0, source=0, dest=1, rate=1e-4)
+
+# ms-style events also supported:
+demo.add_event(('en', t, pop_i, N))       # set one pop's size to N
+demo.add_event(('eg', t, pop_i, alpha))   # exponential growth
+demo.add_event(('em', t, dst, src, M))    # migration rate from src into dst
+demo.add_event(('ej', t, src, dst))       # merge src → dst
 
 # Query
-demo.get_size(pop, t)
+demo.size_at(pop, t)
 demo.copy()
 ```
 

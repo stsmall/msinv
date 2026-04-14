@@ -107,7 +107,7 @@ sim = HullSimulator(
 from msinv import HullSimulator, InversionSpec, Demography
 
 demo = Demography(pop_sizes=[10_000, 10_000])
-demo.add_event(('ej', 14_000, 1, 0))   # at t=14k gen, pop 1 → pop 0
+demo.add_population_split(time=14_000, derived=[1], ancestral=0)
 
 sim = HullSimulator(
     sample_config={('S', 0): 5, ('S', 1): 3, ('I', 1): 3},

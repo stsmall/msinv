@@ -24,7 +24,7 @@ import math
 import numpy as np
 
 from .lineage import Lineage, reset_uids
-from .segment import Segment
+from .segment import Segment, total_length
 from .tables import TableBuilder
 from .events import (apply_coalescence, apply_recombination,
                      apply_gene_flux, apply_migration)
@@ -639,6 +639,34 @@ class HullSimulator:
                     rates.append(('mig', m, (i, dst)))
         return rates
 
+    def _recomb_rates(self, active):
+        """Per-lineage recombination rates.
+
+        Returns list of ('recomb', rate, lineage_idx) where
+        rate = total_length(lineage) * self.r.
+        """
+        if self.r <= 0:
+            return []
+        rates = []
+        for idx, lin in enumerate(active):
+            mat = total_length(lin.head)
+            if mat > 0:
+                rates.append(('recomb', mat * self.r, idx))
+        return rates
+
+    def _offset_to_position(self, lineage, offset):
+        """Convert an offset within a lineage's ancestral material
+        to a genomic position."""
+        remaining = offset
+        seg = lineage.head
+        while seg is not None:
+            seg_len = seg.right - seg.left
+            if remaining < seg_len:
+                return seg.left + remaining
+            remaining -= seg_len
+            seg = seg.next
+        return self.L
+
     def _flux_lineage_weight(self, lineage, inv):
         """Per-lineage gene-flux weight under one ``InversionSpec``:
         ∫_inv phi(x) dx over the lineage's in-inv ancestral material,
@@ -961,7 +989,8 @@ class HullSimulator:
             coal = self._coal_rates(active, t)
             flux = self._flux_rates(active)
             mig = self._migration_rates(active, t)
-            all_events = coal + flux + mig
+            recomb = self._recomb_rates(active)
+            all_events = coal + flux + mig + recomb
             total = sum(r for _, r, _ in all_events)
 
             # Time of the next demographic event (or +inf).
@@ -1058,6 +1087,14 @@ class HullSimulator:
                     continue
                 apply_gene_flux(active, lineage, tract_left,
                                  tract_right, inv=inv)
+            elif chosen_kind == 'recomb':
+                idx = chosen_payload
+                lineage = active[idx]
+                # Pick a breakpoint within this lineage's material.
+                mat_len = total_length(lineage.head)
+                x_offset = self.rng.random() * mat_len
+                x = self._offset_to_position(lineage, x_offset)
+                apply_recombination(active, lineage, x)
             elif chosen_kind == 'mig':
                 idx, dst = chosen_payload
                 apply_migration(active[idx], dst)

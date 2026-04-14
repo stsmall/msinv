@@ -14,6 +14,7 @@ use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
+use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
 
 // ---------------------------------------------------------------
@@ -54,6 +55,7 @@ pub struct HullSimulator {
     pub sequence_length: f64,
     pub recombination_rate: f64,
     pub inversions: Vec<InversionSpec>,
+    pub sweeps: Vec<Sweep>,
     pub seed: u64,
 }
 
@@ -89,6 +91,7 @@ impl HullSimulator {
             sequence_length,
             recombination_rate,
             inversions,
+            sweeps: vec![],
             seed,
         }
     }
@@ -111,6 +114,7 @@ impl HullSimulator {
             sequence_length,
             recombination_rate,
             inversions: vec![],
+            sweeps: vec![],
             seed,
         }
     }
@@ -176,6 +180,10 @@ impl HullSimulator {
         let mut barrier_active: Vec<bool> = self.inversions.iter()
             .map(|_| true).collect();
 
+        // Pending sweeps, sorted by t_event (earliest first).
+        let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
+        pending_sweeps.sort_by(|a, b| a.t_event.partial_cmp(&b.t_event).unwrap());
+
         for _ in 0..10_000_000u64 {
             let n = active.len();
             if n <= 1 {
@@ -239,14 +247,25 @@ impl HullSimulator {
 
             let total_rate: f64 = events.iter().map(|(r, _)| *r).sum();
 
+            // Next sweep boundary.
+            let t_sweep = pending_sweeps.first()
+                .map(|s| s.t_event).unwrap_or(f64::INFINITY);
+
             // Next deterministic boundary.
-            let next_boundary = earliest_barrier.min(t_demo);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
 
             if total_rate <= 0.0 {
                 if next_boundary < f64::INFINITY {
                     t = next_boundary;
                     self.cross_barriers(active, arena, &mut barrier_active, t);
                     demo.apply_events_at(t, active);
+                    if !pending_sweeps.is_empty()
+                        && (pending_sweeps[0].t_event - t).abs() < 1e-9
+                    {
+                        let sweep = pending_sweeps.remove(0);
+                        apply_sweep(active, &sweep, t, arena, tables,
+                                     next_uid, self.sequence_length);
+                    }
                     continue;
                 }
                 return;
@@ -262,6 +281,13 @@ impl HullSimulator {
                 t = next_boundary;
                 self.cross_barriers(active, arena, &mut barrier_active, t);
                 demo.apply_events_at(t, active);
+                if !pending_sweeps.is_empty()
+                    && (pending_sweeps[0].t_event - t).abs() < 1e-9
+                {
+                    let sweep = pending_sweeps.remove(0);
+                    apply_sweep(active, &sweep, t, arena, tables,
+                                 next_uid, self.sequence_length);
+                }
                 continue;
             }
             t = t_event;
@@ -765,6 +791,91 @@ fn find_position(
     seq_len
 }
 
+/// Force-coalesce all qualifying lineages at a sweep event.
+///
+/// Qualifying: has material at x_sel, class matches sweep.target,
+/// population matches sweep.population. The sweep window
+/// [x_sel - w, x_sel + w] is split out of each qualifying lineage,
+/// then all windows are sequentially coalesced.
+fn apply_sweep(
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    seq_len: f64,
+) {
+    let x_lo = if sweep.sweep_window > 0.0 {
+        sweep.x_sel - sweep.sweep_window
+    } else {
+        sweep.x_sel
+    };
+    let x_hi = if sweep.sweep_window > 0.0 {
+        sweep.x_sel + sweep.sweep_window
+    } else {
+        sweep.x_sel + (seq_len * 1e-12).max(1e-9)
+    };
+
+    // Identify qualifying lineage indices.
+    let mut qualifying: Vec<usize> = Vec::new();
+    for (i, lin) in active.iter().enumerate() {
+        if let Some(pop) = sweep.population {
+            if lin.population != pop { continue; }
+        }
+        if let Some(cls) = lin.class_at(sweep.x_sel, arena) {
+            if sweep.class_matches(cls) {
+                qualifying.push(i);
+            }
+        }
+    }
+    if qualifying.len() < 2 { return; }
+
+    // Split each qualifying lineage at x_lo and x_hi so the sweep
+    // window is isolated. Collect window lineage UIDs (not indices —
+    // indices go stale after apply_coalescence's swap_remove).
+    let mut window_uids: Vec<LinUid> = Vec::new();
+    qualifying.sort_unstable();
+    for &orig_idx in qualifying.iter().rev() {
+        let uid1 = *next_uid; *next_uid += 1;
+        let rest = active[orig_idx].split_at(x_lo, arena, uid1);
+        if rest.is_none() { continue; }
+        let mut rest = rest.unwrap();
+        let uid2 = *next_uid; *next_uid += 1;
+        let right_of_hi = rest.split_at(x_hi, arena, uid2);
+
+        if active[orig_idx].head == SEG_NIL {
+            active.swap_remove(orig_idx);
+        }
+        if let Some(right) = right_of_hi {
+            if right.head != SEG_NIL {
+                active.push(right);
+            }
+        }
+        if rest.head != SEG_NIL {
+            let rest_uid = rest.uid;
+            active.push(rest);
+            window_uids.push(rest_uid);
+        }
+    }
+
+    if window_uids.len() < 2 { return; }
+
+    // Sequentially coalesce all window lineages by UID.
+    let eps = (t * 1e-12).max(1e-9);
+    let mut merged_uid = window_uids[0];
+    for (k, &other_uid) in window_uids[1..].iter().enumerate() {
+        let t_merge = t + (k as f64 + 1.0) * eps;
+        let mi = active.iter().position(|l| l.uid == merged_uid);
+        let oi = active.iter().position(|l| l.uid == other_uid);
+        if let (Some(mi), Some(oi)) = (mi, oi) {
+            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid);
+            // Merged lineage is the last one pushed by apply_coalescence.
+            merged_uid = active.last().unwrap().uid;
+        }
+    }
+}
+
 // ---------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------
@@ -882,6 +993,7 @@ mod tests {
             sequence_length: 100.0,
             recombination_rate: 0.0,
             inversions: vec![],
+            sweeps: vec![],
             seed: 42,
         };
         let result = sim.simulate();
@@ -916,6 +1028,7 @@ mod tests {
             sequence_length: 100.0,
             recombination_rate: 0.0,
             inversions: vec![],
+            sweeps: vec![],
             seed: 42,
         };
         let result = sim.simulate();
@@ -951,11 +1064,63 @@ mod tests {
             sequence_length: 100.0,
             recombination_rate: 0.0,
             inversions: vec![inv],
+            sweeps: vec![],
             seed: 42,
         };
         let result = sim.simulate();
         // Should complete. Cross-pop + cross-karyotype TMRCA >=
         // max(t_split=500, t_inv=5000) = 5000.
         assert!(result.tables.num_nodes() >= 11);
+    }
+
+    #[test]
+    fn sweep_reduces_diversity_in_window() {
+        use crate::sweep::Sweep;
+        // Sweep at centre of [0, 100) at t=100 gen — all lineages
+        // carrying material at x=50 coalesce to a single ancestor.
+        let mut sim = HullSimulator::panmictic(
+            6, 10_000.0, 100.0, 0.0, 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50.0,
+            t_event: 100.0,
+            target: None,       // all classes
+            population: None,
+            sweep_window: 10.0, // [40, 60)
+        });
+        let result = sim.simulate();
+        // 6 samples should still all end up in a tree. The sweep
+        // forces a coalescence at t=100 for the [40,60] window.
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+        // There should be at least one node at t ≈ 100 (the sweep).
+        let near_100 = result.tables.node_time.iter()
+            .filter(|&&t| (t - 100.0).abs() < 1.0)
+            .count();
+        assert!(near_100 >= 1,
+            "Expected node(s) at t~100 from sweep, found {}", near_100);
+    }
+
+    #[test]
+    fn sweep_on_s_class_only() {
+        use crate::sweep::Sweep;
+        let inv = InversionSpec {
+            bp_left: 20.0, bp_right: 80.0,
+            p_inv: 0.5, t_inv: 50_000.0,
+            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            4, 4, 5_000.0, 100.0, 0.0, vec![inv], 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50.0,
+            t_event: 200.0,
+            target: Some((0, Karyotype::S)), // only S lineages
+            population: None,
+            sweep_window: 5.0,
+        });
+        let result = sim.simulate();
+        // Should complete without panic. S lineages coalesce at t=200
+        // near x=50; I lineages are unaffected by the sweep.
+        assert!(result.tables.num_nodes() >= 15,
+            "Got {} nodes", result.tables.num_nodes());
     }
 }

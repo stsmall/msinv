@@ -1,8 +1,7 @@
 # Quick start
 
-This guide walks through the recommended ARG-based **hull simulator**.
-For the legacy SMC simulator (kept for backwards compatibility), see
-the bottom of this page.
+This guide walks through the `HullSimulator` — msinv's ARG-based
+per-position ancestral material tracking simulator.
 
 ## Install
 
@@ -58,21 +57,21 @@ ts = sim.simulate()
 
 ## Multiple inversions
 
-Pass a list of ``HullInversionSpec`` objects:
+Pass a list of ``InversionSpec`` objects:
 
 ```python
-from msinv import HullSimulator, HullInversionSpec
+from msinv import HullSimulator, InversionSpec
 
 sim = HullSimulator(
     n_std=5, n_inv=5,
     population_size=10_000,
     sequence_length=100_000,
     inversions=[
-        HullInversionSpec(bp_left=10_000, bp_right=40_000,
-                          p_inv=0.5, t_inv=200_000),
-        HullInversionSpec(bp_left=60_000, bp_right=90_000,
-                          p_inv=0.3, t_inv=300_000,
-                          gene_conversion_rate=1e-9),
+        InversionSpec(bp_left=10_000, bp_right=40_000,
+                      p_inv=0.5, t_inv=200_000),
+        InversionSpec(bp_left=60_000, bp_right=90_000,
+                      p_inv=0.3, t_inv=300_000,
+                      gene_conversion_rate=1e-9),
     ],
     seed=42,
 )
@@ -105,17 +104,17 @@ sim = HullSimulator(
 ## Two populations with a split
 
 ```python
-from msinv import HullSimulator, HullInversionSpec, HullDemography
+from msinv import HullSimulator, InversionSpec, Demography
 
-demo = HullDemography(pop_sizes=[10_000, 10_000])
+demo = Demography(pop_sizes=[10_000, 10_000])
 demo.add_event(('ej', 14_000, 1, 0))   # at t=14k gen, pop 1 → pop 0
 
 sim = HullSimulator(
     sample_config={('S', 0): 5, ('S', 1): 3, ('I', 1): 3},
     demography=demo,
     sequence_length=100_000,
-    inversions=[HullInversionSpec(bp_left=30_000, bp_right=70_000,
-                                    p_inv=0.3, t_inv=385_000)],
+    inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
+                               p_inv=0.3, t_inv=385_000)],
     seed=42,
 )
 ts = sim.simulate()
@@ -157,28 +156,9 @@ print(mts.diversity())         # tskit's pi
 print(mts.divergence([[0,1,2,3,4], [5,6,7,8,9]]))
 ```
 
-## Legacy SMC simulator (back-compat)
-
-The original SMC engine remains available. New code should prefer
-``HullSimulator``; the SMC simulator has a known multi-pop bug
-(see [`docs/known_issues.md`](known_issues.md)).
-
-```python
-from msinv import MsinvSimulator   # legacy
-
-sim = MsinvSimulator(
-    samples=10, population_size=10_000,
-    mutation_rate=1e-8, recombination_rate=1e-8,
-    sequence_length=100_000,
-    n_std=5, n_inv=5, p_inv=0.5, t_inv=200_000,
-    bp_left=30_000, bp_right=70_000, seed=42,
-)
-positions, haplotypes = sim.simulate_one()
-```
-
 ## Next steps
 
 - [Theory background](theory.md) — what the simulator is doing under the hood
-- [Hull algorithm design](hull_algorithm_design.md) — implementation phases
-- [Known issues](known_issues.md) — the SMC bug history and current limitations
-- [Examples](examples.md) — Kir/Fol, RDL, 2La, MAPT validated applications
+- [Hull algorithm design](hull_algorithm_design.md) — implementation notes
+- [Known issues](known_issues.md) — current limitations
+- [Examples](examples.md) — Kir/Fol, RDL, presentation figures

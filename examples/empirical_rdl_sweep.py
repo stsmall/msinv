@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""RDL sweep-through-inversion under the hull simulator.
+"""RDL sweep-through-inversion.
 
 Reproduces the haplotype asymmetry signature of the Anopheles RDL
 (dieldrin resistance) sweep through a 2L inversion (Grau-Bové et al.
-2020 MBE), now using the ARG-based hull simulator (msinv 0.2.0).
+2020 MBE) using msinv's hull simulator.
 
 Three scenarios (each n_S + n_I haplotypes inside one inversion):
 
@@ -11,7 +11,7 @@ Three scenarios (each n_S + n_I haplotypes inside one inversion):
   2. Sweep on S background ONLY, no flux yet.
   3. Sweep on S, then gene flux transferred RDL to I, then I sweep.
 
-Outputs ``figures/empirical_rdl_sweep_hull.pdf`` showing dxy_SI and
+Outputs ``figures/empirical_rdl_sweep.pdf`` showing dxy_SI and
 within-class pi vs position around the selected site x_sel.
 """
 import time
@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import msprime
 
-from msinv import HullSimulator, HullInversionSpec, Sweep
+from msinv import HullSimulator, InversionSpec, Sweep
 
 
 # --- Parameters ---
@@ -89,7 +89,7 @@ def run_scenario(label, sweeps):
             population_size=Ne,
             sequence_length=L,
             inversions=[
-                HullInversionSpec(bp_left=bp_l, bp_right=bp_r,
+                InversionSpec(bp_left=bp_l, bp_right=bp_r,
                                   p_inv=p_inv_freq, t_inv=t_inv_age),
             ],
             sweeps=sweeps,
@@ -179,12 +179,12 @@ for col, label in enumerate(labels):
         ax_bot.legend(fontsize=8, loc='upper right')
 
 fig.suptitle(
-    f'RDL-like sweep through inversion (hull simulator, msinv v0.2.0)\n'
+    f'RDL-like sweep through inversion (msinv v0.3.0)\n'
     f'Ne={Ne:,}, p_inv={p_inv_freq}, x_sel={x_sel:,} bp, '
     f't_sweep_S={t_sweep_S} gen, t_sweep_I={t_sweep_I} gen, '
     f'{NREPS} replicates',
     fontsize=12, fontweight='bold', y=1.02)
 fig.tight_layout()
-fig.savefig('figures/empirical_rdl_sweep_hull.pdf',
+fig.savefig('figures/empirical_rdl_sweep.pdf',
             bbox_inches='tight', dpi=150)
-print('\nSaved: figures/empirical_rdl_sweep_hull.pdf')
+print('\nSaved: figures/empirical_rdl_sweep.pdf')

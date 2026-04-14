@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "msinv"
-version = "0.2.0"
-description = "Coalescent simulator with chromosomal inversions (ARG-based hull + legacy SMC)"
+version = "0.3.0"
+description = "ARG-based coalescent simulator with chromosomal inversions"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -40,8 +40,7 @@ dependencies = [
 test = [
     "pytest>=7.0",
     "pytest-timeout",
-    "msprime>=1.2",     # required for the bake-off cross-validation
-    "stdpopsim>=0.2",
+    "msprime>=1.2",     # for mutation dropping in figure-generating examples
 ]
 plots = [
     "matplotlib>=3.5",
@@ -101,16 +100,13 @@ tskit = ">=0.5"
 pytest = ">=7.0"
 pytest-timeout = "*"
 msprime = ">=1.2"
-stdpopsim = ">=0.2"
 
 [tool.pixi.feature.plots.dependencies]
 matplotlib = ">=3.5"
 
 [tool.pixi.feature.test.tasks]
-test = "pytest tests/"
-test-hull = "pytest tests/hull/"
-test-smc = "pytest tests/test_*.py"
-bakeoff = "python examples/bakeoff.py"
+test = "pytest tests/hull/"
+figures = "python examples/make_figures.py"
 
 [tool.pixi.environments]
 default = { features = [], solve-group = "default" }

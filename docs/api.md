@@ -1,149 +1,100 @@
 # API reference
 
-Full API documentation is auto-generated via Sphinx in `docs/source/`. See the rendered version at [readthedocs](https://msinv.readthedocs.io) (when published).
+Full API documentation is auto-generated via Sphinx in `docs/source/`.
+The brief reference below covers the classes you'll use day-to-day.
 
-## Core classes
+## `HullSimulator`
 
-### `MsinvSimulator`
+ARG-based per-position ancestral material tracking simulator. Returns
+a [tskit](https://tskit.dev) `TreeSequence`.
 
-Main simulator class.
+### Constructor
 
-**Constructors (two APIs):**
-
-**msprime-style (real units):**
 ```python
-MsinvSimulator(
-    samples=10,                    # number of haploid samples (int)
-    population_size=10000,         # Ne
-    mutation_rate=1e-8,            # per bp per generation
-    recombination_rate=1e-8,       # per bp per generation
-    sequence_length=100000,        # in bp
-    gene_conversion_rate=None,     # per bp per generation (optional)
-    # Inversion parameters
-    n_std=5, n_inv=5,
-    p_inv=0.5,
-    bp_left=0.3, bp_right=0.7,     # as fractions [0, 1]
-    t_inv=200000,                  # in generations
-    # Advanced
-    p_inv_func=None,               # custom trajectory
-    inversions=None,               # list of InversionSpec
-    demography=None,               # Demography object
-    sweep=None,                    # (x_sel, s, origin_class)
-    seed=42,
+HullSimulator(
+    # ----- samples -----
+    n_std=5, n_inv=5,                # back-compat: linked-karyotype, single pop
+    sample_config=None,              # OR {(class, pop): n} dict for full control
+    # ----- demography -----
+    population_size=10_000,          # used when no `demography` passed
+    demography=None,                 # Demography object for multi-pop
+    # ----- chromosome -----
+    sequence_length=100_000,
+    recombination_rate=0.0,
+    # ----- inversion(s) -----
+    bp_left=None, bp_right=None,     # back-compat: single inversion
+    p_inv=None, t_inv=None,
+    gene_conversion_rate=0.0,
+    flux_window=0.05,
+    inversions=None,                 # OR list of InversionSpec
+    # ----- selection -----
+    sweeps=None,                     # list of Sweep
+    # ----- misc -----
+    seed=None,
 )
 ```
 
-**ms-style (coalescent units):**
-```python
-MsinvSimulator(
-    nsam=10, theta=10, rho=50, nsites=1000,
-    n_std=5, n_inv=5, p_inv=0.5, gamma=0.05,
-    t_inv=10.0,
-    ...
-)
-```
+### Methods
 
-**Methods:**
-- `simulate_one()` → `(positions, haplotypes)` in ms format
-- `simulate_one_ts()` → tskit TreeSequence
+- `simulate()` → `tskit.TreeSequence`
 
-### `InversionSpec`
-
-Specification for a single inversion (used with multiple inversions).
+## `InversionSpec`
 
 ```python
 InversionSpec(
-    bp_left=0.1, bp_right=0.3,
+    bp_left=30_000, bp_right=70_000,
     p_inv=0.5,
-    c=0.01,                # Peischl flux coefficient
-    gamma=None,            # OR absolute flux rate (coal units)
-    t_inv=10.0,
-    flux_w=0.3,
-    trajectory=None,       # optional p_inv_func
-    label='inv1',
+    t_inv=200_000,                   # generations
+    gene_conversion_rate=0.0,        # γ per bp per gen (Peischl 2013 model)
+    flux_window=0.05,                # tract width as fraction of inv length
 )
 ```
 
-### `Demography`
+Inversions may overlap or nest. Each contributes its own `t_inv`
+barrier independently. The simulator tags class labels with the
+inversion's id (e.g. `'S0'`, `'I1'`).
 
-ms-compatible demography with events.
+## `Sweep`
+
+Forced-coalescence selective sweep at a single position and time.
 
 ```python
-demo = Demography(n_pops=2, mig_rate=0.001)
+Sweep(
+    x_sel=50_000,                    # selected site (bp)
+    t_event=300,                     # sweep MRCA at 300 gen ago
+    target_class='S',                # 'S'/'I' (single inv) or 'S0'/'I0' etc.
+    sweep_window=500.0,              # ±bp around x_sel that get force-merged
+)
+```
 
-# Events (time in coalescent units, 2N generations):
-demo.add_event(('eN', t, x))              # set all pop sizes to x*N0
-demo.add_event(('en', t, pop_i, x))       # set one pop size
-demo.add_event(('eG', t, alpha))          # set all growth rates
-demo.add_event(('eg', t, pop_i, alpha))   # set one pop growth
-demo.add_event(('eM', t, M))              # set symmetric migration
-demo.add_event(('em', t, i, j, M))        # set pairwise migration
-demo.add_event(('ej', t, src, dst))       # merge populations
-demo.add_event(('es', t, pop_i, p))       # admixture split
+Stack sweeps (e.g., one S, one I) to model an introgressed allele
+that swept through both arrangements (RDL pattern).
+
+## `Demography`
+
+ms-style demography with size changes, growth, migration, and
+population merges.
+
+```python
+demo = Demography(pop_sizes=[10_000, 10_000])
+
+# Events (time in generations):
+demo.add_event(('en', t, pop_i, x))      # set one pop's size to x*N0
+demo.add_event(('eg', t, pop_i, alpha))  # exponential growth
+demo.add_event(('em', t, i, j, M))       # migration rate from j into i
+demo.add_event(('ej', t, src, dst))      # merge src → dst
 
 # Query
-demo.get_size(pop, t)                # N(t) for a population
-demo.coal_rate_factor(pop, t)        # 1/N(t)
-demo.copy()                          # fresh copy for replicate
-
-# After modifying pop_sizes directly (not via add_event):
-demo.snapshot_initial_state()
+demo.get_size(pop, t)
+demo.copy()
 ```
 
-## Frequency trajectories
+## Output
 
-All have `__call__(t, pop=0)` returning p_inv(t).
+`sim.simulate()` returns a `tskit.TreeSequence`. From there you can:
 
-### `ConstantFrequency`
-```python
-ConstantFrequency(p_inv=0.5, t_inv=10.0)
-```
-
-### `DeterministicTrajectory`
-Logistic sweep from 1/(2N) to p_final under selection s.
-```python
-DeterministicTrajectory(p_final=0.5, N=10000, s=0.01)
-```
-
-### `StochasticTrajectory`
-WF diffusion backward with reflecting boundary (models recurrent origins).
-```python
-StochasticTrajectory(p_final=0.5, N=10000, s=0.0, rng=rng)
-```
-
-### `CoupledTrajectory`
-Per-population 2D diffusion with local selection and migration.
-```python
-CoupledTrajectory(
-    p_final=[0.7, 0.1],    # per-pop present-day freq
-    N=[10000, 10000],      # per-pop Ne
-    s=[0.01, 0.0],         # per-pop selection
-    m=0.001,               # migration rate
-    rng=rng,
-)
-```
-
-## Output formats
-
-### ms format
-```python
-positions, haplotypes = sim.simulate_one()
-# positions: list of floats in [0, 1]
-# haplotypes: numpy array (nsam × n_sites) of 0/1
-```
-
-### Tree sequence
-```python
-ts = sim.simulate_one_ts()
-# Returns tskit.TreeSequence
-# Can be saved: ts.dump("out.trees")
-# Can be analyzed: ts.diversity(), ts.divergence(), etc.
-```
-
-## Utility functions
-
-- `phi(x, w)` — compute phi(x) at position x within inversion
-- `GeneFluxModel(w)` — gene flux model with window w
-- `get_all_nodes(root)`, `find_root(node)` — tree helpers
-- `build_initial_tree(...)` — n=2 utility for exact validation
-- `simulate_one_n2(...)` — n=2 exact simulation (for tests)
+- Drop mutations: `mts = msprime.sim_mutations(ts, rate=mu, random_seed=s)`
+- Compute statistics: `mts.diversity()`, `mts.divergence([[0,1,2],[3,4,5]])`,
+  `mts.Fst(...)`, `mts.genotype_matrix()`, etc.
+- Save / load: `ts.dump('out.trees')`, `tskit.load('out.trees')`
+- Inspect trees: `ts.at(position)`, `for tree in ts.trees(): ...`

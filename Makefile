@@ -1,16 +1,10 @@
-.PHONY: test test-hull test-smc bakeoff build clean install dev-install
+.PHONY: test figures build clean install dev-install
 
 test:
-	pytest tests/
-
-test-hull:
 	pytest tests/hull/
 
-test-smc:
-	pytest tests/test_*.py
-
-bakeoff:
-	python examples/bakeoff.py
+figures:
+	python examples/make_figures.py
 
 build:
 	python -m build

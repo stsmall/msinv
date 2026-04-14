@@ -1,462 +1,665 @@
 #!/usr/bin/env python3
-"""
-Generate presentation figures for msinv.
+"""Generate presentation figures for msinv (hull simulator).
 
-Produces PDF figures showing:
-1. Inversion divergence signal (dxy, pi, Fst across chromosome)
-2. Comparison with msprime/stdpopsim
-3. Real data: Anopheles 2La and Human MAPT
-4. Multiple inversions
-5. Stochastic trajectory
-6. Performance benchmarks
-7. phi(x) gene flux profile
-"""
+Produces 8 PDF figures showing:
 
-import sys
+  1. Inversion divergence signal (dxy, pi, Da across chromosome)
+  2. msinv vs msprime ground truth (no inversion → identical)
+  3. Real inversions — An. funestus 3Ra (Kir/Fol) + Human MAPT
+  4. Multiple inversions on one chromosome
+  5. Inversion origin trajectories (forward-time Wright-Fisher)
+  6. phi(x) gene-flux profile + cross-class T_MRCA
+  7. Performance scaling with rho and Ne
+  8. Feature summary table
+
+All sims use HullSimulator (the only engine in msinv >= 0.3.0).
+"""
 import os
+import time
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-import msinv
 
 import msprime
+import msinv
+from msinv import HullSimulator, InversionSpec, Demography
+from msinv.hull.simulator import _phi
+
 
 OUTDIR = os.path.join(os.path.dirname(__file__), '..', 'figures')
 os.makedirs(OUTDIR, exist_ok=True)
 
 
+# ============================================================
+# Helpers
+# ============================================================
+
+def windowed_dxy(haps, pos_bp, ga, gb, wins):
+    """Per-bp dxy in each window."""
+    out = np.zeros(len(wins) - 1)
+    for w in range(len(wins) - 1):
+        m = (pos_bp >= wins[w]) & (pos_bp < wins[w + 1])
+        if not m.any():
+            continue
+        d, n = 0, 0
+        for a in ga:
+            for b in gb:
+                d += int((haps[a, m] != haps[b, m]).sum())
+                n += 1
+        out[w] = d / n / (wins[w + 1] - wins[w])
+    return out
+
+
+def windowed_pi(haps, pos_bp, grp, wins):
+    out = np.zeros(len(wins) - 1)
+    for w in range(len(wins) - 1):
+        m = (pos_bp >= wins[w]) & (pos_bp < wins[w + 1])
+        if not m.any():
+            continue
+        d, n = 0, 0
+        for i in range(len(grp)):
+            for j in range(i + 1, len(grp)):
+                d += int((haps[grp[i], m] != haps[grp[j], m]).sum())
+                n += 1
+        out[w] = d / max(n, 1) / (wins[w + 1] - wins[w])
+    return out
+
+
+def smooth(y, k=3):
+    return np.convolve(y, np.ones(k) / k, mode='same')
+
+
+def run_replicates(builder, mu, n_reps, mut_seed=2026):
+    """Run n_reps hull sims (factory closure), drop mutations, return (haps_list, pos_list)."""
+    mut_rng = np.random.default_rng(mut_seed)
+    out = []
+    for rep in range(n_reps):
+        sim = builder(rep)
+        try:
+            ts = sim.simulate()
+        except Exception:
+            continue
+        seed = int(mut_rng.integers(1, 2 ** 31))
+        mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed,
+                                    discrete_genome=False)
+        haps = mts.genotype_matrix().T
+        pos = np.array([v.site.position for v in mts.variants()])
+        out.append((haps, pos))
+    return out
+
+
+# ============================================================
+# Fig 1 — Inversion divergence signal (dxy, pi, Da)
+# ============================================================
+
 def fig1_inversion_signal():
-    """Figure 1: The inversion divergence signal — dxy, pi_S, pi_I, Fst."""
     print("Fig 1: Inversion signal...")
-    NR = 200; NW = 20
-    sim_params = dict(nsam=10, nreps=1, theta=40, rho=100, nsites=1000,
-        n_std=5, n_inv=5, p_inv=0.5, c=0.01, t_inv=20.0,
-        bp_left=0.3, bp_right=0.7)
-
-    wins = np.linspace(0, 1, NW+1)
+    Ne = 50_000
+    mu = 1e-8
+    L = 100_000
+    bp_l, bp_r = 30_000, 70_000
+    n_S, n_I = 8, 8
+    NW = 30
+    NREPS = 100
+    wins = np.linspace(0, L, NW + 1)
     mid = (wins[:-1] + wins[1:]) / 2
-    dxy = np.zeros(NW); pi_s = np.zeros(NW); pi_i = np.zeros(NW)
-    n_ok = 0
 
-    for rep in range(NR):
-        sim = msinv.MsinvSimulator(seed=42+rep, **sim_params)
-        pos, haps = sim.simulate_one()
-        if len(pos) == 0: continue
-        n_ok += 1
-        sh = haps[:5]; ih = haps[5:]
-        for w in range(NW):
-            idx = [j for j, p in enumerate(pos) if wins[w] <= p < wins[w+1]]
-            if not idx: continue
-            s = sh[:, idx]; inv = ih[:, idx]
-            dxy[w] += sum(np.sum(s[a]!=inv[b]) for a in range(5) for b in range(5))/25
-            pi_s[w] += sum(np.sum(s[a]!=s[b]) for a in range(5) for b in range(a+1,5))/10
-            pi_i[w] += sum(np.sum(inv[a]!=inv[b]) for a in range(5) for b in range(a+1,5))/10
+    def build(rep):
+        return HullSimulator(
+            n_std=n_S, n_inv=n_I,
+            population_size=Ne,
+            sequence_length=L,
+            inversions=[InversionSpec(bp_left=bp_l, bp_right=bp_r,
+                                       p_inv=0.5, t_inv=200_000)],
+            seed=4242 + rep,
+        )
 
-    dxy /= n_ok; pi_s /= n_ok; pi_i /= n_ok
+    reps = run_replicates(build, mu=mu, n_reps=NREPS)
+    print(f"  {len(reps)}/{NREPS} reps OK")
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    dxy = np.zeros(NW); pi_S = np.zeros(NW); pi_I = np.zeros(NW)
+    S = list(range(n_S)); I = list(range(n_S, n_S + n_I))
+    for haps, pos in reps:
+        dxy += windowed_dxy(haps, pos, S, I, wins)
+        pi_S += windowed_pi(haps, pos, S, wins)
+        pi_I += windowed_pi(haps, pos, I, wins)
+    n = len(reps)
+    dxy /= n; pi_S /= n; pi_I /= n
+    da = dxy - (pi_S + pi_I) / 2
 
-    ax1.plot(mid, dxy, 'r-', lw=2, label='$d_{xy}$ (S-I)')
-    ax1.plot(mid, pi_s, 'b-', lw=2, label='$\\pi_S$ (Standard)')
-    ax1.plot(mid, pi_i, 'g-', lw=2, label='$\\pi_I$ (Inverted)')
-    ax1.axvspan(0.3, 0.7, alpha=0.1, color='gray')
-    ax1.set_ylabel('Pairwise differences')
-    ax1.legend(loc='upper right')
-    ax1.set_title(f'Inversion divergence signal (n=10, $\\rho$=100, t_inv=20, c=0.01)')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
 
-    # Fst
-    fst = np.where(dxy > 0, 1 - (pi_s + pi_i)/(2*dxy), 0)
-    ax2.plot(mid, fst, 'k-', lw=2)
-    ax2.axvspan(0.3, 0.7, alpha=0.1, color='gray')
-    ax2.axhline(0, color='gray', ls='--', lw=0.5)
-    ax2.set_ylabel('$F_{ST}$')
-    ax2.set_xlabel('Chromosome position')
-    ax2.set_ylim(-0.1, 1.0)
+    ax1.plot(mid, smooth(dxy), '-', color='#C62828', lw=2.2,
+             label=r'$d_{XY}$ (S vs I)')
+    ax1.plot(mid, smooth(pi_S), '-', color='#1565C0', lw=2,
+             label=r'$\pi_S$ (within S)')
+    ax1.plot(mid, smooth(pi_I), '-', color='#2E7D32', lw=2,
+             label=r'$\pi_I$ (within I)')
+    ax1.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0,
+                label='inversion')
+    ax1.set_ylabel('Per-bp diversity / divergence', fontsize=11)
+    ax1.legend(loc='upper right', fontsize=9)
+    ax1.set_title(
+        f'A. Inversion divergence signal '
+        f'(Ne={Ne:,}, t_inv=200k gen, n_S={n_S}, n_I={n_I}, {n} reps)',
+        fontsize=11, loc='left')
 
-    for ax in [ax1, ax2]:
-        ax.axvline(0.3, color='red', ls=':', lw=1, alpha=0.5)
-        ax.axvline(0.7, color='red', ls=':', lw=1, alpha=0.5)
+    # Da on its own panel — same y-scale as panel A so the magnitude
+    # difference (Da << dxy outside the inv) is visually obvious.
+    ax2.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2.2,
+             label=r'$D_a = d_{XY} - (\pi_S+\pi_I)/2$')
+    ax2.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
+    ax2.axhline(0, color='gray', ls=':', lw=0.7)
+    ax2.set_ylim(ax1.get_ylim())   # share y-scale → magnitude visible
+    ax2.set_ylabel(r'$D_a$', fontsize=11)
+    ax2.set_xlabel('Chromosome position (bp)', fontsize=10)
+    ax2.legend(loc='upper right', fontsize=9)
+    ax2.set_title('B. Net divergence (isolates the inversion barrier)',
+                   fontsize=11, loc='left')
+
+    for ax in (ax1, ax2):
+        ax.axvline(bp_l, color='red', ls=':', lw=1, alpha=0.5)
+        ax.axvline(bp_r, color='red', ls=':', lw=1, alpha=0.5)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig1_inversion_signal.pdf'))
     plt.close()
-    print(f"  Done ({n_ok} reps)")
 
+
+# ============================================================
+# Fig 2 — msinv (no inversion) ↔ msprime ground truth
+# ============================================================
 
 def fig2_msprime_comparison():
-    """Figure 2: msinv vs msprime standard coalescent."""
     print("Fig 2: msprime comparison...")
-    N = 10000
-    rho_vals = [10, 50, 100]
+    Ne = 10_000
+    mu = 1e-8
+    L = 100_000
+    rho_vals = [10, 50, 100]   # 4*Ne*r*L
     ms_S = []; mp_S = []
+    NREPS = 100
 
     for rho in rho_vals:
-        s_ms = [len(msinv.MsinvSimulator(nsam=10, nreps=1, theta=10, rho=rho,
-            nsites=1000, p_inv=0, c=0, seed=s).simulate_one()[0])
-            for s in range(200)]
+        r = rho / (4 * Ne * L)
+        # msinv hull, NO inversion (n_inv=0, n_std = full sample)
+        s_ms = []
+        for s in range(NREPS):
+            sim = HullSimulator(
+                n_std=10, n_inv=0,
+                population_size=Ne,
+                sequence_length=L,
+                recombination_rate=r,
+                seed=s + 100,
+            )
+            ts = sim.simulate()
+            mts = msprime.sim_mutations(ts, rate=mu, random_seed=s + 200,
+                                        discrete_genome=False)
+            s_ms.append(mts.num_mutations)
         ms_S.append(np.mean(s_ms))
 
+        # msprime ground truth
         s_mp = []
-        for s in range(200):
-            ts = msprime.sim_ancestry(samples=5, sequence_length=1000,
-                recombination_rate=rho/(4*N*1000), population_size=N,
-                random_seed=s+1000)
-            ts = msprime.sim_mutations(ts, rate=10/(4*N*1000), random_seed=s+2000)
+        for s in range(NREPS):
+            ts = msprime.sim_ancestry(samples=5, sequence_length=L,
+                                       recombination_rate=r,
+                                       population_size=Ne,
+                                       random_seed=s + 1000)
+            ts = msprime.sim_mutations(ts, rate=mu, random_seed=s + 2000,
+                                        discrete_genome=False)
             s_mp.append(ts.num_mutations)
         mp_S.append(np.mean(s_mp))
 
-    expected = 10 * sum(1/i for i in range(1, 10))
+    theta = 4 * Ne * mu * L
+    expected = theta * sum(1 / i for i in range(1, 10))
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(7, 4.5))
     x = np.arange(len(rho_vals))
-    w = 0.3
-    ax.bar(x - w/2, ms_S, w, label='msinv', color='steelblue')
-    ax.bar(x + w/2, mp_S, w, label='msprime', color='coral')
-    ax.axhline(expected, color='gray', ls='--', lw=1, label=f'Watterson E[S]={expected:.1f}')
+    w = 0.35
+    ax.bar(x - w / 2, ms_S, w, label='msinv (hull)', color='#1976D2')
+    ax.bar(x + w / 2, mp_S, w, label='msprime', color='#E65100')
+    ax.axhline(expected, color='gray', ls='--', lw=1.2,
+                label=f'Watterson E[S] = {expected:.0f}')
     ax.set_xticks(x)
     ax.set_xticklabels([f'$\\rho$={r}' for r in rho_vals])
-    ax.set_ylabel('Mean segregating sites')
-    ax.legend()
-    ax.set_title('msinv matches msprime (no inversion)')
+    ax.set_ylabel('Mean segregating sites (10 samples, 100 kb)')
+    ax.legend(fontsize=10)
+    ax.set_title('msinv hull matches msprime in the no-inversion limit')
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig2_msprime_comparison.pdf'))
     plt.close()
-    print("  Done")
 
 
-def fig3_real_data():
-    """Figure 3: Real inversions — 2La and MAPT."""
-    print("Fig 3: Real data...")
-    NR = 100; NW = 10
+# ============================================================
+# Fig 3 — Real inversions: An. funestus 3Ra-like + MAPT-like
+# ============================================================
 
-    results = {}
+def fig3_real_inversions():
+    print("Fig 3: Real inversions...")
+    NREPS = 80
+    NW = 25
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
+
     configs = {
-        'An. gambiae 2La\n(t_inv=5, ~10ky)': dict(
-            nsam=20, theta=1.4, rho=8.0, nsites=10000,
-            n_std=10, n_inv=10, p_inv=0.5, c=0.005, t_inv=5.0,
-            bp_left=0.2, bp_right=0.8),
-        'Human MAPT H1/H2\n(t_inv=4.3, ~3My)': dict(
-            nsam=20, theta=3.0, rho=2.0, nsites=5000,
-            n_std=16, n_inv=4, p_inv=0.2, c=0.0001, t_inv=4.3,
-            bp_left=0.2, bp_right=0.8),
+        'An. funestus 3Ra–like\n(Ne=44k, t_inv=385k gen)': dict(
+            Ne=44_000, mu=3.55e-9, L=100_000,
+            bp_l=20_000, bp_r=80_000,
+            p_inv=0.3, t_inv=385_000,
+            n_S=10, n_I=10),
+        'Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)': dict(
+            Ne=10_000, mu=1.2e-8, L=100_000,
+            bp_l=20_000, bp_r=80_000,
+            p_inv=0.2, t_inv=100_000,
+            n_S=16, n_I=4),
     }
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    for idx, (name, params) in enumerate(configs.items()):
-        wins = np.linspace(0, 1, NW+1)
+    for ax, (name, p) in zip(axes, configs.items()):
+        wins = np.linspace(0, p['L'], NW + 1)
         mid = (wins[:-1] + wins[1:]) / 2
-        dxy = np.zeros(NW); pi_s = np.zeros(NW); n_ok = 0
-        ns = params['n_std']; ni = params['n_inv']
 
-        for rep in range(NR):
-            sim = msinv.MsinvSimulator(nreps=1, seed=42+rep, **params)
-            pos, haps = sim.simulate_one()
-            if len(pos) == 0: continue
-            n_ok += 1
-            sh = haps[:ns]; ih = haps[ns:]
-            for w in range(NW):
-                ix = [j for j, p in enumerate(pos) if wins[w] <= p < wins[w+1]]
-                if not ix: continue
-                d = sum(np.sum(sh[:, ix][a] != ih[:, ix][b])
-                       for a in range(min(ns,5)) for b in range(min(ni,5)))
-                dxy[w] += d / (min(ns,5) * min(ni,5))
-                d2 = sum(np.sum(sh[:, ix][a] != sh[:, ix][b])
-                        for a in range(min(ns,5)) for b in range(a+1, min(ns,5)))
-                pi_s[w] += d2 / max(1, min(ns,5)*(min(ns,5)-1)//2)
+        def build(rep, p=p):
+            return HullSimulator(
+                n_std=p['n_S'], n_inv=p['n_I'],
+                population_size=p['Ne'],
+                sequence_length=p['L'],
+                inversions=[InversionSpec(
+                    bp_left=p['bp_l'], bp_right=p['bp_r'],
+                    p_inv=p['p_inv'], t_inv=p['t_inv'])],
+                seed=7000 + rep,
+            )
 
-        if n_ok > 0: dxy /= n_ok; pi_s /= n_ok
+        reps = run_replicates(build, mu=p['mu'], n_reps=NREPS)
+        S = list(range(p['n_S'])); I = list(range(p['n_S'], p['n_S'] + p['n_I']))
+        dxy = np.zeros(NW); pi_S = np.zeros(NW); pi_I = np.zeros(NW)
+        for haps, pos in reps:
+            dxy += windowed_dxy(haps, pos, S, I, wins)
+            pi_S += windowed_pi(haps, pos, S, wins)
+            pi_I += windowed_pi(haps, pos, I, wins)
+        n = max(len(reps), 1)
+        dxy /= n; pi_S /= n; pi_I /= n
+        da = dxy - (pi_S + pi_I) / 2
 
-        ax = axes[idx]
-        ax.plot(mid, dxy, 'r-', lw=2, label='$d_{xy}$ (S-I)')
-        ax.plot(mid, pi_s, 'b-', lw=2, label='$\\pi$ (within)')
-        ax.axvspan(0.2, 0.8, alpha=0.1, color='gray')
-        ax.axvline(0.2, color='red', ls=':', lw=1)
-        ax.axvline(0.8, color='red', ls=':', lw=1)
-        ax.set_xlabel('Chromosome position')
-        ax.set_ylabel('Pairwise differences')
-        ax.set_title(name)
+        ax.plot(mid, smooth(dxy), '-', color='#C62828', lw=2,
+                 label=r'$d_{XY}$')
+        ax.plot(mid, smooth((pi_S + pi_I) / 2), '-', color='#1565C0', lw=2,
+                 label=r'$\bar\pi$')
+        ax.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2,
+                 label=r'$D_a$')
+        ax.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
+        ax.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
+        ax.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
+        ax.set_xlabel('Position (bp)')
+        ax.set_ylabel('Per-bp')
+        ax.set_title(name, fontsize=10)
         ax.legend(loc='upper right', fontsize=8)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig3_real_inversions.pdf'))
     plt.close()
-    print(f"  Done")
 
+
+# ============================================================
+# Fig 4 — Multiple inversions on one chromosome
+# ============================================================
 
 def fig4_multiple_inversions():
-    """Figure 4: Two inversions on one chromosome."""
     print("Fig 4: Multiple inversions...")
-    inv1 = msinv.InversionSpec(0.1, 0.3, p_inv=0.5, c=0.01, t_inv=10.0, label='Inv A')
-    inv2 = msinv.InversionSpec(0.6, 0.9, p_inv=0.3, c=0.005, t_inv=20.0, label='Inv B')
+    Ne = 30_000
+    mu = 1e-8
+    L = 100_000
+    NW = 35
+    NREPS = 80
 
-    NR = 100; NW = 20
-    mid = np.linspace(0.025, 0.975, NW)
-    dxy = np.zeros(NW); n_ok = 0
+    # Two non-overlapping inversions, different ages/freqs
+    inv_A = (10_000, 35_000, 0.5, 100_000)   # young, common
+    inv_B = (60_000, 90_000, 0.3, 300_000)   # old, rarer
 
-    for rep in range(NR):
-        sim = msinv.MsinvSimulator(nsam=10, nreps=1, theta=20, rho=20, nsites=1000,
-            n_std=5, n_inv=5, p_inv=0.5, c=0.01, seed=42+rep, t_inv=10.0,
-            inversions=[inv1, inv2])
-        pos, haps = sim.simulate_one()
-        if len(pos) == 0: continue
-        n_ok += 1
-        for i, x in enumerate(mid):
-            idx = [j for j, p in enumerate(pos) if abs(p - x) < 0.025]
-            for j in idx:
-                dxy[i] += sum(int(haps[a,j]!=haps[b,j]) for a in range(5) for b in range(5,10))/25
+    wins = np.linspace(0, L, NW + 1)
+    mid = (wins[:-1] + wins[1:]) / 2
 
-    if n_ok > 0: dxy /= n_ok
+    def build(rep):
+        return HullSimulator(
+            sample_config={
+                ('SS', 0): 5,            # S at both inversions
+                ('II', 0): 5,            # I at both
+                (('S', 'I'), 0): 4,      # S at A, I at B (recombinant)
+                (('I', 'S'), 0): 4,      # I at A, S at B
+            },
+            population_size=Ne,
+            sequence_length=L,
+            inversions=[
+                InversionSpec(bp_left=inv_A[0], bp_right=inv_A[1],
+                               p_inv=inv_A[2], t_inv=inv_A[3]),
+                InversionSpec(bp_left=inv_B[0], bp_right=inv_B[1],
+                               p_inv=inv_B[2], t_inv=inv_B[3]),
+            ],
+            seed=9000 + rep,
+        )
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.fill_between(mid, dxy, alpha=0.3, color='steelblue')
-    ax.plot(mid, dxy, 'b-', lw=2)
-    ax.axvspan(0.1, 0.3, alpha=0.15, color='red', label='Inv A (t=10, p=0.5)')
-    ax.axvspan(0.6, 0.9, alpha=0.15, color='green', label='Inv B (t=20, p=0.3)')
-    ax.set_xlabel('Chromosome position')
-    ax.set_ylabel('$d_{xy}$ (between arrangements)')
-    ax.set_title('Multiple inversions on one chromosome')
-    ax.legend()
+    reps = run_replicates(build, mu=mu, n_reps=NREPS)
+    print(f"  {len(reps)}/{NREPS} reps OK")
+
+    # Sample groups (set by sample_config order)
+    SS = list(range(0, 5))
+    II = list(range(5, 10))
+    SI = list(range(10, 14))
+    IS = list(range(14, 18))
+
+    dxy_A = np.zeros(NW)   # S-at-A vs I-at-A across the chromosome
+    dxy_B = np.zeros(NW)   # S-at-B vs I-at-B
+    for haps, pos in reps:
+        gA_S = SS + SI; gA_I = II + IS
+        gB_S = SS + IS; gB_I = II + SI
+        dxy_A += windowed_dxy(haps, pos, gA_S, gA_I, wins)
+        dxy_B += windowed_dxy(haps, pos, gB_S, gB_I, wins)
+    n = len(reps)
+    dxy_A /= n; dxy_B /= n
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(mid, smooth(dxy_A), '-', color='#C62828', lw=2,
+             label='Inv A axis (S vs I at A)')
+    ax.plot(mid, smooth(dxy_B), '-', color='#1565C0', lw=2,
+             label='Inv B axis (S vs I at B)')
+    ax.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828',
+                label='Inv A (t=100k, p=0.5)')
+    ax.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0',
+                label='Inv B (t=300k, p=0.3)')
+    ax.set_xlabel('Position (bp)')
+    ax.set_ylabel(r'$d_{XY}$ between karyotypes')
+    ax.set_title('Two independent inversions — each gives its own '
+                  'cross-karyotype barrier signal')
+    ax.legend(loc='upper right', fontsize=9)
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig4_multiple_inversions.pdf'))
     plt.close()
-    print(f"  Done ({n_ok} reps)")
 
 
-def fig5_trajectory():
-    """Figure 5: Inversion frequency trajectories through time."""
+# ============================================================
+# Fig 5 — Inversion origin trajectories (forward-time WF)
+# ============================================================
+
+def _wf_trajectory(p_target, N, s, rng, max_gen=400_000):
+    """Forward-in-time Wright-Fisher trajectory: start at 1/(2N),
+    accept the run if it reaches p_target before going extinct.
+    Returns (gens, freqs) arrays in forward time (origin → present)."""
+    while True:
+        freqs = [1 / (2 * N)]
+        for g in range(1, max_gen):
+            p = freqs[-1]
+            if s != 0.0:
+                p_eff = p * (1 + s) / (1 + s * p)
+            else:
+                p_eff = p
+            new_count = rng.binomial(2 * N, p_eff)
+            new_p = new_count / (2 * N)
+            freqs.append(new_p)
+            if new_p >= p_target:
+                return np.arange(len(freqs)), np.array(freqs)
+            if new_p <= 0:
+                break  # extinct, restart
+
+
+def fig5_trajectories():
     print("Fig 5: Trajectories...")
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    N = 10_000
+    p_target = 0.5
+    gen_per_year = 10
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    N = 10000
-    gen_per_year = 10  # approximate for many organisms
-
-    # Panel A: Forward-time view — neutral drift vs selective sweep
+    # Panel A: forward trajectories (neutral drift vs selected)
     ax = axes[0]
-    ax.set_title('A. How inversions establish\n(forward in time, from origin to present)',
-                  fontsize=11)
-
-    # Multiple neutral trajectories
+    rng = np.random.default_rng(0)
     for trial in range(8):
-        traj = msinv.StochasticTrajectory(0.5, N=N, s=0.0,
-            rng=np.random.default_rng(trial + 10))
-        # Convert to forward time in thousands of years
-        t_fwd_ky = (traj.t_inv - traj._times) * 2 * N / gen_per_year / 1000
-        ax.plot(t_fwd_ky, traj._freqs, alpha=0.3, lw=1, color='steelblue')
-    ax.plot([], [], color='steelblue', alpha=0.5, lw=2,
-            label='Neutral drift (s=0)')
+        rng_t = np.random.default_rng(100 + trial)
+        gens, freqs = _wf_trajectory(p_target, N, s=0.0, rng=rng_t)
+        t_ky = gens / gen_per_year / 1000
+        ax.plot(t_ky, freqs, alpha=0.4, lw=1, color='#1976D2')
+    ax.plot([], [], color='#1976D2', alpha=0.7, lw=2,
+             label='Neutral drift (s=0)')
 
-    # One deterministic sweep
-    det = msinv.DeterministicTrajectory(0.5, N=N, s=0.005)
-    t_det = np.linspace(0, det.t_inv, 300)
-    t_det_ky = (det.t_inv - t_det) * 2 * N / gen_per_year / 1000
-    freqs_det = [det(t) for t in t_det]
-    ax.plot(t_det_ky, freqs_det, 'r-', lw=2.5, label='Selected (s=0.005)')
+    rng_s = np.random.default_rng(7)
+    gens_s, freqs_s = _wf_trajectory(p_target, N, s=0.005, rng=rng_s)
+    t_s_ky = gens_s / gen_per_year / 1000
+    ax.plot(t_s_ky, freqs_s, '-', color='#C62828', lw=2.5,
+             label='Selected (s=0.005)')
 
-    ax.axhline(1/(2*N), color='gray', ls='--', lw=0.8)
-    ax.axhline(0.5, color='gray', ls=':', lw=0.5)
-    ax.text(0.98, 0.52, 'present freq = 0.5', transform=ax.transAxes,
-            ha='right', fontsize=8, color='gray')
-    ax.text(0.98, 0.02, 'origin: single mutation (1/2N)',
-            transform=ax.transAxes, ha='right', fontsize=8, color='gray')
-
-    ax.set_xlabel('Thousands of years ago (← past | present →)')
-    ax.set_ylabel('Inversion frequency in population')
-    ax.set_ylim(-0.05, 1.05)
-    ax.invert_xaxis()
-    ax.legend(fontsize=9, loc='center left')
-
-    # Panel B: Age distribution from recurrent origins
-    ax = axes[1]
-    ax.set_title('B. Inversion age depends on stochastic history\n'
-                  '(20 independent neutral trajectories)', fontsize=11)
-
-    t_invs_ky = []
-    for trial in range(20):
-        traj = msinv.StochasticTrajectory(0.5, N=N, s=0.0,
-            rng=np.random.default_rng(trial))
-        age_ky = traj.t_inv * 2 * N / gen_per_year / 1000
-        t_invs_ky.append(age_ky)
-
-    ax.hist(t_invs_ky, bins=15, color='steelblue', alpha=0.7, edgecolor='white')
-    ax.axvline(np.median(t_invs_ky), color='red', ls='--', lw=2,
-               label=f'Median = {np.median(t_invs_ky):.0f} ky')
-    ax.set_xlabel('Inversion age (thousands of years)')
-    ax.set_ylabel('Count (out of 20 trajectories)')
+    ax.axhline(p_target, color='gray', ls=':', lw=0.7)
+    ax.axhline(1 / (2 * N), color='gray', ls='--', lw=0.7)
+    ax.text(0.02, p_target + 0.02, f'present freq = {p_target}',
+             transform=ax.get_yaxis_transform(), fontsize=8, color='gray')
+    ax.set_xlabel('Generations from origin (×1000)')
+    ax.set_ylabel('Inversion frequency')
+    ax.set_ylim(-0.02, 0.7)
     ax.legend(fontsize=9)
-    ax.text(0.95, 0.85,
-            f'Range: {np.min(t_invs_ky):.0f}–{np.max(t_invs_ky):.0f} ky\n'
-            f'Key insight: same p=0.5 today,\n'
-            f'but very different ages',
-            transform=ax.transAxes, ha='right', fontsize=9,
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    ax.set_title('A. Forward-in-time WF trajectories\n'
+                  '(origin → today)', fontsize=10)
+
+    # Panel B: age distribution from 50 neutral runs
+    ax = axes[1]
+    ages_ky = []
+    for trial in range(50):
+        rng_t = np.random.default_rng(500 + trial)
+        gens, _ = _wf_trajectory(p_target, N, s=0.0, rng=rng_t)
+        ages_ky.append(gens[-1] / gen_per_year / 1000)
+    ax.hist(ages_ky, bins=15, color='#1976D2', alpha=0.75,
+             edgecolor='white')
+    med = float(np.median(ages_ky))
+    ax.axvline(med, color='#C62828', ls='--', lw=2,
+                label=f'median = {med:.0f} ky')
+    ax.set_xlabel('Inversion age (ky)')
+    ax.set_ylabel('count (50 trajectories)')
+    ax.legend(fontsize=9)
+    ax.set_title('B. Inversion age varies widely\n'
+                  '(same present freq, different histories)',
+                  fontsize=10)
+    ax.text(0.97, 0.85,
+             f'range: {min(ages_ky):.0f}–{max(ages_ky):.0f} ky',
+             transform=ax.transAxes, ha='right', fontsize=9,
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig5_trajectories.pdf'))
     plt.close()
-    print("  Done")
 
+
+# ============================================================
+# Fig 6 — phi(x) profile and its T_MRCA effect
+# ============================================================
 
 def fig6_phi_profile():
-    """Figure 6: phi(x) gene flux profile and T_SI."""
     print("Fig 6: phi(x) profile...")
-    flux = msinv.GeneFluxModel(w=0.3)
-    x = np.linspace(0, 1, 200)
-    phi_vals = [flux.phi(xi) for xi in x]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    # Panel A: triangular roof for several w
+    x = np.linspace(0, 1, 400)
+    for w, c in [(0.05, '#1976D2'), (0.10, '#388E3C'), (0.20, '#E65100')]:
+        ax1.plot(x, [_phi(xi, w) for xi in x], '-', color=c, lw=2,
+                  label=f'w = {w}')
+    ax1.set_xlabel('Inversion-relative position $x$')
+    ax1.set_ylabel(r'$\phi(x)$  (per-bp flux weight)')
+    ax1.set_title('A. Peischl phi(x) profile\n(triangular roof — peaks in centre)',
+                   fontsize=10)
+    ax1.legend(fontsize=9)
+    ax1.fill_between(x, [_phi(xi, 0.10) for xi in x],
+                      alpha=0.10, color='#388E3C')
 
-    ax1.plot(x, phi_vals, 'k-', lw=2)
-    ax1.set_xlabel('Position within inversion')
-    ax1.set_ylabel('$\\phi(x)$')
-    ax1.set_title('Gene flux probability\n(flux window w=0.3)')
-    ax1.fill_between(x, phi_vals, alpha=0.2)
+    # Panel B: cross-class T_MRCA inside vs near breakpoints (n=2 sample)
+    Ne = 10_000; L = 100_000
+    bp_l, bp_r = 20_000, 80_000
+    inv_len = bp_r - bp_l
+    NREPS = 200
+    positions = np.linspace(bp_l + 1000, bp_r - 1000, 10)
+    T_si = []
+    for px in positions:
+        ts_t = []
+        for rep in range(NREPS):
+            sim = HullSimulator(
+                n_std=1, n_inv=1,
+                population_size=Ne,
+                sequence_length=L,
+                inversions=[InversionSpec(
+                    bp_left=bp_l, bp_right=bp_r,
+                    p_inv=0.5, t_inv=4 * Ne,
+                    gene_conversion_rate=1e-7)],
+                seed=20000 + rep,
+            )
+            ts = sim.simulate()
+            tree = ts.at(px)
+            ts_t.append(tree.tmrca(0, 1))
+        T_si.append(np.mean(ts_t))
 
-    # T_SI at different positions (use n=2 from msinv package)
-    msinv_n2 = msinv  # simulate_one_n2, build_initial_tree now in package
-
-    rng = np.random.default_rng(42)
-    positions = np.linspace(0.02, 0.98, 20)
-    T_SI = []
-    for xp in positions:
-        phi_x = flux.phi(xp)
-        p_func = msinv_n2.ConstantFrequency(0.5)
-        times = []
-        for _ in range(2000):
-            tree = msinv_n2.build_initial_tree(0, 1, p_func, 0.01, 10.0, phi_x, rng)
-            times.append(tree.t_coal)
-        T_SI.append(np.mean(times))
-
-    ax2.plot(positions, T_SI, 'r-', lw=2)
-    ax2.set_xlabel('Position within inversion')
-    ax2.set_ylabel('$E[T_{SI}]$ (2N gen)')
-    ax2.set_title('Coalescence time between arrangements\n($\\rho$=10, c=0.01)')
-    ax2.set_yscale('log')
+    rel_x = (positions - bp_l) / inv_len
+    ax2.plot(rel_x, np.array(T_si) / Ne, 'o-', color='#C62828', lw=2,
+             markersize=7)
+    ax2.set_xlabel('Inversion-relative position')
+    ax2.set_ylabel(r'$E[T_{S\!I}]$  (units of $N_e$ generations)')
+    ax2.set_title('B. Cross-class coalescence time\n'
+                   '(centre = more flux → smaller $T_{SI}$)',
+                   fontsize=10)
+    ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig6_phi_profile.pdf'))
     plt.close()
-    print("  Done")
 
+
+# ============================================================
+# Fig 7 — Performance scaling
+# ============================================================
 
 def fig7_performance():
-    """Figure 7: Performance comparison."""
     print("Fig 7: Performance...")
-    import time as tm
+    Ne = 10_000
+    mu = 1e-8
+    L = 100_000
+    NREPS = 20
 
-    # Python timing at different rho
-    rho_vals = [5, 10, 20, 50]
-    py_times = []
+    rho_vals = [10, 50, 100, 500, 1000]
+    times_inv = []
+    times_no = []
     for rho in rho_vals:
-        t0 = tm.time()
-        for s in range(20):
-            sim = msinv.MsinvSimulator(nsam=10, nreps=1, theta=10, rho=rho,
-                nsites=1000, n_std=5, n_inv=5, p_inv=0.5, c=0.01,
-                seed=s, t_inv=10.0, bp_left=0.3, bp_right=0.7)
-            sim.simulate_one()
-        py_times.append((tm.time() - t0) / 20 * 1000)
+        r = rho / (4 * Ne * L)
+        # With one inversion
+        t0 = time.time()
+        for s in range(NREPS):
+            sim = HullSimulator(
+                n_std=5, n_inv=5,
+                population_size=Ne,
+                sequence_length=L,
+                recombination_rate=r,
+                inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
+                                           p_inv=0.5, t_inv=100_000)],
+                seed=s + 50,
+            )
+            sim.simulate()
+        times_inv.append((time.time() - t0) / NREPS * 1000)
 
-    # C timing (if available)
-    c_times = []
-    try:
-        sys.path.insert(0, os.path.dirname(__file__))
-        import smc_full_bridge as cfull
-        if cfull.is_available():
-            for rho in rho_vals:
-                cfull.seed(42)
-                t0 = tm.time()
-                for s in range(200):
-                    cfull.seed(42+s)
-                    cfull.simulate_one(5, 5, 10.0, rho, 1000)
-                c_times.append((tm.time() - t0) / 200 * 1000)
-    except Exception:
-        pass
+        # Without inversion (baseline)
+        t0 = time.time()
+        for s in range(NREPS):
+            sim = HullSimulator(
+                n_std=10, n_inv=0,
+                population_size=Ne,
+                sequence_length=L,
+                recombination_rate=r,
+                seed=s + 50,
+            )
+            sim.simulate()
+        times_no.append((time.time() - t0) / NREPS * 1000)
 
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(rho_vals, py_times, 'bo-', lw=2, markersize=8, label='Python')
-    if c_times:
-        ax.plot(rho_vals, c_times, 'rs-', lw=2, markersize=8, label='C (28x faster)')
-    ax.set_xlabel('$\\rho$ (recombination rate)')
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    ax.plot(rho_vals, times_no, 'o-', color='#1976D2', lw=2, markersize=8,
+             label='no inversion (hull baseline)')
+    ax.plot(rho_vals, times_inv, 's-', color='#C62828', lw=2, markersize=8,
+             label='one inversion (S/I barrier)')
+    ax.set_xlabel(r'$\rho = 4 N_e r L$')
     ax.set_ylabel('Time per replicate (ms)')
-    ax.set_title('Performance: Python vs C inner loop')
-    ax.legend()
+    ax.set_title('Hull simulator scaling (n=10, L=100kb)')
+    ax.legend(fontsize=10)
+    ax.set_xscale('log')
     ax.set_yscale('log')
-    ax.grid(True, alpha=0.3)
-
+    ax.grid(True, alpha=0.3, which='both')
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig7_performance.pdf'))
     plt.close()
-    print("  Done")
 
+
+# ============================================================
+# Fig 8 — Feature summary table (hull-only)
+# ============================================================
 
 def fig8_feature_summary():
-    """Figure 8: Feature summary table."""
     print("Fig 8: Feature summary...")
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
     ax.axis('off')
 
     features = [
-        ['Feature', 'msinv', 'ms', 'msprime', 'discoal', 'SLiM'],
-        ['Chromosomal inversions', '✓', '✗', '✗*', '✗', '✓'],
-        ['Gene flux (φ(x) model)', '✓', '✗', '✗', '✗', 'partial'],
-        ['Inversion age (t_inv)', '✓', '✗', '✗', '✗', '✓'],
-        ['Frequency trajectory', '✓', '✗', '✗', '✓', '✓'],
-        ['Recurrent origins', '✓', '✗', '✗', '✓', '✗'],
-        ['Multiple inversions', '✓', '✗', '✗', '✗', '✓'],
-        ['ms-compatible demography', '✓', '✓', '✓', '✓', 'partial'],
-        ['Multiple populations', '✓', '✓', '✓', '✓', '✓'],
-        ['Tree sequence output', '✓', '✗', '✓', '✗', '✓'],
-        ['n > 2 samples', '✓', '✓', '✓', '✓', '✓'],
-        ['SMC\' approximation', '✓', '✗', '✓', '✗', 'N/A'],
+        ['Feature',                           'msinv', 'msprime', 'discoal', 'SLiM'],
+        ['Chromosomal inversions (any age)',  '\u2713', '\u2717', '\u2717', '\u2713'],
+        ['Cross-karyotype barrier (t_inv)',   '\u2713', '\u2717', '\u2717', '\u2713'],
+        ['Gene flux (Peischl phi(x))',        '\u2713', '\u2717', '\u2717', 'partial'],
+        ['Multiple inversions (incl. nested)', '\u2713', '\u2717', '\u2717', '\u2713'],
+        ['Per-pop inversion frequencies',     '\u2713', '\u2717', '\u2717', '\u2713'],
+        ['Selective sweeps',                  '\u2713', 'partial', '\u2713', '\u2713'],
+        ['Coalescent (fast, neutral)',        '\u2713', '\u2713', '\u2713', '\u2717'],
+        ['ms-style demography',               '\u2713', '\u2713', '\u2713', 'partial'],
+        ['Multiple populations',              '\u2713', '\u2713', '\u2713', '\u2713'],
+        ['Tree sequence (tskit) output',      '\u2713', '\u2713', '\u2717', '\u2713'],
     ]
 
     table = ax.table(cellText=features[1:], colLabels=features[0],
-                      loc='center', cellLoc='center')
+                     loc='center', cellLoc='center')
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.4)
+    table.set_fontsize(10)
+    table.scale(1, 1.5)
 
-    # Color header
     for j in range(len(features[0])):
-        table[0, j].set_facecolor('#4472C4')
+        table[0, j].set_facecolor('#1565C0')
         table[0, j].set_text_props(color='white', weight='bold')
 
-    # Color checks
     for i in range(1, len(features)):
         for j in range(1, len(features[0])):
             cell = table[i, j]
-            if features[i][j] == '✓':
-                cell.set_facecolor('#E2EFDA')
-            elif features[i][j] == '✗':
-                cell.set_facecolor('#FCE4EC')
+            v = features[i][j]
+            if v == '\u2713':
+                cell.set_facecolor('#C8E6C9')
+            elif v == '\u2717':
+                cell.set_facecolor('#FFCDD2')
+            else:
+                cell.set_facecolor('#FFF9C4')
 
-    ax.set_title('msinv: Coalescent simulator with chromosomal inversions',
+    ax.set_title('msinv: ARG-based coalescent simulator with chromosomal inversions',
                   fontsize=14, weight='bold', pad=20)
+    fig.text(0.5, 0.04,
+             f'msinv v{msinv.__version__}  —  hull algorithm '
+             '(per-position ancestral material tracking)',
+             ha='center', fontsize=9, style='italic', color='#555')
 
     plt.tight_layout()
     plt.savefig(os.path.join(OUTDIR, 'fig8_feature_summary.pdf'))
     plt.close()
-    print("  Done")
 
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
-    print("Generating presentation figures...\n")
+    print("Generating presentation figures (msinv hull simulator)...\n")
+    t0 = time.time()
     fig1_inversion_signal()
     fig2_msprime_comparison()
-    fig3_real_data()
+    fig3_real_inversions()
     fig4_multiple_inversions()
-    fig5_trajectory()
+    fig5_trajectories()
     fig6_phi_profile()
     fig7_performance()
     fig8_feature_summary()
 
-    print(f"\nAll figures saved to {OUTDIR}/")
-    print("Files:")
+    print(f"\nDone in {time.time() - t0:.0f}s. Files in {OUTDIR}/:")
     for f in sorted(os.listdir(OUTDIR)):
-        if f.endswith('.pdf'):
+        if f.startswith('fig') and f.endswith('.pdf'):
             print(f"  {f}")
 
 

@@ -93,6 +93,7 @@ def run_scenario(label, sweeps):
                                   p_inv=p_inv_freq, t_inv=t_inv_age),
             ],
             sweeps=sweeps,
+            recombination_rate=r,
             seed=SEED_BASE + rep,
         )
         try:

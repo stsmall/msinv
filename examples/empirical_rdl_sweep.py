@@ -121,24 +121,23 @@ def run_scenario(label, sweeps):
     return dxy, pi_S, pi_I
 
 
+# ---- Sweep definitions (hitchhiking mode: spatial decay around x_sel) ----
+s_coef = 0.05   # strong selection (dieldrin resistance)
+
 # ---- Run three scenarios ----
 results = {}
 results['neutral'] = run_scenario('neutral', sweeps=[])
 
 # Scenario 2: S sweep only (no flux yet → I lineages unaffected)
 sweep_S = Sweep(x_sel=x_sel, t_event=t_sweep_S,
-                target_class='S0',  # 'S<inv_id>' for inv 0 (single inv → 'S')
-                sweep_window=500.0)
-# Phase-5b labels single-inv segments 'S' (no _0 suffix). Use 'S':
-sweep_S = Sweep(x_sel=x_sel, t_event=t_sweep_S,
-                target_class='S', sweep_window=500.0)
+                target_class='S', selection_coefficient=s_coef)
 results['S sweep only'] = run_scenario('S sweep only', sweeps=[sweep_S])
 
 # Scenario 3: S sweep, then flux, then I sweep
-# (we just stack two sweeps; gene flux between them is implicit in the
+# (we stack two sweeps; gene flux between them is implicit in the
 # class-flip of the I-background sweep target).
 sweep_I = Sweep(x_sel=x_sel, t_event=t_sweep_I,
-                target_class='I', sweep_window=500.0)
+                target_class='I', selection_coefficient=s_coef)
 results['S then I sweep'] = run_scenario(
     'S then I sweep', sweeps=[sweep_S, sweep_I])
 
@@ -151,54 +150,66 @@ def smooth(y, k=3):
 wins = np.linspace(0, L, NW + 1)
 mid = (wins[:-1] + wins[1:]) / 2
 
-fig, axes = plt.subplots(2, 3, figsize=(16, 7), sharey='row', sharex=True)
+fig, axes = plt.subplots(3, 3, figsize=(16, 10), sharey='row', sharex=True)
 labels = ['neutral', 'S sweep only', 'S then I sweep']
 
 for col, label in enumerate(labels):
     dxy, pi_S, pi_I = results[label]
-    ax_top = axes[0, col]
-    ax_bot = axes[1, col]
-    ax_top.plot(mid, smooth(dxy), '-', color='#FF9800', lw=2,
-                 label='$d_{XY}$ (S vs I)')
-    ax_top.set_title(label, fontsize=11, fontweight='bold')
-    ax_top.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
-    ax_top.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6,
-                    label='x_sel')
-    ax_top.set_xlim(0, L)
-    if col == 0:
-        ax_top.set_ylabel('$d_{XY}$ (per bp)', fontsize=11)
-        ax_top.legend(fontsize=8, loc='upper right')
+    fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
+    ax_dxy = axes[0, col]
+    ax_pi = axes[1, col]
+    ax_fst = axes[2, col]
 
-    ax_bot.plot(mid, smooth(pi_S), '-', color='#1976D2', lw=2,
-                 label='$\\pi_S$')
-    ax_bot.plot(mid, smooth(pi_I), '-', color='#C2185B', lw=2,
-                 label='$\\pi_I$')
-    ax_bot.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
-    ax_bot.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6)
-    ax_bot.set_xlabel('Position (bp)', fontsize=10)
+    ax_dxy.plot(mid, smooth(dxy), '-', color='#FF9800', lw=2,
+                label='$d_{XY}$ (S vs I)')
+    ax_dxy.set_title(label, fontsize=11, fontweight='bold')
+    ax_dxy.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
+    ax_dxy.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6,
+                   label='x_sel')
+    ax_dxy.set_xlim(0, L)
     if col == 0:
-        ax_bot.set_ylabel('$\\pi$ within class (per bp)', fontsize=11)
-        ax_bot.legend(fontsize=8, loc='upper right')
+        ax_dxy.set_ylabel('$d_{XY}$ (per bp)', fontsize=11)
+        ax_dxy.legend(fontsize=8, loc='upper right')
+
+    ax_pi.plot(mid, smooth(pi_S), '-', color='#1976D2', lw=2,
+               label='$\\pi_S$')
+    ax_pi.plot(mid, smooth(pi_I), '-', color='#C2185B', lw=2,
+               label='$\\pi_I$')
+    ax_pi.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
+    ax_pi.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6)
+    if col == 0:
+        ax_pi.set_ylabel('$\\pi$ within class (per bp)', fontsize=11)
+        ax_pi.legend(fontsize=8, loc='upper right')
+
+    ax_fst.plot(mid, smooth(fst), '-', color='#E65100', lw=2,
+                label='$F_{ST}$ (Hudson)')
+    ax_fst.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
+    ax_fst.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6)
+    ax_fst.axhline(0, color='gray', ls=':', lw=0.7)
+    ax_fst.set_xlabel('Position (bp)', fontsize=10)
+    if col == 0:
+        ax_fst.set_ylabel('$F_{ST}$', fontsize=11)
+        ax_fst.legend(fontsize=8, loc='upper right')
 
 fig.suptitle(
     'RDL-like sweep through inversion (msinv hull simulator)',
-    fontsize=12, fontweight='bold', y=1.02)
+    fontsize=12, fontweight='bold', y=1.01)
 
 caption = (
     f'Figure. RDL (dieldrin resistance) sweep-through-inversion, modelled after '
-    f'Grau-Bov\u00e9 et al. (2020 MBE). Three scenarios for n_S={n_S} + n_I={n_I} '
-    f'haplotypes inside a single inversion. '
-    f'(Top) Cross-class $d_{{XY}}$ (S vs I). (Bottom) Within-class $\\pi_S$ and $\\pi_I$. '
-    f'Left: Neutral baseline — uniform elevation of $d_{{XY}}$ inside the inversion. '
-    f'Centre: Sweep on S only (t={t_sweep_S} gen) — $\\pi_S$ collapses around x_sel while '
-    f'$\\pi_I$ is unaffected, producing haplotype asymmetry. '
-    f'Right: S sweep then I sweep (via gene flux at t={t_flux} gen, then I sweep at t={t_sweep_I} gen) '
-    f'— both $\\pi_S$ and $\\pi_I$ collapse, matching the empirical RDL pattern. '
+    f'Grau-Bov\u00e9 et al. (2020 MBE). Hitchhiking mode (s={s_coef}) with spatial decay '
+    f'P(linked) = exp(-r |x - x_sel| t_dur). Three scenarios for n_S={n_S} + n_I={n_I} haplotypes. '
+    f'(Row 1) Cross-class $d_{{XY}}$. (Row 2) Within-class $\\pi_S$, $\\pi_I$. '
+    f'(Row 3) Hudson $F_{{ST}}$. '
+    f'Left: Neutral baseline. '
+    f'Centre: S sweep only (t={t_sweep_S} gen) — $\\pi_S$ valley around x_sel, $\\pi_I$ unaffected '
+    f'(haplotype asymmetry). '
+    f'Right: S then I sweep (t_S={t_sweep_S}, t_I={t_sweep_I} gen) — both collapse. '
     f'Parameters: Ne={Ne:,}, p_inv={p_inv_freq}, t_inv={t_inv_age:,} gen, '
-    f'$\\mu$={mu:.0e}, r={r:.0e}, L={L/1e3:.0f} kb, {NREPS} replicates.\n'
+    f's={s_coef}, $\\gamma$=1e-9, $\\mu$={mu:.0e}, r={r:.0e}, L={L/1e3:.0f} kb, {NREPS} reps.\n'
     f'Command: pixi run -e all python examples/empirical_rdl_sweep.py'
 )
-fig.text(0.5, -0.04, caption, ha='center', fontsize=7, wrap=True,
+fig.text(0.5, -0.03, caption, ha='center', fontsize=7, wrap=True,
          fontstyle='italic', color='#333',
          bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
                    edgecolor='#BDBDBD', alpha=0.9))

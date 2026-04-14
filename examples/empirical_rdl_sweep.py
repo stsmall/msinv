@@ -26,7 +26,7 @@ from msinv import HullSimulator, InversionSpec, Sweep
 
 
 # --- Parameters ---
-Ne = 100_000              # An. gambiae effective Ne
+Ne = 50_000               # An. gambiae (reduced from 100k → rho=200)
 mu = 3e-9
 r = 1e-8
 L = 100_000               # 100 kb
@@ -90,7 +90,8 @@ def run_scenario(label, sweeps):
             sequence_length=L,
             inversions=[
                 InversionSpec(bp_left=bp_l, bp_right=bp_r,
-                                  p_inv=p_inv_freq, t_inv=t_inv_age),
+                                  p_inv=p_inv_freq, t_inv=t_inv_age,
+                                  gene_conversion_rate=1e-9),
             ],
             sweeps=sweeps,
             recombination_rate=r,

@@ -111,7 +111,8 @@ def fig1_inversion_signal():
             population_size=Ne,
             sequence_length=L,
             inversions=[InversionSpec(bp_left=bp_l, bp_right=bp_r,
-                                       p_inv=0.5, t_inv=200_000)],
+                                       p_inv=0.5, t_inv=200_000,
+                                       gene_conversion_rate=1e-9)],
             recombination_rate=1e-8,
             seed=4242 + rep,
         )
@@ -171,7 +172,7 @@ def fig1_inversion_signal():
         f'(B) Net divergence $D_a = d_{{XY}} - (\\pi_S + \\pi_I)/2$ isolates the barrier signal; '
         f'the shared-y-axis shows that $D_a$ is a small fraction of $d_{{XY}}$ '
         f'— most apparent divergence is ancestral polymorphism, not fixed differences. '
-        f'Parameters: Ne={Ne:,}, t_inv=200,000 gen, L={L/1e3:.0f} kb, '
+        f'Parameters: Ne={Ne:,}, t_inv=200,000 gen, $\\rho$=200, $\\gamma$=1e-9, L={L/1e3:.0f} kb, '
         f'r=1e-8 bp$^{{-1}}$ gen$^{{-1}}$, $\\mu$=1e-8, n_S={n_S}, n_I={n_I}, {n} replicates.\n'
         f'Command: pixi run -e all python examples/make_figures.py'
     )
@@ -283,11 +284,13 @@ def fig3_real_inversions():
             Ne=44_000, mu=3.55e-9, L=100_000,
             bp_l=20_000, bp_r=80_000,
             p_inv=0.3, t_inv=385_000,
+            gamma=1e-9,
             n_S=10, n_I=10),
         'Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)': dict(
             Ne=10_000, mu=1.2e-8, L=100_000,
             bp_l=20_000, bp_r=80_000,
             p_inv=0.2, t_inv=100_000,
+            gamma=1e-9,
             n_S=16, n_I=4),
     }
 
@@ -302,7 +305,8 @@ def fig3_real_inversions():
                 sequence_length=p['L'],
                 inversions=[InversionSpec(
                     bp_left=p['bp_l'], bp_right=p['bp_r'],
-                    p_inv=p['p_inv'], t_inv=p['t_inv'])],
+                    p_inv=p['p_inv'], t_inv=p['t_inv'],
+                    gene_conversion_rate=p.get('gamma', 0.0))],
                 recombination_rate=1e-8,
                 seed=7000 + rep,
             )
@@ -339,7 +343,7 @@ def fig3_real_inversions():
         'Both show elevated $d_{XY}$ and $D_a$ inside the inversion (grey shading) '
         'with $\\bar\\pi$ remaining at background levels outside. '
         'The deeper barrier and older age of 3Ra produce a stronger signal than MAPT. '
-        f'Parameters: L=100 kb, r=1e-8, {NREPS} replicates per scenario.\n'
+        f'Parameters: L=100 kb, r=1e-8, $\\gamma$=1e-9, {NREPS} replicates per scenario.\n'
         'Command: pixi run -e all python examples/make_figures.py'
     )
     fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
@@ -385,9 +389,11 @@ def fig4_multiple_inversions():
             sequence_length=L,
             inversions=[
                 InversionSpec(bp_left=inv_A[0], bp_right=inv_A[1],
-                               p_inv=inv_A[2], t_inv=inv_A[3]),
+                               p_inv=inv_A[2], t_inv=inv_A[3],
+                               gene_conversion_rate=1e-9),
                 InversionSpec(bp_left=inv_B[0], bp_right=inv_B[1],
-                               p_inv=inv_B[2], t_inv=inv_B[3]),
+                               p_inv=inv_B[2], t_inv=inv_B[3],
+                               gene_conversion_rate=1e-9),
             ],
             recombination_rate=1e-8,
             seed=9000 + rep,
@@ -434,7 +440,7 @@ def fig4_multiple_inversions():
         'along their respective S-vs-I axes. Inv B is older and produces a stronger signal. '
         'The collinear gap between inversions shows background-level divergence on both axes. '
         'Sample configuration: 5 SS + 5 II + 4 SI + 4 IS (18 haplotypes, all four karyotype combinations). '
-        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, r=1e-8, {n} replicates.\n'
+        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, r=1e-8, $\\gamma$=1e-9, {n} replicates.\n'
         'Command: pixi run -e all python examples/make_figures.py'
     )
     fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
@@ -661,7 +667,8 @@ def fig7_performance():
                 sequence_length=L,
                 recombination_rate=r,
                 inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
-                                           p_inv=0.5, t_inv=100_000)],
+                                           p_inv=0.5, t_inv=100_000,
+                                           gene_conversion_rate=1e-9)],
                 seed=s + 50,
             )
             sim.simulate()

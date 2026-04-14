@@ -26,7 +26,7 @@ from msinv import HullSimulator, InversionSpec, Demography
 # --- Parameters ---
 Ne = 44_000
 mu = 3.55e-9
-r = 4.0e-8
+r = 1e-9   # reduced from 4e-8 for computational feasibility (rho≈18)
 L = 100_000
 t_split_gen = 14_000     # ~1300 yr at 11 gen/yr
 t_inv_gen = 385_000      # ~35 kyr — 3Ra age (Small 2023)
@@ -112,6 +112,7 @@ for rep in range(NREPS):
             InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
                               p_inv=p_inv_anc, t_inv=t_inv_gen),
         ],
+        recombination_rate=r,
         seed=SEED_BASE + rep,
     )
     try:

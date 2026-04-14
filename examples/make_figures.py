@@ -163,8 +163,27 @@ def fig1_inversion_signal():
         ax.axvline(bp_l, color='red', ls=':', lw=1, alpha=0.5)
         ax.axvline(bp_r, color='red', ls=':', lw=1, alpha=0.5)
 
+    caption = (
+        f'Figure 1. Chromosomal inversion divergence signal simulated with msinv (hull algorithm). '
+        f'(A) Per-bp absolute divergence ($d_{{XY}}$) between Standard (S) and Inverted (I) '
+        f'karyotypes is elevated inside the inversion (grey shading, {bp_l/1e3:.0f}–{bp_r/1e3:.0f} kb), '
+        f'while within-class diversity ($\\pi_S$, $\\pi_I$) remains at background levels. '
+        f'(B) Net divergence $D_a = d_{{XY}} - (\\pi_S + \\pi_I)/2$ isolates the barrier signal; '
+        f'the shared-y-axis shows that $D_a$ is a small fraction of $d_{{XY}}$ '
+        f'— most apparent divergence is ancestral polymorphism, not fixed differences. '
+        f'Parameters: Ne={Ne:,}, t_inv=200,000 gen, L={L/1e3:.0f} kb, '
+        f'r=1e-8 bp$^{{-1}}$ gen$^{{-1}}$, $\\mu$=1e-8, n_S={n_S}, n_I={n_I}, {n} replicates.\n'
+        f'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig1_inversion_signal.pdf'))
+    fig.subplots_adjust(bottom=0.22)
+    plt.savefig(os.path.join(OUTDIR, 'fig1_inversion_signal.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -227,8 +246,25 @@ def fig2_msprime_comparison():
     ax.legend(fontsize=10)
     ax.set_title('msinv hull matches msprime in the no-inversion limit')
 
+    caption = (
+        f'Figure 2. msinv validation against msprime in the no-inversion limit. '
+        f'Mean number of segregating sites from 10 haploid samples across {NREPS} replicates '
+        f'at three recombination rates ($\\rho$ = 4$N_e$rL). '
+        f'Without an inversion, the hull simulator produces the same distribution of genealogies '
+        f'as msprime — the two are statistically indistinguishable. '
+        f'Dashed line: Watterson expectation E[S] = $\\theta \\sum_{{i=1}}^{{n-1}} 1/i$ = {expected:.0f}. '
+        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, n=10, {NREPS} replicates per $\\rho$.\n'
+        f'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig2_msprime_comparison.pdf'))
+    fig.subplots_adjust(bottom=0.28)
+    plt.savefig(os.path.join(OUTDIR, 'fig2_msprime_comparison.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -296,8 +332,25 @@ def fig3_real_inversions():
         ax.set_title(name, fontsize=10)
         ax.legend(loc='upper right', fontsize=8)
 
+    caption = (
+        'Figure 3. msinv reproduces divergence patterns of real chromosomal inversions. '
+        'Left: An. funestus 3Ra-like inversion (Ne=44,000, $\\mu$=3.55e-9, t_inv=385,000 gen, p_inv=0.3). '
+        'Right: Human MAPT H1/H2-like inversion (Ne=10,000, $\\mu$=1.2e-8, t_inv=100,000 gen, p_inv=0.2). '
+        'Both show elevated $d_{XY}$ and $D_a$ inside the inversion (grey shading) '
+        'with $\\bar\\pi$ remaining at background levels outside. '
+        'The deeper barrier and older age of 3Ra produce a stronger signal than MAPT. '
+        f'Parameters: L=100 kb, r=1e-8, {NREPS} replicates per scenario.\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig3_real_inversions.pdf'))
+    fig.subplots_adjust(bottom=0.22)
+    plt.savefig(os.path.join(OUTDIR, 'fig3_real_inversions.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -373,8 +426,26 @@ def fig4_multiple_inversions():
     ax.set_title('Two independent inversions — each gives its own '
                   'cross-karyotype barrier signal')
     ax.legend(loc='upper right', fontsize=9)
+
+    caption = (
+        'Figure 4. Two independent inversions on the same chromosome, each generating its own '
+        'cross-karyotype divergence barrier. Inv A (10–35 kb; t_inv=100,000 gen, p_inv=0.5, red shading) '
+        'and Inv B (60–90 kb; t_inv=300,000 gen, p_inv=0.3, blue shading) show elevated $d_{XY}$ '
+        'along their respective S-vs-I axes. Inv B is older and produces a stronger signal. '
+        'The collinear gap between inversions shows background-level divergence on both axes. '
+        'Sample configuration: 5 SS + 5 II + 4 SI + 4 IS (18 haplotypes, all four karyotype combinations). '
+        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, r=1e-8, {n} replicates.\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig4_multiple_inversions.pdf'))
+    fig.subplots_adjust(bottom=0.22)
+    plt.savefig(os.path.join(OUTDIR, 'fig4_multiple_inversions.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -461,8 +532,27 @@ def fig5_trajectories():
              transform=ax.transAxes, ha='right', fontsize=9,
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
+    caption = (
+        'Figure 5. Forward-in-time Wright-Fisher trajectories for inversion frequency. '
+        '(A) Example trajectories from 1/(2N) to a present frequency of 0.5. '
+        'Neutral drift (blue, 8 runs) takes highly variable paths; '
+        'positive selection (s=0.005, red) reaches the same frequency much faster. '
+        '(B) Distribution of inversion ages (time from origin to reaching p=0.5) '
+        'across 50 neutral trajectories. Even for the same present frequency, '
+        'inversion ages vary by orders of magnitude — this motivates ABC inference '
+        'rather than point estimates of t_inv. '
+        f'Parameters: Ne={N:,}, 10 gen/yr, p_target={p_target}.\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig5_trajectories.pdf'))
+    fig.subplots_adjust(bottom=0.18)
+    plt.savefig(os.path.join(OUTDIR, 'fig5_trajectories.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -523,8 +613,26 @@ def fig6_phi_profile():
                    fontsize=10)
     ax2.grid(True, alpha=0.3)
 
+    caption = (
+        'Figure 6. Gene flux profile and its effect on cross-class coalescence time. '
+        '(A) The Peischl $\\phi(x)$ function gives the per-bp gene-conversion weight as a function '
+        'of position within the inversion — triangular with a peak at the centre and zero at breakpoints. '
+        'The window parameter $w$ controls the conversion tract length relative to the inversion. '
+        '(B) Expected cross-class coalescence time $E[T_{SI}]$ as a function of inversion-relative position '
+        f'(Ne={Ne:,}, t_inv=4Ne, $\\gamma$=1e-7, r=1e-8). '
+        'T$_{SI}$ is lowest at the centre (where $\\phi(x)$ peaks and gene flux is strongest) '
+        f'and highest near breakpoints. {NREPS} replicates per position.\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig6_phi_profile.pdf'))
+    fig.subplots_adjust(bottom=0.22)
+    plt.savefig(os.path.join(OUTDIR, 'fig6_phi_profile.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -584,8 +692,26 @@ def fig7_performance():
     ax.set_xscale('log')
     ax.set_yscale('log')
     ax.grid(True, alpha=0.3, which='both')
+
+    caption = (
+        'Figure 7. Hull simulator performance scaling with recombination rate. '
+        'Wall-clock time per replicate (ms) for 10 haploid samples on a 100 kb sequence. '
+        'Blue: no inversion (baseline panmictic coalescent). '
+        'Red: one inversion with S/I karyotype barrier (bp_left=30kb, bp_right=70kb, t_inv=100,000 gen). '
+        'The inversion adds overhead from per-segment class tracking and gene-flux events, '
+        'but cost scales sublinearly with $\\rho$. '
+        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, n=10, {NREPS} replicates per point.\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
+
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig7_performance.pdf'))
+    fig.subplots_adjust(bottom=0.28)
+    plt.savefig(os.path.join(OUTDIR, 'fig7_performance.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 
@@ -635,13 +761,25 @@ def fig8_feature_summary():
 
     ax.set_title('msinv: ARG-based coalescent simulator with chromosomal inversions',
                   fontsize=14, weight='bold', pad=20)
-    fig.text(0.5, 0.04,
-             f'msinv v{msinv.__version__}  —  hull algorithm '
-             '(per-position ancestral material tracking)',
-             ha='center', fontsize=9, style='italic', color='#555')
+    caption = (
+        'Figure 8. Feature comparison: msinv vs existing coalescent and forward simulators. '
+        'msinv is the only coalescent simulator with explicit chromosomal inversion support — '
+        'cross-karyotype barriers (t_inv), position-dependent gene flux ($\\phi(x)$), '
+        'multiple/nested inversions, and per-population frequencies. '
+        'Unlike SLiM (forward-time), msinv is coalescent-based: fast for neutral scenarios '
+        'and directly produces tree sequences for downstream analysis with tskit. '
+        f'msinv v{msinv.__version__}, hull algorithm (per-position ancestral material tracking).\n'
+        'Command: pixi run -e all python examples/make_figures.py'
+    )
+    fig.text(0.5, 0.02, caption, ha='center', fontsize=7, wrap=True,
+             fontstyle='italic', color='#333',
+             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                       edgecolor='#BDBDBD', alpha=0.9))
 
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTDIR, 'fig8_feature_summary.pdf'))
+    fig.subplots_adjust(bottom=0.15)
+    plt.savefig(os.path.join(OUTDIR, 'fig8_feature_summary.pdf'),
+                bbox_inches='tight')
     plt.close()
 
 

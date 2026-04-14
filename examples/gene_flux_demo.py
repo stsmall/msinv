@@ -103,6 +103,7 @@ for gamma in GAMMAS:
                 p_inv=p_inv, t_inv=t_inv,
                 gene_conversion_rate=gamma,
                 flux_window=0.05)],
+            recombination_rate=1e-8,
             seed=SEED_BASE + rep,
         )
         try:
@@ -157,10 +158,29 @@ for col, gamma in enumerate(GAMMAS):
         ax_bot.set_ylabel('Cross-class\n $d_{XY}$ (per bp)', fontsize=10)
 
 fig.suptitle(
-    'Gene flux erodes the karyotype barrier '
-    f'(Ne={Ne:,}, p_inv={p_inv}, t_inv={t_inv:,} gen, n_S=n_I={n_S}, '
-    f'{NREPS} reps)',
+    'Gene flux erodes the karyotype barrier',
     fontsize=12, fontweight='bold', y=1.00)
+
+caption = (
+    f'Figure. Effect of gene-conversion rate $\\gamma$ on the karyotype barrier. '
+    f'Each column shows a different $\\gamma$ value (0, 1e-8, 5e-8, 1e-7 bp$^{{-1}}$ gen$^{{-1}}$). '
+    f'(Top) Average within-class diversity $\\bar\\pi = (\\pi_S + \\pi_I)/2$. '
+    f'At $\\gamma$=0 (no flux), $\\bar\\pi$ inside the inversion (grey shading) is depressed to '
+    f'$4 N_e \\mu \\cdot p_{{class}}$ (red dashed) — the structured-coalescent prediction. '
+    f'As $\\gamma$ increases, gene flux relaxes the class barrier and $\\bar\\pi$ recovers '
+    f'toward the collinear expectation $4 N_e \\mu$ (grey dashed), '
+    f'first at the centre (where $\\phi(x)$ peaks) and last at breakpoints. '
+    f'(Bottom) Cross-class $d_{{XY}}$ (S vs I). At $\\gamma$=0, $d_{{XY}}$ is uniformly elevated; '
+    f'as $\\gamma$ grows, the centre collapses first, leaving breakpoints as the last barrier. '
+    f'Parameters: Ne={Ne:,}, p_inv={p_inv}, t_inv={t_inv:,} gen, '
+    f'L={L/1e3:.0f} kb, $\\mu$=1e-8, r=1e-8, n_S=n_I={n_S}, {NREPS} replicates.\n'
+    f'Command: pixi run -e all python examples/gene_flux_demo.py'
+)
+fig.text(0.5, -0.04, caption, ha='center', fontsize=7, wrap=True,
+         fontstyle='italic', color='#333',
+         bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                   edgecolor='#BDBDBD', alpha=0.9))
+
 fig.tight_layout()
 
 OUT = os.path.join(os.path.dirname(__file__), '..', 'figures',

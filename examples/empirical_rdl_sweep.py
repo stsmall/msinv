@@ -180,11 +180,28 @@ for col, label in enumerate(labels):
         ax_bot.legend(fontsize=8, loc='upper right')
 
 fig.suptitle(
-    f'RDL-like sweep through inversion (msinv v0.3.0)\n'
-    f'Ne={Ne:,}, p_inv={p_inv_freq}, x_sel={x_sel:,} bp, '
-    f't_sweep_S={t_sweep_S} gen, t_sweep_I={t_sweep_I} gen, '
-    f'{NREPS} replicates',
+    'RDL-like sweep through inversion (msinv hull simulator)',
     fontsize=12, fontweight='bold', y=1.02)
+
+caption = (
+    f'Figure. RDL (dieldrin resistance) sweep-through-inversion, modelled after '
+    f'Grau-Bov\u00e9 et al. (2020 MBE). Three scenarios for n_S={n_S} + n_I={n_I} '
+    f'haplotypes inside a single inversion. '
+    f'(Top) Cross-class $d_{{XY}}$ (S vs I). (Bottom) Within-class $\\pi_S$ and $\\pi_I$. '
+    f'Left: Neutral baseline — uniform elevation of $d_{{XY}}$ inside the inversion. '
+    f'Centre: Sweep on S only (t={t_sweep_S} gen) — $\\pi_S$ collapses around x_sel while '
+    f'$\\pi_I$ is unaffected, producing haplotype asymmetry. '
+    f'Right: S sweep then I sweep (via gene flux at t={t_flux} gen, then I sweep at t={t_sweep_I} gen) '
+    f'— both $\\pi_S$ and $\\pi_I$ collapse, matching the empirical RDL pattern. '
+    f'Parameters: Ne={Ne:,}, p_inv={p_inv_freq}, t_inv={t_inv_age:,} gen, '
+    f'$\\mu$={mu:.0e}, r={r:.0e}, L={L/1e3:.0f} kb, {NREPS} replicates.\n'
+    f'Command: pixi run -e all python examples/empirical_rdl_sweep.py'
+)
+fig.text(0.5, -0.04, caption, ha='center', fontsize=7, wrap=True,
+         fontstyle='italic', color='#333',
+         bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                   edgecolor='#BDBDBD', alpha=0.9))
+
 fig.tight_layout()
 fig.savefig('figures/empirical_rdl_sweep.pdf',
             bbox_inches='tight', dpi=150)

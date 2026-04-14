@@ -66,9 +66,83 @@ class Demography:
         self.events: List[Tuple] = []
 
     def add_event(self, event: Tuple):
-        """Add a demographic event. Events are kept sorted by time."""
+        """Add a raw ms-style demographic event. Events are kept sorted by time.
+
+        Prefer the named methods below (``add_population_split``,
+        ``add_population_size_change``, etc.) for readability.
+        """
         self.events.append(event)
         self.events.sort(key=lambda e: e[1])
+
+    # -- msprime-compatible convenience methods ----------------------------
+
+    def add_population_split(self, time: float, derived: List[int],
+                             ancestral: int):
+        """Going backward, merge *derived* populations into *ancestral*.
+
+        Equivalent to msprime ``Demography.add_population_split``
+        (and to one ``ej`` event per derived pop in ms).
+        """
+        for src in derived:
+            self.add_event(('ej', time, src, ancestral))
+
+    def add_mass_migration(self, time: float, source: int, dest: int,
+                           proportion: float = 1.0):
+        """Going backward, move *proportion* of lineages from *source*
+        to *dest*.
+
+        With proportion=1.0 this is identical to ``ej``.  Fractional
+        proportions (``es`` in ms) are not yet implemented; use
+        proportion=1.0 for now.
+        """
+        if proportion != 1.0:
+            raise NotImplementedError(
+                "Fractional mass migration (es) not yet implemented. "
+                "Use proportion=1.0 for a full population merge.")
+        self.add_event(('ej', time, source, dest))
+
+    def add_population_size_change(self, time: float,
+                                   population: Optional[int] = None,
+                                   new_size: Optional[float] = None):
+        """Change effective population size going backward.
+
+        If *population* is None, change all populations (``eN``).
+        Otherwise change only that population (``en``).
+        """
+        if population is None:
+            self.add_event(('eN', time, new_size))
+        else:
+            self.add_event(('en', time, population, new_size))
+
+    def add_growth_rate_change(self, time: float,
+                               population: Optional[int] = None,
+                               growth_rate: float = 0.0):
+        """Set exponential growth rate going backward.
+
+        N(t') = N(t) * exp(-growth_rate * (t' - t)).
+
+        If *population* is None, change all populations (``eG``).
+        """
+        if population is None:
+            self.add_event(('eG', time, growth_rate))
+        else:
+            self.add_event(('eg', time, population, growth_rate))
+
+    def add_migration_rate_change(self, time: float,
+                                  source: Optional[int] = None,
+                                  dest: Optional[int] = None,
+                                  rate: float = 0.0):
+        """Change migration rate going backward.
+
+        If *source* and *dest* are both None, set all off-diagonal
+        migration rates (``eM``).  Otherwise set the single rate
+        from *source* to *dest* (``em``; note dest receives migrants
+        from source, matching msprime convention).
+        """
+        if source is None and dest is None:
+            self.add_event(('eM', time, rate))
+        else:
+            self.add_event(('em', time, dest, source, rate))
 
     def copy(self) -> 'Demography':
         """Fresh copy with replayable events."""

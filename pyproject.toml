@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5"]
+build-backend = "maturin"
 
 [project]
 name = "msinv"
@@ -29,18 +29,19 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
     "numpy>=1.20",
-    "tskit>=0.5",       # required for HullSimulator TreeSequence output
+    "tskit>=0.5",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
     "pytest-timeout",
-    "msprime>=1.2",     # for mutation dropping in figure-generating examples
+    "msprime>=1.2",
 ]
 plots = [
     "matplotlib>=3.5",
@@ -49,42 +50,24 @@ plots = [
 all = [
     "msinv[test,plots]",
 ]
-docs = [
-    "sphinx>=7.0",
-    "furo",
-    "myst-parser",
-    "sphinx-autodoc-typehints",
-]
 
 [project.urls]
 Homepage = "https://github.com/stsmall/msinv"
 Documentation = "https://github.com/stsmall/msinv/tree/main/docs"
 Issues = "https://github.com/stsmall/msinv/issues"
-Changelog = "https://github.com/stsmall/msinv/blob/main/CHANGELOG.md"
 
-[tool.hatch.build.targets.wheel]
-packages = ["msinv"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "/msinv",
-    "/tests",
-    "/examples",
-    "/docs/*.md",
-    "/README.md",
-    "/CHANGELOG.md",
-    "/CONTRIBUTING.md",
-    "/LICENSE",
-    "/Makefile",
-    "/pyproject.toml",
-]
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "msinv._msinv_core"
+manifest-path = "rust/msinv-py/Cargo.toml"
+python-source = "."
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 600
 
 # ---------------------------------------------------------------------------
-# Pixi configuration (alternative to pip; reads the SAME pyproject.toml)
+# Pixi
 # ---------------------------------------------------------------------------
 
 [tool.pixi.project]

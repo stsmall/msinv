@@ -9,7 +9,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::class_tag::{BranchClass, Karyotype};
 use crate::demography::{DemoEvent, Demography};
-use crate::events::{apply_coalescence, apply_recombination};
+use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
@@ -620,13 +620,14 @@ fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
     }
 }
 
-/// Compute total coalescence rate by interval scanning — O(S log S).
+/// Compute total coalescence rate — O(n) per pop bucket.
 ///
-/// Scans all segment endpoints across all lineages. Between each pair
-/// of consecutive endpoints, the set of ancestral lineages (and their
-/// classes) is constant. For each such interval, count lineages per
-/// (class, pop) group and compute the standard structured-coalescent
-/// rate contribution.
+/// In the full ARG model, the rate for any pair in the same population
+/// to coalesce is 1/(2*Ne) regardless of overlap. For structured
+/// (inversion) scenarios, we bucket lineages by their dominant class
+/// at the first inversion-internal segment and apply the per-class rate.
+///
+/// For panmictic-only (no active inversions): rate = k*(k-1)/(4*Ne).
 fn compute_total_coal_rate(
     active: &[Lineage],
     arena: &SegmentArena,
@@ -635,62 +636,45 @@ fn compute_total_coal_rate(
     inversions: &[InversionSpec],
     barrier_active: &[bool],
 ) -> f64 {
-    // Collect all segment endpoints.
-    let mut endpoints: Vec<f64> = Vec::new();
-    for lin in active {
-        let mut cur = lin.head;
-        while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            endpoints.push(seg.left);
-            endpoints.push(seg.right);
-            cur = seg.next;
-        }
-    }
-    if endpoints.is_empty() {
-        return 0.0;
-    }
-    endpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    endpoints.dedup();
+    let any_inv_active = barrier_active.iter().any(|&b| b);
 
-    let mut total_rate = 0.0;
-
-    // For each interval between consecutive endpoints, find which
-    // lineages cover it and bucket by (class, pop).
-    for w in endpoints.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if b <= a { continue; }
-        let mid = (a + b) / 2.0;
-
-        // Count lineages at mid, bucketed by (class, pop).
-        let mut buckets: Vec<(BranchClass, u32, usize)> = Vec::new(); // (class, pop, count)
+    if !any_inv_active {
+        // Panmictic: bucket by pop. O(n).
+        let mut counts: Vec<(u32, usize)> = Vec::new();
         for lin in active {
-            if let Some(cls) = lin.class_at(mid, arena) {
-                if let Some(entry) = buckets.iter_mut()
-                    .find(|(c, p, _)| c.can_coalesce(cls) && *p == lin.population)
-                {
-                    entry.2 += 1;
-                } else {
-                    buckets.push((cls, lin.population, 1));
-                }
+            if let Some(e) = counts.iter_mut().find(|(p, _)| *p == lin.population) {
+                e.1 += 1;
+            } else {
+                counts.push((lin.population, 1));
             }
         }
-
-        for (cls, pop, k) in &buckets {
+        let mut total = 0.0;
+        for (pop, k) in &counts {
             if *k < 2 { continue; }
             let ne = demo.size_at(*pop, t).max(1e-9);
-            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
-            if p_class <= 0.0 { continue; }
             let kf = *k as f64;
-            // Per-pair rate for this class/pop, times interval width.
-            // But we want the TOTAL rate (not per-bp), so we DON'T
-            // multiply by interval width — each pair has rate 1/(2*Ne*p_class)
-            // regardless of how long the overlap interval is. The interval
-            // width determines WHICH position the coalescence happened at
-            // (for the merge sweep), not the rate.
-            total_rate += kf * (kf - 1.0) / 2.0 / (2.0 * ne * p_class);
+            total += kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+        }
+        return total;
+    }
+
+    // Structured: per-pair overlap-by-class enumeration. O(n^2) but
+    // n stays bounded (GC removes non-overlapping fragments).
+    let n = active.len();
+    let mut total = 0.0;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if active[i].population != active[j].population { continue; }
+            let ne = demo.size_at(active[i].population, t).max(1e-9);
+            let overlaps = overlap_by_class(active[i].head, active[j].head, arena);
+            for (cls, _ov_len) in &overlaps {
+                let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
+                if p_class <= 0.0 { continue; }
+                total += 1.0 / (2.0 * ne * p_class);
+            }
         }
     }
-    total_rate
+    total
 }
 
 /// Effective sub-population frequency for a BranchClass tag.
@@ -711,8 +695,8 @@ fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
     p
 }
 
-/// When a coalescence event fires, sample a (class, pop) group and
-/// pick two lineages from it to coalesce.
+/// When a coalescence event fires, pick a (class, pop) bucket
+/// weighted by rate, then pick two lineages from that bucket.
 fn sample_and_coalesce(
     active: &mut Vec<Lineage>,
     arena: &mut SegmentArena,
@@ -724,54 +708,54 @@ fn sample_and_coalesce(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
 ) {
-    // Build weighted list of (class, pop, rate, lineage_indices).
-    let mut endpoints: Vec<f64> = Vec::new();
-    for lin in active.iter() {
-        let mut cur = lin.head;
-        while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            endpoints.push(seg.left);
-            endpoints.push(seg.right);
-            cur = seg.next;
-        }
-    }
-    endpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    endpoints.dedup();
+    let any_inv_active = barrier_active.iter().any(|&b| b);
 
+    // Build (class, pop, rate, indices) buckets.
     struct Bucket {
-        _cls: BranchClass,
-        pop: u32,
         rate: f64,
         indices: Vec<usize>,
+        allowed_class: Option<BranchClass>, // None = panmictic
     }
     let mut buckets: Vec<Bucket> = Vec::new();
 
-    for w in endpoints.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if b <= a { continue; }
-        let mid = (a + b) / 2.0;
-
-        // Temporary per-interval buckets
-        let mut local: Vec<(BranchClass, u32, Vec<usize>)> = Vec::new();
-        for (li, lin) in active.iter().enumerate() {
-            if let Some(cls) = lin.class_at(mid, arena) {
-                if let Some(entry) = local.iter_mut()
-                    .find(|(c, p, _)| c.can_coalesce(cls) && *p == lin.population)
-                {
-                    entry.2.push(li);
-                } else {
-                    local.push((cls, lin.population, vec![li]));
-                }
+    if !any_inv_active {
+        // Panmictic: one bucket per pop.
+        let mut pop_map: Vec<(u32, Vec<usize>)> = Vec::new();
+        for (i, lin) in active.iter().enumerate() {
+            if let Some(e) = pop_map.iter_mut().find(|(p, _)| *p == lin.population) {
+                e.1.push(i);
+            } else {
+                pop_map.push((lin.population, vec![i]));
             }
         }
-        for (cls, pop, indices) in local {
+        for (pop, indices) in pop_map {
             if indices.len() < 2 { continue; }
             let ne = demo.size_at(pop, t).max(1e-9);
-            let p_class = p_class_for_tag(cls, inversions, barrier_active, t);
-            if p_class <= 0.0 { continue; }
             let kf = indices.len() as f64;
-            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne * p_class);
-            buckets.push(Bucket { _cls: cls, pop, rate, indices });
+            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+            buckets.push(Bucket { rate, indices, allowed_class: None });
+        }
+    } else {
+        // Structured: per-pair overlap-by-class. Each pair with
+        // overlap at a matching class gets its own bucket entry.
+        let n = active.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if active[i].population != active[j].population { continue; }
+                let ne = demo.size_at(active[i].population, t).max(1e-9);
+                let overlaps = overlap_by_class(
+                    active[i].head, active[j].head, arena);
+                for (cls, _ov_len) in &overlaps {
+                    let p_class = p_class_for_tag(
+                        *cls, inversions, barrier_active, t);
+                    if p_class <= 0.0 { continue; }
+                    let rate = 1.0 / (2.0 * ne * p_class);
+                    buckets.push(Bucket {
+                        rate, indices: vec![i, j],
+                        allowed_class: Some(*cls),
+                    });
+                }
+            }
         }
     }
 
@@ -779,24 +763,27 @@ fn sample_and_coalesce(
     let total: f64 = buckets.iter().map(|b| b.rate).sum();
     if total <= 0.0 { return; }
 
-    // Pick a bucket weighted by rate.
     let u = rng.random::<f64>() * total;
     let mut cum = 0.0;
-    let mut chosen_bucket = 0;
+    let mut chosen = 0;
     for (i, b) in buckets.iter().enumerate() {
         cum += b.rate;
-        if u < cum {
-            chosen_bucket = i;
-            break;
-        }
+        if u < cum { chosen = i; break; }
     }
 
-    // Pick two lineages from this bucket.
-    let indices = &buckets[chosen_bucket].indices;
-    let ii = rng.random_range(0..indices.len());
-    let mut jj = rng.random_range(0..indices.len() - 1);
-    if jj >= ii { jj += 1; }
-    apply_coalescence(active, indices[ii], indices[jj], t, arena, tables, next_uid);
+    let bucket = &buckets[chosen];
+    let indices = &bucket.indices;
+    let allowed = bucket.allowed_class;
+    if indices.len() == 2 {
+        apply_coalescence_partial(active, indices[0], indices[1], t,
+                                   arena, tables, next_uid, allowed);
+    } else {
+        let ii = rng.random_range(0..indices.len());
+        let mut jj = rng.random_range(0..indices.len() - 1);
+        if jj >= ii { jj += 1; }
+        apply_coalescence_partial(active, indices[ii], indices[jj], t,
+                                   arena, tables, next_uid, allowed);
+    }
 }
 
 /// Build initial segment chain for one sample lineage.

@@ -934,8 +934,25 @@ class HullSimulator:
 
     # -- main loop ---------------------------------------------------------
 
-    def simulate(self):
-        """Run one replicate. Returns a tskit ``TreeSequence``."""
+    def simulate(self, use_rust=None):
+        """Run one replicate. Returns a tskit ``TreeSequence``.
+
+        Parameters
+        ----------
+        use_rust : bool or None
+            If True, use the Rust backend (requires the compiled
+            extension). If False, use the pure-Python backend. If None
+            (default), auto-detect: use Rust if available.
+        """
+        if use_rust is None:
+            try:
+                from ._rust_bridge import RUST_AVAILABLE
+                use_rust = RUST_AVAILABLE
+            except ImportError:
+                use_rust = False
+        if use_rust:
+            from ._rust_bridge import rust_simulate
+            return rust_simulate(self)
         reset_uids()
         tables = TableBuilder(sequence_length=self.L,
                                num_populations=self.demography.n_pops)

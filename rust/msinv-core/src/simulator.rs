@@ -13,6 +13,7 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
+use crate::rate_index::RateCache;
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
@@ -189,6 +190,12 @@ impl HullSimulator {
             .map(|l| l.cached_len).sum();
         let mut total_recomb_rate: f64 = total_material * self.recombination_rate;
 
+        // Phase D: incremental pair rate cache.
+        let max_lins = (active.len() * 4).max(64);  // generous headroom
+        let mut rate_cache = RateCache::new(max_lins);
+        rate_cache.rebuild(&active, arena);
+        let mut cache_dirty = false;  // force full rebuild when true
+
         for _ in 0..10_000_000u64 {
             let n = active.len();
             if n <= 1 {
@@ -216,10 +223,23 @@ impl HullSimulator {
             // --- Compute all event rates ---
             let mut all_events: Vec<(f64, Event)> = Vec::new();
 
-            // Coalescence.
-            compute_coal_events(
-                active, arena, demo, t, &self.inversions, &barrier_active,
-                &mut all_events);
+            // Coalescence: use cached pair rates when inversions active.
+            if cache_dirty {
+                rate_cache.rebuild(active, arena);
+                cache_dirty = false;
+            }
+            if any_barrier {
+                // Structured: emit events from the pair rate cache.
+                emit_coal_events_from_cache(
+                    &rate_cache, active, &*demo, t,
+                    &self.inversions, &barrier_active,
+                    &mut all_events);
+            } else {
+                // Post-barrier panmictic: Hudson per-pop buckets.
+                compute_coal_events(
+                    active, arena, demo, t, &self.inversions, &barrier_active,
+                    &mut all_events);
+            }
 
             // Recombination (O(1) from running total).
             if total_recomb_rate > 0.0 {
@@ -263,6 +283,7 @@ impl HullSimulator {
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
+                    cache_dirty = true;
                     continue;
                 }
                 return;
@@ -289,6 +310,7 @@ impl HullSimulator {
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
+                cache_dirty = true;
                 continue;
             }
             t = t_event;
@@ -313,11 +335,41 @@ impl HullSimulator {
                 Event::CoalPair { i, j, class } => {
                     let (i, j) = (*i, *j);
                     let cls = *class;
+                    let n_before = active.len();
+
+                    // Remove cache entries for consumed lineages.
+                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                    rate_cache.remove_lineage(hi);
+                    rate_cache.remove_lineage(lo);
+
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         Some(cls));
-                    // Coalescence removes 2 lineages and adds 1-3.
-                    // Recompute total from scratch (cheap with cached_len).
+
+                    // Handle swap_remove index changes in cache.
+                    // swap_remove(hi): last element moved to hi
+                    let old_last_hi = n_before - 1;
+                    if hi != old_last_hi {
+                        rate_cache.swap_update(hi, old_last_hi);
+                    } else {
+                        rate_cache.swap_update(hi, hi);
+                    }
+                    // swap_remove(lo): (n_before-2)th element moved to lo
+                    let old_last_lo = n_before - 2;
+                    if lo < old_last_lo {
+                        rate_cache.swap_update(lo, old_last_lo);
+                    } else {
+                        rate_cache.swap_update(lo, lo);
+                    }
+
+                    // Recompute pairs for newly pushed lineages.
+                    let n_after = active.len();
+                    for new_idx in (n_before - 2)..n_after {
+                        if new_idx < n_after {
+                            rate_cache.recompute_for(new_idx, active, arena);
+                        }
+                    }
+
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                 }
@@ -354,9 +406,29 @@ impl HullSimulator {
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
                     let x = find_position(active, chosen_idx, x_offset,
                                            arena, self.sequence_length);
+                    let n_before = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid);
-                    // Recombination preserves total material (split only).
+                    // Recomb: lineage at chosen_idx is replaced (swap_remove
+                    // + push of left and right). Recompute pairs for the
+                    // modified indices.
+                    if any_barrier {
+                        // The original lineage was swap_removed; last moved
+                        // to chosen_idx. Two new lineages pushed at end.
+                        let old_last = n_before - 1;
+                        rate_cache.remove_lineage(chosen_idx);
+                        if chosen_idx != old_last {
+                            rate_cache.swap_update(chosen_idx, old_last);
+                        } else {
+                            rate_cache.swap_update(chosen_idx, chosen_idx);
+                        }
+                        // Recompute for the two new lineages.
+                        let n_after = active.len();
+                        for new_idx in (n_before - 1)..n_after {
+                            rate_cache.recompute_for(new_idx, active, arena);
+                        }
+                    }
+                    // Recombination preserves total material.
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
@@ -366,9 +438,24 @@ impl HullSimulator {
                     {
                         let (tl, tr) = self.draw_tract(x_event, inv, rng);
                         if tr > tl {
+                            let n_before = active.len();
                             apply_gene_flux(active, li, tl, tr, inv,
                                              arena, next_uid);
-                            // Flux preserves total material (split only).
+                            // Flux: same structure as recomb (swap_remove + push).
+                            if any_barrier {
+                                let old_last = n_before - 1;
+                                rate_cache.remove_lineage(li);
+                                if li != old_last {
+                                    rate_cache.swap_update(li, old_last);
+                                } else {
+                                    rate_cache.swap_update(li, li);
+                                }
+                                let n_after = active.len();
+                                for new_idx in (n_before - 1)..n_after {
+                                    rate_cache.recompute_for(
+                                        new_idx, active, arena);
+                                }
+                            }
                         }
                     }
                 }
@@ -387,9 +474,10 @@ impl HullSimulator {
             let n_before_gc = active.len();
             gc_sole_lineages(active, arena);
             if active.len() != n_before_gc {
-                // GC removed lineages — recompute total.
+                // GC removed lineages — recompute total and cache.
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
+                cache_dirty = true;
             }
 
             // Keep recomb rate in sync.
@@ -657,6 +745,29 @@ fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
     // Remove in reverse order to preserve indices.
     for &idx in to_remove.iter().rev() {
         active.swap_remove(idx);
+    }
+}
+
+/// Emit coalescence events from the RateCache. O(n^2) iteration of
+/// cached pairs, but the CACHE itself is maintained incrementally —
+/// only O(n) pairs are recomputed after each event.
+fn emit_coal_events_from_cache(
+    cache: &RateCache,
+    active: &[Lineage],
+    demo: &Demography,
+    t: f64,
+    inversions: &[InversionSpec],
+    barrier_active: &[bool],
+    events: &mut Vec<(f64, Event)>,
+) {
+    for (i, j, overlaps) in cache.iter_pairs() {
+        let ne = demo.size_at(active[i].population, t).max(1e-9);
+        for (cls, _ov_len) in overlaps {
+            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
+            if p_class <= 0.0 { continue; }
+            let rate = 1.0 / (2.0 * ne * p_class);
+            events.push((rate, Event::CoalPair { i, j, class: *cls }));
+        }
     }
 }
 

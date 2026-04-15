@@ -121,13 +121,26 @@ impl HullSimulator {
     }
 
     pub fn simulate(&self) -> SimResult {
-        // Inversions require recombination — rho=0 with inversions
-        // causes infinite loops (partial coalescence fragments lineages
-        // that can never recombine back together).
-        if !self.inversions.is_empty() && self.recombination_rate <= 0.0 {
+        // rho=0 is forbidden globally (matches Python). Without
+        // recombination, partial coalescence fragments lineages that
+        // can never recombine back together. For independent loci,
+        // simulate each separately.
+        if self.recombination_rate <= 0.0 {
             panic!(
-                "recombination_rate must be > 0 when inversions are present. \
-                 Inversions are recombination modifiers — rho=0 is undefined.");
+                "recombination_rate must be > 0 (got {}). rho=0 is not \
+                 supported. For non-recombining loci, simulate each \
+                 locus separately.",
+                self.recombination_rate);
+        }
+        // gamma > 0 required for any inversion (matches Python).
+        for inv in &self.inversions {
+            if inv.gene_conversion_rate <= 0.0 {
+                panic!(
+                    "gene_conversion_rate (gamma) must be > 0 for every \
+                     inversion (got {} for inv_id={}). gamma=0 makes the \
+                     inversion an absolute barrier (often unrealistic).",
+                    inv.gene_conversion_rate, inv.inv_id);
+            }
         }
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
         let mut arena = SegmentArena::new();
@@ -1183,7 +1196,8 @@ mod tests {
 
     #[test]
     fn panmictic_no_recomb_gives_single_tree() {
-        let sim = HullSimulator::panmictic(10, 1000.0, 100.0, 0.0, 42);
+        // rho > 0 enforced; use 1e-12 (expected recombs ≈ 1e-6).
+        let sim = HullSimulator::panmictic(10, 1000.0, 100.0, 1e-12, 42);
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 19);
         assert_eq!(result.tables.num_edges(), 18);
@@ -1203,7 +1217,7 @@ mod tests {
 
     #[test]
     fn two_samples_no_recomb() {
-        let sim = HullSimulator::panmictic(2, 100.0, 50.0, 0.0, 7);
+        let sim = HullSimulator::panmictic(2, 100.0, 50.0, 1e-12, 7);
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 3);
         assert_eq!(result.tables.num_edges(), 2);
@@ -1211,7 +1225,7 @@ mod tests {
 
     #[test]
     fn coal_times_positive() {
-        let sim = HullSimulator::panmictic(5, 1000.0, 100.0, 0.0, 123);
+        let sim = HullSimulator::panmictic(5, 1000.0, 100.0, 1e-12, 123);
         let result = sim.simulate();
         for i in 5..result.tables.num_nodes() {
             assert!(result.tables.node_time[i] > 0.0);
@@ -1290,7 +1304,7 @@ mod tests {
             ],
             demography: demo,
             sequence_length: 100.0,
-            recombination_rate: 0.0,
+            recombination_rate: 1e-12,
             inversions: vec![],
             sweeps: vec![],
             seed: 42,
@@ -1325,7 +1339,7 @@ mod tests {
             ],
             demography: demo,
             sequence_length: 100.0,
-            recombination_rate: 0.0,
+            recombination_rate: 1e-12,
             inversions: vec![],
             sweeps: vec![],
             seed: 42,
@@ -1377,7 +1391,7 @@ mod tests {
         // Sweep at centre of [0, 100) at t=100 gen — all lineages
         // carrying material at x=50 coalesce to a single ancestor.
         let mut sim = HullSimulator::panmictic(
-            6, 10_000.0, 100.0, 0.0, 42);
+            6, 10_000.0, 100.0, 1e-12, 42);
         sim.sweeps.push(Sweep {
             x_sel: 50.0,
             t_event: 100.0,

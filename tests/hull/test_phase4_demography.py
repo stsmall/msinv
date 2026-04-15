@@ -186,7 +186,7 @@ def test_inversion_with_two_pops():
         sequence_length=10_000.0,
         p_inv=p_inv_anc, t_inv=t_inv,
         bp_left=0.0, bp_right=10_000.0,
-        gene_conversion_rate=0.0,
+        gene_conversion_rate=1e-15,  # negligible (gamma>0 enforced)
         recombination_rate=1e-8,
         seed=42,
     )

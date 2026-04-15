@@ -347,7 +347,7 @@ class HullSimulator:
                  t_inv: float = None,
                  bp_left: float = None,
                  bp_right: float = None,
-                 gene_conversion_rate: float = 0.0,
+                 gene_conversion_rate: float = 1e-9,
                  flux_window: float = 0.05,
                  inversions: list = None,
                  sweeps: list = None,
@@ -504,16 +504,18 @@ class HullSimulator:
 
         self.L = sequence_length
         self.r = recombination_rate
-        # Validate: inversions require recombination (rho=0 + inversions
-        # hangs because partial coalescence fragments lineages that can
-        # never recombine back together).  rho=0 is valid only for
-        # independent non-recombining loci (RADseq/amplicon use case).
-        if self.inversions and self.r <= 0:
+        # rho = 0 is forbidden globally. Without recombination,
+        # partial coalescence fragments lineages that can never
+        # recombine back together (hangs with inversions) and the
+        # ARG collapses to a single tree across the whole sequence
+        # (no genealogical resolution within the locus). For
+        # independent non-recombining loci, simulate each locus
+        # separately with its own short sequence_length.
+        if self.r <= 0:
             raise ValueError(
-                "recombination_rate must be > 0 when inversions are "
-                "present. Inversions are recombination modifiers — "
-                "rho=0 is undefined. For non-recombining loci, omit "
-                "the inversions parameter.")
+                f"recombination_rate must be > 0 (got {self.r}). "
+                "rho=0 is not supported. For non-recombining loci, "
+                "simulate each locus separately.")
         # Sweeps: list of Sweep objects, sorted by t_event.
         self.sweeps = []
         if sweeps:

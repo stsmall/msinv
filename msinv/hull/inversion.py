@@ -24,8 +24,8 @@ class InversionSpec:
         Inversion age in generations. After t >= t_inv, the class
         barrier lifts and inv-internal positions become panmictic.
     gene_conversion_rate : float
-        Per-bp per-generation gene-conversion rate γ. Defaults to 0
-        (no flux). Combined with phi(x) for the per-position flux rate.
+        Per-bp per-generation gene-conversion rate γ. Must be > 0.
+        Combined with phi(x) for the per-position flux rate.
     flux_window : float
         Tract length as a fraction of the inversion's genomic length.
     inv_id : int
@@ -37,7 +37,7 @@ class InversionSpec:
     bp_right: float
     p_inv: float
     t_inv: float
-    gene_conversion_rate: float = 0.0
+    gene_conversion_rate: float = 1e-9
     flux_window: float = 0.05
     inv_id: int = -1   # set by simulator
 
@@ -66,3 +66,9 @@ class InversionSpec:
         if not (0.0 < self.flux_window < 1.0):
             raise ValueError(
                 f"flux_window must be in (0, 1), got {self.flux_window}.")
+        if self.gene_conversion_rate <= 0.0:
+            raise ValueError(
+                f"gene_conversion_rate (gamma) must be > 0, got "
+                f"{self.gene_conversion_rate}. Inversions decouple from "
+                f"flanks unless gene flux is allowed; gamma=0 makes the "
+                f"inversion an absolute barrier (often unrealistic).")

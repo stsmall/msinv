@@ -184,6 +184,11 @@ impl HullSimulator {
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.t_event.partial_cmp(&b.t_event).unwrap());
 
+        // Running totals for O(1) recombination rate (Phase A).
+        let mut total_material: f64 = active.iter()
+            .map(|l| l.cached_len).sum();
+        let mut total_recomb_rate: f64 = total_material * self.recombination_rate;
+
         for _ in 0..10_000_000u64 {
             let n = active.len();
             if n <= 1 {
@@ -216,16 +221,9 @@ impl HullSimulator {
                 active, arena, demo, t, &self.inversions, &barrier_active,
                 &mut all_events);
 
-            // Recombination.
-            let recomb_rate: f64 = if self.recombination_rate > 0.0 {
-                active.iter()
-                    .map(|lin| lin.cached_len * self.recombination_rate)
-                    .sum()
-            } else {
-                0.0
-            };
-            if recomb_rate > 0.0 {
-                all_events.push((recomb_rate, Event::Recombination));
+            // Recombination (O(1) from running total).
+            if total_recomb_rate > 0.0 {
+                all_events.push((total_recomb_rate, Event::Recombination));
             }
 
             // Gene flux.
@@ -261,6 +259,10 @@ impl HullSimulator {
                         apply_sweep(active, &sweep, t, arena, tables,
                                      next_uid, self.sequence_length);
                     }
+                    // Sweeps/barriers may change lineage structure.
+                    total_material = active.iter()
+                        .map(|l| l.cached_len).sum();
+                    total_recomb_rate = total_material * self.recombination_rate;
                     continue;
                 }
                 return;
@@ -283,6 +285,10 @@ impl HullSimulator {
                     apply_sweep(active, &sweep, t, arena, tables,
                                  next_uid, self.sequence_length);
                 }
+                // Sweeps/barriers may change lineage structure.
+                total_material = active.iter()
+                    .map(|l| l.cached_len).sum();
+                total_recomb_rate = total_material * self.recombination_rate;
                 continue;
             }
             t = t_event;
@@ -310,6 +316,10 @@ impl HullSimulator {
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         Some(cls));
+                    // Coalescence removes 2 lineages and adds 1-3.
+                    // Recompute total from scratch (cheap with cached_len).
+                    total_material = active.iter()
+                        .map(|l| l.cached_len).sum();
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
@@ -323,13 +333,14 @@ impl HullSimulator {
                         apply_coalescence(
                             active, pool[ii], pool[jj], t, arena,
                             tables, next_uid);
+                        // Recompute after merge.
+                        total_material = active.iter()
+                            .map(|l| l.cached_len).sum();
                     }
                 }
                 Event::Recombination => {
                     let u_lin: f64 = rng.random::<f64>();
-                    let total_mat: f64 = active.iter()
-                        .map(|l| l.cached_len).sum();
-                    let target = u_lin * total_mat;
+                    let target = u_lin * total_material;
                     let mut cum_len = 0.0;
                     let mut chosen_idx = 0;
                     for (idx, lin) in active.iter().enumerate() {
@@ -345,6 +356,7 @@ impl HullSimulator {
                                            arena, self.sequence_length);
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid);
+                    // Recombination preserves total material (split only).
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
@@ -356,6 +368,7 @@ impl HullSimulator {
                         if tr > tl {
                             apply_gene_flux(active, li, tl, tr, inv,
                                              arena, next_uid);
+                            // Flux preserves total material (split only).
                         }
                     }
                 }
@@ -364,13 +377,23 @@ impl HullSimulator {
                     if idx < active.len() {
                         active[idx].population = *dst_pop;
                     }
+                    // Migration doesn't change material.
                 }
             }
 
             // GC: remove lineages that are the sole carrier at every
             // position they cover. These can never produce more edges
             // (no other lineage to coalesce with at those positions).
+            let n_before_gc = active.len();
             gc_sole_lineages(active, arena);
+            if active.len() != n_before_gc {
+                // GC removed lineages — recompute total.
+                total_material = active.iter()
+                    .map(|l| l.cached_len).sum();
+            }
+
+            // Keep recomb rate in sync.
+            total_recomb_rate = total_material * self.recombination_rate;
         }
     }
 

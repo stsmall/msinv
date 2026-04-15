@@ -195,13 +195,15 @@ where $\phi(x)$ is the position-dependent flux rate.
 
 ### 8.2 Expected Divergence
 
-$$E[d_{XY}(x)] = \mu \cdot E[T_{\text{coal}}(x)]$$
+$$E[d_{XY}(x)] = 2 \mu \cdot E[T_{\text{coal}}(x)]$$
+
+(Factor of 2: mutations accumulate on **both** lineages leading to the MRCA.)
 
 Inside the inversion (no flux):
-$$E[d_{XY}] = \mu \left(t_k + 2 N_e\right)$$
+$$E[d_{XY}] = 2 \mu \left(t_k + 2 N_e\right)$$
 
 Outside the inversion (or after $t_k$):
-$$E[d_{XY}] = \mu \cdot 2 N_e = \frac{\theta}{2}$$
+$$E[d_{XY}] = 2 \mu \cdot 2 N_e = \theta$$
 
 The ratio of inside-to-outside divergence:
 $$\frac{d_{XY}^{\text{inv}}}{d_{XY}^{\text{col}}} = 1 + \frac{t_k}{2 N_e}$$
@@ -227,7 +229,7 @@ Hudson's $F_{ST}$ between karyotype classes at a locus inside the inversion:
 $$F_{ST} = 1 - \frac{\pi_W}{d_{XY}} = 1 - \frac{2 \, p_k \, q_k \, N_e}{t_k + 2 N_e}$$
 
 For balanced frequencies ($p_k = q_k = 0.5$):
-$$F_{ST} = \frac{t_k}{t_k + 2 N_e}$$
+$$F_{ST} = 1 - \frac{N_e}{t_k + 2 N_e}$$
 
 $F_{ST} \to 0$ for young inversions ($t_k \ll 2 N_e$) and $F_{ST} \to 1$ for old inversions ($t_k \gg 2 N_e$).
 

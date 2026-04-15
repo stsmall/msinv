@@ -141,10 +141,10 @@ def fig1_inversion_signal():
     theta = 4 * Ne * mu
     # Build theory arrays: step inside/outside inversion
     inside = (mid >= bp_l) & (mid <= bp_r)
-    dxy_th = np.where(inside, mu * (t_inv + 2 * Ne), mu * 2 * Ne)
+    dxy_th = np.where(inside, 2 * mu * (t_inv + 2 * Ne), 2 * mu * 2 * Ne)
     pi_th = np.where(inside, p_class * theta, theta)
     da_th = dxy_th - pi_th
-    fst_th = np.where(inside, t_inv / (t_inv + 2 * Ne), 0.0)
+    fst_th = np.where(inside, 1.0 - Ne / (t_inv + 2 * Ne), 0.0)
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 9.5), sharex=True)
 
@@ -362,12 +362,12 @@ def fig3_real_inversions():
         inside = (mid >= p['bp_l']) & (mid <= p['bp_r'])
         theta_p = 4 * p['Ne'] * p['mu']
         p_c = p['p_inv']  # minority class fraction
-        dxy_th = np.where(inside, p['mu'] * (p['t_inv'] + 2 * p['Ne']),
-                          p['mu'] * 2 * p['Ne'])
+        dxy_th = np.where(inside, 2 * p['mu'] * (p['t_inv'] + 2 * p['Ne']),
+                          2 * p['mu'] * 2 * p['Ne'])
         pi_th = np.where(inside, p_c * theta_p, theta_p)
         da_th = dxy_th - pi_th
         fst_th = np.where(inside,
-                          p['t_inv'] / (p['t_inv'] + 2 * p['Ne']), 0.0)
+                          1.0 - p['Ne'] / (p['t_inv'] + 2 * p['Ne']), 0.0)
 
         # Top row: dxy, pi, Da
         ax = axes[0, col]
@@ -501,8 +501,8 @@ def fig4_multiple_inversions():
     # Position-dependent theory curves per inversion
     in_A = (mid >= inv_A[0]) & (mid <= inv_A[1])
     in_B = (mid >= inv_B[0]) & (mid <= inv_B[1])
-    fst_A_th = np.where(in_A, inv_A[3] / (inv_A[3] + 2 * Ne), 0.0)
-    fst_B_th = np.where(in_B, inv_B[3] / (inv_B[3] + 2 * Ne), 0.0)
+    fst_A_th = np.where(in_A, 1.0 - Ne / (inv_A[3] + 2 * Ne), 0.0)
+    fst_B_th = np.where(in_B, 1.0 - Ne / (inv_B[3] + 2 * Ne), 0.0)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 

@@ -14,6 +14,8 @@ import pytest
 
 from msinv.hull import HullSimulator, InversionSpec
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 def test_panmictic_recomb_produces_multiple_trees():
     """With recombination, expect more than 1 tree."""
@@ -75,7 +77,7 @@ def test_recomb_class_barrier_preserved(seed):
         recombination_rate=1e-8,
         bp_left=30_000.0, bp_right=70_000.0,
         p_inv=0.5, t_inv=t_inv,
-        gene_conversion_rate=1e-12,  # negligible flux (gamma>0 enforced)
+        gene_conversion_rate=NEGLIGIBLE_GAMMA,
         seed=seed,
     )
     ts = sim.simulate()

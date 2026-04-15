@@ -21,6 +21,8 @@ from msinv.hull.lineage import Lineage, reset_uids
 from msinv.hull.segment import Segment
 from msinv.hull.events import apply_gene_flux
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for apply_gene_flux
@@ -160,7 +162,7 @@ def test_class_barrier_strict_at_negligible_gamma(seed):
         population_size=Ne, sequence_length=10_000.0,
         p_inv=0.5, t_inv=t_inv,
         bp_left=0.0, bp_right=10_000.0,
-        gene_conversion_rate=1e-15,  # negligible (gamma>0 enforced)
+        gene_conversion_rate=NEGLIGIBLE_GAMMA,
         recombination_rate=1e-8,
         seed=seed,
     )
@@ -242,10 +244,10 @@ def test_gene_conversion_creates_strictly_more_low_mrcas_than_no_flux():
                         v += 1
         return v
 
-    # Across multiple seeds, larger γ should produce MORE violations
-    # than negligible γ. (gamma > 0 is enforced; use 1e-15 as the
-    # "no-flux" baseline, which fires zero events at this Ne/L/t_inv.)
-    no_flux = sum(count_violations(1e-15, s) for s in range(10))
+    # Across seeds, larger γ should produce MORE violations than
+    # negligible γ. NEGLIGIBLE_GAMMA fires zero events at this
+    # Ne/L/t_inv combo so it serves as the "no-flux" baseline.
+    no_flux = sum(count_violations(NEGLIGIBLE_GAMMA, s) for s in range(10))
     with_flux = sum(count_violations(5e-5, s) for s in range(10))
     assert no_flux == 0
     assert with_flux > 0, (
@@ -412,7 +414,7 @@ def test_multi_inv_per_inversion_gamma():
                                    flux_window=0.05),
                     InversionSpec(bp_left=6_000.0, bp_right=10_000.0,
                                    p_inv=0.5, t_inv=4_000.0,
-                                   gene_conversion_rate=1e-15,
+                                   gene_conversion_rate=NEGLIGIBLE_GAMMA,
                                    flux_window=0.05),
                 ],
                 recombination_rate=1e-8,

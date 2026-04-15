@@ -24,6 +24,8 @@ from msinv.hull import HullSimulator, InversionSpec
 from msinv.hull.demography import Demography
 from msinv.hull.sweep import Sweep
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 # ---------------------------------------------------------------------------
 # Corner 1: Gene flux + nested inversions
@@ -60,7 +62,7 @@ def test_flux_in_nested_inv_only_flips_one_inv_class():
     """
     inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
                               p_inv=0.5, t_inv=20_000.0,
-                              gene_conversion_rate=1e-12)  # negligible outer flux
+                              gene_conversion_rate=NEGLIGIBLE_GAMMA)
     inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
                               p_inv=0.5, t_inv=5_000.0,
                               gene_conversion_rate=5e-4)  # high inner flux

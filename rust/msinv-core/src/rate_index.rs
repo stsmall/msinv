@@ -60,6 +60,11 @@ impl RateCache {
         arena: &SegmentArena,
     ) {
         self.n = active.len();
+        // Grow capacity if needed.
+        if self.n > self.capacity {
+            self.capacity = self.n * 2;
+            self.overlaps.resize(tri_size(self.capacity), SmallVec::new());
+        }
         // Clear all entries.
         for entry in &mut self.overlaps {
             entry.clear();
@@ -88,6 +93,10 @@ impl RateCache {
         arena: &SegmentArena,
     ) {
         self.n = active.len();
+        if self.n > self.capacity {
+            self.capacity = self.n * 2;
+            self.overlaps.resize(tri_size(self.capacity), SmallVec::new());
+        }
         for other in 0..self.n {
             if other == idx { continue; }
             let (i, j) = if other < idx { (other, idx) } else { (idx, other) };

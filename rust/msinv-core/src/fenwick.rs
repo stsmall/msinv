@@ -50,6 +50,34 @@ impl Fenwick {
         }
     }
 
+    /// Total sum of all elements. O(log n).
+    pub fn total(&self) -> f64 {
+        if self.n == 0 { return 0.0; }
+        self.prefix_sum(self.n - 1)
+    }
+
+    /// Find the smallest index i such that prefix_sum(i) > target.
+    /// O(log n) binary descent on the tree structure.
+    /// Returns n if target >= total (shouldn't happen with valid draws).
+    pub fn find(&self, target: f64) -> usize {
+        let mut pos = 0usize;
+        let mut remaining = target;
+        let mut bit_mask = 1usize;
+        while bit_mask <= self.n {
+            bit_mask <<= 1;
+        }
+        bit_mask >>= 1;
+        while bit_mask > 0 {
+            let next = pos + bit_mask;
+            if next <= self.n && self.tree[next] <= remaining {
+                remaining -= self.tree[next];
+                pos = next;
+            }
+            bit_mask >>= 1;
+        }
+        pos // 0-indexed result
+    }
+
     /// Add `delta` to all positions in [l, r) using two point updates.
     /// Combined with prefix_sum this gives a "range add, point query"
     /// BIT, but here we use it with range_sum for "range add, range
@@ -74,6 +102,25 @@ mod tests {
         assert_eq!(f.prefix_sum(3), 1.0);
         assert_eq!(f.prefix_sum(7), 3.0);
         assert_eq!(f.range_sum(4, 8), 2.0);
+    }
+
+    #[test]
+    fn find_selects_correct_leaf() {
+        let mut f = Fenwick::new(4);
+        f.update(0, 1.0);  // leaf 0: rate 1
+        f.update(1, 3.0);  // leaf 1: rate 3
+        f.update(2, 1.0);  // leaf 2: rate 1
+        f.update(3, 5.0);  // leaf 3: rate 5
+        // total = 10
+        assert_eq!(f.total(), 10.0);
+        // find(0.5) → leaf 0 (prefix[0]=1 > 0.5)
+        assert_eq!(f.find(0.5), 0);
+        // find(1.5) → leaf 1 (prefix[0]=1 <= 1.5, prefix[1]=4 > 1.5)
+        assert_eq!(f.find(1.5), 1);
+        // find(4.5) → leaf 2 (prefix[1]=4 <= 4.5, prefix[2]=5 > 4.5)
+        assert_eq!(f.find(4.5), 2);
+        // find(5.5) → leaf 3
+        assert_eq!(f.find(5.5), 3);
     }
 
     #[test]

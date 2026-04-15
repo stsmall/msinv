@@ -1,7 +1,8 @@
 """Replot figures 1, 3, 4 from cached .npz data with updated styling
-(Rust branding, clipped FST). For figure 7 we run only the lightweight
-Python-vs-Rust benchmark (no msprime, no scaling sweep) and reuse the
-existing fig7 layout. Figures 2, 5, 6, 8 are untouched."""
+(Rust branding, clipped FST). For figure 7 only the Python-vs-Rust
+benchmark in Panel B is run live; Panel A scaling points are hardcoded
+from a prior full run (re-run make_figures.py::fig7_performance to
+refresh them). Figures 2, 5, 6, 8 are untouched."""
 
 import os
 import sys
@@ -26,13 +27,13 @@ def smooth(y, w=3):
 
 def replot_fig1():
     print("Replotting fig1 from npz...")
-    d = np.load(os.path.join(OUTDIR, 'fig1_data.npz'))
-    mid, dxy, pi_S, pi_I, da, fst = (d['mid'], d['dxy'], d['pi_S'],
-                                      d['pi_I'], d['da'], d['fst'])
+    with np.load(os.path.join(OUTDIR, 'fig1_data.npz')) as d:
+        mid, dxy, pi_S, pi_I, da, fst = (d['mid'], d['dxy'], d['pi_S'],
+                                          d['pi_I'], d['da'], d['fst'])
+        Ne = int(d['Ne']); mu = float(d['mu']); L = int(d['L'])
+        bp_l = float(d['bp_l']); bp_r = float(d['bp_r'])
+        n_reps = int(d['n_reps'])
     fst = np.clip(fst, 0.0, 1.0)
-    Ne = int(d['Ne']); mu = float(d['mu']); L = int(d['L'])
-    bp_l = float(d['bp_l']); bp_r = float(d['bp_r'])
-    n_reps = int(d['n_reps'])
 
     t_inv = 200_000
     inside = (mid >= bp_l) & (mid <= bp_r)
@@ -104,13 +105,13 @@ def replot_fig3():
         'Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)',
     ]
     for col, tag in enumerate(['funestus', 'mapt']):
-        d = np.load(os.path.join(OUTDIR, f'fig3_{tag}_data.npz'))
-        mid, dxy, pi_S, pi_I, da, fst = (d['mid'], d['dxy'], d['pi_S'],
-                                          d['pi_I'], d['da'], d['fst'])
+        with np.load(os.path.join(OUTDIR, f'fig3_{tag}_data.npz')) as d:
+            mid, dxy, pi_S, pi_I, da, fst = (d['mid'], d['dxy'], d['pi_S'],
+                                              d['pi_I'], d['da'], d['fst'])
+            bp_l = float(d['bp_l']); bp_r = float(d['bp_r'])
+            Ne = int(d['Ne']); mu = float(d['mu'])
+            t_inv = float(d['t_inv']); p_inv = float(d['p_inv'])
         fst = np.clip(fst, 0.0, 1.0)
-        bp_l = float(d['bp_l']); bp_r = float(d['bp_r'])
-        Ne = int(d['Ne']); mu = float(d['mu'])
-        t_inv = float(d['t_inv']); p_inv = float(d['p_inv'])
 
         inside = (mid >= bp_l) & (mid <= bp_r)
         theta_p = 4 * Ne * mu
@@ -161,15 +162,15 @@ def replot_fig3():
 
 def replot_fig4():
     print("Replotting fig4 from npz...")
-    d = np.load(os.path.join(OUTDIR, 'fig4_data.npz'))
-    mid = d['mid']
-    dxy_A = d['dxy_A']; dxy_B = d['dxy_B']
-    fst_A = np.clip(d['fst_A'], 0.0, 1.0)
-    fst_B = np.clip(d['fst_B'], 0.0, 1.0)
+    with np.load(os.path.join(OUTDIR, 'fig4_data.npz')) as d:
+        mid = d['mid']
+        dxy_A = d['dxy_A']; dxy_B = d['dxy_B']
+        fst_A = np.clip(d['fst_A'], 0.0, 1.0)
+        fst_B = np.clip(d['fst_B'], 0.0, 1.0)
+        Ne = int(d['Ne'])
     # Inversion specs are constant in fig4 — not stored in the npz.
     inv_A = (10_000, 35_000, 0.5, 100_000)   # young, common
     inv_B = (60_000, 90_000, 0.3, 300_000)   # old, rarer
-    Ne = int(d['Ne'])
     fst_A_th = np.where((mid >= inv_A[0]) & (mid <= inv_A[1]),
                          1.0 - Ne / (inv_A[3] + 2 * Ne), 0.0)
     fst_B_th = np.where((mid >= inv_B[0]) & (mid <= inv_B[1]),

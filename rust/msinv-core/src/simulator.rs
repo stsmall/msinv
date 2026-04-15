@@ -142,6 +142,9 @@ impl HullSimulator {
         self.run_loop(&mut active, &mut arena, &mut tables,
                        &mut next_uid, &mut rng, &mut demo);
 
+        // Pre-sort edges in tskit canonical order so Python can
+        // skip the expensive tc.sort() call.
+        tables.sort_edges();
         SimResult { tables }
     }
 
@@ -391,8 +394,14 @@ impl HullSimulator {
                         let ii = rng.random_range(0..pool.len());
                         let mut jj = rng.random_range(0..pool.len() - 1);
                         if jj >= ii { jj += 1; }
+                        // Phase F: hull prescreen — skip if lineage
+                        // extents don't overlap (cheap rejection).
+                        let (a, b) = (pool[ii], pool[jj]);
+                        if !active[a].hulls_overlap(&active[b], arena) {
+                            continue; // no-op, draw next event
+                        }
                         apply_coalescence(
-                            active, pool[ii], pool[jj], t, arena,
+                            active, a, b, t, arena,
                             tables, next_uid);
                         // Recompute after merge.
                         total_material = active.iter()

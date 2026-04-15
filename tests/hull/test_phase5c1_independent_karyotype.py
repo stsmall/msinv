@@ -44,7 +44,7 @@ def test_linked_karyotype_uses_single_S_for_both_invs():
     sim = HullSimulator(
         sample_config={('S', 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -66,7 +66,7 @@ def test_independent_karyotype_tuple_assigns_per_inv():
     sim = HullSimulator(
         sample_config={(('S', 'I'), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -83,7 +83,7 @@ def test_string_shorthand_for_two_invs():
     sim = HullSimulator(
         sample_config={('SI', 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -100,7 +100,7 @@ def test_None_at_one_inv_uses_panmictic_there():
     sim = HullSimulator(
         sample_config={(('S', None), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -118,7 +118,7 @@ def test_wrong_length_raises():
     sim = HullSimulator(
         sample_config={(('S', 'I', 'S'), 0): 1},  # 3 entries for 2 invs
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     with pytest.raises(ValueError, match="entries but there are"):
         sim._initial_lineages(tables)

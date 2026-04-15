@@ -135,14 +135,16 @@ def fig1_inversion_signal():
              mid=mid, dxy=dxy, pi_S=pi_S, pi_I=pi_I, da=da, fst=fst,
              Ne=Ne, mu=mu, L=L, bp_l=bp_l, bp_r=bp_r, n_reps=n)
 
-    # Theoretical predictions (Guerrero et al. 2012; Charlesworth et al. 1997)
+    # Position-dependent theory curves (Guerrero et al. 2012; Charlesworth 1997)
     t_inv = 200_000
     p_class = 0.5
-    theta = 4 * Ne * mu            # 4*Ne*mu per bp
-    dxy_theory = mu * (t_inv + 2 * Ne)   # E[dxy] inside inv
-    pi_theory = theta              # E[pi] within class (collinear = inv)
-    da_theory = dxy_theory - pi_theory    # E[Da] inside inv
-    fst_theory = t_inv / (t_inv + 2 * Ne)  # Guerrero eq.
+    theta = 4 * Ne * mu
+    # Build theory arrays: step inside/outside inversion
+    inside = (mid >= bp_l) & (mid <= bp_r)
+    dxy_th = np.where(inside, mu * (t_inv + 2 * Ne), mu * 2 * Ne)
+    pi_th = np.where(inside, p_class * theta, theta)
+    da_th = dxy_th - pi_th
+    fst_th = np.where(inside, t_inv / (t_inv + 2 * Ne), 0.0)
 
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 9.5), sharex=True)
 
@@ -152,10 +154,10 @@ def fig1_inversion_signal():
              label=r'$\pi_S$ (within S)')
     ax1.plot(mid, smooth(pi_I), '-', color='#2E7D32', lw=2,
              label=r'$\pi_I$ (within I)')
-    ax1.axhline(dxy_theory, color='#C62828', ls='--', lw=1.2, alpha=0.7,
-                label=rf'$\mu(t_{{inv}}+2N_e)$ = {dxy_theory:.2e}')
-    ax1.axhline(pi_theory, color='#1565C0', ls='--', lw=1.2, alpha=0.7,
-                label=rf'$\theta$ = {pi_theory:.2e}')
+    ax1.plot(mid, dxy_th, '--', color='#C62828', lw=1.2, alpha=0.7,
+             label=r'$E[d_{XY}]$')
+    ax1.plot(mid, pi_th, '--', color='#1565C0', lw=1.2, alpha=0.7,
+             label=r'$E[\pi_c]$')
     ax1.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0,
                 label='inversion')
     ax1.set_ylabel('Per-bp diversity / divergence', fontsize=11)
@@ -167,8 +169,8 @@ def fig1_inversion_signal():
 
     ax2.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2.2,
              label=r'$D_a = d_{XY} - (\pi_S+\pi_I)/2$')
-    ax2.axhline(da_theory, color='#6A1B9A', ls='--', lw=1.2, alpha=0.7,
-                label=rf'$\mu \cdot t_{{inv}}$ = {da_theory:.2e}')
+    ax2.plot(mid, da_th, '--', color='#6A1B9A', lw=1.2, alpha=0.7,
+             label=r'$E[D_a]$')
     ax2.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
     ax2.axhline(0, color='gray', ls=':', lw=0.7)
     ax2.set_ylabel(r'$D_a$', fontsize=11)
@@ -178,8 +180,8 @@ def fig1_inversion_signal():
 
     ax3.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
              label=r'$F_{ST}$ (Hudson)')
-    ax3.axhline(fst_theory, color='#E65100', ls='--', lw=1.2, alpha=0.7,
-                label=rf'$t_{{inv}}/(t_{{inv}}+2N_e)$ = {fst_theory:.2f}')
+    ax3.plot(mid, fst_th, '--', color='#E65100', lw=1.2, alpha=0.7,
+             label=r'$E[F_{ST}]$')
     ax3.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
     ax3.axhline(0, color='gray', ls=':', lw=0.7)
     ax3.set_ylabel(r'$F_{ST}$', fontsize=11)
@@ -356,10 +358,16 @@ def fig3_real_inversions():
                  mid=mid, dxy=dxy, pi_S=pi_S, pi_I=pi_I, da=da, fst=fst,
                  n_reps=n, **p)
 
-        # Theory predictions
-        dxy_th = p['mu'] * (p['t_inv'] + 2 * p['Ne'])
-        pi_th = 4 * p['Ne'] * p['mu']
-        fst_th = p['t_inv'] / (p['t_inv'] + 2 * p['Ne'])
+        # Position-dependent theory curves
+        inside = (mid >= p['bp_l']) & (mid <= p['bp_r'])
+        theta_p = 4 * p['Ne'] * p['mu']
+        p_c = p['p_inv']  # minority class fraction
+        dxy_th = np.where(inside, p['mu'] * (p['t_inv'] + 2 * p['Ne']),
+                          p['mu'] * 2 * p['Ne'])
+        pi_th = np.where(inside, p_c * theta_p, theta_p)
+        da_th = dxy_th - pi_th
+        fst_th = np.where(inside,
+                          p['t_inv'] / (p['t_inv'] + 2 * p['Ne']), 0.0)
 
         # Top row: dxy, pi, Da
         ax = axes[0, col]
@@ -369,10 +377,10 @@ def fig3_real_inversions():
                  label=r'$\bar\pi$')
         ax.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2,
                  label=r'$D_a$')
-        ax.axhline(dxy_th, color='#C62828', ls='--', lw=1, alpha=0.6,
-                    label=rf'$\mu(t_{{inv}}+2N_e)$={dxy_th:.1e}')
-        ax.axhline(pi_th, color='#1565C0', ls='--', lw=1, alpha=0.6,
-                    label=rf'$\theta$={pi_th:.1e}')
+        ax.plot(mid, dxy_th, '--', color='#C62828', lw=1, alpha=0.6,
+                 label=r'$E[d_{XY}]$')
+        ax.plot(mid, pi_th, '--', color='#1565C0', lw=1, alpha=0.6,
+                 label=r'$E[\bar\pi]$')
         ax.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
         ax.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
         ax.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
@@ -384,8 +392,8 @@ def fig3_real_inversions():
         ax_f = axes[1, col]
         ax_f.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
                    label=r'$F_{ST}$ (Hudson)')
-        ax_f.axhline(fst_th, color='#E65100', ls='--', lw=1, alpha=0.6,
-                      label=rf'$t_{{inv}}/(t_{{inv}}+2N_e)$={fst_th:.2f}')
+        ax_f.plot(mid, fst_th, '--', color='#E65100', lw=1, alpha=0.6,
+                   label=r'$E[F_{ST}]$')
         ax_f.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
         ax_f.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
         ax_f.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
@@ -490,9 +498,11 @@ def fig4_multiple_inversions():
              piA_S=piA_S, piA_I=piA_I, piB_S=piB_S, piB_I=piB_I,
              Ne=Ne, L=L, n_reps=n)
 
-    # Theory: FST = t_inv / (t_inv + 2*Ne) per inversion
-    fst_A_th = inv_A[3] / (inv_A[3] + 2 * Ne)  # t_inv_A=100k
-    fst_B_th = inv_B[3] / (inv_B[3] + 2 * Ne)  # t_inv_B=300k
+    # Position-dependent theory curves per inversion
+    in_A = (mid >= inv_A[0]) & (mid <= inv_A[1])
+    in_B = (mid >= inv_B[0]) & (mid <= inv_B[1])
+    fst_A_th = np.where(in_A, inv_A[3] / (inv_A[3] + 2 * Ne), 0.0)
+    fst_B_th = np.where(in_B, inv_B[3] / (inv_B[3] + 2 * Ne), 0.0)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 
@@ -515,10 +525,10 @@ def fig4_multiple_inversions():
              label='Inv A axis $F_{ST}$')
     ax2.plot(mid, smooth(fst_B), '-', color='#1565C0', lw=2,
              label='Inv B axis $F_{ST}$')
-    ax2.axhline(fst_A_th, color='#C62828', ls='--', lw=1, alpha=0.6,
-                label=rf'A theory={fst_A_th:.2f}')
-    ax2.axhline(fst_B_th, color='#1565C0', ls='--', lw=1, alpha=0.6,
-                label=rf'B theory={fst_B_th:.2f}')
+    ax2.plot(mid, fst_A_th, '--', color='#C62828', lw=1, alpha=0.6,
+             label=r'$E[F_{ST}]$ A')
+    ax2.plot(mid, fst_B_th, '--', color='#1565C0', lw=1, alpha=0.6,
+             label=r'$E[F_{ST}]$ B')
     ax2.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828')
     ax2.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0')
     ax2.axhline(0, color='gray', ls=':', lw=0.7)

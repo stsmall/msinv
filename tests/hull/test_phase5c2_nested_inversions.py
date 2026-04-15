@@ -46,7 +46,7 @@ def test_nested_inv_segments_carry_frozenset_class():
     sim = HullSimulator(
         sample_config={(('S', 'I'), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv_outer, inv_inner], seed=1)
+        inversions=[inv_outer, inv_inner], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -66,7 +66,7 @@ def test_overlapping_invs_segments_carry_frozenset():
     sim = HullSimulator(
         sample_config={(('S', 'I'), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[a, b], seed=1)
+        inversions=[a, b], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])

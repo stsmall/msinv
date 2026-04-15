@@ -121,6 +121,14 @@ impl HullSimulator {
     }
 
     pub fn simulate(&self) -> SimResult {
+        // Inversions require recombination — rho=0 with inversions
+        // causes infinite loops (partial coalescence fragments lineages
+        // that can never recombine back together).
+        if !self.inversions.is_empty() && self.recombination_rate <= 0.0 {
+            panic!(
+                "recombination_rate must be > 0 when inversions are present. \
+                 Inversions are recombination modifiers — rho=0 is undefined.");
+        }
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(self.seed);
         let mut arena = SegmentArena::new();
         let mut tables = TableBuilder::new(
@@ -191,7 +199,9 @@ impl HullSimulator {
         let mut total_recomb_rate: f64 = total_material * self.recombination_rate;
 
         // Phase D: incremental pair rate cache.
-        let max_lins = (active.len() * 4).max(64);  // generous headroom
+        // At high rho, recombination can fragment n lineages into many
+        // more. Generous capacity avoids reallocation.
+        let max_lins = (active.len() * 20).max(256);
         let mut rate_cache = RateCache::new(max_lins);
         rate_cache.rebuild(&active, arena);
         let mut cache_dirty = false;  // force full rebuild when true
@@ -1264,17 +1274,15 @@ mod tests {
     fn single_inv_more_nodes_than_panmictic() {
         // With an inversion barrier, S/I pairs can't coalesce until
         // t_inv, producing more nodes (longer genealogy).
+        // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
-            bp_left: 30.0, bp_right: 70.0,
+            bp_left: 3000.0, bp_right: 7000.0,
             p_inv: 0.5, t_inv: 5000.0,
-            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator::simple(
-            5, 5, 1000.0, 100.0, 0.0, vec![inv], 42);
+            5, 5, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         let result = sim.simulate();
-        // 10 samples + at least 9 internal = 19 nodes, but with the
-        // barrier more recombination-like events (from partial overlap
-        // at different classes) typically produce extra nodes.
         assert!(result.tables.num_nodes() >= 19,
             "Got {} nodes", result.tables.num_nodes());
     }
@@ -1283,36 +1291,35 @@ mod tests {
     fn barrier_crossing_reduces_active_classes() {
         // Very old inversion → barrier crossed early, should
         // behave like panmictic after t_inv.
+        // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 100.0,
+            bp_left: 0.0, bp_right: 10000.0,
             p_inv: 0.5, t_inv: 1.0, // crossed almost immediately
-            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator::simple(
-            3, 3, 1000.0, 100.0, 0.0, vec![inv], 42);
+            3, 3, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         let result = sim.simulate();
-        // Should still produce a valid tree with 6 samples.
         assert!(result.tables.num_nodes() >= 11);
     }
 
     #[test]
     fn gene_flux_produces_extra_nodes() {
         // With gene flux, flux events split lineages → more nodes.
+        // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 200.0,
+            bp_left: 0.0, bp_right: 10000.0,
             p_inv: 0.5, t_inv: 20_000.0,
-            gene_conversion_rate: 5e-5, flux_window: 0.05, inv_id: 0,
+            gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
         };
         let no_flux = HullSimulator::simple(
-            4, 4, 1000.0, 200.0, 0.0,
-            vec![InversionSpec { gene_conversion_rate: 0.0, ..inv.clone() }],
+            4, 4, 1000.0, 10000.0, 1e-8,
+            vec![InversionSpec { gene_conversion_rate: 1e-9, ..inv.clone() }],
             42);
         let with_flux = HullSimulator::simple(
-            4, 4, 1000.0, 200.0, 0.0, vec![inv], 42);
+            4, 4, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         let r_no = no_flux.simulate();
         let r_yes = with_flux.simulate();
-        // Gene flux creates additional lineages → more coalescence
-        // events → more nodes/edges.
         assert!(r_yes.tables.num_nodes() >= r_no.tables.num_nodes(),
             "flux={} vs no_flux={}", r_yes.tables.num_nodes(),
             r_no.tables.num_nodes());
@@ -1388,10 +1395,11 @@ mod tests {
         let mut demo = Demography::new(vec![1000.0, 1000.0]);
         demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
 
+        // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
-            bp_left: 30.0, bp_right: 70.0,
+            bp_left: 3000.0, bp_right: 7000.0,
             p_inv: 0.5, t_inv: 5000.0,
-            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator {
             samples: vec![
@@ -1405,15 +1413,13 @@ mod tests {
                 },
             ],
             demography: demo,
-            sequence_length: 100.0,
-            recombination_rate: 0.0,
+            sequence_length: 10000.0,
+            recombination_rate: 1e-8,
             inversions: vec![inv],
             sweeps: vec![],
             seed: 42,
         };
         let result = sim.simulate();
-        // Should complete. Cross-pop + cross-karyotype TMRCA >=
-        // max(t_split=500, t_inv=5000) = 5000.
         assert!(result.tables.num_nodes() >= 11);
     }
 
@@ -1447,23 +1453,22 @@ mod tests {
     #[test]
     fn sweep_on_s_class_only() {
         use crate::sweep::Sweep;
+        // Ne=5000, L=100000, r=1e-8 → rho=20
         let inv = InversionSpec {
-            bp_left: 20.0, bp_right: 80.0,
+            bp_left: 20000.0, bp_right: 80000.0,
             p_inv: 0.5, t_inv: 50_000.0,
-            gene_conversion_rate: 0.0, flux_window: 0.05, inv_id: 0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let mut sim = HullSimulator::simple(
-            4, 4, 5_000.0, 100.0, 0.0, vec![inv], 42);
+            4, 4, 5_000.0, 100000.0, 1e-8, vec![inv], 42);
         sim.sweeps.push(Sweep {
-            x_sel: 50.0,
+            x_sel: 50000.0,
             t_event: 200.0,
-            target: Some((0, Karyotype::S)), // only S lineages
+            target: Some((0, Karyotype::S)),
             population: None,
-            sweep_window: 5.0,
+            sweep_window: 5000.0,
         });
         let result = sim.simulate();
-        // Should complete without panic. S lineages coalesce at t=200
-        // near x=50; I lineages are unaffected by the sweep.
         assert!(result.tables.num_nodes() >= 15,
             "Got {} nodes", result.tables.num_nodes());
     }

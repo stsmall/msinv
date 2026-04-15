@@ -6,6 +6,7 @@ pub mod tables;
 pub mod events;
 pub mod phi;
 pub mod fenwick;
+pub mod rate_index;
 pub mod demography;
 pub mod sweep;
 pub mod simulator;

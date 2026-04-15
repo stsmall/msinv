@@ -4,7 +4,7 @@ Wraps ``demestats`` (Ragsdale 2026, doi:10.64898/2026.04.09.717519)
 when available for arbitrary structured-coalescent rates over a demes
 graph. Falls back to direct calculation for the simple cases.
 
-Currently a STUB — Phase 4 will hook in demestats as the rate engine.
+Currently a STUB — future work will hook in demestats as the rate engine.
 """
 
 try:

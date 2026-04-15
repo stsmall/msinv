@@ -26,7 +26,7 @@ from msinv import HullSimulator, InversionSpec, Demography
 # --- Parameters ---
 Ne = 44_000
 mu = 3.55e-9
-r = 1e-9   # reduced from 4e-8 for computational feasibility (rho≈18)
+r = 4.0e-8  # An. funestus recombination rate (rho≈704, uses high-rho path)
 L = 100_000
 t_split_gen = 14_000     # ~1300 yr at 11 gen/yr
 t_inv_gen = 385_000      # ~35 kyr — 3Ra age (Small 2023)
@@ -215,17 +215,24 @@ ax_da.set_title(
     fontsize=11, fontweight='bold', loc='left')
 
 annot = (
-    f'msinv v0.3.0 (hull algorithm).  '
-    f'Ne_K = Ne_F = Ne_Anc = {Ne:,}, '
-    f'T$_{{split}}$ = {t_split_gen:,} gen, '
-    f'T$_{{inv}}$ = {t_inv_gen:,} gen.  '
-    f'No gene flux ($\\gamma=0$). '
-    f'{n_ok} replicates.'
+    f'Figure. An. funestus Kiribina/Folonzo cross-karyotype divergence for the 3Ra and 3Rb '
+    f'inversions on chromosome arm 3R, simulated with msinv (hull algorithm). '
+    f'(A) Absolute divergence $d_{{XY}}$ between Kiribina (all-Standard, pop 0) and Folonzo '
+    f'(mixed S/I, pop 1) haplotypes. K vs F$_I$ (alt karyotype) shows elevated $d_{{XY}}$ inside '
+    f'both inversions due to the recombination barrier, while K vs F$_S$ (same karyotype) shows '
+    f'only the population-split signal. F$_S$ vs F$_I$ (within Folonzo, cross-class) captures '
+    f'the inversion barrier alone. '
+    f'(B) Net divergence $D_a$ on the same y-axis as A — the inversion signal is a '
+    f'small fraction of total $d_{{XY}}$, dominated by ancestral polymorphism. '
+    f'Parameters: Ne_K = Ne_F = {Ne:,}, T$_{{split}}$ = {t_split_gen:,} gen, '
+    f'T$_{{inv}}$ = {t_inv_gen:,} gen, $\\mu$ = {mu:.2e}, r = {r:.1e}, '
+    f'$\\gamma$ = 0, {n_ok} replicates.\n'
+    f'Command: pixi run -e all python examples/empirical_kir_fol.py'
 )
-fig.text(0.5, -0.02, annot, ha='center', fontsize=8,
-         fontstyle='italic', color='#455A64',
-         bbox=dict(boxstyle='round,pad=0.5', facecolor='#ECEFF1',
-                   edgecolor='#B0BEC5', alpha=0.85))
+fig.text(0.5, -0.02, annot, ha='center', fontsize=7, wrap=True,
+         fontstyle='italic', color='#333',
+         bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
+                   edgecolor='#BDBDBD', alpha=0.9))
 
 fig.suptitle(
     'An. funestus Kir/Fol — 3Ra + 3Rb inversion divergence (hull simulator)',

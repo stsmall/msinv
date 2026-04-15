@@ -44,7 +44,7 @@ def test_linked_karyotype_uses_single_S_for_both_invs():
     sim = HullSimulator(
         sample_config={('S', 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -66,7 +66,7 @@ def test_independent_karyotype_tuple_assigns_per_inv():
     sim = HullSimulator(
         sample_config={(('S', 'I'), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -83,7 +83,7 @@ def test_string_shorthand_for_two_invs():
     sim = HullSimulator(
         sample_config={('SI', 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -100,7 +100,7 @@ def test_None_at_one_inv_uses_panmictic_there():
     sim = HullSimulator(
         sample_config={(('S', None), 0): 1},
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
@@ -118,7 +118,7 @@ def test_wrong_length_raises():
     sim = HullSimulator(
         sample_config={(('S', 'I', 'S'), 0): 1},  # 3 entries for 2 invs
         population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1)
+        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
     tables = TableBuilder(sequence_length=100.0)
     with pytest.raises(ValueError, match="entries but there are"):
         sim._initial_lineages(tables)
@@ -141,10 +141,10 @@ def test_independent_karyotype_each_inv_barrier_independent(seed):
     >= inv 1's t_inv.
     """
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=2000.0)
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=4000.0)
 
     # 4 samples, all 'S' at inv 0, but split S/I at inv 1.
@@ -154,7 +154,8 @@ def test_independent_karyotype_each_inv_barrier_independent(seed):
             (('S', 'I'), 0): 2,   # SI samples (S at inv 0, I at inv 1)
         },
         population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=seed)
+        inversions=[inv0, inv1], seed=seed,
+        recombination_rate=1e-8)
     ts = sim.simulate()
     samples = list(ts.samples())
     SS = samples[:2]
@@ -179,10 +180,10 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
     """When all samples are 'S' at inv 0, inv 0's barrier is moot —
     cross-class T_MRCA at inv 0 should be ≪ inv 0's t_inv."""
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=10_000.0)  # very deep
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=2000.0)
 
     sim = HullSimulator(
@@ -191,7 +192,8 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
             (('S', 'I'), 0): 3,
         },
         population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=42)
+        inversions=[inv0, inv1], seed=42,
+        recombination_rate=1e-8)
     ts = sim.simulate()
     samples = list(ts.samples())
     # Inside inv 0, ALL samples are S → SS pair MRCA should follow

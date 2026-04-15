@@ -191,16 +191,6 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
     a_remain_head = a_remain_tail = None
     b_remain_head = b_remain_tail = None
 
-    def _append(head_attr, tail_attr, seg):
-        head, tail = head_attr
-        seg.prev = tail
-        seg.next = None
-        if head is None:
-            head = seg
-        if tail is not None:
-            tail.next = seg
-        return seg, seg if head is None else head, seg
-
     def _emit_merged(l, r):
         nonlocal merged_head, merged_tail
         from .segment import Segment
@@ -514,6 +504,16 @@ class HullSimulator:
 
         self.L = sequence_length
         self.r = recombination_rate
+        # Validate: inversions require recombination (rho=0 + inversions
+        # hangs because partial coalescence fragments lineages that can
+        # never recombine back together).  rho=0 is valid only for
+        # independent non-recombining loci (RADseq/amplicon use case).
+        if self.inversions and self.r <= 0:
+            raise ValueError(
+                "recombination_rate must be > 0 when inversions are "
+                "present. Inversions are recombination modifiers — "
+                "rho=0 is undefined. For non-recombining loci, omit "
+                "the inversions parameter.")
         # Sweeps: list of Sweep objects, sorted by t_event.
         self.sweeps = []
         if sweeps:
@@ -576,13 +576,19 @@ class HullSimulator:
 
     # -- rate helpers ------------------------------------------------------
 
+    # Below this rho, use exact per-pair overlap-by-class coalescence
+    # rates (O(n^2)).  Above, use Hudson-style (class, pop) buckets
+    # (O(n)) with segment-walking classification and non-overlapping
+    # pair rejection (skip_if_no_overlap in apply_coalescence).
+    _RHO_THRESHOLD = 100.0
+
     def _coal_rates(self, active, t: float):
         """Coalescence rates at time t.
 
-        After all inversions' barriers have lifted: Hudson model with
-        per-pop buckets, O(n). While any inversion is active: per-pair
-        overlap-by-class enumeration, O(n^2). Lineage GC keeps n
-        bounded so O(n^2) is tractable up to rho ~ 100.
+        Two regimes:
+        1. No active inversions → Hudson per-pop buckets, O(n).
+        2. Active inversions → per-pair overlap-by-class with
+           _coalesce_partial, O(n^2). Exact.
 
         Returns list of (kind, rate, payload).
         """
@@ -603,8 +609,9 @@ class HullSimulator:
                 rates.append((f'coal_{pop}', rate, idx_list))
             return rates
 
-        # Structured: per-pair overlap-by-class.
+        # Build p_class lookup for active inversions.
         inv_p_class = {}
+        sample_positions = []
         for inv in self.inversions:
             if t >= inv.t_inv:
                 continue
@@ -613,6 +620,8 @@ class HullSimulator:
             cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
             inv_p_class[cls_S] = p_std
             inv_p_class[cls_I] = inv.p_inv
+            sample_positions.append(
+                ((inv.bp_left + inv.bp_right) / 2.0, inv))
 
         def _p_class_for(cls):
             if cls == 'P' or cls is None:
@@ -626,25 +635,86 @@ class HullSimulator:
                 return p
             return inv_p_class.get(cls, 1.0)
 
-        for i in range(len(active)):
-            lin_i = active[i]
-            for j in range(i + 1, len(active)):
-                lin_j = active[j]
-                if lin_i.population != lin_j.population:
+        # Compute rho to decide which algorithm to use.
+        rho = 4.0 * self.demography.pop_sizes[0] * self.r * self.L
+
+        if rho > self._RHO_THRESHOLD and self.r > 0:
+            # HIGH RHO: Hudson per-(class, pop) buckets.
+            #
+            # Classify each lineage by walking ALL segments (not just
+            # the midpoint) so fragments retain class identity after
+            # recombination.  The rate k*(k-1)/2 / (2*Ne*p_class)
+            # overestimates when fragments don't overlap, but the
+            # event handler uses rejection sampling to skip non-
+            # overlapping pairs (see 'coal_' handler in main loop).
+            def _classify(lin):
+                """Classify by reading branch_class tags directly.
+
+                Each segment's branch_class is 'S0', 'I1', 'P', or a
+                frozenset for nested inversions.  We extract the per-
+                inversion class from the tag itself — no position
+                check needed.  This avoids misclassification of small
+                segments near breakpoints whose midpoint might fall
+                outside the inversion bounds.
+                """
+                inv_tags = {}
+                seg = lin.head
+                while seg is not None:
+                    bc = seg.branch_class
+                    if bc != 'P' and bc is not None:
+                        if isinstance(bc, frozenset):
+                            for tag in bc:
+                                for _, inv in sample_positions:
+                                    if tag == inv.class_S() or tag == inv.class_I():
+                                        inv_tags[inv.inv_id] = tag
+                        else:
+                            for _, inv in sample_positions:
+                                if bc == inv.class_S() or bc == inv.class_I():
+                                    inv_tags[inv.inv_id] = bc
+                    seg = seg.next
+                tags = []
+                for _, inv in sample_positions:
+                    tags.append(inv_tags.get(inv.inv_id, 'P'))
+                return tuple(tags) if tags else ('P',)
+
+            buckets = {}
+            for i, lin in enumerate(active):
+                key = (_classify(lin), lin.population)
+                buckets.setdefault(key, []).append(i)
+            for (cls_tuple, pop), idx_list in buckets.items():
+                k = len(idx_list)
+                if k < 2:
                     continue
-                ovl = _overlap_by_class(lin_i, lin_j)
-                ne_pop = max(
-                    self.demography.size_at(lin_i.population, t), 1e-9)
-                for cls_key, ov_len in ovl.items():
-                    if ov_len <= 0:
+                ne_pop = max(self.demography.size_at(pop, t), 1e-9)
+                p_class = 1.0
+                for tag in cls_tuple:
+                    p_class *= _p_class_for(tag)
+                if p_class <= 0:
+                    continue
+                rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
+                rates.append((f'coal_{pop}', rate, idx_list))
+        else:
+            # LOW RHO: exact per-pair overlap-by-class.
+            for i in range(len(active)):
+                lin_i = active[i]
+                for j in range(i + 1, len(active)):
+                    lin_j = active[j]
+                    if lin_i.population != lin_j.population:
                         continue
-                    p_class = _p_class_for(cls_key)
-                    if p_class <= 0:
-                        continue
-                    rates.append((
-                        f'coal_{cls_key}_{lin_i.population}',
-                        1.0 / (2.0 * ne_pop * p_class),
-                        (i, j, cls_key)))
+                    ovl = _overlap_by_class(lin_i, lin_j)
+                    ne_pop = max(
+                        self.demography.size_at(lin_i.population, t),
+                        1e-9)
+                    for cls_key, ov_len in ovl.items():
+                        if ov_len <= 0:
+                            continue
+                        p_class = _p_class_for(cls_key)
+                        if p_class <= 0:
+                            continue
+                        rates.append((
+                            f'coal_{cls_key}_{lin_i.population}',
+                            1.0 / (2.0 * ne_pop * p_class),
+                            (i, j, cls_key)))
         return rates
 
     def _migration_rates(self, active, t: float):
@@ -790,7 +860,7 @@ class HullSimulator:
         return rates
 
     def _apply_sweep(self, active, sweep, t, tables):
-        """Force-coalesce all qualifying lineages at sweep.x_sel.
+        """Force-coalesce qualifying lineages near sweep.x_sel.
 
         A "qualifying" lineage is one with ancestral material at
         ``sweep.x_sel`` whose class at that position matches
@@ -798,19 +868,20 @@ class HullSimulator:
         is 'any'), and whose population matches ``sweep.population``
         (or any pop if ``None``).
 
+        Two modes:
+
+        **Hitchhiking mode** (``sweep.selection_coefficient > 0``):
+        For each qualifying lineage, each segment is included with
+        probability ``exp(-r * |midpoint - x_sel| * t_dur)`` where
+        ``t_dur = ln(2*Ne*s)/s``.  This produces the classic smooth
+        hitchhiking valley, deep at x_sel and decaying with distance.
+
+        **Window mode** (``sweep.selection_coefficient == 0``):
         The merge happens at positions in
         ``[x_sel - sweep_window, x_sel + sweep_window]``. Material
         outside this window remains on the original lineages.
         """
-        x_lo = sweep.x_sel - sweep.sweep_window
-        x_hi = sweep.x_sel + sweep.sweep_window
-        if x_hi <= x_lo:
-            # Single-point sweep: use a tiny epsilon window so we
-            # actually have something to merge.
-            eps = max(1e-9, self.L * 1e-12)
-            x_lo = sweep.x_sel
-            x_hi = sweep.x_sel + eps
-
+        # ---- identify qualifying lineages ----
         qualifying = []
         for lin in active:
             if (sweep.population is not None
@@ -820,14 +891,6 @@ class HullSimulator:
             if cls_at_x is None:
                 continue  # no material at x_sel
             if sweep.target_class != 'any':
-                # The segment may carry a single string tag ('S0', 'S',
-                # 'P', ...) or a frozenset of tags (Phase 5c.2 nested
-                # inversions). For a string target_class, accept either
-                # equality with the segment class OR membership in the
-                # segment's frozenset. For a frozenset target_class,
-                # require subset. This lets sweeps targeting "S in
-                # inv 0" fire correctly at positions inside multiple
-                # nested inversions.
                 if isinstance(cls_at_x, frozenset):
                     if isinstance(sweep.target_class, frozenset):
                         if not sweep.target_class.issubset(cls_at_x):
@@ -837,32 +900,100 @@ class HullSimulator:
                             continue
                 else:
                     if cls_at_x != sweep.target_class:
-                        continue
+                        # Allow 'S' to match 'S0', 'S1', etc. (and 'I'
+                        # to match 'I0', 'I1') so users don't have to
+                        # know the inv_id suffix for single-inversion
+                        # cases.
+                        tc = sweep.target_class
+                        if not (len(tc) == 1 and isinstance(cls_at_x, str)
+                                and cls_at_x.startswith(tc)):
+                            continue
             qualifying.append(lin)
 
         if len(qualifying) < 2:
             return None  # nothing to coalesce
 
-        # Force-coalesce all qualifying lineages into a single sweep
-        # ancestor at time t. We do this by sequentially merging via
-        # _coalesce_partial restricted to the sweep window.
-        # Simplification: we use the existing apply_coalescence (which
-        # merges all overlap), but first split each lineage at x_lo
-        # and x_hi so the merged piece is exactly the sweep window.
         from .events import apply_coalescence
 
-        # Split each qualifying lineage at x_lo and x_hi so the sweep
-        # window is its own segment.
+        # ---- hitchhiking mode ----
+        if sweep.selection_coefficient > 0:
+            r = getattr(self, 'recombination_rate', 0.0) or 0.0
+            Ne = self._get_Ne_for_sweep()
+            swept_lineages = []
+            for lin in qualifying:
+                swept_segs = []
+                unswept_segs = []
+                seg = lin.head
+                while seg is not None:
+                    mid = (seg.left + seg.right) / 2.0
+                    p = sweep.hitchhiking_probability(mid, r, Ne)
+                    if self.rng.random() < p:
+                        swept_segs.append(seg)
+                    else:
+                        unswept_segs.append(seg)
+                    seg = seg.next
+                if not swept_segs:
+                    continue
+                # Build new lineage from swept segments
+                active.remove(lin)
+                from .segment import Segment as Seg
+                s_head = s_tail = None
+                for s in swept_segs:
+                    ns = Seg(s.left, s.right, s.node_id,
+                             branch_class=s.branch_class, prev=s_tail)
+                    if s_head is None:
+                        s_head = ns
+                    if s_tail is not None:
+                        s_tail.next = ns
+                    s_tail = ns
+                from .lineage import Lineage
+                swept_lin = Lineage(s_head, s_tail,
+                                    population=lin.population)
+                active.append(swept_lin)
+                swept_lineages.append(swept_lin)
+                # Build lineage from unswept segments (if any)
+                if unswept_segs:
+                    u_head = u_tail = None
+                    for s in unswept_segs:
+                        ns = Seg(s.left, s.right, s.node_id,
+                                 branch_class=s.branch_class, prev=u_tail)
+                        if u_head is None:
+                            u_head = ns
+                        if u_tail is not None:
+                            u_tail.next = ns
+                        u_tail = ns
+                    unsw_lin = Lineage(u_head, u_tail,
+                                       population=lin.population)
+                    active.append(unsw_lin)
+            if len(swept_lineages) < 2:
+                return None
+            eps = max(1e-9, t * 1e-12)
+            merged = swept_lineages[0]
+            for k_idx, other in enumerate(swept_lineages[1:], start=1):
+                t_merge = t + k_idx * eps
+                result = apply_coalescence(active, merged, other,
+                                           t_merge, tables,
+                                           skip_if_no_overlap=True)
+                if result is not None:
+                    # Merge succeeded — active[-1] is the new lineage.
+                    merged = active[-1]
+                # else: no overlap → no-op, merged stays as-is.
+            return merged
+
+        # ---- window mode (original) ----
+        x_lo = sweep.x_sel - sweep.sweep_window
+        x_hi = sweep.x_sel + sweep.sweep_window
+        if x_hi <= x_lo:
+            eps = max(1e-9, self.L * 1e-12)
+            x_lo = sweep.x_sel
+            x_hi = sweep.x_sel + eps
+
         windowed_lineages = []
         for lin in qualifying:
-            # Split at x_lo: (left of lo, rest)
             a, rest = lin.split_at(x_lo)
             if rest is None:
-                # Material doesn't extend to x_lo; restore lin
                 continue
-            # Split rest at x_hi: (window, right of hi)
             window, b = rest.split_at(x_hi)
-            # Re-add the non-window pieces back to active as separate lineages
             active.remove(lin)
             if a is not None:
                 active.append(a)
@@ -872,11 +1003,6 @@ class HullSimulator:
                 active.append(window)
                 windowed_lineages.append(window)
 
-        # Now sequentially coalesce all windowed lineages. Each
-        # successive pair-merge needs a strictly-greater time than the
-        # previous one (tskit requires parent.time > child.time);
-        # nudge by a tiny epsilon per merge so they're all "at" the
-        # sweep time but strictly ordered.
         if len(windowed_lineages) < 2:
             return None
         eps = max(1e-9, t * 1e-12)
@@ -886,6 +1012,12 @@ class HullSimulator:
             apply_coalescence(active, merged, other, t_merge, tables)
             merged = active[-1]
         return merged
+
+    def _get_Ne_for_sweep(self):
+        """Get effective population size for sweep duration calculation."""
+        if hasattr(self, 'demography') and self.demography is not None:
+            return self.demography.pop_sizes[0]
+        return getattr(self, 'population_size', 10_000) or 10_000
 
     def _flip_to_panmictic(self, active, inv_id=None):
         """Flip per-segment classes to 'P' for inversion ``inv_id`` (or
@@ -1104,15 +1236,18 @@ class HullSimulator:
             if chosen_kind.startswith('coal_'):
                 payload = chosen_payload
                 if isinstance(payload, list):
-                    # Post-t_inv panmictic bucket: pick two random
-                    # lineages from the bucket. Full merge (no class
-                    # barrier — all inversions retired).
+                    # Hudson bucket: pick two random lineages and merge.
+                    # Following msprime (Kelleher 2016), the rate uses
+                    # k*(k-1)/2 as an upper bound; non-overlapping
+                    # pairs produce no edges and no lineage merge (a
+                    # cheap no-op inside apply_coalescence).
                     pool = payload
                     ii, jj = self.rng.choice(len(pool), size=2,
                                               replace=False)
                     i, j = pool[ii], pool[jj]
                     apply_coalescence(active, active[i], active[j],
-                                       t, tables)
+                                       t, tables,
+                                       skip_if_no_overlap=True)
                 else:
                     # Per-pair structured event: payload is
                     # (i, j, allowed_class). Partial coalescence —

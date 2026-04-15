@@ -9,7 +9,6 @@ correctly:
   - Between the two inversions (collinear gap): also panmictic.
 """
 
-import numpy as np
 import pytest
 
 from msinv.hull import HullSimulator
@@ -25,16 +24,17 @@ def test_two_inversions_each_respects_its_own_t_inv(seed):
     """With 2 inversions, each must have its own class barrier."""
     n_std = 4; n_inv = 4
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=2000.0)   # younger
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=8000.0)   # older
 
     sim = HullSimulator(
         n_std=n_std, n_inv=n_inv,
         population_size=Ne, sequence_length=L,
         inversions=[inv0, inv1], seed=seed,
+        recombination_rate=1e-8,
     )
     ts = sim.simulate()
     samples = list(ts.samples())
@@ -66,10 +66,10 @@ def test_collinear_gap_is_panmictic():
     panmictic — cross-class T_MRCA can be << min(t_inv) there."""
     n_std = 5; n_inv = 5
     Ne = 1000
-    L = 100.0
-    inv0 = InversionSpec(bp_left=10.0, bp_right=40.0,
+    L = 10000.0
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
                           p_inv=0.5, t_inv=10_000.0)
-    inv1 = InversionSpec(bp_left=60.0, bp_right=90.0,
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
                           p_inv=0.5, t_inv=10_000.0)
     gap_lo, gap_hi = inv0.bp_right, inv1.bp_left
 
@@ -80,6 +80,7 @@ def test_collinear_gap_is_panmictic():
             n_std=n_std, n_inv=n_inv,
             population_size=Ne, sequence_length=L,
             inversions=[inv0, inv1], seed=seed,
+            recombination_rate=1e-8,
         )
         ts = sim.simulate()
         samples = list(ts.samples())
@@ -113,9 +114,10 @@ def test_single_inv_api_back_compat():
     still work and produce the same results as before Phase 5b."""
     sim_legacy = HullSimulator(
         n_std=3, n_inv=3,
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         p_inv=0.5, t_inv=5000.0,
-        bp_left=20.0, bp_right=80.0, seed=42,
+        bp_left=2000.0, bp_right=8000.0, seed=42,
+        recombination_rate=1e-8,
     )
     ts_legacy = sim_legacy.simulate()
     assert ts_legacy.num_samples == 6
@@ -124,12 +126,13 @@ def test_single_inv_api_back_compat():
 def test_inversions_list_with_single_invspec():
     """Pass inversions=[InversionSpec(...)] as a list of one — should
     work like the legacy single-inv API."""
-    inv = InversionSpec(bp_left=20.0, bp_right=80.0,
+    inv = InversionSpec(bp_left=2000.0, bp_right=8000.0,
                          p_inv=0.5, t_inv=5000.0)
     sim = HullSimulator(
         n_std=3, n_inv=3,
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[inv], seed=42,
+        recombination_rate=1e-8,
     )
     ts = sim.simulate()
     assert ts.num_samples == 6
@@ -151,12 +154,13 @@ def test_inversions_list_with_single_invspec():
 
 def test_overlapping_inversions_accepted():
     """Phase 5c.2 supports overlapping/nested inversions."""
-    a = InversionSpec(bp_left=0.0, bp_right=50.0, p_inv=0.5, t_inv=1000.0)
-    b = InversionSpec(bp_left=40.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
+    a = InversionSpec(bp_left=0.0, bp_right=5000.0, p_inv=0.5, t_inv=1000.0)
+    b = InversionSpec(bp_left=4000.0, bp_right=8000.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
         n_std=2, n_inv=2,
-        population_size=1000, sequence_length=100.0,
+        population_size=1000, sequence_length=10000.0,
         inversions=[a, b], seed=1,
+        recombination_rate=1e-8,
     )
     ts = sim.simulate()
     assert ts.num_samples == 4

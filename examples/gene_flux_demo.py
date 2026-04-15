@@ -140,8 +140,8 @@ def main():
 
     pi_full_theory = 4 * Ne * mu
     pi_inside_theory = 4 * (Ne * p_inv) * mu
-    dxy_full_barrier = mu * (t_inv + 2 * Ne)
-    dxy_panmictic = mu * 2 * Ne
+    dxy_full_barrier = 2 * mu * (t_inv + 2 * Ne)
+    dxy_panmictic = 2 * mu * 2 * Ne
     # Position-dependent theory arrays
     inside = (mid >= bp_l) & (mid <= bp_r)
     pi_th_curve = np.where(inside, pi_inside_theory, pi_full_theory)

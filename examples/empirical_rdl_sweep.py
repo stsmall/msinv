@@ -166,10 +166,10 @@ def main():
     # Position-dependent theory curves
     theta = 4 * Ne * mu
     inside = (mid >= bp_l) & (mid <= bp_r)
-    dxy_th = np.where(inside, mu * (t_inv_age + 2 * Ne), mu * 2 * Ne)
+    dxy_th = np.where(inside, 2 * mu * (t_inv_age + 2 * Ne), 2 * mu * 2 * Ne)
     pi_th_panmictic = theta
     pi_th_class = np.where(inside, p_inv_freq * theta, theta)
-    fst_th = np.where(inside, t_inv_age / (t_inv_age + 2 * Ne), 0.0)
+    fst_th = np.where(inside, 1.0 - Ne / (t_inv_age + 2 * Ne), 0.0)
 
     labels = ['neutral', 'S sweep only', 'S then I sweep']
     fig, axes = plt.subplots(3, 3, figsize=(16, 10), sharey='row', sharex=True)

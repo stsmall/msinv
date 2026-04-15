@@ -40,7 +40,7 @@ n_fol_S = 5
 n_fol_I = 5
 
 N_WORKERS = 10
-REPS_PER_WORKER = 100
+REPS_PER_WORKER = 10
 NW = 40
 
 # Sample group indices (set by sample_config order)

@@ -131,6 +131,19 @@ def fig1_inversion_signal():
     da = dxy - (pi_S + pi_I) / 2
     fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
 
+    np.savez(os.path.join(OUTDIR, 'fig1_data.npz'),
+             mid=mid, dxy=dxy, pi_S=pi_S, pi_I=pi_I, da=da, fst=fst,
+             Ne=Ne, mu=mu, L=L, bp_l=bp_l, bp_r=bp_r, n_reps=n)
+
+    # Theoretical predictions (Guerrero et al. 2012; Charlesworth et al. 1997)
+    t_inv = 200_000
+    p_class = 0.5
+    theta = 4 * Ne * mu            # 4*Ne*mu per bp
+    dxy_theory = mu * (t_inv + 2 * Ne)   # E[dxy] inside inv
+    pi_theory = theta              # E[pi] within class (collinear = inv)
+    da_theory = dxy_theory - pi_theory    # E[Da] inside inv
+    fst_theory = t_inv / (t_inv + 2 * Ne)  # Guerrero eq.
+
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(9, 9.5), sharex=True)
 
     ax1.plot(mid, smooth(dxy), '-', color='#C62828', lw=2.2,
@@ -139,10 +152,14 @@ def fig1_inversion_signal():
              label=r'$\pi_S$ (within S)')
     ax1.plot(mid, smooth(pi_I), '-', color='#2E7D32', lw=2,
              label=r'$\pi_I$ (within I)')
+    ax1.axhline(dxy_theory, color='#C62828', ls='--', lw=1.2, alpha=0.7,
+                label=rf'$\mu(t_{{inv}}+2N_e)$ = {dxy_theory:.2e}')
+    ax1.axhline(pi_theory, color='#1565C0', ls='--', lw=1.2, alpha=0.7,
+                label=rf'$\theta$ = {pi_theory:.2e}')
     ax1.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0,
                 label='inversion')
     ax1.set_ylabel('Per-bp diversity / divergence', fontsize=11)
-    ax1.legend(loc='upper right', fontsize=9)
+    ax1.legend(loc='upper right', fontsize=8)
     ax1.set_title(
         f'A. Inversion divergence signal '
         f'(Ne={Ne:,}, t_inv=200k gen, n_S={n_S}, n_I={n_I}, {n} reps)',
@@ -150,20 +167,24 @@ def fig1_inversion_signal():
 
     ax2.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2.2,
              label=r'$D_a = d_{XY} - (\pi_S+\pi_I)/2$')
+    ax2.axhline(da_theory, color='#6A1B9A', ls='--', lw=1.2, alpha=0.7,
+                label=rf'$\mu \cdot t_{{inv}}$ = {da_theory:.2e}')
     ax2.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
     ax2.axhline(0, color='gray', ls=':', lw=0.7)
     ax2.set_ylabel(r'$D_a$', fontsize=11)
-    ax2.legend(loc='upper right', fontsize=9)
+    ax2.legend(loc='upper right', fontsize=8)
     ax2.set_title('B. Net divergence (isolates the inversion barrier)',
                    fontsize=11, loc='left')
 
     ax3.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
              label=r'$F_{ST}$ (Hudson)')
+    ax3.axhline(fst_theory, color='#E65100', ls='--', lw=1.2, alpha=0.7,
+                label=rf'$t_{{inv}}/(t_{{inv}}+2N_e)$ = {fst_theory:.2f}')
     ax3.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
     ax3.axhline(0, color='gray', ls=':', lw=0.7)
     ax3.set_ylabel(r'$F_{ST}$', fontsize=11)
     ax3.set_xlabel('Chromosome position (bp)', fontsize=10)
-    ax3.legend(loc='upper right', fontsize=9)
+    ax3.legend(loc='upper right', fontsize=8)
     ax3.set_title(r'C. Hudson $F_{ST}$ (relative differentiation)',
                    fontsize=11, loc='left')
 
@@ -287,10 +308,10 @@ def fig3_real_inversions():
     fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex='col')
 
     configs = [
-        ('An. funestus 3Ra–like\n(Ne=44k, t_inv=385k gen)', dict(
-            Ne=44_000, mu=3.55e-9, L=100_000,
+        ('An. funestus 3Ra–like\n(Ne=10k, t_inv=100k gen)', dict(
+            Ne=10_000, mu=3.55e-9, L=100_000,
             bp_l=20_000, bp_r=80_000,
-            p_inv=0.3, t_inv=385_000,
+            p_inv=0.3, t_inv=100_000,
             gamma=1e-9,
             n_S=10, n_I=10)),
         ('Human MAPT H1/H2–like\n(Ne=10k, t_inv=3 Myr / 100k gen)', dict(
@@ -330,6 +351,16 @@ def fig3_real_inversions():
         da = dxy - (pi_S + pi_I) / 2
         fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
 
+        tag = 'funestus' if col == 0 else 'mapt'
+        np.savez(os.path.join(OUTDIR, f'fig3_{tag}_data.npz'),
+                 mid=mid, dxy=dxy, pi_S=pi_S, pi_I=pi_I, da=da, fst=fst,
+                 n_reps=n, **p)
+
+        # Theory predictions
+        dxy_th = p['mu'] * (p['t_inv'] + 2 * p['Ne'])
+        pi_th = 4 * p['Ne'] * p['mu']
+        fst_th = p['t_inv'] / (p['t_inv'] + 2 * p['Ne'])
+
         # Top row: dxy, pi, Da
         ax = axes[0, col]
         ax.plot(mid, smooth(dxy), '-', color='#C62828', lw=2,
@@ -338,17 +369,23 @@ def fig3_real_inversions():
                  label=r'$\bar\pi$')
         ax.plot(mid, smooth(da), '-', color='#6A1B9A', lw=2,
                  label=r'$D_a$')
+        ax.axhline(dxy_th, color='#C62828', ls='--', lw=1, alpha=0.6,
+                    label=rf'$\mu(t_{{inv}}+2N_e)$={dxy_th:.1e}')
+        ax.axhline(pi_th, color='#1565C0', ls='--', lw=1, alpha=0.6,
+                    label=rf'$\theta$={pi_th:.1e}')
         ax.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
         ax.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
         ax.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
         ax.set_ylabel('Per-bp' if col == 0 else '')
         ax.set_title(name, fontsize=10)
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right', fontsize=7)
 
         # Bottom row: FST
         ax_f = axes[1, col]
         ax_f.plot(mid, smooth(fst), '-', color='#E65100', lw=2.2,
                    label=r'$F_{ST}$ (Hudson)')
+        ax_f.axhline(fst_th, color='#E65100', ls='--', lw=1, alpha=0.6,
+                      label=rf'$t_{{inv}}/(t_{{inv}}+2N_e)$={fst_th:.2f}')
         ax_f.axvspan(p['bp_l'], p['bp_r'], alpha=0.10, color='gray', zorder=0)
         ax_f.axvline(p['bp_l'], color='red', ls=':', lw=1, alpha=0.5)
         ax_f.axvline(p['bp_r'], color='red', ls=':', lw=1, alpha=0.5)
@@ -359,7 +396,7 @@ def fig3_real_inversions():
 
     caption = (
         'Figure 3. msinv reproduces divergence patterns of real chromosomal inversions. '
-        'Left: An. funestus 3Ra-like inversion (Ne=44,000, $\\mu$=3.55e-9, t_inv=385,000 gen, p_inv=0.3). '
+        'Left: An. funestus 3Ra-like inversion (Ne=10,000, $\\mu$=3.55e-9, t_inv=100,000 gen, p_inv=0.3). '
         'Right: Human MAPT H1/H2-like inversion (Ne=10,000, $\\mu$=1.2e-8, t_inv=100,000 gen, p_inv=0.2). '
         'Top: $d_{XY}$, $\\bar\\pi$, and $D_a$ show elevated divergence inside the inversion. '
         'Bottom: Hudson $F_{ST}$ shows relative differentiation. '
@@ -385,7 +422,7 @@ def fig3_real_inversions():
 
 def fig4_multiple_inversions():
     print("Fig 4: Multiple inversions...")
-    Ne = 30_000
+    Ne = 10_000
     mu = 1e-8
     L = 100_000
     NW = 35
@@ -448,6 +485,15 @@ def fig4_multiple_inversions():
     fst_A = 1.0 - (piA_S + piA_I) / 2 / np.maximum(dxy_A, 1e-20)
     fst_B = 1.0 - (piB_S + piB_I) / 2 / np.maximum(dxy_B, 1e-20)
 
+    np.savez(os.path.join(OUTDIR, 'fig4_data.npz'),
+             mid=mid, dxy_A=dxy_A, dxy_B=dxy_B, fst_A=fst_A, fst_B=fst_B,
+             piA_S=piA_S, piA_I=piA_I, piB_S=piB_S, piB_I=piB_I,
+             Ne=Ne, L=L, n_reps=n)
+
+    # Theory: FST = t_inv / (t_inv + 2*Ne) per inversion
+    fst_A_th = inv_A[3] / (inv_A[3] + 2 * Ne)  # t_inv_A=100k
+    fst_B_th = inv_B[3] / (inv_B[3] + 2 * Ne)  # t_inv_B=300k
+
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
 
     # Panel A: dxy
@@ -469,6 +515,10 @@ def fig4_multiple_inversions():
              label='Inv A axis $F_{ST}$')
     ax2.plot(mid, smooth(fst_B), '-', color='#1565C0', lw=2,
              label='Inv B axis $F_{ST}$')
+    ax2.axhline(fst_A_th, color='#C62828', ls='--', lw=1, alpha=0.6,
+                label=rf'A theory={fst_A_th:.2f}')
+    ax2.axhline(fst_B_th, color='#1565C0', ls='--', lw=1, alpha=0.6,
+                label=rf'B theory={fst_B_th:.2f}')
     ax2.axvspan(inv_A[0], inv_A[1], alpha=0.18, color='#C62828')
     ax2.axvspan(inv_B[0], inv_B[1], alpha=0.18, color='#1565C0')
     ax2.axhline(0, color='gray', ls=':', lw=0.7)

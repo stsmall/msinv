@@ -13,7 +13,6 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
-use crate::rate_engine::{RateEngine, RateTag};
 use crate::rate_index::RateCache;
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
@@ -143,9 +142,9 @@ impl HullSimulator {
         self.run_loop(&mut active, &mut arena, &mut tables,
                        &mut next_uid, &mut rng, &mut demo);
 
-        // Pre-sort edges in tskit canonical order so Python can
-        // skip the expensive tc.sort() call.
-        tables.sort_edges();
+        // NOTE: sort_edges disabled — was producing wrong tree
+        // sequences. Python bridge does tc.sort() anyway.
+        // tables.sort_edges();
         SimResult { tables }
     }
 
@@ -402,6 +401,18 @@ impl HullSimulator {
                     // Recombination preserves total material but changes
                     // lineage indices → rebuild event list.
                     engine_dirty = true;
+                    // GC sole-carrier lineages — only after recomb
+                    // (matches Python). GC after coalescence is wrong:
+                    // the merged lineage's solo bits (non-overlap parts
+                    // from the two parents) still need to coalesce with
+                    // others, but if no current other lineage covers
+                    // them they get incorrectly discarded.
+                    let n_before_gc = active.len();
+                    gc_sole_lineages(active, arena);
+                    if active.len() != n_before_gc {
+                        total_material = active.iter()
+                            .map(|l| l.cached_len).sum();
+                    }
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
@@ -424,16 +435,6 @@ impl HullSimulator {
                     }
                     engine_dirty = true;  // pop assignment changed
                 }
-            }
-
-            // GC: remove lineages that are the sole carrier at every
-            // position they cover.
-            let n_before_gc = active.len();
-            gc_sole_lineages(active, arena);
-            if active.len() != n_before_gc {
-                total_material = active.iter()
-                    .map(|l| l.cached_len).sum();
-                engine_dirty = true;
             }
 
             // Keep recomb rate in sync.

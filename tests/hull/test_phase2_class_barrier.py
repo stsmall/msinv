@@ -23,10 +23,10 @@ from msinv.hull import HullSimulator
 
 def test_panmictic_via_samples_arg_still_works():
     sim = HullSimulator(samples=8, population_size=1.0,
-                         sequence_length=100.0, seed=1)
+                         sequence_length=10000.0, recombination_rate=1e-8, seed=1)
     ts = sim.simulate()
     assert ts.num_samples == 8
-    assert ts.num_trees == 1
+    assert ts.num_trees >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +58,8 @@ def test_cross_class_mrca_at_least_t_inv(seed):
 
     sim = HullSimulator(
         n_std=n_std, n_inv=n_inv,
-        population_size=Ne, sequence_length=1000.0,
-        p_inv=p_inv, t_inv=t_inv, seed=seed,
+        population_size=Ne, sequence_length=10000.0,
+        recombination_rate=1e-8, p_inv=p_inv, t_inv=t_inv, seed=seed,
     )
     ts = sim.simulate()
     times = _cross_class_mrca_times(ts, n_std)
@@ -84,8 +84,8 @@ def test_within_class_mrca_can_be_below_t_inv():
     for seed in range(20):
         sim = HullSimulator(
             n_std=n_std, n_inv=n_inv,
-            population_size=Ne, sequence_length=1000.0,
-            p_inv=p_inv, t_inv=t_inv, seed=seed,
+            population_size=Ne, sequence_length=10000.0,
+            recombination_rate=1e-8, p_inv=p_inv, t_inv=t_inv, seed=seed,
         )
         ts = sim.simulate()
         samples = list(ts.samples())
@@ -112,15 +112,15 @@ def test_rare_class_coalesces_faster_than_panmictic():
     n_inv = 5
     Ne = 10_000
     p_inv = 0.1   # I is the rare class
-    t_inv = 100.0 * 2 * Ne   # very deep, so class barrier doesn't kick in
+    t_inv = 10.0 * 2 * Ne   # deep enough that class barrier doesn't constrain I-I coal
 
     rare_class_mrca = []
     panmictic_mrca = []
     for seed in range(40):
         sim = HullSimulator(
             n_std=1, n_inv=n_inv,   # 1 S so class barrier is mostly irrelevant
-            population_size=Ne, sequence_length=10.0,
-            p_inv=p_inv, t_inv=t_inv, seed=seed,
+            population_size=Ne, sequence_length=10000.0,
+            recombination_rate=1e-8, p_inv=p_inv, t_inv=t_inv, seed=seed,
         )
         ts = sim.simulate()
         samples = list(ts.samples())
@@ -129,8 +129,8 @@ def test_rare_class_coalesces_faster_than_panmictic():
             rare_class_mrca.append(tree.time(tree.mrca(*I)))
 
         sim_pan = HullSimulator(
-            samples=n_inv, population_size=Ne, sequence_length=10.0,
-            seed=seed,
+            samples=n_inv, population_size=Ne, sequence_length=10000.0,
+            recombination_rate=1e-8, seed=seed,
         )
         ts_pan = sim_pan.simulate()
         for tree in ts_pan.trees():
@@ -151,8 +151,8 @@ def test_rare_class_coalesces_faster_than_panmictic():
 def test_treeseq_is_valid_with_class_barrier():
     sim = HullSimulator(
         n_std=4, n_inv=4,
-        population_size=1000, sequence_length=100.0,
-        p_inv=0.5, t_inv=5000.0, seed=42,
+        population_size=1000, sequence_length=10000.0,
+        recombination_rate=1e-8, p_inv=0.5, t_inv=5000.0, seed=42,
     )
     ts = sim.simulate()
     # tskit's `dump_tables`/load roundtrip would catch any structural issues.

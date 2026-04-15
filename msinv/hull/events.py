@@ -5,24 +5,38 @@ keeping the ARG state consistent. SMC' is correct by construction in
 this representation (Kelleher, Etheridge, McVean 2016).
 """
 
-import numpy as np
-
 from .lineage import Lineage
 from .segment import Segment
 
 
-def apply_coalescence(active, lin_a, lin_b, t, tables):
+def apply_coalescence(active, lin_a, lin_b, t, tables,
+                      skip_if_no_overlap=False):
     """Coalesce two lineages.
 
-    A new tskit node is added at time t. For each genomic interval
-    where both lin_a and lin_b have ancestral material, an edge is
-    added from the new node to each of their existing node_ids. Where
-    only one is ancestral, the offspring lineage carries that lineage's
-    node_id. Where both are ancestral, the offspring lineage carries
-    the new node's id (because it is now their MRCA at that interval).
+    For each genomic interval where both lin_a and lin_b have ancestral
+    material, an edge is added from a new internal node to each of
+    their existing node_ids.  The merged lineage carries the new node's
+    id in the overlap and retains the original node_ids elsewhere.
 
-    The merged lineage replaces lin_a and lin_b in ``active``.
+    If *skip_if_no_overlap* is True and the lineages have no
+    overlapping material, no merge occurs — matching msprime's Hudson
+    algorithm where non-overlapping pairs are a no-op.
     """
+    if skip_if_no_overlap:
+        sa_check = lin_a.head
+        sb_check = lin_b.head
+        has_overlap = False
+        while sa_check is not None and sb_check is not None:
+            if sa_check.right <= sb_check.left:
+                sa_check = sa_check.next
+            elif sb_check.right <= sa_check.left:
+                sb_check = sb_check.next
+            else:
+                has_overlap = True
+                break
+        if not has_overlap:
+            return None
+
     new_node = tables.add_internal(time=t, population=lin_a.population)
     new_head = new_tail = None
 
@@ -43,10 +57,12 @@ def apply_coalescence(active, lin_a, lin_b, t, tables):
     # boundary, and emit at most one merged segment per interval.
     while sa is not None and sb is not None:
         if sa.right <= sb.left:
-            _append(Segment(sa.left, sa.right, sa.node_id))
+            _append(Segment(sa.left, sa.right, sa.node_id,
+                            branch_class=sa.branch_class))
             sa = sa.next
         elif sb.right <= sa.left:
-            _append(Segment(sb.left, sb.right, sb.node_id))
+            _append(Segment(sb.left, sb.right, sb.node_id,
+                            branch_class=sb.branch_class))
             sb = sb.next
         else:
             # Overlap [max(left), min(right))
@@ -54,38 +70,48 @@ def apply_coalescence(active, lin_a, lin_b, t, tables):
             r = min(sa.right, sb.right)
             # Pre-overlap solo bits
             if sa.left < l:
-                _append(Segment(sa.left, l, sa.node_id))
+                _append(Segment(sa.left, l, sa.node_id,
+                                branch_class=sa.branch_class))
             if sb.left < l:
-                _append(Segment(sb.left, l, sb.node_id))
+                _append(Segment(sb.left, l, sb.node_id,
+                                branch_class=sb.branch_class))
             # Overlap → coalesces here. Add edges from new_node to both.
             tables.add_edge(l, r, new_node, sa.node_id)
             tables.add_edge(l, r, new_node, sb.node_id)
-            _append(Segment(l, r, new_node))
+            _append(Segment(l, r, new_node,
+                            branch_class=sa.branch_class))
             # Advance whichever ended at r; keep the other's tail
             if sa.right == r:
                 sa = sa.next
             else:
-                sa = Segment(r, sa.right, sa.node_id, next=sa.next)
+                sa = Segment(r, sa.right, sa.node_id,
+                             branch_class=sa.branch_class, next=sa.next)
                 if sa.next is not None:
                     sa.next.prev = sa
             if sb.right == r:
                 sb = sb.next
             else:
-                sb = Segment(r, sb.right, sb.node_id, next=sb.next)
+                sb = Segment(r, sb.right, sb.node_id,
+                             branch_class=sb.branch_class, next=sb.next)
                 if sb.next is not None:
                     sb.next.prev = sb
     while sa is not None:
-        _append(Segment(sa.left, sa.right, sa.node_id))
+        _append(Segment(sa.left, sa.right, sa.node_id,
+                        branch_class=sa.branch_class))
         sa = sa.next
     while sb is not None:
-        _append(Segment(sb.left, sb.right, sb.node_id))
+        _append(Segment(sb.left, sb.right, sb.node_id,
+                        branch_class=sb.branch_class))
         sb = sb.next
 
     active.remove(lin_a)
     active.remove(lin_b)
     if new_head is not None:
+        # Do NOT pass branch_class: each segment already carries the
+        # correct per-position class from the merge.  Passing a
+        # lineage-level class would overwrite every segment (the Lineage
+        # constructor propagates branch_class to all segments).
         merged = Lineage(new_head, new_tail,
-                         branch_class=lin_a.branch_class,
                          population=lin_a.population)
         active.append(merged)
     return new_node

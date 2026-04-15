@@ -18,7 +18,7 @@ impl InversionSpec {
             bp_right,
             p_inv,
             t_inv,
-            gene_conversion_rate: 0.0,
+            gene_conversion_rate: 1e-9,
             flux_window: 0.05,
             inv_id: 0,
         }

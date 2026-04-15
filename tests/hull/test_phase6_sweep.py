@@ -386,6 +386,7 @@ def test_sweep_hitchhiking_inside_inversion_with_recombination():
             sequence_length=L,
             p_inv=0.5, t_inv=t_inv,
             bp_left=20_000.0, bp_right=80_000.0,
+            gene_conversion_rate=1e-15,  # negligible (gamma>0 enforced)
             recombination_rate=1e-8,
             sweeps=[sweep],
             seed=seed,

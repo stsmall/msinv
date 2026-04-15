@@ -336,7 +336,7 @@ def fig3_real_inversions():
                 inversions=[InversionSpec(
                     bp_left=p['bp_l'], bp_right=p['bp_r'],
                     p_inv=p['p_inv'], t_inv=p['t_inv'],
-                    gene_conversion_rate=p.get('gamma', 0.0))],
+                    gene_conversion_rate=p.get('gamma', 1e-9))],
                 recombination_rate=1e-8,
                 seed=7000 + rep,
             )

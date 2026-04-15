@@ -60,15 +60,16 @@ def test_panmictic_diversity_matches_msprime():
 
 def test_panmictic_tmrca_matches_msprime():
     """Mean T_MRCA for n=2 should match msprime within 20%."""
-    Ne = 1_000; L = 1_000.0
+    Ne = 1_000; L = 1_000.0; r = 1e-9  # rho > 0 required
 
     hull_t = []; msp_t = []
     for seed in range(NREPS):
         ts = HullSimulator(n_std=2, n_inv=0, population_size=Ne,
-            sequence_length=L, seed=seed).simulate()
+            sequence_length=L, recombination_rate=r,
+            seed=seed).simulate()
         hull_t.append(ts.first().time(ts.first().root))
 
-        ts2 = _msp_ancestry(2, Ne, L, 0.0, seed+5000)
+        ts2 = _msp_ancestry(2, Ne, L, r, seed+5000)
         msp_t.append(ts2.first().time(ts2.first().root))
 
     ratio = np.mean(hull_t) / np.mean(msp_t)

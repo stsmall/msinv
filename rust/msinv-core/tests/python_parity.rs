@@ -441,9 +441,18 @@ fn rho_zero_with_inversion_panics() {
 }
 
 #[test]
-fn rho_zero_without_inversion_works() {
-    // Pure panmictic, no inversions — rho=0 is fine.
+#[should_panic(expected = "recombination_rate must be > 0")]
+fn rho_zero_without_inversion_panics() {
+    // rho=0 is forbidden globally now (matches Python).
     let sim = HullSimulator::panmictic(5, 1000.0, 1000.0, 0.0, 42);
-    let result = sim.simulate();
-    assert_eq!(result.tables.num_nodes(), 9); // 5 samples + 4 internal
+    sim.simulate();
+}
+
+#[test]
+#[should_panic(expected = "gene_conversion_rate (gamma) must be > 0")]
+fn gamma_zero_with_inversion_panics() {
+    let mut iv = inv(200.0, 800.0, 0.5, 5000.0, 0);
+    iv.gene_conversion_rate = 0.0;
+    let sim = HullSimulator::simple(2, 2, 1000.0, 1000.0, 1e-8, vec![iv], 42);
+    sim.simulate();
 }

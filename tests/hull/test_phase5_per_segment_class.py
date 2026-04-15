@@ -173,7 +173,7 @@ def test_treeseq_valid_with_inv_subregion():
         p_inv=0.5, t_inv=8000.0,
         bp_left=5000.0, bp_right=15000.0,
         recombination_rate=1e-8,
-        gene_conversion_rate=0.0,
+        gene_conversion_rate=1e-15,  # negligible (gamma>0 enforced)
         seed=42,
     )
     ts = sim.simulate()

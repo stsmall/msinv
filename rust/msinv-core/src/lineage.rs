@@ -38,6 +38,29 @@ impl Lineage {
         Self { head, tail, population, uid, cached_len }
     }
 
+    /// Leftmost genomic position covered by this lineage. O(1).
+    #[inline]
+    pub fn hull_left(&self, arena: &SegmentArena) -> f64 {
+        if self.head == SEG_NIL { return f64::INFINITY; }
+        arena.get(self.head).left
+    }
+
+    /// Rightmost genomic position covered by this lineage. O(1).
+    #[inline]
+    pub fn hull_right(&self, arena: &SegmentArena) -> f64 {
+        if self.tail == SEG_NIL { return f64::NEG_INFINITY; }
+        arena.get(self.tail).right
+    }
+
+    /// O(1) hull overlap check: do the genomic extents of two lineages
+    /// overlap at all? Rejects clearly non-overlapping pairs before the
+    /// full segment walk.
+    #[inline]
+    pub fn hulls_overlap(&self, other: &Lineage, arena: &SegmentArena) -> bool {
+        self.hull_left(arena) < other.hull_right(arena)
+            && other.hull_left(arena) < self.hull_right(arena)
+    }
+
     /// Total length of ancestral material (O(1) — cached).
     #[inline]
     pub fn total_length(&self, _arena: &SegmentArena) -> f64 {

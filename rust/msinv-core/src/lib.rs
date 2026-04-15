@@ -7,6 +7,7 @@ pub mod events;
 pub mod phi;
 pub mod fenwick;
 pub mod rate_index;
+pub mod rate_engine;
 pub mod demography;
 pub mod sweep;
 pub mod simulator;

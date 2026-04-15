@@ -13,6 +13,7 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
+use crate::rate_engine::{RateEngine, RateTag};
 use crate::rate_index::RateCache;
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
@@ -202,12 +203,15 @@ impl HullSimulator {
         let mut total_recomb_rate: f64 = total_material * self.recombination_rate;
 
         // Phase D: incremental pair rate cache.
-        // At high rho, recombination can fragment n lineages into many
-        // more. Generous capacity avoids reallocation.
         let max_lins = (active.len() * 20).max(256);
         let mut rate_cache = RateCache::new(max_lins);
         rate_cache.rebuild(&active, arena);
-        let mut cache_dirty = false;  // force full rebuild when true
+
+        // Persistent event list + Fenwick tree. Rebuilt on structural
+        // changes; reused when only recombination happens.
+        let mut all_events: Vec<(f64, Event)> = Vec::new();
+        let mut event_tree = crate::fenwick::Fenwick::new(0);
+        let mut engine_dirty = true;  // force full rebuild
 
         for _ in 0..10_000_000u64 {
             let n = active.len();
@@ -233,50 +237,49 @@ impl HullSimulator {
             // Next demographic event boundary.
             let t_demo = demo.next_event_time(t);
 
-            // --- Compute all event rates ---
-            let mut all_events: Vec<(f64, Event)> = Vec::new();
+            // --- Build or reuse event rates ---
+            if engine_dirty {
+                all_events.clear();
 
-            // Coalescence: use cached pair rates when inversions active.
-            if cache_dirty {
-                rate_cache.rebuild(active, arena);
-                cache_dirty = false;
-            }
-            if any_barrier {
-                // Structured: emit events from the pair rate cache.
-                emit_coal_events_from_cache(
-                    &rate_cache, active, &*demo, t,
-                    &self.inversions, &barrier_active,
-                    &mut all_events);
-            } else {
-                // Post-barrier panmictic: Hudson per-pop buckets.
-                compute_coal_events(
-                    active, arena, demo, t, &self.inversions, &barrier_active,
-                    &mut all_events);
+                // Coalescence.
+                if any_barrier {
+                    rate_cache.rebuild(active, arena);
+                    emit_coal_events_from_cache(
+                        &rate_cache, active, &*demo, t,
+                        &self.inversions, &barrier_active,
+                        &mut all_events);
+                } else {
+                    compute_coal_events(
+                        active, arena, demo, t, &self.inversions,
+                        &barrier_active, &mut all_events);
+                }
+
+                // Recombination.
+                if total_recomb_rate > 0.0 {
+                    all_events.push((total_recomb_rate, Event::Recombination));
+                }
+
+                // Gene flux.
+                if any_barrier {
+                    self.compute_flux_rates(
+                        active, arena, &barrier_active, &mut all_events);
+                }
+                // Migration.
+                for (rate, lin_idx, dst) in demo.migration_rates(active) {
+                    all_events.push((rate, Event::Migration {
+                        lineage_idx: lin_idx, dst_pop: dst,
+                    }));
+                }
+
+                // Rebuild Fenwick tree.
+                let n_events = all_events.len();
+                event_tree = crate::fenwick::Fenwick::new(n_events);
+                for (leaf, (rate, _)) in all_events.iter().enumerate() {
+                    event_tree.update(leaf, *rate);
+                }
+                engine_dirty = false;
             }
 
-            // Recombination (O(1) from running total).
-            if total_recomb_rate > 0.0 {
-                all_events.push((total_recomb_rate, Event::Recombination));
-            }
-
-            // Gene flux.
-            if any_barrier {
-                self.compute_flux_rates(
-                    active, arena, &barrier_active, &mut all_events);
-            }
-            // Migration.
-            for (rate, lin_idx, dst) in demo.migration_rates(active) {
-                all_events.push((rate, Event::Migration {
-                    lineage_idx: lin_idx, dst_pop: dst,
-                }));
-            }
-
-            // Build Fenwick tree for O(log n) event selection.
-            let n_events = all_events.len();
-            let mut event_tree = crate::fenwick::Fenwick::new(n_events);
-            for (leaf, (rate, _)) in all_events.iter().enumerate() {
-                event_tree.update(leaf, *rate);
-            }
             let total_rate = event_tree.total();
 
             // Next sweep boundary.
@@ -302,7 +305,7 @@ impl HullSimulator {
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
-                    cache_dirty = true;
+                    engine_dirty = true;
                     continue;
                 }
                 return;
@@ -329,7 +332,7 @@ impl HullSimulator {
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
-                cache_dirty = true;
+                engine_dirty = true;
                 continue;
             }
             t = t_event;
@@ -337,7 +340,7 @@ impl HullSimulator {
             // Pick which event fires — O(log n) via Fenwick tree.
             let u2: f64 = rng.random::<f64>() * total_rate;
             let leaf = event_tree.find(u2);
-            let chosen_event = if leaf < n_events {
+            let chosen_event = if leaf < all_events.len() {
                 &all_events[leaf].1
             } else {
                 continue;  // numerical precision miss
@@ -347,43 +350,12 @@ impl HullSimulator {
                 Event::CoalPair { i, j, class } => {
                     let (i, j) = (*i, *j);
                     let cls = *class;
-                    let n_before = active.len();
-
-                    // Remove cache entries for consumed lineages.
-                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                    rate_cache.remove_lineage(hi);
-                    rate_cache.remove_lineage(lo);
-
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         Some(cls));
-
-                    // Handle swap_remove index changes in cache.
-                    // swap_remove(hi): last element moved to hi
-                    let old_last_hi = n_before - 1;
-                    if hi != old_last_hi {
-                        rate_cache.swap_update(hi, old_last_hi);
-                    } else {
-                        rate_cache.swap_update(hi, hi);
-                    }
-                    // swap_remove(lo): (n_before-2)th element moved to lo
-                    let old_last_lo = n_before - 2;
-                    if lo < old_last_lo {
-                        rate_cache.swap_update(lo, old_last_lo);
-                    } else {
-                        rate_cache.swap_update(lo, lo);
-                    }
-
-                    // Recompute pairs for newly pushed lineages.
-                    let n_after = active.len();
-                    for new_idx in (n_before - 2)..n_after {
-                        if new_idx < n_after {
-                            rate_cache.recompute_for(new_idx, active, arena);
-                        }
-                    }
-
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
+                    engine_dirty = true;
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
@@ -406,6 +378,7 @@ impl HullSimulator {
                         // Recompute after merge.
                         total_material = active.iter()
                             .map(|l| l.cached_len).sum();
+                        engine_dirty = true;
                     }
                 }
                 Event::Recombination => {
@@ -424,29 +397,11 @@ impl HullSimulator {
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
                     let x = find_position(active, chosen_idx, x_offset,
                                            arena, self.sequence_length);
-                    let n_before = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid);
-                    // Recomb: lineage at chosen_idx is replaced (swap_remove
-                    // + push of left and right). Recompute pairs for the
-                    // modified indices.
-                    if any_barrier {
-                        // The original lineage was swap_removed; last moved
-                        // to chosen_idx. Two new lineages pushed at end.
-                        let old_last = n_before - 1;
-                        rate_cache.remove_lineage(chosen_idx);
-                        if chosen_idx != old_last {
-                            rate_cache.swap_update(chosen_idx, old_last);
-                        } else {
-                            rate_cache.swap_update(chosen_idx, chosen_idx);
-                        }
-                        // Recompute for the two new lineages.
-                        let n_after = active.len();
-                        for new_idx in (n_before - 1)..n_after {
-                            rate_cache.recompute_for(new_idx, active, arena);
-                        }
-                    }
-                    // Recombination preserves total material.
+                    // Recombination preserves total material but changes
+                    // lineage indices → rebuild event list.
+                    engine_dirty = true;
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
@@ -456,25 +411,10 @@ impl HullSimulator {
                     {
                         let (tl, tr) = self.draw_tract(x_event, inv, rng);
                         if tr > tl {
-                            let n_before = active.len();
                             apply_gene_flux(active, li, tl, tr, inv,
                                              arena, next_uid);
-                            // Flux: same structure as recomb (swap_remove + push).
-                            if any_barrier {
-                                let old_last = n_before - 1;
-                                rate_cache.remove_lineage(li);
-                                if li != old_last {
-                                    rate_cache.swap_update(li, old_last);
-                                } else {
-                                    rate_cache.swap_update(li, li);
-                                }
-                                let n_after = active.len();
-                                for new_idx in (n_before - 1)..n_after {
-                                    rate_cache.recompute_for(
-                                        new_idx, active, arena);
-                                }
-                            }
                         }
+                        engine_dirty = true;
                     }
                 }
                 Event::Migration { lineage_idx, dst_pop } => {
@@ -482,20 +422,18 @@ impl HullSimulator {
                     if idx < active.len() {
                         active[idx].population = *dst_pop;
                     }
-                    // Migration doesn't change material.
+                    engine_dirty = true;  // pop assignment changed
                 }
             }
 
             // GC: remove lineages that are the sole carrier at every
-            // position they cover. These can never produce more edges
-            // (no other lineage to coalesce with at those positions).
+            // position they cover.
             let n_before_gc = active.len();
             gc_sole_lineages(active, arena);
             if active.len() != n_before_gc {
-                // GC removed lineages — recompute total and cache.
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
-                cache_dirty = true;
+                engine_dirty = true;
             }
 
             // Keep recomb rate in sync.

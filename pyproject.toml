@@ -87,6 +87,10 @@ msprime = ">=1.2"
 [tool.pixi.feature.plots.dependencies]
 matplotlib = ">=3.5"
 
+[tool.pixi.feature.rust.dependencies]
+python = ">=3.12,<3.14"
+maturin = ">=1.4"
+
 [tool.pixi.feature.test.tasks]
 test = "pytest tests/hull/"
 figures = "python examples/make_figures.py"
@@ -95,3 +99,4 @@ figures = "python examples/make_figures.py"
 default = { features = [], solve-group = "default" }
 test = { features = ["test"], solve-group = "default" }
 all = { features = ["test", "plots"], solve-group = "default" }
+rust = { features = ["test", "plots", "rust"], solve-group = "rust" }

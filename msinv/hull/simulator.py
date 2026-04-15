@@ -504,6 +504,16 @@ class HullSimulator:
 
         self.L = sequence_length
         self.r = recombination_rate
+        # Validate: inversions require recombination (rho=0 + inversions
+        # hangs because partial coalescence fragments lineages that can
+        # never recombine back together).  rho=0 is valid only for
+        # independent non-recombining loci (RADseq/amplicon use case).
+        if self.inversions and self.r <= 0:
+            raise ValueError(
+                "recombination_rate must be > 0 when inversions are "
+                "present. Inversions are recombination modifiers — "
+                "rho=0 is undefined. For non-recombining loci, omit "
+                "the inversions parameter.")
         # Sweeps: list of Sweep objects, sorted by t_event.
         self.sweeps = []
         if sweeps:
@@ -638,20 +648,32 @@ class HullSimulator:
             # event handler uses rejection sampling to skip non-
             # overlapping pairs (see 'coal_' handler in main loop).
             def _classify(lin):
-                """Classify by any non-P class found in segments."""
+                """Classify by reading branch_class tags directly.
+
+                Each segment's branch_class is 'S0', 'I1', 'P', or a
+                frozenset for nested inversions.  We extract the per-
+                inversion class from the tag itself — no position
+                check needed.  This avoids misclassification of small
+                segments near breakpoints whose midpoint might fall
+                outside the inversion bounds.
+                """
                 inv_tags = {}
                 seg = lin.head
                 while seg is not None:
-                    seg_mid = (seg.left + seg.right) / 2.0
-                    for mid, inv in sample_positions:
-                        if inv.bp_left <= seg_mid < inv.bp_right:
-                            if isinstance(seg.branch_class, frozenset):
-                                inv_tags[inv.inv_id] = seg.branch_class
-                            elif seg.branch_class != 'P':
-                                inv_tags[inv.inv_id] = seg.branch_class
+                    bc = seg.branch_class
+                    if bc != 'P' and bc is not None:
+                        if isinstance(bc, frozenset):
+                            for tag in bc:
+                                for _, inv in sample_positions:
+                                    if tag == inv.class_S() or tag == inv.class_I():
+                                        inv_tags[inv.inv_id] = tag
+                        else:
+                            for _, inv in sample_positions:
+                                if bc == inv.class_S() or bc == inv.class_I():
+                                    inv_tags[inv.inv_id] = bc
                     seg = seg.next
                 tags = []
-                for mid, inv in sample_positions:
+                for _, inv in sample_positions:
                     tags.append(inv_tags.get(inv.inv_id, 'P'))
                 return tuple(tags) if tags else ('P',)
 
@@ -949,8 +971,13 @@ class HullSimulator:
             merged = swept_lineages[0]
             for k_idx, other in enumerate(swept_lineages[1:], start=1):
                 t_merge = t + k_idx * eps
-                apply_coalescence(active, merged, other, t_merge, tables)
-                merged = active[-1]
+                result = apply_coalescence(active, merged, other,
+                                           t_merge, tables,
+                                           skip_if_no_overlap=True)
+                if result is not None:
+                    # Merge succeeded — active[-1] is the new lineage.
+                    merged = active[-1]
+                # else: no overlap → no-op, merged stays as-is.
             return merged
 
         # ---- window mode (original) ----

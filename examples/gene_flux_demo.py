@@ -140,8 +140,12 @@ def main():
 
     pi_full_theory = 4 * Ne * mu
     pi_inside_theory = 4 * (Ne * p_inv) * mu
-    dxy_full_barrier = mu * (t_inv + 2 * Ne)   # dxy with no gene flux
-    dxy_panmictic = mu * 2 * Ne                  # dxy with full mixing
+    dxy_full_barrier = mu * (t_inv + 2 * Ne)
+    dxy_panmictic = mu * 2 * Ne
+    # Position-dependent theory arrays
+    inside = (mid >= bp_l) & (mid <= bp_r)
+    pi_th_curve = np.where(inside, pi_inside_theory, pi_full_theory)
+    dxy_th_curve = np.where(inside, dxy_full_barrier, dxy_panmictic)
 
     for col, gamma in enumerate(GAMMAS):
         pi_avg, dxy = results[gamma]
@@ -156,10 +160,8 @@ def main():
 
         ax_top.plot(mid, smooth(pi_avg), '-', color='#1565C0', lw=2.2,
                      label=r'$\bar\pi$ (within S, I)')
-        ax_top.axhline(pi_full_theory, color='#666', ls='--', lw=0.8,
-                        label=r'$4N_e\mu$' if col == 0 else None)
-        ax_top.axhline(pi_inside_theory, color='#C62828', ls=':', lw=1.0,
-                        label=r'$4N_e\mu \cdot p$' if col == 0 else None)
+        ax_top.plot(mid, pi_th_curve, '--', color='#C62828', lw=1.0,
+                     label=r'$E[\pi_c]$' if col == 0 else None)
         ax_top.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
         ax_top.set_title(rf'$\gamma$ = {gamma:.0e}' + f'\n{regime_label}',
                           fontsize=10, fontweight='bold')
@@ -169,10 +171,8 @@ def main():
 
         ax_bot.plot(mid, smooth(dxy), '-', color='#C62828', lw=2.2,
                      label=r'$d_{XY}$ (S vs I)')
-        ax_bot.axhline(dxy_full_barrier, color='#C62828', ls='--', lw=0.8,
-                        label=r'$\mu(t_{inv}+2N_e)$' if col == 0 else None)
-        ax_bot.axhline(dxy_panmictic, color='#666', ls=':', lw=0.8,
-                        label=r'$2N_e\mu$ (panmictic)' if col == 0 else None)
+        ax_bot.plot(mid, dxy_th_curve, '--', color='#C62828', lw=1.0,
+                     label=r'$E[d_{XY}]$' if col == 0 else None)
         ax_bot.axvspan(bp_l, bp_r, alpha=0.10, color='gray', zorder=0)
         ax_bot.set_xlabel('Position (bp)', fontsize=10)
         if col == 0:

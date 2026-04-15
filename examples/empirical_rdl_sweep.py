@@ -78,7 +78,7 @@ def per_window(haps, pos_bp, group_a, group_b, kind='dxy'):
 
 def run_scenario(args):
     """Run one scenario — returns (label, dxy, pi_S, pi_I)."""
-    label, sweeps, seed_offset = args
+    label, sweeps, seed_offset, gamma = args
     print(f"  [{label}] starting {NREPS} reps...")
     t0 = time.time()
     mut_rng = np.random.default_rng(2027 + seed_offset)
@@ -94,7 +94,7 @@ def run_scenario(args):
             inversions=[
                 InversionSpec(bp_left=bp_l, bp_right=bp_r,
                               p_inv=p_inv_freq, t_inv=t_inv_age,
-                              gene_conversion_rate=1e-9),
+                              gene_conversion_rate=gamma),
             ],
             sweeps=sweeps,
             recombination_rate=r,
@@ -131,9 +131,9 @@ def main():
                     target_class='I', selection_coefficient=s_coef)
 
     tasks = [
-        ('neutral', [], 0),
-        ('S sweep only', [sweep_S], 1),
-        ('S then I sweep', [sweep_S, sweep_I], 2),
+        ('neutral', [], 0, 1e-9),
+        ('S sweep only', [sweep_S], 1, 1e-9),
+        ('S then I sweep', [sweep_S, sweep_I], 2, 1e-9),
     ]
 
     with Pool(3) as pool:
@@ -163,8 +163,16 @@ def main():
     wins = np.linspace(0, L, NW + 1)
     mid = (wins[:-1] + wins[1:]) / 2
 
-    fig, axes = plt.subplots(3, 3, figsize=(16, 10), sharey='row', sharex=True)
+    # Position-dependent theory curves
+    theta = 4 * Ne * mu
+    inside = (mid >= bp_l) & (mid <= bp_r)
+    dxy_th = np.where(inside, mu * (t_inv_age + 2 * Ne), mu * 2 * Ne)
+    pi_th_panmictic = theta
+    pi_th_class = np.where(inside, p_inv_freq * theta, theta)
+    fst_th = np.where(inside, t_inv_age / (t_inv_age + 2 * Ne), 0.0)
+
     labels = ['neutral', 'S sweep only', 'S then I sweep']
+    fig, axes = plt.subplots(3, 3, figsize=(16, 10), sharey='row', sharex=True)
 
     for col, label in enumerate(labels):
         dxy, pi_S, pi_I = results[label]
@@ -175,34 +183,40 @@ def main():
 
         ax_dxy.plot(mid, smooth(dxy), '-', color='#FF9800', lw=2,
                     label='$d_{XY}$ (S vs I)')
-        ax_dxy.set_title(label, fontsize=11, fontweight='bold')
+        ax_dxy.plot(mid, dxy_th, '--', color='#FF9800', lw=1, alpha=0.5,
+                    label=r'$E[d_{XY}]$' if col == 0 else None)
+        ax_dxy.set_title(label, fontsize=10, fontweight='bold')
         ax_dxy.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
         ax_dxy.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6,
-                       label='x_sel')
+                       label='x_sel' if col == 0 else None)
         ax_dxy.set_xlim(0, L)
         if col == 0:
             ax_dxy.set_ylabel('$d_{XY}$ (per bp)', fontsize=11)
-            ax_dxy.legend(fontsize=8, loc='upper right')
+            ax_dxy.legend(fontsize=7, loc='upper right')
 
         ax_pi.plot(mid, smooth(pi_S), '-', color='#1976D2', lw=2,
                    label='$\\pi_S$')
         ax_pi.plot(mid, smooth(pi_I), '-', color='#C2185B', lw=2,
                    label='$\\pi_I$')
+        ax_pi.plot(mid, pi_th_class, '--', color='#666', lw=0.8,
+                   label=r'$E[\pi_c]$' if col == 0 else None)
         ax_pi.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
         ax_pi.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6)
         if col == 0:
             ax_pi.set_ylabel('$\\pi$ within class (per bp)', fontsize=11)
-            ax_pi.legend(fontsize=8, loc='upper right')
+            ax_pi.legend(fontsize=7, loc='upper right')
 
         ax_fst.plot(mid, smooth(fst), '-', color='#E65100', lw=2,
                     label='$F_{ST}$ (Hudson)')
+        ax_fst.plot(mid, fst_th, '--', color='#E65100', lw=1, alpha=0.5,
+                    label=r'$E[F_{ST}]$' if col == 0 else None)
         ax_fst.axvspan(bp_l, bp_r, alpha=0.08, color='gray', zorder=0)
         ax_fst.axvline(x_sel, color='red', ls=':', lw=1.5, alpha=0.6)
         ax_fst.axhline(0, color='gray', ls=':', lw=0.7)
         ax_fst.set_xlabel('Position (bp)', fontsize=10)
         if col == 0:
             ax_fst.set_ylabel('$F_{ST}$', fontsize=11)
-            ax_fst.legend(fontsize=8, loc='upper right')
+            ax_fst.legend(fontsize=7, loc='upper right')
 
     fig.suptitle(
         'RDL-like sweep through inversion (msinv hull simulator)',
@@ -213,10 +227,10 @@ def main():
         f'Grau-Bov\u00e9 et al. (2020 MBE). Hitchhiking mode (s={s_coef}) with spatial decay '
         f'P(linked) = exp(-r |x - x_sel| t_dur). Three scenarios for n_S={n_S} + n_I={n_I} haplotypes. '
         f'(Row 1) Cross-class $d_{{XY}}$. (Row 2) Within-class $\\pi_S$, $\\pi_I$. '
-        f'(Row 3) Hudson $F_{{ST}}$. '
-        f'Left: Neutral baseline. '
-        f'Centre: S sweep only (t={t_sweep_S} gen) — $\\pi_S$ valley around x_sel, $\\pi_I$ unaffected '
-        f'(haplotype asymmetry). '
+        f'(Row 3) Hudson $F_{{ST}}$. Dashed lines: structured coalescent predictions '
+        f'($\\theta$, $p \\cdot \\theta$, $\\mu(t_{{inv}}+2N_e)$, $F_{{ST}}=t_{{inv}}/(t_{{inv}}+2N_e)$). '
+        f'Left: Neutral baseline — $\\pi$ dips to $p \\cdot \\theta$ inside inv (isolated classes). '
+        f'Centre: S sweep only (t={t_sweep_S} gen) — $\\pi_S$ valley around x_sel, $\\pi_I$ unaffected. '
         f'Right: S then I sweep (t_S={t_sweep_S}, t_I={t_sweep_I} gen) — both collapse. '
         f'Parameters: Ne={Ne:,}, p_inv={p_inv_freq}, t_inv={t_inv_age:,} gen, '
         f's={s_coef}, $\\gamma$=1e-9, $\\mu$={mu:.0e}, r={r:.0e}, L={L/1e3:.0f} kb, {NREPS} reps.\n'

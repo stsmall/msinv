@@ -84,22 +84,20 @@ impl Lineage {
     /// Both lineages' cached_len are updated.
     pub fn split_at(&mut self, x: f64, arena: &mut SegmentArena,
                      new_uid: LinUid) -> Option<Lineage> {
-        let (left_head, right_head) = arena.split_at(self.head, x);
+        let (left_head, left_tail, right_head, right_tail) =
+            arena.split_at(self.head, x);
         if right_head == SEG_NIL {
+            // Update tail in case split_at changed it (x past end).
+            self.tail = left_tail;
             return None;
         }
-        let right_tail = arena.find_tail(right_head);
         let right_len = arena.total_length(right_head);
         let right = Lineage::new_with_len(
             right_head, right_tail, self.population, new_uid, right_len);
 
-        // Update self to be the left portion.
+        // Update self to be the left portion (no find_tail needed).
         self.head = left_head;
-        self.tail = if left_head == SEG_NIL {
-            SEG_NIL
-        } else {
-            arena.find_tail(left_head)
-        };
+        self.tail = left_tail;
         self.cached_len -= right_len;
         if self.cached_len < 0.0 { self.cached_len = 0.0; }
         Some(right)

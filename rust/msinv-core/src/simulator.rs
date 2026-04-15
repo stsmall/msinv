@@ -258,7 +258,13 @@ impl HullSimulator {
                 }));
             }
 
-            let total_rate: f64 = all_events.iter().map(|(r, _)| *r).sum();
+            // Build Fenwick tree for O(log n) event selection.
+            let n_events = all_events.len();
+            let mut event_tree = crate::fenwick::Fenwick::new(n_events);
+            for (leaf, (rate, _)) in all_events.iter().enumerate() {
+                event_tree.update(leaf, *rate);
+            }
+            let total_rate = event_tree.total();
 
             // Next sweep boundary.
             let t_sweep = pending_sweeps.first()
@@ -315,20 +321,13 @@ impl HullSimulator {
             }
             t = t_event;
 
-            // Pick which event fires.
+            // Pick which event fires — O(log n) via Fenwick tree.
             let u2: f64 = rng.random::<f64>() * total_rate;
-            let mut cum = 0.0;
-            let mut chosen_event = None;
-            for (rate, event) in &all_events {
-                cum += rate;
-                if u2 < cum {
-                    chosen_event = Some(event);
-                    break;
-                }
-            }
-            let chosen_event = match chosen_event {
-                Some(e) => e,
-                None => continue,
+            let leaf = event_tree.find(u2);
+            let chosen_event = if leaf < n_events {
+                &all_events[leaf].1
+            } else {
+                continue;  // numerical precision miss
             };
 
             match chosen_event {

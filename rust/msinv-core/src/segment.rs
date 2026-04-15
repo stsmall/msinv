@@ -95,15 +95,18 @@ impl SegmentArena {
         len
     }
 
-    /// Split a segment chain at position `x`. Returns (left_head, right_head).
+    /// Split a segment chain at position `x`.
+    /// Returns (left_head, left_tail, right_head, right_tail).
     /// Left chain covers [original_left, x); right chain covers [x, ...).
-    /// Either may be SEG_NIL if x is outside the chain's range.
-    pub fn split_at(&mut self, head: SegIdx, x: f64) -> (SegIdx, SegIdx) {
+    /// Any of these may be SEG_NIL if that chain is empty.
+    pub fn split_at(&mut self, head: SegIdx, x: f64)
+        -> (SegIdx, SegIdx, SegIdx, SegIdx)
+    {
         if head == SEG_NIL {
-            return (SEG_NIL, SEG_NIL);
+            return (SEG_NIL, SEG_NIL, SEG_NIL, SEG_NIL);
         }
 
-        // Walk to find the segment containing x.
+        // Walk to find the segment containing x, tracking tail.
         let mut prev_idx = SEG_NIL;
         let mut cur = head;
         while cur != SEG_NIL {
@@ -111,11 +114,12 @@ impl SegmentArena {
             if x <= seg.left {
                 // x is at or before this segment — everything from
                 // cur onward goes to the right chain.
+                let right_tail = self.find_tail(cur);
                 if prev_idx != SEG_NIL {
                     self.get_mut(prev_idx).next = SEG_NIL;
-                    return (head, cur);
+                    return (head, prev_idx, cur, right_tail);
                 }
-                return (SEG_NIL, head);
+                return (SEG_NIL, SEG_NIL, head, right_tail);
             }
             if x < seg.right {
                 // x falls inside this segment — split it.
@@ -126,18 +130,21 @@ impl SegmentArena {
                 self.get_mut(right_half).next = next_after;
                 self.get_mut(cur).right = x;
                 self.get_mut(cur).next = SEG_NIL;
+                let right_tail = if next_after == SEG_NIL {
+                    right_half
+                } else {
+                    self.find_tail(right_half)
+                };
                 if prev_idx == SEG_NIL {
-                    // cur was head — left chain is just this truncated seg
-                    return (cur, right_half);
+                    return (cur, cur, right_half, right_tail);
                 }
-                return (head, right_half);
+                return (head, cur, right_half, right_tail);
             }
-            // x >= seg.right — keep walking.
             prev_idx = cur;
-            cur = seg.next;
+            cur = self.get(cur).next;
         }
         // x is past the end of the chain — everything is on the left.
-        (head, SEG_NIL)
+        (head, prev_idx, SEG_NIL, SEG_NIL)
     }
 
     /// Append segment chain `suffix_head` to the end of chain ending
@@ -254,42 +261,50 @@ mod tests {
     fn split_at_boundary() {
         let mut arena = SegmentArena::new();
         let head = make_chain(&mut arena, &[(0.0, 10.0), (10.0, 20.0)]);
-        let (left, right) = arena.split_at(head, 10.0);
-        // Left: [0, 10), Right: [10, 20)
-        assert_ne!(left, SEG_NIL);
-        assert_ne!(right, SEG_NIL);
-        assert!((arena.total_length(left) - 10.0).abs() < 1e-12);
-        assert!((arena.total_length(right) - 10.0).abs() < 1e-12);
+        let (lh, lt, rh, rt) = arena.split_at(head, 10.0);
+        assert_ne!(lh, SEG_NIL);
+        assert_ne!(rh, SEG_NIL);
+        assert_ne!(lt, SEG_NIL);
+        assert_ne!(rt, SEG_NIL);
+        assert!((arena.total_length(lh) - 10.0).abs() < 1e-12);
+        assert!((arena.total_length(rh) - 10.0).abs() < 1e-12);
+        // Tail pointers are correct.
+        assert_eq!(arena.get(lt).next, SEG_NIL);
+        assert_eq!(arena.get(rt).next, SEG_NIL);
     }
 
     #[test]
     fn split_inside_segment() {
         let mut arena = SegmentArena::new();
         let head = make_chain(&mut arena, &[(0.0, 20.0)]);
-        let (left, right) = arena.split_at(head, 7.0);
-        assert_ne!(left, SEG_NIL);
-        assert_ne!(right, SEG_NIL);
-        assert!((arena.get(left).right - 7.0).abs() < 1e-12);
-        assert!((arena.get(right).left - 7.0).abs() < 1e-12);
-        assert!((arena.get(right).right - 20.0).abs() < 1e-12);
+        let (lh, lt, rh, rt) = arena.split_at(head, 7.0);
+        assert_ne!(lh, SEG_NIL);
+        assert_ne!(rh, SEG_NIL);
+        assert!((arena.get(lh).right - 7.0).abs() < 1e-12);
+        assert!((arena.get(rh).left - 7.0).abs() < 1e-12);
+        assert!((arena.get(rh).right - 20.0).abs() < 1e-12);
+        assert_eq!(lh, lt); // single-segment left chain
+        assert_eq!(rh, rt); // single-segment right chain
     }
 
     #[test]
     fn split_before_start() {
         let mut arena = SegmentArena::new();
         let head = make_chain(&mut arena, &[(5.0, 10.0)]);
-        let (left, right) = arena.split_at(head, 3.0);
-        assert_eq!(left, SEG_NIL);
-        assert_eq!(right, head);
+        let (lh, _lt, rh, rt) = arena.split_at(head, 3.0);
+        assert_eq!(lh, SEG_NIL);
+        assert_eq!(rh, head);
+        assert_eq!(rt, head); // single segment
     }
 
     #[test]
     fn split_past_end() {
         let mut arena = SegmentArena::new();
         let head = make_chain(&mut arena, &[(0.0, 10.0)]);
-        let (left, right) = arena.split_at(head, 15.0);
-        assert_eq!(left, head);
-        assert_eq!(right, SEG_NIL);
+        let (lh, lt, rh, _rt) = arena.split_at(head, 15.0);
+        assert_eq!(lh, head);
+        assert_eq!(lt, head); // single segment
+        assert_eq!(rh, SEG_NIL);
     }
 
     #[test]

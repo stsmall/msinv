@@ -11,7 +11,6 @@
 /// entries referencing the old last index are patched.
 
 use crate::class_tag::BranchClass;
-use crate::fenwick::Fenwick;
 use crate::lineage::Lineage;
 use crate::segment::SegmentArena;
 

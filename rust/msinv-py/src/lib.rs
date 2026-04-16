@@ -118,6 +118,13 @@ fn simulate_raw(
                     let m: f64 = tup.get_item(2)?.extract()?;
                     demo.add_event(DemoEvent::EM { t, m });
                 }
+                "eig" => {
+                    let t: f64 = tup.get_item(1)?.extract()?;
+                    let pop: u32 = tup.get_item(2)?.extract()?;
+                    let inv_id: u16 = tup.get_item(3)?.extract()?;
+                    let p_inv: f64 = tup.get_item(4)?.extract()?;
+                    demo.add_event(DemoEvent::Eig { t, pop, inv_id, p_inv });
+                }
                 _ => {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         format!("Unknown demographic event type: {etype}")));
@@ -133,7 +140,16 @@ fn simulate_raw(
             let d: &Bound<'_, PyDict> = item.downcast()?;
             let bp_left: f64 = d.get_item("bp_left")?.unwrap().extract()?;
             let bp_right: f64 = d.get_item("bp_right")?.unwrap().extract()?;
-            let p_inv: f64 = d.get_item("p_inv")?.unwrap().extract()?;
+            // p_inv: accept float (scalar → all pops same) or list (per-pop).
+            let p_inv_obj = d.get_item("p_inv")?.unwrap();
+            let p_inv: Vec<f64> = if let Ok(v) = p_inv_obj.extract::<f64>() {
+                vec![v]
+            } else if let Ok(v) = p_inv_obj.extract::<Vec<f64>>() {
+                v
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "p_inv must be a float or list of floats"));
+            };
             let t_inv: f64 = d.get_item("t_inv")?.unwrap().extract()?;
             let gcr: f64 = d.get_item("gene_conversion_rate")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
@@ -174,9 +190,15 @@ fn simulate_raw(
                     _ => None,
                 }
             };
+            let sel_coeff: f64 = d.get_item("selection_coefficient")?
+                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
+            let start_freq: f64 = d.get_item("starting_frequency")?
+                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
             sweep_specs.push(Sweep {
                 x_sel, t_event, target, population: pop,
                 sweep_window: sw_win,
+                selection_coefficient: sel_coeff,
+                starting_frequency: start_freq,
             });
         }
     }

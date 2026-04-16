@@ -6,7 +6,7 @@ force-coalescing lineages carrying ancestral material near ``x_sel``
 that are of a specified target class into a single sweep ancestor at
 ``t_event``.
 
-Two modes are supported:
+Three modes are supported:
 
 1. **Hitchhiking mode** (``selection_coefficient > 0``): each lineage's
    inclusion in the sweep is probabilistic, with probability decaying
@@ -23,6 +23,14 @@ Two modes are supported:
    material in ``[x_sel - sweep_window, x_sel + sweep_window]`` are
    deterministically coalesced (the original Hudson-Kaplan
    approximation).
+
+3. **Soft sweep from standing variation** (``selection_coefficient > 0``
+   and ``starting_frequency > 0``): hitchhiking mode, but swept
+   lineages are randomly partitioned among K ≈ 1/f0 "founding copies"
+   of the beneficial allele (discoal model, Kern & Schrider 2016).
+   Lineages within each group coalesce; K surviving ancestors continue
+   at the normal coalescent rate.  Produces the characteristic partial
+   diversity reduction of a sweep from standing variation.
 
 For a sweep that started on the S background, transferred to I via
 gene conversion, and fixed on both — model with two sweep events, one
@@ -64,6 +72,12 @@ class Sweep:
         Selection coefficient for the swept allele.  When > 0,
         enables hitchhiking mode: inclusion probability decays with
         recombination distance from x_sel.  Default 0 (window mode).
+    starting_frequency : float
+        Starting frequency of the beneficial allele (standing variation).
+        When > 0, enables soft-sweep mode (discoal model): swept
+        lineages are partitioned among K ≈ 1/f0 founding copies instead
+        of coalescing to a single ancestor.  0.0 = hard sweep (single
+        origin).  Must be in [0, 1).
     """
 
     x_sel: float
@@ -72,6 +86,17 @@ class Sweep:
     population: Optional[int] = None
     sweep_window: float = 0.0
     selection_coefficient: float = 0.0
+    starting_frequency: float = 0.0
+
+    @property
+    def num_founders(self) -> int:
+        """Number of founding copies for soft sweep partitioning.
+
+        Returns 1 for hard sweeps (starting_frequency == 0).
+        """
+        if self.starting_frequency <= 0.0:
+            return 1
+        return max(1, round(1.0 / self.starting_frequency))
 
     def hitchhiking_probability(self, x: float, r: float, Ne: float) -> float:
         """Probability that position *x* is linked to the sweep.

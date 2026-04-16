@@ -148,12 +148,14 @@ impl HullSimulator {
             self.sequence_length, self.demography.n_pops);
         let mut next_uid: LinUid = 0;
         let mut demo = self.demography.clone();
+        let mut inversions = self.inversions.clone();
 
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
         self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng, &mut demo);
+                       &mut next_uid, &mut rng, &mut demo,
+                       &mut inversions);
 
         // NOTE: sort_edges disabled — was producing wrong tree
         // sequences. Python bridge does tc.sort() anyway.
@@ -198,11 +200,12 @@ impl HullSimulator {
         next_uid: &mut LinUid,
         rng: &mut Xoshiro256PlusPlus,
         demo: &mut Demography,
+        inversions: &mut Vec<InversionSpec>,
     ) {
         let mut t: f64 = 0.0;
 
         // Track which inversions' barriers are still active.
-        let mut barrier_active: Vec<bool> = self.inversions.iter()
+        let mut barrier_active: Vec<bool> = inversions.iter()
             .map(|_| true).collect();
 
         // Pending sweeps, sorted by t_event (earliest first).
@@ -239,7 +242,7 @@ impl HullSimulator {
             // Check for barrier crossings.
             let mut any_barrier = false;
             let mut earliest_barrier = f64::INFINITY;
-            for (k, inv) in self.inversions.iter().enumerate() {
+            for (k, inv) in inversions.iter().enumerate() {
                 if barrier_active[k] {
                     any_barrier = true;
                     earliest_barrier = earliest_barrier.min(inv.t_inv);
@@ -258,11 +261,11 @@ impl HullSimulator {
                     rate_cache.rebuild(active, arena);
                     emit_coal_events_from_cache(
                         &rate_cache, active, &*demo, t,
-                        &self.inversions, &barrier_active,
+                        inversions, &barrier_active,
                         &mut all_events);
                 } else {
                     compute_coal_events(
-                        active, arena, demo, t, &self.inversions,
+                        active, arena, demo, t, inversions,
                         &barrier_active, &mut all_events);
                 }
 
@@ -273,8 +276,8 @@ impl HullSimulator {
 
                 // Gene flux.
                 if any_barrier {
-                    self.compute_flux_rates(
-                        active, arena, &barrier_active, &mut all_events);
+                    Self::compute_flux_rates_static(
+                        inversions, active, arena, &barrier_active, &mut all_events);
                 }
                 // Migration.
                 for (rate, lin_idx, dst) in demo.migration_rates(active) {
@@ -304,16 +307,10 @@ impl HullSimulator {
             if total_rate <= 0.0 {
                 if next_boundary < f64::INFINITY {
                     t = next_boundary;
-                    self.cross_barriers(active, arena, &mut barrier_active, t);
-                    demo.apply_events_at(t, active);
-                    if !pending_sweeps.is_empty()
-                        && (pending_sweeps[0].t_event - t).abs() < 1e-9
-                    {
-                        let sweep = pending_sweeps.remove(0);
-                        apply_sweep(active, &sweep, t, arena, tables,
-                                     next_uid, self.sequence_length);
-                    }
-                    // Sweeps/barriers may change lineage structure.
+                    apply_boundary(
+                        inversions, active, arena, &mut barrier_active,
+                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        self.sequence_length, rng, self.recombination_rate);
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -331,16 +328,10 @@ impl HullSimulator {
             // Check if a deterministic boundary happens first.
             if next_boundary <= t_event {
                 t = next_boundary;
-                self.cross_barriers(active, arena, &mut barrier_active, t);
-                demo.apply_events_at(t, active);
-                if !pending_sweeps.is_empty()
-                    && (pending_sweeps[0].t_event - t).abs() < 1e-9
-                {
-                    let sweep = pending_sweeps.remove(0);
-                    apply_sweep(active, &sweep, t, arena, tables,
-                                 next_uid, self.sequence_length);
-                }
-                // Sweeps/barriers may change lineage structure.
+                apply_boundary(
+                    inversions, active, arena, &mut barrier_active,
+                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    self.sequence_length, rng, self.recombination_rate);
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -429,7 +420,7 @@ impl HullSimulator {
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
                     let (li, ii) = (*lineage_idx, *inv_idx);
-                    let inv = &self.inversions[ii];
+                    let inv = &inversions[ii];
                     if let Some(x_event) = self.sample_flux_position(
                         active, li, inv, arena, rng)
                     {
@@ -458,8 +449,9 @@ impl HullSimulator {
     // ---------------------------------------------------------------
     // Per-pair, per-class coalescence rates
     // ---------------------------------------------------------------
+    #[allow(dead_code)]
     fn compute_coal_rates_structured(
-        &self,
+        inversions: &[InversionSpec],
         active: &[Lineage],
         arena: &SegmentArena,
         demo: &Demography,
@@ -478,7 +470,9 @@ impl HullSimulator {
                     active[i].head, active[j].head, arena);
                 for (cls, ov_len) in &overlaps {
                     if *ov_len <= 0.0 { continue; }
-                    let p_class = self.p_class_for(*cls, t, barrier_active);
+                    let pop = active[i].population;
+                    let p_class = p_class_for_tag(
+                        *cls, inversions, barrier_active, t, pop);
                     if p_class <= 0.0 { continue; }
                     let rate = 1.0 / (2.0 * ne_pop * p_class);
                     events.push((rate, Event::CoalPair {
@@ -517,45 +511,30 @@ impl HullSimulator {
         }
     }
 
-    /// Effective sub-population frequency for a given BranchClass tag.
-    fn p_class_for(&self, cls: BranchClass, t: f64, barrier_active: &[bool]) -> f64 {
-        if cls.is_panmictic() {
-            return 1.0;
-        }
-        let mut p = 1.0;
-        for (k, inv) in self.inversions.iter().enumerate() {
-            if !barrier_active[k] || t >= inv.t_inv {
-                continue;
-            }
-            match cls.get_inv(inv.inv_id) {
-                Some(Karyotype::S) => p *= inv.p_std(),
-                Some(Karyotype::I) => p *= inv.p_inv,
-                None => {}
-            }
-        }
-        p
-    }
 
     // ---------------------------------------------------------------
     // Gene flux rates
     // ---------------------------------------------------------------
-    fn compute_flux_rates(
-        &self,
+    fn compute_flux_rates_static(
+        inversions: &[InversionSpec],
         active: &[Lineage],
         arena: &SegmentArena,
         barrier_active: &[bool],
         events: &mut Vec<(f64, Event)>,
     ) {
-        for (inv_idx, inv) in self.inversions.iter().enumerate() {
+        for (inv_idx, inv) in inversions.iter().enumerate() {
             if !barrier_active[inv_idx] { continue; }
             if inv.gene_conversion_rate <= 0.0 { continue; }
-            let p_std = inv.p_std();
             for (lin_idx, lin) in active.iter().enumerate() {
+                // Per-population inversion frequency for this lineage's pop.
+                let pop = lin.population;
+                let p_inv_pop = inv.p_inv_for(pop);
+                let p_std_pop = 1.0 - p_inv_pop;
                 // Determine lineage's class for this inversion.
                 let kary = lineage_class_for_inv(lin, inv, arena);
                 let p_other = match kary {
-                    Some(Karyotype::S) => inv.p_inv,
-                    Some(Karyotype::I) => p_std,
+                    Some(Karyotype::S) => p_inv_pop,
+                    Some(Karyotype::I) => p_std_pop,
                     None => continue,
                 };
                 if p_other <= 0.0 { continue; }
@@ -649,14 +628,14 @@ impl HullSimulator {
     // ---------------------------------------------------------------
     // Barrier crossing
     // ---------------------------------------------------------------
-    fn cross_barriers(
-        &self,
+    fn cross_barriers_static(
+        inversions: &[InversionSpec],
         active: &mut [Lineage],
         arena: &mut SegmentArena,
         barrier_active: &mut [bool],
         t: f64,
     ) {
-        for (k, inv) in self.inversions.iter().enumerate() {
+        for (k, inv) in inversions.iter().enumerate() {
             if barrier_active[k] && t >= inv.t_inv {
                 barrier_active[k] = false;
                 // Flip all segments' class tags for this inversion to panmictic.
@@ -731,9 +710,10 @@ fn emit_coal_events_from_cache(
     events: &mut Vec<(f64, Event)>,
 ) {
     for (i, j, overlaps) in cache.iter_pairs() {
-        let ne = demo.size_at(active[i].population, t).max(1e-9);
+        let pop = active[i].population;
+        let ne = demo.size_at(pop, t).max(1e-9);
         for (cls, _ov_len) in overlaps {
-            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
+            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t, pop);
             if p_class <= 0.0 { continue; }
             let rate = 1.0 / (2.0 * ne * p_class);
             events.push((rate, Event::CoalPair { i, j, class: *cls }));
@@ -783,7 +763,8 @@ fn compute_coal_events(
             let ne = demo.size_at(active[i].population, t).max(1e-9);
             let overlaps = overlap_by_class(active[i].head, active[j].head, arena);
             for (cls, _ov_len) in &overlaps {
-                let p_class = p_class_for_tag(*cls, inversions, barrier_active, t);
+                let pop = active[i].population;
+                let p_class = p_class_for_tag(*cls, inversions, barrier_active, t, pop);
                 if p_class <= 0.0 { continue; }
                 let rate = 1.0 / (2.0 * ne * p_class);
                 events.push((rate, Event::CoalPair { i, j, class: *cls }));
@@ -792,9 +773,10 @@ fn compute_coal_events(
     }
 }
 
-/// Effective sub-population frequency for a BranchClass tag.
+/// Effective sub-population frequency for a BranchClass tag,
+/// using per-population inversion frequencies.
 fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
-                    barrier_active: &[bool], t: f64) -> f64 {
+                    barrier_active: &[bool], t: f64, pop: u32) -> f64 {
     if cls.is_panmictic() {
         return 1.0;
     }
@@ -802,8 +784,8 @@ fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
     for (k, inv) in inversions.iter().enumerate() {
         if !barrier_active[k] || t >= inv.t_inv { continue; }
         match cls.get_inv(inv.inv_id) {
-            Some(Karyotype::S) => p *= inv.p_std(),
-            Some(Karyotype::I) => p *= inv.p_inv,
+            Some(Karyotype::S) => p *= inv.p_std_for(pop),
+            Some(Karyotype::I) => p *= inv.p_inv_for(pop),
             None => {}
         }
     }
@@ -857,12 +839,13 @@ fn sample_and_coalesce(
         for i in 0..n {
             for j in (i + 1)..n {
                 if active[i].population != active[j].population { continue; }
-                let ne = demo.size_at(active[i].population, t).max(1e-9);
+                let pop = active[i].population;
+                let ne = demo.size_at(pop, t).max(1e-9);
                 let overlaps = overlap_by_class(
                     active[i].head, active[j].head, arena);
                 for (cls, _ov_len) in &overlaps {
                     let p_class = p_class_for_tag(
-                        *cls, inversions, barrier_active, t);
+                        *cls, inversions, barrier_active, t, pop);
                     if p_class <= 0.0 { continue; }
                     let rate = 1.0 / (2.0 * ne * p_class);
                     buckets.push(Bucket {
@@ -1102,12 +1085,56 @@ fn find_position(
     seq_len
 }
 
-/// Force-coalesce all qualifying lineages at a sweep event.
+/// Apply a deterministic boundary: cross barriers, fire demographic
+/// events (propagating any inversion frequency changes), and fire any
+/// pending sweep whose time matches.
+fn apply_boundary(
+    inversions: &mut Vec<InversionSpec>,
+    active: &mut Vec<Lineage>,
+    arena: &mut SegmentArena,
+    barrier_active: &mut [bool],
+    demo: &mut Demography,
+    pending_sweeps: &mut Vec<Sweep>,
+    t: f64,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    seq_len: f64,
+    rng: &mut Xoshiro256PlusPlus,
+    recomb_rate: f64,
+) {
+    HullSimulator::cross_barriers_static(inversions, active, arena, barrier_active, t);
+    let inv_changes = demo.apply_events_at(t, active);
+    for (inv_id, pop, p_inv_val) in inv_changes {
+        if let Some(inv) = inversions.iter_mut().find(|i| i.inv_id == inv_id) {
+            inv.set_p_inv_for(pop, p_inv_val);
+        }
+    }
+    if !pending_sweeps.is_empty()
+        && (pending_sweeps[0].t_event - t).abs() < 1e-9
+    {
+        let sweep = pending_sweeps.remove(0);
+        let ne_sweep = demo.size_at(
+            sweep.population.unwrap_or(0), t).max(1.0);
+        apply_sweep(active, &sweep, t, arena, tables,
+                     next_uid, seq_len, rng, ne_sweep, recomb_rate);
+    }
+}
+
+/// Force-coalesce qualifying lineages at a sweep event.
 ///
-/// Qualifying: has material at x_sel, class matches sweep.target,
-/// population matches sweep.population. The sweep window
-/// [x_sel - w, x_sel + w] is split out of each qualifying lineage,
-/// then all windows are sequentially coalesced.
+/// Three modes:
+///
+/// 1. **Window mode** (selection_coefficient == 0): split out the sweep
+///    window and coalesce all qualifying lineages deterministically.
+///
+/// 2. **Hitchhiking mode** (selection_coefficient > 0, starting_frequency == 0):
+///    each segment is included probabilistically based on recombination
+///    distance from x_sel. All swept lineages coalesce to a single ancestor.
+///
+/// 3. **Soft sweep** (selection_coefficient > 0, starting_frequency > 0):
+///    hitchhiking mode, but swept lineages are randomly partitioned among
+///    K ≈ 1/f0 founding copies (discoal model). Lineages within each group
+///    coalesce; K surviving ancestors continue at normal coalescent rate.
 fn apply_sweep(
     active: &mut Vec<Lineage>,
     sweep: &Sweep,
@@ -1116,19 +1143,11 @@ fn apply_sweep(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     seq_len: f64,
+    rng: &mut Xoshiro256PlusPlus,
+    ne: f64,
+    recomb_rate: f64,
 ) {
-    let x_lo = if sweep.sweep_window > 0.0 {
-        sweep.x_sel - sweep.sweep_window
-    } else {
-        sweep.x_sel
-    };
-    let x_hi = if sweep.sweep_window > 0.0 {
-        sweep.x_sel + sweep.sweep_window
-    } else {
-        sweep.x_sel + (seq_len * 1e-12).max(1e-9)
-    };
-
-    // Identify qualifying lineage indices.
+    // ---- Identify qualifying lineages ----
     let mut qualifying: Vec<usize> = Vec::new();
     for (i, lin) in active.iter().enumerate() {
         if let Some(pop) = sweep.population {
@@ -1142,9 +1161,25 @@ fn apply_sweep(
     }
     if qualifying.len() < 2 { return; }
 
-    // Split each qualifying lineage at x_lo and x_hi so the sweep
-    // window is isolated. Collect window lineage UIDs (not indices —
-    // indices go stale after apply_coalescence's swap_remove).
+    // ---- Hitchhiking mode: probabilistically select segments ----
+    if sweep.selection_coefficient > 0.0 {
+        apply_sweep_hitchhiking(
+            active, sweep, t, arena, tables, next_uid, rng, ne, recomb_rate);
+        return;
+    }
+
+    // ---- Window mode ----
+    let x_lo = if sweep.sweep_window > 0.0 {
+        sweep.x_sel - sweep.sweep_window
+    } else {
+        sweep.x_sel
+    };
+    let x_hi = if sweep.sweep_window > 0.0 {
+        sweep.x_sel + sweep.sweep_window
+    } else {
+        sweep.x_sel + (seq_len * 1e-12).max(1e-9)
+    };
+
     let mut window_uids: Vec<LinUid> = Vec::new();
     qualifying.sort_unstable();
     for &orig_idx in qualifying.iter().rev() {
@@ -1171,17 +1206,157 @@ fn apply_sweep(
     }
 
     if window_uids.len() < 2 { return; }
+    coalesce_uid_group(active, &window_uids, t, arena, tables, next_uid);
+}
 
-    // Sequentially coalesce all window lineages by UID.
+/// Hitchhiking mode: probabilistic segment inclusion + optional soft sweep.
+///
+/// For each qualifying lineage, each segment is included with probability
+/// `exp(-r * |midpoint - x_sel| * t_dur)`. Segments that are NOT swept
+/// are split into a separate lineage that continues independently.
+///
+/// For hard sweeps (starting_frequency == 0): all swept lineages merge
+/// to a single ancestor. For soft sweeps (starting_frequency > 0):
+/// swept lineages are randomly partitioned among K ≈ 1/f0 founder
+/// groups, and lineages within each group are coalesced separately.
+fn apply_sweep_hitchhiking(
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    rng: &mut Xoshiro256PlusPlus,
+    ne: f64,
+    recomb_rate: f64,
+) {
+    // ---- Identify qualifying lineages (repeat — indices are fragile) ----
+    let mut qualifying_uids: Vec<LinUid> = Vec::new();
+    for lin in active.iter() {
+        if let Some(pop) = sweep.population {
+            if lin.population != pop { continue; }
+        }
+        if let Some(cls) = lin.class_at(sweep.x_sel, arena) {
+            if sweep.class_matches(cls) {
+                qualifying_uids.push(lin.uid);
+            }
+        }
+    }
+    if qualifying_uids.len() < 2 { return; }
+
+    // ---- Split each qualifying lineage into swept / unswept parts ----
+    let mut swept_uids: Vec<LinUid> = Vec::new();
+
+    for &q_uid in &qualifying_uids {
+        let q_idx = match active.iter().position(|l| l.uid == q_uid) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        // Walk segments, classify each as swept or unswept.
+        let mut swept_segs: Vec<(f64, f64, i32, BranchClass)> = Vec::new();
+        let mut unswept_segs: Vec<(f64, f64, i32, BranchClass)> = Vec::new();
+
+        let mut cur = active[q_idx].head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            let mid = (seg.left + seg.right) / 2.0;
+            let p = sweep.hitchhiking_probability(mid, recomb_rate, ne);
+            let u: f64 = rng.random();
+            if u < p {
+                swept_segs.push((seg.left, seg.right, seg.node_id, seg.branch_class));
+            } else {
+                unswept_segs.push((seg.left, seg.right, seg.node_id, seg.branch_class));
+            }
+            cur = seg.next;
+        }
+
+        if swept_segs.is_empty() {
+            continue; // lineage entirely escapes the sweep
+        }
+
+        // Remove original lineage.
+        let pop = active[q_idx].population;
+        active.swap_remove(q_idx);
+
+        // Build swept lineage.
+        let swept_uid = *next_uid; *next_uid += 1;
+        let swept_lin = build_lineage_from_segs(&swept_segs, pop, swept_uid, arena);
+        active.push(swept_lin);
+        swept_uids.push(swept_uid);
+
+        // Build unswept lineage (if any segments).
+        if !unswept_segs.is_empty() {
+            let unsw_uid = *next_uid; *next_uid += 1;
+            let unsw_lin = build_lineage_from_segs(&unswept_segs, pop, unsw_uid, arena);
+            active.push(unsw_lin);
+        }
+    }
+
+    if swept_uids.len() < 2 { return; }
+
+    // ---- Soft sweep: partition into K founder groups ----
+    let k = sweep.num_founders();
+    if k <= 1 {
+        // Hard sweep: coalesce all to one ancestor.
+        coalesce_uid_group(active, &swept_uids, t, arena, tables, next_uid);
+    } else {
+        // Soft sweep: randomly assign each swept lineage to one of K groups.
+        let mut groups: Vec<Vec<LinUid>> = vec![Vec::new(); k];
+        for &uid in &swept_uids {
+            let g = (rng.random::<f64>() * k as f64) as usize;
+            let g = g.min(k - 1); // clamp for floating-point edge case
+            groups[g].push(uid);
+        }
+        // Coalesce within each group.
+        let eps = (t * 1e-12).max(1e-9);
+        for (gi, group) in groups.iter().enumerate() {
+            if group.len() < 2 { continue; }
+            let t_group = t + (gi as f64) * eps;
+            coalesce_uid_group(active, group, t_group, arena, tables, next_uid);
+        }
+    }
+}
+
+/// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.
+fn build_lineage_from_segs(
+    segs: &[(f64, f64, i32, BranchClass)],
+    pop: u32,
+    uid: LinUid,
+    arena: &mut SegmentArena,
+) -> Lineage {
+    let mut head = SEG_NIL;
+    let mut tail = SEG_NIL;
+    for (l, r, nid, cls) in segs {
+        let seg = arena.alloc(*l, *r, *nid, *cls);
+        if tail != SEG_NIL {
+            arena.get_mut(tail).next = seg;
+        } else {
+            head = seg;
+        }
+        tail = seg;
+    }
+    Lineage::new(head, tail, pop, uid, arena)
+}
+
+/// Coalesce a group of lineages (identified by UID) sequentially.
+fn coalesce_uid_group(
+    active: &mut Vec<Lineage>,
+    uids: &[LinUid],
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+) {
+    if uids.len() < 2 { return; }
     let eps = (t * 1e-12).max(1e-9);
-    let mut merged_uid = window_uids[0];
-    for (k, &other_uid) in window_uids[1..].iter().enumerate() {
+    let mut merged_uid = uids[0];
+    for (k, &other_uid) in uids[1..].iter().enumerate() {
         let t_merge = t + (k as f64 + 1.0) * eps;
         let mi = active.iter().position(|l| l.uid == merged_uid);
         let oi = active.iter().position(|l| l.uid == other_uid);
         if let (Some(mi), Some(oi)) = (mi, oi) {
             apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid);
-            // Merged lineage is the last one pushed by apply_coalescence.
             merged_uid = active.last().unwrap().uid;
         }
     }
@@ -1239,7 +1414,7 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
             bp_left: 3000.0, bp_right: 7000.0,
-            p_inv: 0.5, t_inv: 5000.0,
+            p_inv: vec![0.5], t_inv: 5000.0,
             gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator::simple(
@@ -1256,7 +1431,7 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
             bp_left: 0.0, bp_right: 10000.0,
-            p_inv: 0.5, t_inv: 1.0, // crossed almost immediately
+            p_inv: vec![0.5], t_inv: 1.0, // crossed almost immediately
             gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator::simple(
@@ -1271,7 +1446,7 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
             bp_left: 0.0, bp_right: 10000.0,
-            p_inv: 0.5, t_inv: 20_000.0,
+            p_inv: vec![0.5], t_inv: 20_000.0,
             gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
         };
         let no_flux = HullSimulator::simple(
@@ -1360,7 +1535,7 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = InversionSpec {
             bp_left: 3000.0, bp_right: 7000.0,
-            p_inv: 0.5, t_inv: 5000.0,
+            p_inv: vec![0.5], t_inv: 5000.0,
             gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let sim = HullSimulator {
@@ -1398,6 +1573,7 @@ mod tests {
             target: None,       // all classes
             population: None,
             sweep_window: 10.0, // [40, 60)
+            ..Default::default()
         });
         let result = sim.simulate();
         // 6 samples should still all end up in a tree. The sweep
@@ -1418,7 +1594,7 @@ mod tests {
         // Ne=5000, L=100000, r=1e-8 → rho=20
         let inv = InversionSpec {
             bp_left: 20000.0, bp_right: 80000.0,
-            p_inv: 0.5, t_inv: 50_000.0,
+            p_inv: vec![0.5], t_inv: 50_000.0,
             gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
         };
         let mut sim = HullSimulator::simple(
@@ -1429,9 +1605,32 @@ mod tests {
             target: Some((0, Karyotype::S)),
             population: None,
             sweep_window: 5000.0,
+            ..Default::default()
         });
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 15,
             "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn soft_sweep_with_recombination() {
+        // Soft sweep K=5 with rho=40 (realistic recombination).
+        // T_MRCA should be >> t_event because K=5 founders survive.
+        let mut sim = HullSimulator::panmictic(
+            20, 10_000.0, 100_000.0, 1e-8, 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50_000.0,
+            t_event: 500.0,
+            target: None,
+            population: None,
+            sweep_window: 0.0,
+            selection_coefficient: 0.01,
+            starting_frequency: 0.2,
+        });
+        let result = sim.simulate();
+        let t_mrca = result.tables.node_time.iter()
+            .cloned().fold(0.0_f64, f64::max);
+        assert!(t_mrca > 2000.0,
+            "Soft sweep K=5 with rho=40: T_MRCA={:.1}, expected >> 500", t_mrca);
     }
 }

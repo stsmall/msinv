@@ -79,7 +79,13 @@ def test_panmictic_tmrca_matches_msprime():
 
 
 def test_panmictic_tree_count_matches_msprime():
-    """Mean tree count should match msprime within 25%."""
+    """Mean tree count should match msprime within 25%.
+
+    Hull uses *r* as the per-lineage recombination rate (diploid
+    convention).  msprime with ``ploidy=1`` halves the effective rate,
+    so we use the default ``ploidy=2`` here for a like-for-like
+    comparison of breakpoint counts.
+    """
     Ne = 5_000; L = 50_000; r = 1e-8; n = 6
 
     hull_t = []; msp_t = []
@@ -88,7 +94,10 @@ def test_panmictic_tree_count_matches_msprime():
             sequence_length=L, recombination_rate=r, seed=seed).simulate()
         hull_t.append(ts.num_trees)
 
-        ts2 = _msp_ancestry(n, Ne, L, r, seed+4000)
+        # ploidy=2 (default) so msprime uses the same effective rate as hull
+        ts2 = msprime.sim_ancestry(n, population_size=Ne,
+            sequence_length=L, recombination_rate=r,
+            random_seed=seed+4000)
         msp_t.append(ts2.num_trees)
 
     ratio = np.mean(hull_t) / np.mean(msp_t)

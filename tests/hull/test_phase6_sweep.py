@@ -492,3 +492,74 @@ def test_soft_sweep_diversity_signature():
     assert mean_soft > t_sweep * 3, (
         f"Soft sweep T_MRCA ({mean_soft:.1f}) should be >> "
         f"t_event={t_sweep} (multiple founders survive)")
+
+
+# ---------------------------------------------------------------------------
+# Simultaneous sweeps at identical t_event (regression: TSK_ERR_BAD_NODE_TIME_ORDERING)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("use_rust", [False, True])
+@pytest.mark.parametrize("seed", range(5))
+def test_two_simultaneous_window_sweeps(seed, use_rust):
+    """Two window-mode sweeps at the exact same t_event must not
+    corrupt node-time ordering. Regression for the bug where each
+    sweep restarted its eps counter at 1, so the second sweep could
+    place a parent at t+eps below a child created by the first sweep
+    at t+k*eps."""
+    if use_rust:
+        try:
+            from msinv.hull._rust_bridge import RUST_AVAILABLE
+            if not RUST_AVAILABLE:
+                pytest.skip("Rust backend unavailable")
+        except ImportError:
+            pytest.skip("Rust bridge missing")
+
+    Ne = 10_000
+    L = 100_000.0
+    t_sweep = 300.0
+    sweeps = [
+        Sweep(x_sel=25_000.0, t_event=t_sweep,
+              target_class='P', sweep_window=2_000.0),
+        Sweep(x_sel=75_000.0, t_event=t_sweep,
+              target_class='P', sweep_window=2_000.0),
+    ]
+    sim = HullSimulator(
+        samples=10, population_size=Ne, sequence_length=L,
+        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
+    ts = sim.simulate(use_rust=use_rust)
+
+    samples = list(ts.samples())
+    for x_sel in (25_000.0, 75_000.0):
+        tree = ts.at(x_sel)
+        tmrca = tree.time(tree.mrca(*samples))
+        assert tmrca <= t_sweep + 10.0, (
+            f"sweep at x={x_sel}: T_MRCA={tmrca} > t_event={t_sweep}")
+
+
+@pytest.mark.parametrize("use_rust", [False, True])
+@pytest.mark.parametrize("seed", range(5))
+def test_two_simultaneous_hitchhiking_sweeps(seed, use_rust):
+    """Two hitchhiking sweeps at the exact same t_event."""
+    if use_rust:
+        try:
+            from msinv.hull._rust_bridge import RUST_AVAILABLE
+            if not RUST_AVAILABLE:
+                pytest.skip("Rust backend unavailable")
+        except ImportError:
+            pytest.skip("Rust bridge missing")
+
+    Ne = 10_000
+    L = 100_000.0
+    t_sweep = 300.0
+    sweeps = [
+        Sweep(x_sel=25_000.0, t_event=t_sweep, target_class='P',
+              selection_coefficient=0.01),
+        Sweep(x_sel=75_000.0, t_event=t_sweep, target_class='P',
+              selection_coefficient=0.01),
+    ]
+    sim = HullSimulator(
+        samples=10, population_size=Ne, sequence_length=L,
+        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
+    # Must not raise TSK_ERR_BAD_NODE_TIME_ORDERING.
+    ts = sim.simulate(use_rust=use_rust)
+    assert ts.num_samples == 10

@@ -25,3 +25,6 @@ slim_validation/inversion/*.state
 slim_validation/inversion_validation.log
 slim_validation/inversion_results.txt
 rust/target/
+.venv/
+.pixi/
+pixi.lock

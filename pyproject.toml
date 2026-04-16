@@ -65,39 +65,3 @@ python-source = "."
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 600
-
-# ---------------------------------------------------------------------------
-# Pixi
-# ---------------------------------------------------------------------------
-
-[tool.pixi.workspace]
-channels = ["conda-forge"]
-platforms = ["linux-64", "osx-64", "osx-arm64"]
-
-[tool.pixi.dependencies]
-python = ">=3.9"
-numpy = ">=1.20"
-tskit = ">=0.5"
-
-[tool.pixi.feature.test.dependencies]
-pytest = ">=7.0"
-pytest-timeout = "*"
-msprime = ">=1.2"
-pip = ">=26.0.1,<27"
-
-[tool.pixi.feature.plots.dependencies]
-matplotlib = ">=3.5"
-
-[tool.pixi.feature.rust.dependencies]
-python = ">=3.12,<3.14"
-maturin = ">=1.4"
-
-[tool.pixi.feature.test.tasks]
-test = "pytest tests/hull/"
-figures = "python examples/make_figures.py"
-
-[tool.pixi.environments]
-default = { features = [], solve-group = "default" }
-test = { features = ["test"], solve-group = "default" }
-all = { features = ["test", "plots"], solve-group = "default" }
-rust = { features = ["test", "plots", "rust"], solve-group = "rust" }

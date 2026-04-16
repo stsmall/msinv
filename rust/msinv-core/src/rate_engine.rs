@@ -62,9 +62,10 @@ impl RateEngine {
 
         // Coal pairs from cache.
         for (i, j, overlaps) in cache.iter_pairs() {
-            let ne = demo.size_at(active[i].population, t).max(1e-9);
+            let pop = active[i].population;
+            let ne = demo.size_at(pop, t).max(1e-9);
             for (cls, _ov_len) in overlaps {
-                let p_class = p_class_for(*cls, inversions, barrier_active);
+                let p_class = p_class_for(*cls, inversions, barrier_active, pop);
                 if p_class <= 0.0 { continue; }
                 let rate = 1.0 / (2.0 * ne * p_class);
                 tags.push(RateTag::CoalPair { i, j, class: *cls });
@@ -166,17 +167,17 @@ impl RateEngine {
     }
 }
 
-/// Compute p_class for a BranchClass tag.
+/// Compute p_class for a BranchClass tag, using per-population inversion frequencies.
 fn p_class_for(cls: BranchClass, inversions: &[InversionSpec],
-               barrier_active: &[bool]) -> f64 {
+               barrier_active: &[bool], pop: u32) -> f64 {
     use crate::class_tag::Karyotype;
     if cls.is_panmictic() { return 1.0; }
     let mut p = 1.0;
     for (k, inv) in inversions.iter().enumerate() {
         if !barrier_active[k] { continue; }
         match cls.get_inv(inv.inv_id) {
-            Some(Karyotype::S) => p *= inv.p_std(),
-            Some(Karyotype::I) => p *= inv.p_inv,
+            Some(Karyotype::S) => p *= inv.p_std_for(pop),
+            Some(Karyotype::I) => p *= inv.p_inv_for(pop),
             None => {}
         }
     }

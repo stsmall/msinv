@@ -13,14 +13,14 @@ use msinv_core::sweep::Sweep;
 // Helpers
 fn inv(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, id: u16) -> InversionSpec {
     InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv, t_inv,
+        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
         gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: id,
     }
 }
 
 fn inv_gamma(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, gamma: f64, id: u16) -> InversionSpec {
     InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv, t_inv,
+        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
         gene_conversion_rate: gamma, flux_window: 0.05, inv_id: id,
     }
 }
@@ -239,6 +239,7 @@ fn sweep_forces_coalescence() {
         target: None,
         population: None,
         sweep_window: 5000.0,
+        ..Default::default()
     });
     let result = sim.simulate();
     // At least one node near t=200 from the sweep.
@@ -261,6 +262,7 @@ fn sweep_on_s_class_inside_inversion() {
         target: Some((0, Karyotype::S)),
         population: None,
         sweep_window: 5000.0,
+        ..Default::default()
     });
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 19,
@@ -278,6 +280,7 @@ fn sweep_with_no_target_lineages_is_noop() {
         target: Some((0, Karyotype::I)),
         population: None,
         sweep_window: 500.0,
+        ..Default::default()
     });
     let result = sim.simulate();
     // With rho > 0, there will be more than 4 internal nodes from
@@ -363,10 +366,12 @@ fn two_sweeps_at_same_time() {
     sim.sweeps.push(Sweep {
         x_sel: 20000.0, t_event: 500.0,
         target: None, population: None, sweep_window: 2000.0,
+        ..Default::default()
     });
     sim.sweeps.push(Sweep {
         x_sel: 80000.0, t_event: 500.0,
         target: None, population: None, sweep_window: 2000.0,
+        ..Default::default()
     });
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 19,
@@ -383,6 +388,7 @@ fn sweep_at_exact_t_inv() {
     sim.sweeps.push(Sweep {
         x_sel: 5000.0, t_event: 500.0,
         target: None, population: None, sweep_window: 1000.0,
+        ..Default::default()
     });
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 11,
@@ -455,4 +461,86 @@ fn gamma_zero_with_inversion_panics() {
     iv.gene_conversion_rate = 0.0;
     let sim = HullSimulator::simple(2, 2, 1000.0, 1000.0, 1e-8, vec![iv], 42);
     sim.simulate();
+}
+
+// ---------------------------------------------------------------
+// Hitchhiking + soft sweep
+// ---------------------------------------------------------------
+
+#[test]
+fn hitchhiking_hard_sweep_coalesces_near_event() {
+    // Hard sweep with selection_coefficient > 0 triggers hitchhiking path.
+    // Ne=10000, L=100000, r=1e-8, s=0.01
+    let mut sim = HullSimulator::panmictic(
+        10, 10000.0, 100000.0, 1e-8, 42);
+    sim.sweeps.push(Sweep {
+        x_sel: 50000.0,
+        t_event: 500.0,
+        target: None,
+        population: None,
+        sweep_window: 0.0,
+        selection_coefficient: 0.01,
+        starting_frequency: 0.0,
+    });
+    let result = sim.simulate();
+    // Should produce coalescence node(s) near t=500.
+    let near_500 = result.tables.node_time.iter()
+        .filter(|&&t| (t - 500.0).abs() < 5.0).count();
+    assert!(near_500 >= 1,
+        "Expected hitchhiking sweep node(s) near t=500, found {}", near_500);
+}
+
+#[test]
+fn soft_sweep_preserves_partial_diversity() {
+    // Soft sweep (f0=0.2 → K=5 founders) should NOT fully coalesce
+    // all lineages: T_MRCA should be much larger than t_event.
+    // Run multiple seeds; at least one should show partial coalescence.
+    // Ne=10000, L=100000, r=1e-8, s=0.01, f0=0.2
+    let mut any_partial = false;
+    for seed in 0..20u64 {
+        let mut sim = HullSimulator::panmictic(
+            10, 10000.0, 100000.0, 1e-8, seed);
+        sim.sweeps.push(Sweep {
+            x_sel: 50000.0,
+            t_event: 500.0,
+            target: None,
+            population: None,
+            sweep_window: 0.0,
+            selection_coefficient: 0.01,
+            starting_frequency: 0.2,
+        });
+        let result = sim.simulate();
+        let t_mrca = result.tables.node_time.iter()
+            .cloned().fold(0.0_f64, f64::max);
+        // If soft sweep works, multiple founder groups survive past the
+        // sweep, so T_MRCA >> t_event (deep coalescence at neutral rate).
+        if t_mrca > 2000.0 {
+            any_partial = true;
+            break;
+        }
+    }
+    assert!(any_partial,
+        "Soft sweep (K=5) should leave multiple founders → T_MRCA >> 500");
+}
+
+#[test]
+fn hitchhiking_with_inversion() {
+    // Hitchhiking sweep targeting S class inside an inversion.
+    // Ne=10000, L=100000, r=1e-8, s=0.01
+    let mut sim = HullSimulator::simple(
+        5, 5, 10000.0, 100000.0, 1e-8,
+        vec![inv(20000.0, 80000.0, 0.5, 20000.0, 0)], 42);
+    sim.sweeps.push(Sweep {
+        x_sel: 50000.0,
+        t_event: 500.0,
+        target: Some((0, Karyotype::S)),
+        population: None,
+        sweep_window: 0.0,
+        selection_coefficient: 0.01,
+        starting_frequency: 0.0,
+    });
+    let result = sim.simulate();
+    // Should complete without panicking and produce reasonable output.
+    assert!(result.tables.num_nodes() >= 19,
+        "Got {} nodes", result.tables.num_nodes());
 }

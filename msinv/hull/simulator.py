@@ -611,21 +611,32 @@ class HullSimulator:
                 rates.append((f'coal_{pop}', rate, idx_list))
             return rates
 
-        # Build p_class lookup for active inversions.
-        inv_p_class = {}
+        # Build per-(class, pop) p_class lookup for active inversions.
+        # inv_p_class_map[(tag, pop)] → frequency
+        active_inversions = []
         sample_positions = []
         for inv in self.inversions:
             if t >= inv.t_inv:
                 continue
-            p_std = 1.0 - inv.p_inv
-            cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
-            cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
-            inv_p_class[cls_S] = p_std
-            inv_p_class[cls_I] = inv.p_inv
+            active_inversions.append(inv)
             sample_positions.append(
                 ((inv.bp_left + inv.bp_right) / 2.0, inv))
 
-        def _p_class_for(cls):
+        # Pre-build (tag, pop) → p lookup for O(1) access in inner loops.
+        _tag_p_cache = {}
+        pops = {lin.population for lin in active}
+        for inv in active_inversions:
+            cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
+            cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
+            for pop in pops:
+                _tag_p_cache[(cls_S, pop)] = inv.p_std_for(pop)
+                _tag_p_cache[(cls_I, pop)] = inv.p_inv_for(pop)
+
+        def _tag_p(tag, pop):
+            """Return p for a single class tag in a given population."""
+            return _tag_p_cache.get((tag, pop), 1.0)
+
+        def _p_class_for(cls, pop=0):
             if cls == 'P' or cls is None:
                 return 1.0
             if isinstance(cls, frozenset):
@@ -633,9 +644,9 @@ class HullSimulator:
                     return 1.0
                 p = 1.0
                 for tag in cls:
-                    p *= inv_p_class.get(tag, 1.0)
+                    p *= _tag_p(tag, pop)
                 return p
-            return inv_p_class.get(cls, 1.0)
+            return _tag_p(cls, pop)
 
         # Compute rho to decide which algorithm to use.
         rho = 4.0 * self.demography.pop_sizes[0] * self.r * self.L
@@ -690,7 +701,7 @@ class HullSimulator:
                 ne_pop = max(self.demography.size_at(pop, t), 1e-9)
                 p_class = 1.0
                 for tag in cls_tuple:
-                    p_class *= _p_class_for(tag)
+                    p_class *= _p_class_for(tag, pop)
                 if p_class <= 0:
                     continue
                 rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
@@ -710,7 +721,7 @@ class HullSimulator:
                     for cls_key, ov_len in ovl.items():
                         if ov_len <= 0:
                             continue
-                        p_class = _p_class_for(cls_key)
+                        p_class = _p_class_for(cls_key, lin_i.population)
                         if p_class <= 0:
                             continue
                         rates.append((
@@ -839,11 +850,11 @@ class HullSimulator:
                 continue
             if inv.bp_left is None or inv.bp_right <= inv.bp_left:
                 continue
-            if inv.p_inv is None:
-                continue
-            p_inv_v = inv.p_inv
-            p_std_v = 1.0 - p_inv_v
             for idx, lin in enumerate(active):
+                # Per-population inversion frequency.
+                pop = lin.population
+                p_inv_v = inv.p_inv_for(pop)
+                p_std_v = 1.0 - p_inv_v
                 cls = self._lineage_class_for_inv(lin, inv)
                 if cls == 'S':
                     p_other = p_inv_v
@@ -969,17 +980,35 @@ class HullSimulator:
                     active.append(unsw_lin)
             if len(swept_lineages) < 2:
                 return None
+
+            # Soft sweep: partition into K founder groups.
+            k = sweep.num_founders
+            if k <= 1:
+                # Hard sweep: coalesce all to one ancestor.
+                groups = [swept_lineages]
+            else:
+                # Randomly assign each swept lineage to one of K groups.
+                groups = [[] for _ in range(k)]
+                for lin in swept_lineages:
+                    g = int(self.rng.random() * k)
+                    g = min(g, k - 1)  # clamp edge case
+                    groups[g].append(lin)
+                groups = [g for g in groups if len(g) >= 2]
+
             eps = max(1e-9, t * 1e-12)
-            merged = swept_lineages[0]
-            for k_idx, other in enumerate(swept_lineages[1:], start=1):
-                t_merge = t + k_idx * eps
-                result = apply_coalescence(active, merged, other,
-                                           t_merge, tables,
-                                           skip_if_no_overlap=True)
-                if result is not None:
-                    # Merge succeeded — active[-1] is the new lineage.
-                    merged = active[-1]
-                # else: no overlap → no-op, merged stays as-is.
+            merged = None
+            for gi, group in enumerate(groups):
+                if len(group) < 2:
+                    continue
+                m = group[0]
+                for k_idx, other in enumerate(group[1:], start=1):
+                    t_merge = t + (gi * 100 + k_idx) * eps
+                    result = apply_coalescence(active, m, other,
+                                               t_merge, tables,
+                                               skip_if_no_overlap=True)
+                    if result is not None:
+                        m = active[-1]
+                merged = m
             return merged
 
         # ---- window mode (original) ----
@@ -1195,7 +1224,11 @@ class HullSimulator:
                     sweep = pending_sweeps.pop(0)
                     self._apply_sweep(active, sweep, t, tables)
                 else:
-                    self.demography.apply_event_at(t, active)
+                    inv_changes = self.demography.apply_event_at(t, active)
+                    for (inv_id, pop, p_inv_val) in inv_changes:
+                        for inv in self.inversions:
+                            if inv.inv_id == inv_id:
+                                inv.set_p_inv_for(pop, p_inv_val)
                 continue
 
             dt = self.rng.exponential(1.0 / total)
@@ -1216,7 +1249,11 @@ class HullSimulator:
             # Demographic event crossing
             if t_demo < t_event:
                 t = t_demo
-                self.demography.apply_event_at(t, active)
+                inv_changes = self.demography.apply_event_at(t, active)
+                for (inv_id, pop, p_inv_val) in inv_changes:
+                    for inv in self.inversions:
+                        if inv.inv_id == inv_id:
+                            inv.set_p_inv_for(pop, p_inv_val)
                 continue
             t = t_event
 

@@ -5,9 +5,15 @@ described by an InversionSpec. The hull simulator handles each
 inversion's class barrier independently — class labels are tagged
 with the inversion's id (e.g. 'S0' = S-arrangement inside inversion 0,
 'S1' = inside inversion 1).
+
+``p_inv`` may be a single float (same frequency in all populations)
+or a dict mapping population index → frequency, enabling
+per-population inversion frequencies (e.g. {0: 0.0, 1: 0.73} for
+K/F ecotype models).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Union, Dict
 
 
 @dataclass
@@ -18,8 +24,11 @@ class InversionSpec:
     ----------
     bp_left, bp_right : float
         Inversion breakpoints in genomic coordinates.
-    p_inv : float
-        Frequency of the inverted (I) arrangement, in (0, 1).
+    p_inv : float or dict[int, float]
+        Frequency of the inverted (I) arrangement.
+        - float: same frequency in all populations, must be in (0, 1).
+        - dict: per-population frequency, e.g. {0: 0.0, 1: 0.73}.
+          Each value must be in [0, 1] and at least one must be in (0, 1).
     t_inv : float
         Inversion age in generations. After t >= t_inv, the class
         barrier lifts and inv-internal positions become panmictic.
@@ -35,7 +44,7 @@ class InversionSpec:
 
     bp_left: float
     bp_right: float
-    p_inv: float
+    p_inv: Union[float, Dict[int, float]]
     t_inv: float
     gene_conversion_rate: float = 1e-9
     flux_window: float = 0.05
@@ -44,6 +53,38 @@ class InversionSpec:
     @property
     def length(self) -> float:
         return self.bp_right - self.bp_left
+
+    def p_inv_for(self, pop: int) -> float:
+        """Return inverted-arrangement frequency for population *pop*."""
+        if isinstance(self.p_inv, dict):
+            if pop in self.p_inv:
+                return self.p_inv[pop]
+            # Fallback: use the first entry
+            return next(iter(self.p_inv.values()))
+        return self.p_inv
+
+    def p_std_for(self, pop: int) -> float:
+        """Return standard-arrangement frequency for population *pop*."""
+        return 1.0 - self.p_inv_for(pop)
+
+    def set_p_inv_for(self, pop: int, val: float):
+        """Set inverted-arrangement frequency for a specific population."""
+        if not isinstance(self.p_inv, dict):
+            # Convert scalar to dict
+            self.p_inv = {0: self.p_inv}
+        self.p_inv[pop] = val
+
+    def _p_inv_as_list(self, n_pops: int) -> list:
+        """Return p_inv as a list of length n_pops for the Rust bridge."""
+        if isinstance(self.p_inv, dict):
+            max_pop = max(self.p_inv.keys()) if self.p_inv else 0
+            n = max(n_pops, max_pop + 1)
+            default = next(iter(self.p_inv.values()))
+            result = [default] * n
+            for pop, val in self.p_inv.items():
+                result[pop] = val
+            return result
+        return [self.p_inv] * max(n_pops, 1)
 
     def class_S(self) -> str:
         # inv_id == -1 is the legacy single-inversion sentinel: use
@@ -59,8 +100,23 @@ class InversionSpec:
             raise ValueError(
                 f"bp_right must be > bp_left, got "
                 f"({self.bp_left}, {self.bp_right}).")
-        if not (0.0 < self.p_inv < 1.0):
-            raise ValueError(f"p_inv must be in (0, 1), got {self.p_inv}.")
+        # Validate p_inv
+        if isinstance(self.p_inv, dict):
+            if not self.p_inv:
+                raise ValueError("p_inv dict must not be empty.")
+            for pop, val in self.p_inv.items():
+                if not (0.0 <= val <= 1.0):
+                    raise ValueError(
+                        f"p_inv[{pop}] must be in [0, 1], got {val}.")
+            # At least one pop must have 0 < p_inv < 1 for the inversion
+            # to matter (otherwise it's monomorphic everywhere).
+            if not any(0.0 < v < 1.0 for v in self.p_inv.values()):
+                raise ValueError(
+                    "At least one population must have 0 < p_inv < 1.")
+        else:
+            if not (0.0 < self.p_inv < 1.0):
+                raise ValueError(
+                    f"p_inv must be in (0, 1), got {self.p_inv}.")
         if self.t_inv <= 0.0:
             raise ValueError(f"t_inv > 0 required, got {self.t_inv}.")
         if not (0.0 < self.flux_window < 1.0):

@@ -142,6 +142,28 @@ class Demography:
         else:
             self.add_event(('em', time, dest, source, rate))
 
+    def add_inversion_freq_change(self, time: float, population: int,
+                                   inv_id: int, p_inv: float):
+        """Change inversion frequency for a specific population at *time*.
+
+        This is useful at population merge events where the ancestral
+        population has a different inversion frequency than the derived
+        populations (e.g. K has p_inv=0, F has p_inv=0.73, and the
+        ancestral pop had p_inv=0.3).
+
+        Parameters
+        ----------
+        time : float
+            Time in generations (going backward).
+        population : int
+            Population index to modify.
+        inv_id : int
+            Inversion index (0-based, matching the inversions list order).
+        p_inv : float
+            New inverted-arrangement frequency for this population.
+        """
+        self.add_event(('eig', time, population, inv_id, p_inv))
+
     def copy(self) -> 'Demography':
         """Fresh copy with replayable events."""
         d = Demography(list(self.pop_sizes),
@@ -185,8 +207,13 @@ class Demography:
     def apply_event_at(self, t: float, active_lineages):
         """Apply all events scheduled for time t in chronological order,
         mutating ``active_lineages`` in place where required.
+
+        Returns a list of (inv_id, pop, p_inv) tuples for any ``eig``
+        events that fired — the caller must apply these to its
+        InversionSpec list.
         """
         new_events = []
+        inv_changes = []
         for ev in self.events:
             if abs(ev[1] - t) > 1e-9:
                 new_events.append(ev)
@@ -241,7 +268,11 @@ class Demography:
                 for k in range(self.n_pops):
                     self.migration_matrix[src][k] = 0.0
                     self.migration_matrix[k][src] = 0.0
+            elif etype == 'eig':
+                _, _, pop, inv_id, p_inv = ev
+                inv_changes.append((inv_id, pop, p_inv))
             else:
                 raise ValueError(f"Unknown demographic event type: {etype}")
         # Drop processed events.
         self.events = new_events
+        return inv_changes

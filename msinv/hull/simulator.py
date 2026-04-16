@@ -995,14 +995,13 @@ class HullSimulator:
                     groups[g].append(lin)
                 groups = [g for g in groups if len(g) >= 2]
 
-            eps = max(1e-9, t * 1e-12)
             merged = None
             for gi, group in enumerate(groups):
                 if len(group) < 2:
                     continue
                 m = group[0]
                 for k_idx, other in enumerate(group[1:], start=1):
-                    t_merge = t + (gi * 100 + k_idx) * eps
+                    t_merge = self._next_sweep_merge_time(t)
                     result = apply_coalescence(active, m, other,
                                                t_merge, tables,
                                                skip_if_no_overlap=True)
@@ -1036,10 +1035,9 @@ class HullSimulator:
 
         if len(windowed_lineages) < 2:
             return None
-        eps = max(1e-9, t * 1e-12)
         merged = windowed_lineages[0]
-        for k_idx, other in enumerate(windowed_lineages[1:], start=1):
-            t_merge = t + k_idx * eps
+        for other in windowed_lineages[1:]:
+            t_merge = self._next_sweep_merge_time(t)
             apply_coalescence(active, merged, other, t_merge, tables)
             merged = active[-1]
         return merged
@@ -1049,6 +1047,18 @@ class HullSimulator:
         if hasattr(self, 'demography') and self.demography is not None:
             return self.demography.pop_sizes[0]
         return getattr(self, 'population_size', 10_000) or 10_000
+
+    def _next_sweep_merge_time(self, t):
+        # Monotone counter shared across all sweep merges at the same
+        # base t. Prevents TSK_ERR_BAD_NODE_TIME_ORDERING when multiple
+        # sweeps fire simultaneously (same t_event) and a lineage
+        # produced by an earlier merge is then touched by a later one.
+        eps = max(1e-9, t * 1e-12)
+        if getattr(self, '_sweep_base_t', None) != t:
+            self._sweep_base_t = t
+            self._sweep_merge_k = 0
+        self._sweep_merge_k += 1
+        return t + self._sweep_merge_k * eps
 
     def _flip_to_panmictic(self, active, inv_id=None):
         """Flip per-segment classes to 'P' for inversion ``inv_id`` (or
@@ -1174,6 +1184,8 @@ class HullSimulator:
             from ._rust_bridge import rust_simulate
             return rust_simulate(self)
         reset_uids()
+        self._sweep_base_t = None
+        self._sweep_merge_k = 0
         tables = TableBuilder(sequence_length=self.L,
                                num_populations=self.demography.n_pops)
         active = self._initial_lineages(tables)

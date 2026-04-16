@@ -212,6 +212,11 @@ impl HullSimulator {
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.t_event.partial_cmp(&b.t_event).unwrap());
 
+        // Monotone sweep-merge cursor shared across all sweeps at the
+        // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
+        // sweeps fire simultaneously).
+        let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+
         // Running totals for O(1) recombination rate (Phase A).
         let mut total_material: f64 = active.iter()
             .map(|l| l.cached_len).sum();
@@ -310,7 +315,8 @@ impl HullSimulator {
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, t, tables, next_uid,
-                        self.sequence_length, rng, self.recombination_rate);
+                        self.sequence_length, rng, self.recombination_rate,
+                        &mut sweep_cursor);
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -331,7 +337,8 @@ impl HullSimulator {
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, t, tables, next_uid,
-                    self.sequence_length, rng, self.recombination_rate);
+                    self.sequence_length, rng, self.recombination_rate,
+                    &mut sweep_cursor);
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -980,6 +987,7 @@ fn apply_boundary(
     seq_len: f64,
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
+    sweep_cursor: &mut (f64, u64),
 ) {
     HullSimulator::cross_barriers_static(inversions, active, arena, barrier_active, t);
     let inv_changes = demo.apply_events_at(t, active);
@@ -988,15 +996,28 @@ fn apply_boundary(
             inv.set_p_inv_for(pop, p_inv_val);
         }
     }
-    if !pending_sweeps.is_empty()
+    // Drain all sweeps scheduled at this t (simultaneous sweeps).
+    while !pending_sweeps.is_empty()
         && (pending_sweeps[0].t_event - t).abs() < 1e-9
     {
         let sweep = pending_sweeps.remove(0);
         let ne_sweep = demo.size_at(
             sweep.population.unwrap_or(0), t).max(1.0);
         apply_sweep(active, &sweep, t, arena, tables,
-                     next_uid, seq_len, rng, ne_sweep, recomb_rate);
+                     next_uid, seq_len, rng, ne_sweep, recomb_rate,
+                     sweep_cursor);
     }
+}
+
+/// Monotonically increasing merge time, shared across all sweep merges
+/// at the same base `t`. Resets when `t` changes.
+fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
+    if cursor.0 != t {
+        *cursor = (t, 0);
+    }
+    cursor.1 += 1;
+    let eps = (t * 1e-12).max(1e-9);
+    t + (cursor.1 as f64) * eps
 }
 
 /// Force-coalesce qualifying lineages at a sweep event.
@@ -1025,6 +1046,7 @@ fn apply_sweep(
     rng: &mut Xoshiro256PlusPlus,
     ne: f64,
     recomb_rate: f64,
+    sweep_cursor: &mut (f64, u64),
 ) {
     // ---- Identify qualifying lineages ----
     let mut qualifying: Vec<usize> = Vec::new();
@@ -1043,7 +1065,8 @@ fn apply_sweep(
     // ---- Hitchhiking mode: probabilistically select segments ----
     if sweep.selection_coefficient > 0.0 {
         apply_sweep_hitchhiking(
-            active, sweep, t, arena, tables, next_uid, rng, ne, recomb_rate);
+            active, sweep, t, arena, tables, next_uid, rng, ne, recomb_rate,
+            sweep_cursor);
         return;
     }
 
@@ -1085,7 +1108,8 @@ fn apply_sweep(
     }
 
     if window_uids.len() < 2 { return; }
-    coalesce_uid_group(active, &window_uids, t, arena, tables, next_uid);
+    coalesce_uid_group(active, &window_uids, t, arena, tables, next_uid,
+                       sweep_cursor);
 }
 
 /// Hitchhiking mode: probabilistic segment inclusion + optional soft sweep.
@@ -1108,6 +1132,7 @@ fn apply_sweep_hitchhiking(
     rng: &mut Xoshiro256PlusPlus,
     ne: f64,
     recomb_rate: f64,
+    sweep_cursor: &mut (f64, u64),
 ) {
     // ---- Identify qualifying lineages (repeat — indices are fragile) ----
     let mut qualifying_uids: Vec<LinUid> = Vec::new();
@@ -1178,7 +1203,8 @@ fn apply_sweep_hitchhiking(
     let k = sweep.num_founders();
     if k <= 1 {
         // Hard sweep: coalesce all to one ancestor.
-        coalesce_uid_group(active, &swept_uids, t, arena, tables, next_uid);
+        coalesce_uid_group(active, &swept_uids, t, arena, tables, next_uid,
+                           sweep_cursor);
     } else {
         // Soft sweep: randomly assign each swept lineage to one of K groups.
         let mut groups: Vec<Vec<LinUid>> = vec![Vec::new(); k];
@@ -1187,12 +1213,12 @@ fn apply_sweep_hitchhiking(
             let g = g.min(k - 1); // clamp for floating-point edge case
             groups[g].push(uid);
         }
-        // Coalesce within each group.
-        let eps = (t * 1e-12).max(1e-9);
-        for (gi, group) in groups.iter().enumerate() {
+        // Coalesce within each group; shared cursor keeps merge times
+        // strictly increasing across groups.
+        for group in groups.iter() {
             if group.len() < 2 { continue; }
-            let t_group = t + (gi as f64) * eps;
-            coalesce_uid_group(active, group, t_group, arena, tables, next_uid);
+            coalesce_uid_group(active, group, t, arena, tables, next_uid,
+                               sweep_cursor);
         }
     }
 }
@@ -1226,12 +1252,12 @@ fn coalesce_uid_group(
     arena: &mut SegmentArena,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
+    sweep_cursor: &mut (f64, u64),
 ) {
     if uids.len() < 2 { return; }
-    let eps = (t * 1e-12).max(1e-9);
     let mut merged_uid = uids[0];
-    for (k, &other_uid) in uids[1..].iter().enumerate() {
-        let t_merge = t + (k as f64 + 1.0) * eps;
+    for &other_uid in uids[1..].iter() {
+        let t_merge = next_sweep_merge_t(sweep_cursor, t);
         let mi = active.iter().position(|l| l.uid == merged_uid);
         let oi = active.iter().position(|l| l.uid == other_uid);
         if let (Some(mi), Some(oi)) = (mi, oi) {

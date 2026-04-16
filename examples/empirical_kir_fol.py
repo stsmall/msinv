@@ -23,14 +23,18 @@ import msprime  # for mutation dropping on the hull TreeSequence
 from msinv import HullSimulator, InversionSpec, Demography
 
 
-# --- Parameters ---
+# --- Parameters (Small et al. 2023) ---
 Ne = 44_000
 mu = 3.55e-9
 r = 4.0e-8  # An. funestus recombination rate (rho≈704, uses high-rho path)
 L = 100_000
 t_split_gen = 14_000     # ~1300 yr at 11 gen/yr
 t_inv_gen = 385_000      # ~35 kyr — 3Ra age (Small 2023)
-p_inv_anc = 0.3
+
+# Per-population inversion frequencies (K = all-Standard, F = empirical)
+p_inv_3Ra = {0: 0.0, 1: 0.73}   # K fixed-S, Fol 3Ra freq
+p_inv_3Rb = {0: 0.0, 1: 0.40}   # K fixed-S, Fol 3Rb freq
+p_inv_anc = 0.3                   # ancestral freq before split
 
 # 3Ra and 3Rb breakpoints, in genomic coords
 inv_3Ra = (15_000, 45_000)
@@ -97,6 +101,11 @@ mut_rng = np.random.default_rng(2026)
 for rep in range(NREPS):
     demo = Demography(pop_sizes=[Ne, Ne])
     demo.add_event(('ej', t_split_gen, 1, 0))   # Fol → Kir at t_split
+    # At split, ancestral pop (0) reverts to ancestral p_inv
+    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=0,
+                                   p_inv=p_inv_anc)
+    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=1,
+                                   p_inv=p_inv_anc)
 
     sim = HullSimulator(
         sample_config={
@@ -108,9 +117,9 @@ for rep in range(NREPS):
         sequence_length=L,
         inversions=[
             InversionSpec(bp_left=inv_3Ra[0], bp_right=inv_3Ra[1],
-                              p_inv=p_inv_anc, t_inv=t_inv_gen),
+                              p_inv=p_inv_3Ra, t_inv=t_inv_gen),
             InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
-                              p_inv=p_inv_anc, t_inv=t_inv_gen),
+                              p_inv=p_inv_3Rb, t_inv=t_inv_gen),
         ],
         recombination_rate=r,
         seed=SEED_BASE + rep,

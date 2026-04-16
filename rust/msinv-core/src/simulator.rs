@@ -8,7 +8,7 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::class_tag::{BranchClass, Karyotype};
-use crate::demography::{DemoEvent, Demography};
+use crate::demography::Demography;
 use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
@@ -483,35 +483,6 @@ impl HullSimulator {
         }
     }
 
-    fn compute_coal_rates_panmictic(
-        &self,
-        active: &[Lineage],
-        _arena: &SegmentArena,
-        demo: &Demography,
-        t: f64,
-        events: &mut Vec<(f64, Event)>,
-    ) {
-        // Bucket lineages by population.
-        let mut buckets: Vec<(u32, usize)> = Vec::new(); // (pop, count)
-        for lin in active.iter() {
-            if let Some(entry) = buckets.iter_mut().find(|(p, _)| *p == lin.population) {
-                entry.1 += 1;
-            } else {
-                buckets.push((lin.population, 1));
-            }
-        }
-        for (pop, k) in &buckets {
-            if *k < 2 { continue; }
-            let ne = demo.size_at(*pop, t).max(1e-9);
-            let kf = *k as f64;
-            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-            if rate > 0.0 {
-                events.push((rate, Event::CoalPanmicticPop { pop: *pop }));
-            }
-        }
-    }
-
-
     // ---------------------------------------------------------------
     // Gene flux rates
     // ---------------------------------------------------------------
@@ -790,98 +761,6 @@ fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
         }
     }
     p
-}
-
-/// When a coalescence event fires, pick a (class, pop) bucket
-/// weighted by rate, then pick two lineages from that bucket.
-fn sample_and_coalesce(
-    active: &mut Vec<Lineage>,
-    arena: &mut SegmentArena,
-    demo: &Demography,
-    t: f64,
-    inversions: &[InversionSpec],
-    barrier_active: &[bool],
-    rng: &mut Xoshiro256PlusPlus,
-    tables: &mut TableBuilder,
-    next_uid: &mut LinUid,
-) {
-    let any_inv_active = barrier_active.iter().any(|&b| b);
-
-    // Build (class, pop, rate, indices) buckets.
-    struct Bucket {
-        rate: f64,
-        indices: Vec<usize>,
-        allowed_class: Option<BranchClass>, // None = panmictic
-    }
-    let mut buckets: Vec<Bucket> = Vec::new();
-
-    if !any_inv_active {
-        // Panmictic: one bucket per pop.
-        let mut pop_map: Vec<(u32, Vec<usize>)> = Vec::new();
-        for (i, lin) in active.iter().enumerate() {
-            if let Some(e) = pop_map.iter_mut().find(|(p, _)| *p == lin.population) {
-                e.1.push(i);
-            } else {
-                pop_map.push((lin.population, vec![i]));
-            }
-        }
-        for (pop, indices) in pop_map {
-            if indices.len() < 2 { continue; }
-            let ne = demo.size_at(pop, t).max(1e-9);
-            let kf = indices.len() as f64;
-            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-            buckets.push(Bucket { rate, indices, allowed_class: None });
-        }
-    } else {
-        // Structured: per-pair overlap-by-class. Each pair with
-        // overlap at a matching class gets its own bucket entry.
-        let n = active.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if active[i].population != active[j].population { continue; }
-                let pop = active[i].population;
-                let ne = demo.size_at(pop, t).max(1e-9);
-                let overlaps = overlap_by_class(
-                    active[i].head, active[j].head, arena);
-                for (cls, _ov_len) in &overlaps {
-                    let p_class = p_class_for_tag(
-                        *cls, inversions, barrier_active, t, pop);
-                    if p_class <= 0.0 { continue; }
-                    let rate = 1.0 / (2.0 * ne * p_class);
-                    buckets.push(Bucket {
-                        rate, indices: vec![i, j],
-                        allowed_class: Some(*cls),
-                    });
-                }
-            }
-        }
-    }
-
-    if buckets.is_empty() { return; }
-    let total: f64 = buckets.iter().map(|b| b.rate).sum();
-    if total <= 0.0 { return; }
-
-    let u = rng.random::<f64>() * total;
-    let mut cum = 0.0;
-    let mut chosen = 0;
-    for (i, b) in buckets.iter().enumerate() {
-        cum += b.rate;
-        if u < cum { chosen = i; break; }
-    }
-
-    let bucket = &buckets[chosen];
-    let indices = &bucket.indices;
-    let allowed = bucket.allowed_class;
-    if indices.len() == 2 {
-        apply_coalescence_partial(active, indices[0], indices[1], t,
-                                   arena, tables, next_uid, allowed);
-    } else {
-        let ii = rng.random_range(0..indices.len());
-        let mut jj = rng.random_range(0..indices.len() - 1);
-        if jj >= ii { jj += 1; }
-        apply_coalescence_partial(active, indices[ii], indices[jj], t,
-                                   arena, tables, next_uid, allowed);
-    }
 }
 
 /// Build initial segment chain for one sample lineage.

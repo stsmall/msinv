@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Kir/Fol neutral baseline — incremental rho sweep with realistic demography.
+"""Kir/Fol with 2Ra mating barrier — reduced effective migration.
 
-Runs each (rho, Ne_anc) combination sequentially, saves .npz + updates
-plot after each combo completes. Cached results are reused on re-run.
+Tests the hypothesis that 2Ra fixation in K reduces gene flow because
+wing morphology (set by 2Ra) causes assortative mating. Only the
+triple-S fraction of Folonzo can mate with Kiribina.
+
+Three scenarios:
+  1. Neutral baseline (no migration, just split — current model)
+  2. Migration with 2Ra barrier (m_eff = m * P(triple-S in F))
+  3. Migration without 2Ra barrier (m_eff = m, unrestricted)
 
 Usage:
-    .venv/bin/python examples/empirical_kir_fol_parallel.py
-    .venv/bin/python examples/empirical_kir_fol_parallel.py --rho 40,100 --Ne-anc 1000000
-    .venv/bin/python examples/empirical_kir_fol_parallel.py --rho 40 --reps 50
+    .venv/bin/python examples/empirical_kir_fol_2Ra.py
 """
-import argparse
 import os
 import sys
 import time
@@ -28,10 +31,12 @@ from msinv import HullSimulator, InversionSpec, Demography
 Ne = 44_000
 mu = 3.55e-9
 L = 100_000
+RHO = 40
 t_split_gen = 14_000
 t_inv_gen = 385_000
-Ne_mid = 100_000       # 14k-60k gen ago
-t_Ne_mid = 60_000      # transition to mid-size
+Ne_mid = 100_000
+t_Ne_mid = 60_000
+Ne_anc = 1_000_000
 
 p_inv_3Ra = {0: 0.0, 1: 0.73}
 p_inv_3Rb = {0: 0.0, 1: 0.40}
@@ -43,8 +48,18 @@ inv_3Rb = (55_000, 85_000)
 n_kir = 10
 n_fol_S = 5
 n_fol_I = 5
-
 NW = 40
+N_REPS = 25
+
+# Karyotype frequencies in Folonzo
+p_2Ra_S_fol = 1.0 - 0.45   # 0.55
+p_3Ra_S_fol = 1.0 - 0.73   # 0.27
+p_3Rb_S_fol = 1.0 - 0.40   # 0.60
+p_triple_S = p_2Ra_S_fol * p_3Ra_S_fol * p_3Rb_S_fol  # ~0.089
+
+# Migration: gene flow ceased ~1100 gen ago, was active from 1100-14000
+m_base = 1e-4   # baseline per-gen migration rate
+t_mig_cease = 1_100
 
 kir = list(range(n_kir))
 fol_same = list(range(n_kir, n_kir + n_fol_S))
@@ -80,25 +95,27 @@ def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
     return vals
 
 
-def run_one(rho, ne_anc, n_reps):
-    """Run one (rho, Ne_anc) combo sequentially. Returns result dict."""
-    r = rho_to_r(rho)
-    tag = f"rho{rho}_Nanc{ne_anc // 1000}k"
-
-    # Check cache
+def run_scenario(label, m_eff, n_reps):
+    """Run one migration scenario."""
+    r = rho_to_r(RHO)
+    tag = f"2Ra_{label.replace(' ', '_')}"
     npz_path = f'figures/kir_fol_{tag}.npz'
+
     if os.path.exists(npz_path):
         print(f"  Loading cached: {npz_path}")
         sys.stdout.flush()
         data = dict(np.load(npz_path, allow_pickle=True))
-        for k in ('rho', 'Ne_anc', 'total_ok'):
-            data[k] = int(data[k])
-        for k in ('elapsed', 'fst_ratio', 'fst_inv', 'fst_col', 'r'):
-            data[k] = float(data[k])
+        data['label'] = label
+        data['m_eff'] = float(data['m_eff'])
+        data['total_ok'] = int(data['total_ok'])
+        data['elapsed'] = float(data['elapsed'])
+        data['fst_ratio'] = float(data['fst_ratio'])
+        data['fst_inv'] = float(data['fst_inv'])
+        data['fst_col'] = float(data['fst_col'])
         return data
 
     print(f"\n{'='*60}")
-    print(f"{tag}  r={r:.3e}  ({n_reps} reps, sequential)")
+    print(f"{label}  m_eff={m_eff:.2e}  ({n_reps} reps)")
     print(f"{'='*60}")
     sys.stdout.flush()
     t0 = time.time()
@@ -112,13 +129,22 @@ def run_one(rho, ne_anc, n_reps):
     for rep in range(n_reps):
         seed = 10_000 + rep
         demo = Demography(pop_sizes=[Ne, Ne])
+
+        # Migration: active from t_mig_cease to t_split (backwards)
+        if m_eff > 0:
+            # Set migration from t_mig_cease onwards (going backward)
+            demo.add_event(('em', t_mig_cease, 0, 1, m_eff))
+            demo.add_event(('em', t_mig_cease, 1, 0, m_eff))
+
+        # At split: merge pops, zero migration
         demo.add_event(('ej', t_split_gen, 1, 0))
         demo.add_inversion_freq_change(t_split_gen, 0, inv_id=0,
                                        p_inv=p_inv_anc)
         demo.add_inversion_freq_change(t_split_gen, 0, inv_id=1,
                                        p_inv=p_inv_anc)
+        # Ancestral demography
         demo.add_event(('en', t_split_gen, 0, Ne_mid))
-        demo.add_event(('en', t_Ne_mid, 0, ne_anc))
+        demo.add_event(('en', t_Ne_mid, 0, Ne_anc))
 
         sim = HullSimulator(
             sample_config={
@@ -173,7 +199,6 @@ def run_one(rho, ne_anc, n_reps):
 
     elapsed = time.time() - t0
 
-    # Derived stats
     d = acc
     da_kf_same = d['dxy_kf_same'] - (d['pi_K'] + d['pi_FS']) / 2
     da_kf_alt = d['dxy_kf_alt'] - (d['pi_K'] + d['pi_FI']) / 2
@@ -182,7 +207,6 @@ def run_one(rho, ne_anc, n_reps):
     fst_kf_alt = 1.0 - (d['pi_K'] + d['pi_FI']) / 2 / np.maximum(d['dxy_kf_alt'], 1e-20)
     fst_fs_fi = 1.0 - (d['pi_FS'] + d['pi_FI']) / 2 / np.maximum(d['dxy_fs_fi'], 1e-20)
 
-    # FST ratio
     wins = np.linspace(0, L, NW + 1)
     mid = (wins[:-1] + wins[1:]) / 2
     inv_w = [w for w in range(NW)
@@ -194,7 +218,7 @@ def run_one(rho, ne_anc, n_reps):
     fst_ratio = fi / fc if fc != 0 else float('nan')
 
     res = {
-        'rho': rho, 'r': r, 'Ne_anc': ne_anc,
+        'label': label, 'm_eff': m_eff,
         'total_ok': n_ok, 'elapsed': elapsed,
         'fst_ratio': fst_ratio, 'fst_inv': fi, 'fst_col': fc,
         **acc,
@@ -204,7 +228,6 @@ def run_one(rho, ne_anc, n_reps):
         'fst_fs_fi': fst_fs_fi,
     }
 
-    # Save npz
     np.savez(npz_path, **{k: v for k, v in res.items()
                           if isinstance(v, (np.ndarray, int, float))})
 
@@ -216,12 +239,8 @@ def run_one(rho, ne_anc, n_reps):
     return res
 
 
-def plot_results(all_results):
-    """Plot all completed results."""
-    n = len(all_results)
-    if n == 0:
-        return
-
+def plot_scenarios(results):
+    n = len(results)
     wins = np.linspace(0, L, NW + 1)
     mid = (wins[:-1] + wins[1:]) / 2
 
@@ -235,9 +254,7 @@ def plot_results(all_results):
     c_fs_fi = '#FF8F00'
     c_kf_alt = '#00838F'
 
-    for col, res in enumerate(all_results):
-        rho = res['rho']
-        ne_anc = res['Ne_anc']
+    for col, res in enumerate(results):
         ax_dxy = axes[0, col]
         ax_da = axes[1, col]
         ax_fst = axes[2, col]
@@ -248,7 +265,9 @@ def plot_results(all_results):
                     label=r'F$_S$ vs F$_I$')
         ax_dxy.plot(mid, smooth(res['dxy_kf_alt']), '-', color=c_kf_alt, lw=2,
                     label=r'K vs F$_I$')
-        ax_dxy.set_title(f'$\\rho$={rho}, N_anc={ne_anc//1000}k\n'
+
+        m_str = f"m={res['m_eff']:.1e}" if res['m_eff'] > 0 else "no migration"
+        ax_dxy.set_title(f'{res["label"]}\n{m_str}, '
                          f'{res["total_ok"]} reps, {res["elapsed"]:.0f}s',
                          fontsize=9, fontweight='bold')
         for (lo, hi) in [inv_3Ra, inv_3Rb]:
@@ -283,13 +302,31 @@ def plot_results(all_results):
                     bbox=dict(boxstyle='round,pad=0.3',
                               facecolor='white', alpha=0.8))
 
+        inv_w = [w for w in range(NW)
+                 if (inv_3Ra[0] < mid[w] < inv_3Ra[1]) or
+                    (inv_3Rb[0] < mid[w] < inv_3Rb[1])]
+        fst_kfi = float(np.mean([res['fst_kf_alt'][w] for w in inv_w]))
+        fst_fsfi = float(np.mean([res['fst_fs_fi'][w] for w in inv_w]))
+        if fst_kfi > fst_fsfi:
+            ordering = r'K-F$_I$ > F$_S$-F$_I$ $\checkmark$'
+            color = '#1B5E20'
+        else:
+            ordering = r'F$_S$-F$_I$ > K-F$_I$'
+            color = '#B71C1C'
+        ax_fst.text(0.98, 0.80, ordering,
+                    transform=ax_fst.transAxes, ha='right', va='top',
+                    fontsize=8, color=color,
+                    bbox=dict(boxstyle='round,pad=0.2',
+                              facecolor='white', alpha=0.8))
+
     fig.suptitle(
-        'An. funestus Kir/Fol neutral baseline\n'
-        f'Ne: 44k → 100k (14k gen) → N_anc (60k gen)',
-        fontsize=11, fontweight='bold', y=1.02)
+        'An. funestus Kir/Fol: 2Ra mating barrier hypothesis\n'
+        f'Migration active {t_mig_cease:,}–{t_split_gen:,} gen ago, '
+        f'P(triple-S in F)={p_triple_S:.3f}, m_base={m_base:.0e}',
+        fontsize=11, fontweight='bold', y=1.03)
 
     fig.tight_layout()
-    out = 'figures/empirical_kir_fol.pdf'
+    out = 'figures/empirical_kir_fol_2Ra.pdf'
     fig.savefig(out, bbox_inches='tight', dpi=150)
     plt.close()
     print(f'Updated plot: {out}')
@@ -297,39 +334,33 @@ def plot_results(all_results):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--rho', type=str, default='40',
-                        help='Comma-separated rho values (default: 40)')
-    parser.add_argument('--Ne-anc', type=str, default='1000000',
-                        help='Comma-separated Ne_anc values (default: 1000000)')
-    parser.add_argument('--reps', type=int, default=25,
-                        help='Number of replicates (default: 25)')
-    args = parser.parse_args()
-
-    rho_values = [int(x.strip()) for x in args.rho.split(',')]
-    ne_anc_values = [int(x.strip()) for x in args.Ne_anc.split(',')]
-
-    combos = [(rho, na) for rho in rho_values for na in ne_anc_values]
-    print(f"Kir/Fol neutral baseline — {len(combos)} combos, {args.reps} reps each:")
-    for rho, na in combos:
-        print(f"  rho={rho}, Ne_anc={na:,}")
+    print(f"Kir/Fol 2Ra mating barrier test")
+    print(f"  P(triple-S in F) = {p_2Ra_S_fol:.2f} x {p_3Ra_S_fol:.2f} x "
+          f"{p_3Rb_S_fol:.2f} = {p_triple_S:.3f}")
+    print(f"  m_base = {m_base:.0e}")
+    print(f"  m_eff (with 2Ra barrier) = {m_base * p_triple_S:.2e}")
+    print(f"  Migration window: {t_mig_cease:,} – {t_split_gen:,} gen ago")
     sys.stdout.flush()
 
-    all_results = []
-    for rho, na in combos:
-        res = run_one(rho, na, args.reps)
-        all_results.append(res)
-        all_results.sort(key=lambda x: (x['Ne_anc'], x['rho']))
-        plot_results(all_results)
+    scenarios = [
+        ("Free migration", m_base),
+        ("2Ra barrier", m_base * p_triple_S),
+        ("No migration", 0.0),
+    ]
 
-    # Final summary
+    results = []
+    for label, m_eff in scenarios:
+        res = run_scenario(label, m_eff, N_REPS)
+        results.append(res)
+        plot_scenarios(results)
+
     print(f"\n{'='*60}")
     print(f"SUMMARY")
     print(f"{'='*60}")
-    print(f"{'rho':>6} {'Ne_anc':>10} {'reps':>6} {'time':>8} "
+    print(f"{'scenario':<20} {'m_eff':>10} {'reps':>6} {'time':>8} "
           f"{'FST_inv':>10} {'FST_col':>10} {'ratio':>8}")
-    for res in all_results:
-        print(f"  {res['rho']:>4} {int(res['Ne_anc']):>10,} "
+    for res in results:
+        print(f"  {res['label']:<18} {res['m_eff']:>10.2e} "
               f"{res['total_ok']:>6} {res['elapsed']:>7.0f}s "
               f"{res['fst_inv']:>10.4f} {res['fst_col']:>10.4f} "
               f"{res['fst_ratio']:>7.2f}x")

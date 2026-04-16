@@ -44,7 +44,7 @@ impl RateEngine {
     pub fn build_structured(
         cache: &RateCache,
         active: &[Lineage],
-        arena: &SegmentArena,
+        _arena: &SegmentArena,
         demo: &Demography,
         t: f64,
         inversions: &[InversionSpec],

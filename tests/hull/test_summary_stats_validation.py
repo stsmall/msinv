@@ -61,7 +61,7 @@ def _afs_l2(a, b):
 # Panmictic seg sites — low and high rho
 # ---------------------------------------------------------------
 
-@pytest.mark.parametrize("rho,tol", [(20.0, 0.15), (200.0, 0.15), (500.0, 0.20)])
+@pytest.mark.parametrize("rho,tol", [(20.0, 0.06), (200.0, 0.06), (500.0, 0.08)])
 def test_panmictic_segsites_vs_msprime(rho, tol):
     """Mean segregating sites should match msprime within tol at
     each rho point. rho=500 exercises the bitmap iter_pairs + sweepline
@@ -71,7 +71,7 @@ def test_panmictic_segsites_vs_msprime(rho, tol):
     r = rho / (4.0 * Ne * L)
     mu = 1e-8
     n = 10
-    nreps = 100 if rho < 500 else 60
+    nreps = 400 if rho < 500 else 200
 
     hull_s = []
     msp_s = []
@@ -104,7 +104,7 @@ def test_panmictic_sfs_shape_matches_msprime():
     r = 1e-8
     mu = 1e-8
     n = 10
-    nreps = 100
+    nreps = 400
 
     hull_sfs = np.zeros(n + 1)
     msp_sfs = np.zeros(n + 1)
@@ -124,8 +124,8 @@ def test_panmictic_sfs_shape_matches_msprime():
 
     # Compare bins 1..n-1 (drop invariant/fixed).
     d = _afs_l2(hull_sfs[1:-1], msp_sfs[1:-1])
-    assert d < 0.15, (
-        f"SFS L2 distance {d:.3f} exceeds 0.15 "
+    assert d < 0.05, (
+        f"SFS L2 distance {d:.3f} exceeds 0.05 "
         f"(hull={hull_sfs}, msp={msp_sfs})")
 
 
@@ -143,7 +143,7 @@ def test_two_pop_split_segsites_and_dxy():
     mu = 1e-8
     t_split = 5_000.0
     n_per = 6
-    nreps = 120
+    nreps = 300
 
     hull_s0 = []; hull_s1 = []; hull_dxy = []
     msp_s0 = []; msp_s1 = []; msp_dxy = []
@@ -177,7 +177,7 @@ def test_two_pop_split_segsites_and_dxy():
                       ("seg_sites_pop1", hull_s1, msp_s1),
                       ("dxy", hull_dxy, msp_dxy)]:
         ratio = np.mean(h) / np.mean(m)
-        assert 0.85 < ratio < 1.15, (
+        assert 0.93 < ratio < 1.07, (
             f"{lbl}: hull/msprime ratio = {ratio:.3f} "
             f"(hull={np.mean(h):.3g}, msp={np.mean(m):.3g})")
 
@@ -196,7 +196,7 @@ def test_panmictic_high_rho_segsites_tight():
     r = rho / (4.0 * Ne * L)
     mu = 1e-8
     n = 20
-    nreps = 60
+    nreps = 200
 
     hull_s = []; msp_s = []
     for seed in range(nreps):
@@ -216,7 +216,8 @@ def test_panmictic_high_rho_segsites_tight():
         (np.std(hull_s) / hull_m) ** 2
         + (np.std(msp_s) / msp_m) ** 2
     ) / np.sqrt(nreps)
-    # 3-sigma bound.
-    assert abs(ratio - 1.0) < 3.0 * se + 0.05, (
+    # 3-sigma bound with a hard 4% floor (tighter than the
+    # parametrised test at the same rho point).
+    assert abs(ratio - 1.0) < 3.0 * se + 0.02, (
         f"rho=500 seg sites: ratio={ratio:.3f}, 3*SE={3*se:.3f} "
         f"(hull={hull_m:.1f}, msp={msp_m:.1f})")

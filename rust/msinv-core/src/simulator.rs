@@ -371,13 +371,40 @@ impl HullSimulator {
                 Event::CoalPair { i, j, class } => {
                     let (i, j) = (*i, *j);
                     let cls = *class;
+                    // Snapshot pre-state so we can mirror the swap_remove
+                    // pattern on the rate cache without rebuilding.
+                    let pre_len = active.len();
+                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         Some(cls));
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     engine_dirty = true;
-                    cache_dirty = true;
+
+                    if any_barrier && !cache_dirty {
+                        // apply_coalescence_partial does:
+                        //   1. swap_remove(hi)   — last (pre_len-1) → hi
+                        //   2. if lo < active.len() { swap_remove(lo) }
+                        //                          — new last (pre_len-2) → lo
+                        //   3. push up to 3 new lineages at the end.
+                        rate_cache.remove_lineage(hi);
+                        rate_cache.swap_update(hi, pre_len - 1);
+                        // After step 1, active.len() == pre_len - 1.
+                        // lo < pre_len - 1 always (lo < hi < pre_len),
+                        // so step 2's guard holds and we fire swap_remove(lo).
+                        rate_cache.remove_lineage(lo);
+                        // Old last after step 1 has index pre_len - 2
+                        // in the post-swap-1 state.
+                        rate_cache.swap_update(lo, pre_len - 2);
+                        // New lineages were pushed at indices
+                        // (pre_len - 2), (pre_len - 1), ... up to
+                        // active.len() - 1. Refresh each row.
+                        let post_len = active.len();
+                        for new_idx in (pre_len - 2)..post_len {
+                            rate_cache.recompute_for(new_idx, active, arena);
+                        }
+                    }
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;

@@ -1,0 +1,128 @@
+// Scenario 3: single inversion + recent hard sweep on the S karyotype
+// at x_sel inside the inversion.
+//
+// Setup matches scenario 1 (1 inv, flux, balancing selection) plus:
+// after inversion has existed for (t_inv_gen - t_sweep_gen) generations,
+// a beneficial mutation m4 is introduced at x_sel on a random S-karyotype
+// genome. Sweep runs for t_sweep_gen generations until sampling.
+// If m4 is lost, the run is rejected (Python runner retries).
+
+initialize() {
+    if (!exists("Ne")) defineConstant("Ne", 1000);
+    if (!exists("L")) defineConstant("L", 100000);
+    if (!exists("inv_left")) defineConstant("inv_left", 30000);
+    if (!exists("inv_right")) defineConstant("inv_right", 70000);
+    if (!exists("x_sel")) defineConstant("x_sel", 50000);
+    if (!exists("r_rate")) defineConstant("r_rate", 1e-7);
+    if (!exists("gc_rate")) defineConstant("gc_rate", 1e-8);
+    if (!exists("gc_tract")) defineConstant("gc_tract", 100.0);
+    if (!exists("burnin_factor")) defineConstant("burnin_factor", 8);
+    if (!exists("t_inv_factor")) defineConstant("t_inv_factor", 4);
+    if (!exists("t_sweep_factor")) defineConstant("t_sweep_factor", 0.5);
+    if (!exists("s_coef")) defineConstant("s_coef", 0.05);
+    if (!exists("n_sweep_copies")) defineConstant("n_sweep_copies", 5);
+    if (!exists("s_bal")) defineConstant("s_bal", 0.01);
+    if (!exists("seed")) defineConstant("seed", 42);
+    if (!exists("trees_path")) defineConstant("trees_path", "output/scenario3.trees");
+
+    defineConstant("burnin_gen", burnin_factor * Ne);
+    defineConstant("t_inv_gen", t_inv_factor * Ne);
+    defineConstant("sample_gen", burnin_gen + t_inv_gen);
+    defineConstant("sweep_intro_gen",
+                   sample_gen - asInteger(t_sweep_factor * Ne));
+
+    setSeed(seed);
+
+    initializeTreeSeq();
+    initializeMutationRate(0.0);
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    initializeMutationType("m2", 0.5, "f", 0.0);   // karyotype marker
+    initializeMutationType("m4", 0.5, "f", s_coef);  // beneficial sweep allele
+    m2.convertToSubstitution = F;
+    m4.convertToSubstitution = F;
+    m2.color = "red";
+    m4.color = "green";
+
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, L - 1);
+
+    total_rate = r_rate + gc_rate;
+    nc_frac = gc_rate / total_rate;
+    initializeRecombinationRate(total_rate);
+    initializeGeneConversion(nc_frac, gc_tract, 1.0);
+}
+
+mutationEffect(m2) {
+    if (homozygous) return 1.0 - s_bal;
+    return 1.0 + s_bal;
+}
+
+recombination() {
+    k1 = genome1.countOfMutationsOfType(m2) > 0;
+    k2 = genome2.countOfMutationsOfType(m2) > 0;
+    if (k1 == k2) return F;
+    keep = !(breakpoints >= inv_left & breakpoints <= inv_right);
+    new_bp = breakpoints[keep];
+    if (size(new_bp) != size(breakpoints)) {
+        breakpoints = new_bp;
+        return T;
+    }
+    return F;
+}
+
+1 early() {
+    sim.addSubpop("p1", Ne);
+    community.rescheduleScriptBlock(s1, burnin_gen, burnin_gen);
+    community.rescheduleScriptBlock(s3, sweep_intro_gen, sweep_intro_gen);
+    community.rescheduleScriptBlock(s2, sample_gen, sample_gen);
+}
+
+s1 2 early() {
+    genomes = p1.genomes;
+    carriers = sample(genomes, asInteger(size(genomes) * 0.5));
+    carriers.addNewDrawnMutation(m2, inv_left);
+    cat("gen " + sim.cycle + ": added m2 to " + size(carriers) + "\n");
+}
+
+// Introduce beneficial allele on a random S-karyotype genome.
+s3 2 early() {
+    genomes = p1.genomes;
+    s_genomes = genomes[genomes.countOfMutationsOfType(m2) == 0];
+    if (size(s_genomes) == 0) {
+        cat("ERROR: no S-karyotype genomes at sweep intro\n");
+        sim.simulationFinished();
+        return;
+    }
+    n_pick = min(n_sweep_copies, size(s_genomes));
+    picks = sample(s_genomes, n_pick);
+    picks.addNewDrawnMutation(m4, x_sel);
+    cat("gen " + sim.cycle + ": introduced m4 on "
+        + n_pick + " S-karyotype genomes\n");
+}
+
+// Reject + restart if sweep allele is lost.
+2: late() {
+    if (sim.cycle > sweep_intro_gen & sim.cycle < sample_gen) {
+        n_m4 = sum(p1.genomes.countOfMutationsOfType(m4));
+        if (n_m4 == 0) {
+            cat("gen " + sim.cycle + ": m4 lost — rerun needed\n");
+            sim.simulationFinished();
+        }
+    }
+}
+
+s2 2 late() {
+    inds = p1.individuals;
+    n_remember = min(size(inds), 100);
+    sampled = sample(inds, n_remember);
+    sim.treeSeqRememberIndividuals(sampled);
+
+    counts = sapply(sampled, "sum(applyValue.genomes.countOfMutationsOfType(m2));");
+    n_m4 = sum(p1.genomes.countOfMutationsOfType(m4));
+    cat("gen " + sim.cycle + ": S-gen=" + (2 * sum(counts == 0) + sum(counts == 1))
+        + " I-gen=" + (2 * sum(counts == 2) + sum(counts == 1))
+        + " m4_freq=" + (n_m4 / size(p1.genomes)) + "\n");
+    sim.treeSeqOutput(trees_path);
+    cat("saved " + trees_path + "\n");
+    sim.simulationFinished();
+}

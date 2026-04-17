@@ -1,0 +1,113 @@
+// Scenario 2: two inversions, neutral, with gene flux.
+//
+// Same as scenario 1 but with two inversions: inv0 at [15k,45k] with
+// marker m2, inv1 at [55k,85k] with marker m3. Mild balancing
+// selection on each inversion. Crossover suppressed between
+// different karyotypes inside each inversion.
+
+initialize() {
+    if (!exists("Ne")) defineConstant("Ne", 1000);
+    if (!exists("L")) defineConstant("L", 100000);
+    if (!exists("inv0_left")) defineConstant("inv0_left", 15000);
+    if (!exists("inv0_right")) defineConstant("inv0_right", 45000);
+    if (!exists("inv1_left")) defineConstant("inv1_left", 55000);
+    if (!exists("inv1_right")) defineConstant("inv1_right", 85000);
+    if (!exists("r_rate")) defineConstant("r_rate", 1e-7);
+    if (!exists("gc_rate")) defineConstant("gc_rate", 1e-8);
+    if (!exists("gc_tract")) defineConstant("gc_tract", 100.0);
+    if (!exists("burnin_factor")) defineConstant("burnin_factor", 8);
+    if (!exists("t_inv_factor")) defineConstant("t_inv_factor", 4);
+    if (!exists("s_bal")) defineConstant("s_bal", 0.01);
+    if (!exists("seed")) defineConstant("seed", 42);
+    if (!exists("trees_path")) defineConstant("trees_path", "output/scenario2.trees");
+
+    defineConstant("burnin_gen", burnin_factor * Ne);
+    defineConstant("t_inv_gen", t_inv_factor * Ne);
+    defineConstant("sample_gen", burnin_gen + t_inv_gen);
+
+    setSeed(seed);
+
+    initializeTreeSeq();
+    initializeMutationRate(0.0);
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    initializeMutationType("m2", 0.5, "f", 0.0);  // inv0 marker
+    initializeMutationType("m3", 0.5, "f", 0.0);  // inv1 marker
+    m2.convertToSubstitution = F;
+    m3.convertToSubstitution = F;
+    m2.color = "red";
+    m3.color = "blue";
+
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, L - 1);
+
+    total_rate = r_rate + gc_rate;
+    nc_frac = gc_rate / total_rate;
+    initializeRecombinationRate(total_rate);
+    initializeGeneConversion(nc_frac, gc_tract, 1.0);
+}
+
+mutationEffect(m2) {
+    if (homozygous) return 1.0 - s_bal;
+    return 1.0 + s_bal;
+}
+mutationEffect(m3) {
+    if (homozygous) return 1.0 - s_bal;
+    return 1.0 + s_bal;
+}
+
+recombination() {
+    k1_0 = genome1.countOfMutationsOfType(m2) > 0;
+    k2_0 = genome2.countOfMutationsOfType(m2) > 0;
+    k1_1 = genome1.countOfMutationsOfType(m3) > 0;
+    k2_1 = genome2.countOfMutationsOfType(m3) > 0;
+
+    keep = rep(T, size(breakpoints));
+    if (k1_0 != k2_0) {
+        in_inv0 = (breakpoints >= inv0_left & breakpoints <= inv0_right);
+        keep = keep & !in_inv0;
+    }
+    if (k1_1 != k2_1) {
+        in_inv1 = (breakpoints >= inv1_left & breakpoints <= inv1_right);
+        keep = keep & !in_inv1;
+    }
+    if (any(!keep)) {
+        breakpoints = breakpoints[keep];
+        return T;
+    }
+    return F;
+}
+
+1 early() {
+    sim.addSubpop("p1", Ne);
+    community.rescheduleScriptBlock(s1, burnin_gen, burnin_gen);
+    community.rescheduleScriptBlock(s2, sample_gen, sample_gen);
+}
+
+s1 2 early() {
+    genomes = p1.genomes;
+    n = size(genomes);
+    c0 = sample(genomes, asInteger(n * 0.5));
+    c0.addNewDrawnMutation(m2, inv0_left);
+    c1 = sample(genomes, asInteger(n * 0.5));
+    c1.addNewDrawnMutation(m3, inv1_left);
+    cat("gen " + sim.cycle + ": added m2 to " + size(c0)
+        + ", m3 to " + size(c1) + "\n");
+}
+
+s2 2 late() {
+    inds = p1.individuals;
+    n_remember = min(size(inds), 100);
+    sampled = sample(inds, n_remember);
+    sim.treeSeqRememberIndividuals(sampled);
+
+    c0 = sapply(sampled, "sum(applyValue.genomes.countOfMutationsOfType(m2));");
+    c1 = sapply(sampled, "sum(applyValue.genomes.countOfMutationsOfType(m3));");
+    cat("gen " + sim.cycle + ": inv0 S-gen=" + (2 * sum(c0 == 0) + sum(c0 == 1))
+        + " I-gen=" + (2 * sum(c0 == 2) + sum(c0 == 1)) + "\n");
+    cat("          inv1 S-gen=" + (2 * sum(c1 == 0) + sum(c1 == 1))
+        + " I-gen=" + (2 * sum(c1 == 2) + sum(c1 == 1)) + "\n");
+
+    sim.treeSeqOutput(trees_path);
+    cat("saved " + trees_path + "\n");
+    sim.simulationFinished();
+}

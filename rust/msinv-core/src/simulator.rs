@@ -229,7 +229,9 @@ impl HullSimulator {
 
         // Persistent event list + Fenwick tree. Rebuilt on structural
         // changes; reused when only recombination happens.
-        let mut all_events: Vec<(f64, Event)> = Vec::new();
+        let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
+        let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
+        let mut pool_buf: Vec<usize> = Vec::with_capacity(64);
         let mut event_tree = crate::fenwick::Fenwick::new(0);
         let mut engine_dirty = true;  // force full rebuild of event list
         let mut cache_dirty = true;   // force full rebuild of rate_cache
@@ -300,12 +302,10 @@ impl HullSimulator {
                     }));
                 }
 
-                // Rebuild Fenwick tree.
-                let n_events = all_events.len();
-                event_tree = crate::fenwick::Fenwick::new(n_events);
-                for (leaf, (rate, _)) in all_events.iter().enumerate() {
-                    event_tree.update(leaf, *rate);
-                }
+                // Rebuild Fenwick tree. O(n) batch build via build_from.
+                rate_buf.clear();
+                rate_buf.extend(all_events.iter().map(|(r, _)| *r));
+                event_tree.build_from(&rate_buf);
                 engine_dirty = false;
             }
 
@@ -408,16 +408,19 @@ impl HullSimulator {
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
-                    let pool: Vec<usize> = active.iter().enumerate()
-                        .filter(|(_, l)| l.population == pop)
-                        .map(|(i, _)| i).collect();
-                    if pool.len() >= 2 {
-                        let ii = rng.random_range(0..pool.len());
-                        let mut jj = rng.random_range(0..pool.len() - 1);
+                    pool_buf.clear();
+                    for (i, l) in active.iter().enumerate() {
+                        if l.population == pop {
+                            pool_buf.push(i);
+                        }
+                    }
+                    if pool_buf.len() >= 2 {
+                        let ii = rng.random_range(0..pool_buf.len());
+                        let mut jj = rng.random_range(0..pool_buf.len() - 1);
                         if jj >= ii { jj += 1; }
                         // Phase F: hull prescreen — skip if lineage
                         // extents don't overlap (cheap rejection).
-                        let (a, b) = (pool[ii], pool[jj]);
+                        let (a, b) = (pool_buf[ii], pool_buf[jj]);
                         if !active[a].hulls_overlap(&active[b], arena) {
                             continue; // no-op, draw next event
                         }

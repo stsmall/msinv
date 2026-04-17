@@ -231,7 +231,13 @@ impl HullSimulator {
         // changes; reused when only recombination happens.
         let mut all_events: Vec<(f64, Event)> = Vec::new();
         let mut event_tree = crate::fenwick::Fenwick::new(0);
-        let mut engine_dirty = true;  // force full rebuild
+        let mut engine_dirty = true;  // force full rebuild of event list
+        let mut cache_dirty = true;   // force full rebuild of rate_cache
+        // Counter throttling gc_sole_lineages — run every GC_STRIDE
+        // recombs. Sole-carrier lineages contribute no coalescence rate
+        // so a few rounds of delay has no correctness impact.
+        const GC_STRIDE: u32 = 16;
+        let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {
             let n = active.len();
@@ -263,7 +269,10 @@ impl HullSimulator {
 
                 // Coalescence.
                 if any_barrier {
-                    rate_cache.rebuild(active, arena);
+                    if cache_dirty {
+                        rate_cache.rebuild(active, arena);
+                        cache_dirty = false;
+                    }
                     emit_coal_events_from_cache(
                         &rate_cache, active, &*demo, t,
                         inversions, &barrier_active,
@@ -321,6 +330,7 @@ impl HullSimulator {
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
                     engine_dirty = true;
+                    cache_dirty = true;
                     continue;
                 }
                 return;
@@ -343,6 +353,7 @@ impl HullSimulator {
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
                 engine_dirty = true;
+                cache_dirty = true;
                 continue;
             }
             t = t_event;
@@ -366,6 +377,7 @@ impl HullSimulator {
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     engine_dirty = true;
+                    cache_dirty = true;
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
@@ -389,6 +401,7 @@ impl HullSimulator {
                         total_material = active.iter()
                             .map(|l| l.cached_len).sum();
                         engine_dirty = true;
+                        cache_dirty = true;
                     }
                 }
                 Event::Recombination => {
@@ -407,22 +420,43 @@ impl HullSimulator {
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
                     let x = find_position(active, chosen_idx, x_offset,
                                            arena, self.sequence_length);
+                    let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid);
+                    let len_after_split = active.len();
                     // Recombination preserves total material but changes
                     // lineage indices → rebuild event list.
                     engine_dirty = true;
+                    // Incremental cache update: only the split lineage
+                    // and the new right-hand lineage changed.
+                    if any_barrier && !cache_dirty {
+                        rate_cache.recompute_for(chosen_idx, active, arena);
+                        if len_after_split > len_before_split {
+                            rate_cache.recompute_for(
+                                len_after_split - 1, active, arena);
+                        }
+                    }
                     // GC sole-carrier lineages — only after recomb
                     // (matches Python). GC after coalescence is wrong:
                     // the merged lineage's solo bits (non-overlap parts
                     // from the two parents) still need to coalesce with
                     // others, but if no current other lineage covers
                     // them they get incorrectly discarded.
-                    let n_before_gc = active.len();
-                    gc_sole_lineages(active, arena);
-                    if active.len() != n_before_gc {
-                        total_material = active.iter()
-                            .map(|l| l.cached_len).sum();
+                    // Throttled: run every GC_STRIDE recombs. Sole
+                    // carriers have zero coalescence rate, so delaying
+                    // removal a few events is correctness-preserving.
+                    gc_counter += 1;
+                    if gc_counter >= GC_STRIDE {
+                        gc_counter = 0;
+                        let n_before_gc = active.len();
+                        gc_sole_lineages(active, arena);
+                        if active.len() != n_before_gc {
+                            total_material = active.iter()
+                                .map(|l| l.cached_len).sum();
+                            // GC rearranged indices via swap_remove → cache
+                            // mapping no longer valid. Fall back to rebuild.
+                            cache_dirty = true;
+                        }
                     }
                 }
                 Event::Flux { lineage_idx, inv_idx } => {
@@ -437,6 +471,9 @@ impl HullSimulator {
                                              arena, next_uid);
                         }
                         engine_dirty = true;
+                        // Flux may append a new lineage and mutate li —
+                        // safest to rebuild the cache.
+                        cache_dirty = true;
                     }
                 }
                 Event::Migration { lineage_idx, dst_pop } => {
@@ -445,6 +482,11 @@ impl HullSimulator {
                         active[idx].population = *dst_pop;
                     }
                     engine_dirty = true;  // pop assignment changed
+                    // Pop change affects pair eligibility for this
+                    // lineage; recompute its row.
+                    if any_barrier && !cache_dirty {
+                        rate_cache.recompute_for(idx, active, arena);
+                    }
                 }
             }
 

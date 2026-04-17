@@ -88,6 +88,77 @@ impl Fenwick {
             self.update(i, delta);
         }
     }
+
+    /// Reset size to `n` and zero all entries, reusing the underlying
+    /// allocation whenever possible. Avoids reallocation on hot rebuild
+    /// paths where the tree is recreated each iteration.
+    pub fn reset(&mut self, n: usize) {
+        let need = n + 1;
+        if self.tree.len() < need {
+            self.tree.resize(need, 0.0);
+        }
+        for x in self.tree[..need].iter_mut() {
+            *x = 0.0;
+        }
+        self.n = n;
+    }
+
+    /// Batch build from a slice of rates in O(n) instead of
+    /// n * O(log n) point updates. Uses the standard in-place Fenwick
+    /// construction: copy rates into the tree, then propagate each
+    /// cell into its parent in a single linear pass.
+    pub fn build_from(&mut self, rates: &[f64]) {
+        let n = rates.len();
+        let need = n + 1;
+        if self.tree.len() < need {
+            self.tree.resize(need, 0.0);
+        }
+        // Copy rates to 1-indexed tree slots.
+        self.tree[0] = 0.0;
+        for i in 0..n {
+            self.tree[i + 1] = rates[i];
+        }
+        // Propagate each node up to its parent in one pass.
+        for i in 1..=n {
+            let parent = i + (i & i.wrapping_neg());
+            if parent <= n {
+                let v = self.tree[i];
+                self.tree[parent] += v;
+            }
+        }
+        self.n = n;
+    }
+
+    /// Current tree size (number of leaves).
+    pub fn len(&self) -> usize { self.n }
+
+    /// Grow the tree to at least `new_n` leaves, zero-initialising any
+    /// new positions. Existing internal nodes remain valid because
+    /// Fenwick aggregating nodes at index k aggregate the range
+    /// [k - (k & -k) + 1, k], which does not depend on n — n only
+    /// bounds the walk in `update`, `prefix_sum`, and `find`.
+    pub fn grow(&mut self, new_n: usize) {
+        if new_n <= self.n { return; }
+        let need = new_n + 1;
+        if self.tree.len() < need {
+            self.tree.resize(need, 0.0);
+        } else {
+            for x in self.tree[self.n + 1..need].iter_mut() {
+                *x = 0.0;
+            }
+        }
+        self.n = new_n;
+    }
+
+    /// Set the value at position `i` to `new_rate`. Uses prefix-sum
+    /// diff to compute the delta and apply via `update`.
+    pub fn set(&mut self, i: usize, new_rate: f64) {
+        let prev = self.prefix_sum(i) - if i == 0 { 0.0 } else { self.prefix_sum(i - 1) };
+        let delta = new_rate - prev;
+        if delta != 0.0 {
+            self.update(i, delta);
+        }
+    }
 }
 
 #[cfg(test)]

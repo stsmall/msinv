@@ -22,14 +22,14 @@ type PairOverlap = SmallVec<[(BranchClass, f64); 4]>;
 
 /// Flat index for a pair (i, j) where i < j, into a triangular array.
 #[inline]
-fn pair_idx(i: usize, j: usize, n: usize) -> usize {
+pub fn pair_idx(i: usize, j: usize, n: usize) -> usize {
     debug_assert!(i < j && j < n);
     i * n - i * (i + 1) / 2 + (j - i - 1)
 }
 
 /// Number of entries in the triangular pair cache for n lineages.
 #[inline]
-fn tri_size(n: usize) -> usize {
+pub fn tri_size(n: usize) -> usize {
     n * (n - 1) / 2
 }
 

@@ -17,8 +17,9 @@ use crate::segment::SegmentArena;
 use smallvec::SmallVec;
 
 /// Per-pair overlap: list of (BranchClass, overlap_length) entries.
-/// SmallVec avoids heap allocation for the common 1-2 class case.
-type PairOverlap = SmallVec<[(BranchClass, f64); 4]>;
+/// SmallVec inline size 2 fits the common 1-2 class case while keeping
+/// the per-slot footprint small (matters at n² scale at rho ≥ 500).
+type PairOverlap = SmallVec<[(BranchClass, f64); 2]>;
 
 /// Flat index for a pair (i, j) where i < j, into a triangular array.
 #[inline]
@@ -36,19 +37,50 @@ pub fn tri_size(n: usize) -> usize {
 pub struct RateCache {
     /// Per-pair overlap cache. Indexed by pair_idx(i, j, capacity).
     overlaps: Vec<PairOverlap>,
+    /// Bitmap of non-empty pair slots (one bit per pair_idx). Allows
+    /// O(m + n^2/64) iteration over occupied pairs without reading each
+    /// SmallVec header.
+    nonempty_bits: Vec<u64>,
     /// Current number of active lineages.
     n: usize,
     /// Max capacity (determines pair_idx mapping).
     capacity: usize,
 }
 
+#[inline(always)]
+fn bit_set(bits: &mut [u64], i: usize) {
+    bits[i >> 6] |= 1u64 << (i & 63);
+}
+#[inline(always)]
+fn bit_clear(bits: &mut [u64], i: usize) {
+    bits[i >> 6] &= !(1u64 << (i & 63));
+}
+#[inline(always)]
+fn bit_get(bits: &[u64], i: usize) -> bool {
+    (bits[i >> 6] >> (i & 63)) & 1 != 0
+}
+
+#[inline(always)]
+fn nbits_words(n_bits: usize) -> usize { (n_bits + 63) / 64 }
+
 impl RateCache {
     pub fn new(max_lineages: usize) -> Self {
         let cap = max_lineages;
+        let n_pairs = tri_size(cap);
         Self {
-            overlaps: vec![SmallVec::new(); tri_size(cap)],
+            overlaps: vec![SmallVec::new(); n_pairs],
+            nonempty_bits: vec![0u64; nbits_words(n_pairs)],
             n: 0,
             capacity: cap,
+        }
+    }
+
+    fn ensure_capacity(&mut self, need: usize) {
+        if need > self.capacity {
+            self.capacity = need * 2;
+            let n_pairs = tri_size(self.capacity);
+            self.overlaps.resize(n_pairs, SmallVec::new());
+            self.nonempty_bits.resize(nbits_words(n_pairs), 0u64);
         }
     }
 
@@ -59,14 +91,13 @@ impl RateCache {
         arena: &SegmentArena,
     ) {
         self.n = active.len();
-        // Grow capacity if needed.
-        if self.n > self.capacity {
-            self.capacity = self.n * 2;
-            self.overlaps.resize(tri_size(self.capacity), SmallVec::new());
-        }
+        self.ensure_capacity(self.n);
         // Clear all entries.
         for entry in &mut self.overlaps {
             entry.clear();
+        }
+        for w in &mut self.nonempty_bits {
+            *w = 0;
         }
         // Compute all pairs.
         for i in 0..self.n {
@@ -76,7 +107,9 @@ impl RateCache {
                 }
                 let ovl = compute_overlap(active[i].head, active[j].head, arena);
                 if !ovl.is_empty() {
-                    self.overlaps[pair_idx(i, j, self.capacity)] = ovl;
+                    let pidx = pair_idx(i, j, self.capacity);
+                    self.overlaps[pidx] = ovl;
+                    bit_set(&mut self.nonempty_bits, pidx);
                 }
             }
         }
@@ -92,20 +125,21 @@ impl RateCache {
         arena: &SegmentArena,
     ) {
         self.n = active.len();
-        if self.n > self.capacity {
-            self.capacity = self.n * 2;
-            self.overlaps.resize(tri_size(self.capacity), SmallVec::new());
-        }
+        self.ensure_capacity(self.n);
         for other in 0..self.n {
             if other == idx { continue; }
             let (i, j) = if other < idx { (other, idx) } else { (idx, other) };
             let pidx = pair_idx(i, j, self.capacity);
             self.overlaps[pidx].clear();
+            bit_clear(&mut self.nonempty_bits, pidx);
             if active[i].population != active[j].population {
                 continue;
             }
             let ovl = compute_overlap(active[i].head, active[j].head, arena);
-            self.overlaps[pidx] = ovl;
+            if !ovl.is_empty() {
+                self.overlaps[pidx] = ovl;
+                bit_set(&mut self.nonempty_bits, pidx);
+            }
         }
     }
 
@@ -115,7 +149,9 @@ impl RateCache {
         for other in 0..self.n {
             if other == idx { continue; }
             let (i, j) = if other < idx { (other, idx) } else { (idx, other) };
-            self.overlaps[pair_idx(i, j, self.capacity)].clear();
+            let pidx = pair_idx(i, j, self.capacity);
+            self.overlaps[pidx].clear();
+            bit_clear(&mut self.nonempty_bits, pidx);
         }
     }
 
@@ -136,7 +172,14 @@ impl RateCache {
             let new_pidx = pair_idx(
                 other.min(removed_idx), other.max(removed_idx), self.capacity);
             let data = std::mem::take(&mut self.overlaps[old_pidx]);
+            let was_nonempty = bit_get(&self.nonempty_bits, old_pidx);
+            bit_clear(&mut self.nonempty_bits, old_pidx);
             self.overlaps[new_pidx] = data;
+            if was_nonempty {
+                bit_set(&mut self.nonempty_bits, new_pidx);
+            } else {
+                bit_clear(&mut self.nonempty_bits, new_pidx);
+            }
         }
         self.n -= 1;
     }
@@ -147,17 +190,103 @@ impl RateCache {
         &self.overlaps[pair_idx(a, b, self.capacity)]
     }
 
-    /// Iterate all non-empty pairs. Returns (i, j, &overlaps).
-    pub fn iter_pairs(&self) -> impl Iterator<Item = (usize, usize, &PairOverlap)> {
-        let cap = self.capacity;
-        let n = self.n;
-        (0..n).flat_map(move |i| {
-            ((i + 1)..n).filter_map(move |j| {
-                let pidx = pair_idx(i, j, cap);
-                let ovl = &self.overlaps[pidx];
-                if ovl.is_empty() { None } else { Some((i, j, ovl)) }
-            })
-        })
+    /// Iterate all non-empty pairs using the bitmap at word granularity:
+    /// for each row we load 64-bit chunks and use `trailing_zeros` to
+    /// step directly to the next set bit. Empty words cost a single
+    /// load + compare.
+    pub fn iter_pairs(&self) -> NonEmptyPairIter<'_> {
+        let mut it = NonEmptyPairIter {
+            cache: self,
+            row: 0,
+            base_pidx: 0,
+            row_end_pidx: 0,
+            pidx_word: 0,
+            bits: 0,
+            done: false,
+        };
+        it.prime_row(0);
+        it
+    }
+}
+
+pub struct NonEmptyPairIter<'a> {
+    cache: &'a RateCache,
+    row: usize,
+    base_pidx: usize,      // pair_idx(row, row+1, cap)
+    row_end_pidx: usize,   // exclusive end of pair_idx range for this row
+    pidx_word: usize,      // current word index within nonempty_bits
+    bits: u64,             // remaining set bits in current word
+    done: bool,
+}
+
+impl<'a> NonEmptyPairIter<'a> {
+    fn prime_row(&mut self, row: usize) {
+        let n = self.cache.n;
+        if row + 1 >= n {
+            self.done = true;
+            return;
+        }
+        let cap = self.cache.capacity;
+        self.row = row;
+        self.base_pidx = pair_idx(row, row + 1, cap);
+        self.row_end_pidx = self.base_pidx + (n - row - 1);
+        self.pidx_word = self.base_pidx >> 6;
+        self.load_current_word_masked();
+    }
+
+    #[inline]
+    fn load_current_word_masked(&mut self) {
+        let word_start = self.pidx_word << 6;
+        if word_start >= self.row_end_pidx {
+            self.bits = 0;
+            return;
+        }
+        let raw = self.cache.nonempty_bits
+            .get(self.pidx_word).copied().unwrap_or(0);
+        // Mask off bits before row start (only relevant on first word).
+        let lo_mask = if self.base_pidx > word_start {
+            !((1u64 << (self.base_pidx - word_start)) - 1)
+        } else { !0u64 };
+        // Mask off bits past row end (only relevant on last word).
+        let end_offset = self.row_end_pidx - word_start;
+        let hi_mask = if end_offset >= 64 { !0u64 }
+            else { (1u64 << end_offset) - 1 };
+        self.bits = raw & lo_mask & hi_mask;
+    }
+
+    #[inline]
+    fn advance_word(&mut self) -> bool {
+        self.pidx_word += 1;
+        let word_start = self.pidx_word << 6;
+        if word_start >= self.row_end_pidx {
+            return false;
+        }
+        self.load_current_word_masked();
+        true
+    }
+}
+
+impl<'a> Iterator for NonEmptyPairIter<'a> {
+    type Item = (usize, usize, &'a PairOverlap);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.done { return None; }
+            if self.bits != 0 {
+                let bit = self.bits.trailing_zeros() as usize;
+                self.bits &= self.bits - 1;
+                let pidx = (self.pidx_word << 6) + bit;
+                let j = self.row + 1 + (pidx - self.base_pidx);
+                let i = self.row;
+                return Some((i, j, &self.cache.overlaps[pidx]));
+            }
+            if self.advance_word() {
+                continue;
+            }
+            // Next row.
+            self.prime_row(self.row + 1);
+        }
     }
 }
 

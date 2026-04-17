@@ -708,42 +708,59 @@ impl HullSimulator {
 
 /// Remove lineages that are the sole carrier at every position they
 /// cover — these can't produce more edges under SMC'.
+///
+/// Sweepline implementation: collect all segments tagged with owner,
+/// sort by left, walk left-to-right maintaining an "open" set of
+/// segments whose right > current left. A lineage has external
+/// overlap iff at some point its open segment coexists with an open
+/// segment from a different owner. Lineages never marked are
+/// sole-carriers and get swap_removed.
 fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
-    if active.len() <= 1 {
-        return;
-    }
-    // For each lineage, check if any other lineage overlaps it at
-    // any position. If not, remove it.
-    let mut to_remove: Vec<usize> = Vec::new();
-    'outer: for (i, lin_i) in active.iter().enumerate() {
-        let mut cur = lin_i.head;
+    let n = active.len();
+    if n <= 1 { return; }
+
+    let mut segs: Vec<(f64, f64, u32)> = Vec::with_capacity(n * 2);
+    for (i, lin) in active.iter().enumerate() {
+        let mut cur = lin.head;
         while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            // Check if any other lineage has material overlapping [seg.left, seg.right).
-            for (j, lin_j) in active.iter().enumerate() {
-                if j == i { continue; }
-                // Quick check: does lin_j have any segment overlapping seg?
-                let mut cur_j = lin_j.head;
-                while cur_j != SEG_NIL {
-                    let sj = arena.get(cur_j);
-                    if sj.right > seg.left && sj.left < seg.right {
-                        // Overlap found — this lineage still matters.
-                        continue 'outer;
-                    }
-                    if sj.left >= seg.right {
-                        break; // segments sorted, no more overlap possible
-                    }
-                    cur_j = sj.next;
+            let s = arena.get(cur);
+            segs.push((s.left, s.right, i as u32));
+            cur = s.next;
+        }
+    }
+    if segs.is_empty() { return; }
+    segs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let mut has_overlap = vec![false; n];
+    let mut open: Vec<(f64, u32)> = Vec::with_capacity(64);
+    for &(l, r, owner) in &segs {
+        // Drop expired opens.
+        open.retain(|&(rr, _)| rr > l);
+        // Mark overlaps: `owner` gets marked if any open has diff owner,
+        // and every diff-owner open gets marked too. Skip already-marked
+        // entries to keep the inner loop short once a lineage is known
+        // to have overlap.
+        let owner_idx = owner as usize;
+        if !open.is_empty() {
+            if !has_overlap[owner_idx] {
+                for &(_, o2) in &open {
+                    if o2 != owner { has_overlap[owner_idx] = true; break; }
                 }
             }
-            cur = arena.get(cur).next;
+            for &(_, o2) in &open {
+                let o2_idx = o2 as usize;
+                if o2 != owner && !has_overlap[o2_idx] {
+                    has_overlap[o2_idx] = true;
+                }
+            }
         }
-        // No other lineage overlaps lin_i at any position.
-        to_remove.push(i);
+        open.push((r, owner));
     }
-    // Remove in reverse order to preserve indices.
-    for &idx in to_remove.iter().rev() {
-        active.swap_remove(idx);
+
+    for i in (0..n).rev() {
+        if !has_overlap[i] {
+            active.swap_remove(i);
+        }
     }
 }
 

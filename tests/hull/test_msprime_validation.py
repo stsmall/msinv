@@ -11,7 +11,7 @@ import msprime
 from msinv import HullSimulator, InversionSpec, Demography
 
 
-NREPS = 200
+NREPS = 500
 
 
 def _msp_ancestry(n, Ne, L, r, seed, pops=None, demo=None):
@@ -54,7 +54,7 @@ def test_panmictic_diversity_matches_msprime():
         msp_pi.append(float(mts2.diversity()))
 
     ratio = np.mean(hull_pi) / np.mean(msp_pi)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.95 < ratio < 1.05, (
         f"Hull/msprime pi ratio = {ratio:.3f}")
 
 
@@ -73,7 +73,7 @@ def test_panmictic_tmrca_matches_msprime():
         msp_t.append(ts2.first().time(ts2.first().root))
 
     ratio = np.mean(hull_t) / np.mean(msp_t)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.95 < ratio < 1.05, (
         f"Hull/msprime T_MRCA ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_t):.0f}, msp={np.mean(msp_t):.0f})")
 
@@ -101,7 +101,7 @@ def test_panmictic_tree_count_matches_msprime():
         msp_t.append(ts2.num_trees)
 
     ratio = np.mean(hull_t) / np.mean(msp_t)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.95 < ratio < 1.05, (
         f"Hull/msprime tree ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_t):.1f}, msp={np.mean(msp_t):.1f})")
 
@@ -113,7 +113,7 @@ def test_panmictic_tree_count_matches_msprime():
 def test_two_pop_split_dxy_matches_msprime():
     """Two-pop split dxy should match msprime within 25%."""
     Ne = 2_000; mu = 1e-8; L = 50_000; r = 1e-8; t_split = 5_000
-    n_per = 3; NREPS_2P = 100
+    n_per = 3; NREPS_2P = 300
 
     hull_dxy = []; msp_dxy = []
     for seed in range(NREPS_2P):
@@ -143,7 +143,7 @@ def test_two_pop_split_dxy_matches_msprime():
             [list(range(n_per)), list(range(n_per, 2*n_per))])))
 
     ratio = np.mean(hull_dxy) / np.mean(msp_dxy)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.94 < ratio < 1.06, (
         f"Hull/msprime dxy ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_dxy):.2e}, msp={np.mean(msp_dxy):.2e})")
 

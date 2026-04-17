@@ -162,23 +162,21 @@ impl RateCache {
             self.n -= 1;
             return;
         }
-        // Clear all entries for `removed_idx` (already done by remove_lineage).
-        // Copy entries for `old_last` → `removed_idx`.
+        // Callers must have invoked `remove_lineage(removed_idx)` first,
+        // so every (removed_idx, *) slot is already empty with bit = 0.
+        // Move (old_last, *) overlap data into those slots.
         for other in 0..old_last {
             if other == removed_idx { continue; }
-            // old pair: (other, old_last) or (old_last, other)
             let old_pidx = pair_idx(
                 other.min(old_last), other.max(old_last), self.capacity);
             let new_pidx = pair_idx(
                 other.min(removed_idx), other.max(removed_idx), self.capacity);
-            let data = std::mem::take(&mut self.overlaps[old_pidx]);
             let was_nonempty = bit_get(&self.nonempty_bits, old_pidx);
+            let data = std::mem::take(&mut self.overlaps[old_pidx]);
             bit_clear(&mut self.nonempty_bits, old_pidx);
             self.overlaps[new_pidx] = data;
             if was_nonempty {
                 bit_set(&mut self.nonempty_bits, new_pidx);
-            } else {
-                bit_clear(&mut self.nonempty_bits, new_pidx);
             }
         }
         self.n -= 1;
@@ -212,10 +210,14 @@ impl RateCache {
 pub struct NonEmptyPairIter<'a> {
     cache: &'a RateCache,
     row: usize,
-    base_pidx: usize,      // pair_idx(row, row+1, cap)
-    row_end_pidx: usize,   // exclusive end of pair_idx range for this row
-    pidx_word: usize,      // current word index within nonempty_bits
-    bits: u64,             // remaining set bits in current word
+    // pair_idx(row, row+1, cap); base of current row's bit range.
+    base_pidx: usize,
+    // Exclusive end of current row's pair_idx range.
+    row_end_pidx: usize,
+    pidx_word: usize,
+    // Remaining set bits in the currently-loaded word, masked to the
+    // current row's range. Cleared bits are the ones already yielded.
+    bits: u64,
     done: bool,
 }
 

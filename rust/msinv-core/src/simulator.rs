@@ -734,24 +734,12 @@ fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
     let mut has_overlap = vec![false; n];
     let mut open: Vec<(f64, u32)> = Vec::with_capacity(64);
     for &(l, r, owner) in &segs {
-        // Drop expired opens.
         open.retain(|&(rr, _)| rr > l);
-        // Mark overlaps: `owner` gets marked if any open has diff owner,
-        // and every diff-owner open gets marked too. Skip already-marked
-        // entries to keep the inner loop short once a lineage is known
-        // to have overlap.
         let owner_idx = owner as usize;
-        if !open.is_empty() {
-            if !has_overlap[owner_idx] {
-                for &(_, o2) in &open {
-                    if o2 != owner { has_overlap[owner_idx] = true; break; }
-                }
-            }
-            for &(_, o2) in &open {
-                let o2_idx = o2 as usize;
-                if o2 != owner && !has_overlap[o2_idx] {
-                    has_overlap[o2_idx] = true;
-                }
+        for &(_, o2) in &open {
+            if o2 != owner {
+                has_overlap[owner_idx] = true;
+                has_overlap[o2 as usize] = true;
             }
         }
         open.push((r, owner));

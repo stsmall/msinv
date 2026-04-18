@@ -18,7 +18,7 @@ import stdpopsim
 from msinv import HullSimulator, Demography
 
 
-NREPS = 100
+NREPS = 300
 L = 50_000  # keep short for speed
 
 
@@ -139,7 +139,7 @@ def test_homsap_africa_1t12():
         msp_pi.append(float(mts2.diversity()))
 
     ratio = np.mean(hull_pi) / np.mean(msp_pi)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.95 < ratio < 1.05, (
         f"Africa_1T12 pi ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})")
 
@@ -167,7 +167,7 @@ def test_dromel_african3epoch():
         msp_pi.append(float(mts2.diversity()))
 
     ratio = np.mean(hull_pi) / np.mean(msp_pi)
-    assert 0.90 < ratio < 1.10, (
+    assert 0.95 < ratio < 1.05, (
         f"African3Epoch pi ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})")
 

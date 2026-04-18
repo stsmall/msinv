@@ -6,6 +6,7 @@
 use rand::Rng;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
+use smallvec::SmallVec;
 
 use crate::class_tag::{BranchClass, Karyotype};
 use crate::demography::Demography;
@@ -40,10 +41,24 @@ pub struct SampleEntry {
 // Event tag for the competing-rates dispatcher
 // ---------------------------------------------------------------
 enum Event {
+    /// Per-pair coalescence (used by the non-cache structured fallback
+    /// `compute_coal_rates_structured`). Hot path uses CoalAggregate.
     CoalPair { i: usize, j: usize, class: BranchClass },
+    /// Aggregate coalescence rate for all pairs in `pop` whose overlap
+    /// lies in `class`. Firing samples the specific (i, j) pair from
+    /// RateCache proportional to overlap length in that class — avoids
+    /// the O(n^2) per-pair event-list entries that dominated rho≥500.
+    CoalAggregate { pop: u32, class: BranchClass },
     CoalPanmicticPop { pop: u32 },
     Recombination,
+    /// Per-lineage flux (kept for compute_flux_rates_static compatibility
+    /// and any legacy callers). The hot path uses FluxAggregate.
     Flux { lineage_idx: usize, inv_idx: usize },
+    /// Aggregate gene-flux rate for all lineages interacting with
+    /// `inv_idx`. Firing samples a lineage proportional to its cached
+    /// per-lineage flux rate — avoids the O(n * segs) full flux scan
+    /// on every event-list rebuild.
+    FluxAggregate { inv_idx: usize },
     Migration { lineage_idx: usize, dst_pop: u32 },
 }
 
@@ -229,9 +244,33 @@ impl HullSimulator {
 
         // Persistent event list + Fenwick tree. Rebuilt on structural
         // changes; reused when only recombination happens.
-        let mut all_events: Vec<(f64, Event)> = Vec::new();
+        let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
+        let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
+        let mut pool_buf: Vec<usize> = Vec::with_capacity(64);
         let mut event_tree = crate::fenwick::Fenwick::new(0);
-        let mut engine_dirty = true;  // force full rebuild
+        // Fenwick over lineage cached_lens. Enables O(log n) proportional
+        // selection for recombination, replacing the O(n) linear scan
+        // that was super-linear at rho ≥ 1000. Maintained in lockstep
+        // with `active` by mirroring swap_remove / push on tree slots.
+        let mut lin_len_tree = crate::fenwick::Fenwick::new(0);
+        let mut lin_tree_dirty = true;
+        // Per-lineage flux rate cache (parallel to `active`) + per-inv
+        // totals. Emitted as one aggregate Event::FluxAggregate per
+        // inversion so rebuild cost drops from O(n · segs) to O(1).
+        let mut flux_per_lin: Vec<FluxPerLin> = Vec::new();
+        let mut flux_total: Vec<f64> = vec![0.0; inversions.len()];
+        let mut flux_dirty = true;
+        // Reusable scratch for CoalAggregate dispatch — filled per fire
+        // with (i, j) pairs that have overlap in the bucket's class, so
+        // sampling doesn't have to walk iter_pairs twice.
+        let mut coal_candidates: Vec<(usize, usize)> = Vec::with_capacity(256);
+        let mut engine_dirty = true;  // force full rebuild of event list
+        let mut cache_dirty = true;   // force full rebuild of rate_cache
+        // Counter throttling gc_sole_lineages — run every GC_STRIDE
+        // recombs. Sole-carrier lineages contribute no coalescence rate
+        // so a few rounds of delay has no correctness impact.
+        const GC_STRIDE: u32 = 16;
+        let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {
             let n = active.len();
@@ -242,6 +281,29 @@ impl HullSimulator {
                     return;
                 }
                 return;
+            }
+
+            if lin_tree_dirty || lin_len_tree.len() < active.len() {
+                rate_buf.clear();
+                rate_buf.extend(active.iter().map(|l| l.cached_len));
+                lin_len_tree.build_from(&rate_buf);
+                lin_tree_dirty = false;
+            }
+            // Safety net: flux cache must stay parallel to `active`.
+            // Any size drift means some mutation path missed its flux
+            // hook — rebuild now so recomb/coal updates see a valid
+            // shape even before engine_dirty gets its turn.
+            if flux_dirty
+                || flux_per_lin.len() != active.len()
+                || flux_total.len() != inversions.len()
+            {
+                if flux_total.len() != inversions.len() {
+                    flux_total = vec![0.0; inversions.len()];
+                }
+                flux_rebuild_full(
+                    &mut flux_per_lin, &mut flux_total,
+                    active, inversions, arena, &barrier_active);
+                flux_dirty = false;
             }
 
             // Check for barrier crossings.
@@ -263,7 +325,10 @@ impl HullSimulator {
 
                 // Coalescence.
                 if any_barrier {
-                    rate_cache.rebuild(active, arena);
+                    if cache_dirty {
+                        rate_cache.rebuild(active, arena);
+                        cache_dirty = false;
+                    }
                     emit_coal_events_from_cache(
                         &rate_cache, active, &*demo, t,
                         inversions, &barrier_active,
@@ -279,10 +344,17 @@ impl HullSimulator {
                     all_events.push((total_recomb_rate, Event::Recombination));
                 }
 
-                // Gene flux.
+                // Gene flux — aggregate per-inversion events sourced
+                // from the incrementally maintained per-lineage cache.
+                // Rebuild already handled at the top of the loop.
                 if any_barrier {
-                    Self::compute_flux_rates_static(
-                        inversions, active, arena, &barrier_active, &mut all_events);
+                    for (ii, total) in flux_total.iter().enumerate() {
+                        if *total > 0.0 {
+                            all_events.push((*total, Event::FluxAggregate {
+                                inv_idx: ii,
+                            }));
+                        }
+                    }
                 }
                 // Migration.
                 for (rate, lin_idx, dst) in demo.migration_rates(active) {
@@ -291,12 +363,10 @@ impl HullSimulator {
                     }));
                 }
 
-                // Rebuild Fenwick tree.
-                let n_events = all_events.len();
-                event_tree = crate::fenwick::Fenwick::new(n_events);
-                for (leaf, (rate, _)) in all_events.iter().enumerate() {
-                    event_tree.update(leaf, *rate);
-                }
+                // Rebuild Fenwick tree. O(n) batch build via build_from.
+                rate_buf.clear();
+                rate_buf.extend(all_events.iter().map(|(r, _)| *r));
+                event_tree.build_from(&rate_buf);
                 engine_dirty = false;
             }
 
@@ -321,6 +391,9 @@ impl HullSimulator {
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
                     engine_dirty = true;
+                    cache_dirty = true;
+                    lin_tree_dirty = true;
+                    flux_dirty = true;
                     continue;
                 }
                 return;
@@ -343,6 +416,7 @@ impl HullSimulator {
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
                 engine_dirty = true;
+                cache_dirty = true;
                 continue;
             }
             t = t_event;
@@ -357,77 +431,284 @@ impl HullSimulator {
             };
 
             match chosen_event {
-                Event::CoalPair { i, j, class } => {
-                    let (i, j) = (*i, *j);
+                Event::CoalAggregate { pop, class } => {
+                    let pop = *pop;
                     let cls = *class;
+                    // Single-pass collect of matching (i, j) candidates
+                    // so we only walk iter_pairs once per coal dispatch.
+                    // The earlier two-pass (count then sample) version
+                    // dominated the rho=2000 flamegraph via SmallVec
+                    // deref overhead.
+                    coal_candidates.clear();
+                    for (ii, jj, overlaps) in rate_cache.iter_pairs() {
+                        if active[ii].population != pop { continue; }
+                        for (c, _) in overlaps {
+                            if *c == cls {
+                                coal_candidates.push((ii, jj));
+                                break;
+                            }
+                        }
+                    }
+                    if coal_candidates.is_empty() { continue; }
+                    let pick = rng.random_range(0..coal_candidates.len());
+                    let (i, j) = coal_candidates[pick];
+                    let pre_len = active.len();
+                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                    let old_i_len = active[i].cached_len;
+                    let old_j_len = active[j].cached_len;
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         Some(cls));
-                    total_material = active.iter()
-                        .map(|l| l.cached_len).sum();
+                    let post_len = active.len();
+                    // Incremental total_material: remove the two merged
+                    // lineages' contributions, add the new lineages'.
+                    let mut delta = -old_i_len - old_j_len;
+                    for new_idx in (pre_len - 2)..post_len {
+                        delta += active[new_idx].cached_len;
+                    }
+                    total_material += delta;
+                    // Mirror active's swap_remove(hi); swap_remove(lo); push*
+                    // on the length Fenwick so subsequent recomb picks stay
+                    // O(log n). Do swap-pattern in the same order as
+                    // apply_coalescence_partial.
+                    tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
+                    tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
+                    for new_idx in (pre_len - 2)..post_len {
+                        lin_len_tree.grow(new_idx + 1);
+                        lin_len_tree.set(new_idx, active[new_idx].cached_len);
+                    }
                     engine_dirty = true;
+
+                    if any_barrier && !cache_dirty {
+                        rate_cache.remove_lineage(hi);
+                        rate_cache.swap_update(hi, pre_len - 1);
+                        rate_cache.remove_lineage(lo);
+                        rate_cache.swap_update(lo, pre_len - 2);
+                        for new_idx in (pre_len - 2)..post_len {
+                            rate_cache.recompute_for(new_idx, active, arena);
+                        }
+                    }
+                    if any_barrier && !flux_dirty {
+                        flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
+                        flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
+                        for new_idx in (pre_len - 2)..post_len {
+                            flux_push(new_idx, &mut flux_per_lin,
+                                      &mut flux_total, active, inversions,
+                                      arena, &barrier_active);
+                        }
+                    }
+                }
+                Event::CoalPair { i, j, class } => {
+                    let (i, j) = (*i, *j);
+                    let cls = *class;
+                    let pre_len = active.len();
+                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                    let old_i_len = active[i].cached_len;
+                    let old_j_len = active[j].cached_len;
+                    apply_coalescence_partial(
+                        active, i, j, t, arena, tables, next_uid,
+                        Some(cls));
+                    let post_len = active.len();
+                    let mut delta = -old_i_len - old_j_len;
+                    for new_idx in (pre_len - 2)..post_len {
+                        delta += active[new_idx].cached_len;
+                    }
+                    total_material += delta;
+                    tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
+                    tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
+                    for new_idx in (pre_len - 2)..post_len {
+                        lin_len_tree.grow(new_idx + 1);
+                        lin_len_tree.set(new_idx, active[new_idx].cached_len);
+                    }
+                    engine_dirty = true;
+
+                    if any_barrier && !cache_dirty {
+                        rate_cache.remove_lineage(hi);
+                        rate_cache.swap_update(hi, pre_len - 1);
+                        rate_cache.remove_lineage(lo);
+                        rate_cache.swap_update(lo, pre_len - 2);
+                        for new_idx in (pre_len - 2)..post_len {
+                            rate_cache.recompute_for(new_idx, active, arena);
+                        }
+                    }
+                    if any_barrier && !flux_dirty {
+                        flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
+                        flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
+                        for new_idx in (pre_len - 2)..post_len {
+                            flux_push(new_idx, &mut flux_per_lin,
+                                      &mut flux_total, active, inversions,
+                                      arena, &barrier_active);
+                        }
+                    }
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
-                    let pool: Vec<usize> = active.iter().enumerate()
-                        .filter(|(_, l)| l.population == pop)
-                        .map(|(i, _)| i).collect();
-                    if pool.len() >= 2 {
-                        let ii = rng.random_range(0..pool.len());
-                        let mut jj = rng.random_range(0..pool.len() - 1);
+                    pool_buf.clear();
+                    for (i, l) in active.iter().enumerate() {
+                        if l.population == pop {
+                            pool_buf.push(i);
+                        }
+                    }
+                    if pool_buf.len() >= 2 {
+                        let ii = rng.random_range(0..pool_buf.len());
+                        let mut jj = rng.random_range(0..pool_buf.len() - 1);
                         if jj >= ii { jj += 1; }
                         // Phase F: hull prescreen — skip if lineage
                         // extents don't overlap (cheap rejection).
-                        let (a, b) = (pool[ii], pool[jj]);
+                        let (a, b) = (pool_buf[ii], pool_buf[jj]);
                         if !active[a].hulls_overlap(&active[b], arena) {
                             continue; // no-op, draw next event
                         }
+                        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                        let old_a_len = active[a].cached_len;
+                        let old_b_len = active[b].cached_len;
+                        let pre_len = active.len();
                         apply_coalescence(
                             active, a, b, t, arena,
                             tables, next_uid);
-                        // Recompute after merge.
-                        total_material = active.iter()
-                            .map(|l| l.cached_len).sum();
+                        let post_len = active.len();
+                        // Incremental total_material + lin_len_tree.
+                        let mut delta = -old_a_len - old_b_len;
+                        for new_idx in (pre_len - 2)..post_len {
+                            delta += active[new_idx].cached_len;
+                        }
+                        total_material += delta;
+                        tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
+                        tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
+                        for new_idx in (pre_len - 2)..post_len {
+                            lin_len_tree.grow(new_idx + 1);
+                            lin_len_tree.set(new_idx, active[new_idx].cached_len);
+                        }
+                        if any_barrier && !flux_dirty {
+                            flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
+                            flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
+                            for new_idx in (pre_len - 2)..post_len {
+                                flux_push(new_idx, &mut flux_per_lin,
+                                          &mut flux_total, active, inversions,
+                                          arena, &barrier_active);
+                            }
+                        }
                         engine_dirty = true;
+                        cache_dirty = true;
                     }
                 }
                 Event::Recombination => {
                     let u_lin: f64 = rng.random::<f64>();
                     let target = u_lin * total_material;
-                    let mut cum_len = 0.0;
-                    let mut chosen_idx = 0;
-                    for (idx, lin) in active.iter().enumerate() {
-                        cum_len += lin.cached_len;
-                        if cum_len > target {
-                            chosen_idx = idx;
-                            break;
-                        }
-                    }
+                    // O(log n) proportional selection via the length
+                    // Fenwick. Clamp to last valid index in case `target`
+                    // floats just past total (FP rounding).
+                    let chosen_idx = {
+                        let raw = lin_len_tree.find(target);
+                        if raw >= active.len() { active.len() - 1 } else { raw }
+                    };
                     let lin_len = active[chosen_idx].cached_len;
+                    if lin_len <= 0.0 { continue; }
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
                     let x = find_position(active, chosen_idx, x_offset,
                                            arena, self.sequence_length);
+                    let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid);
-                    // Recombination preserves total material but changes
-                    // lineage indices → rebuild event list.
+                    let len_after_split = active.len();
+                    // Recombination preserves total material.
                     engine_dirty = true;
+                    // Update lin_len_tree: chosen_idx's cached_len shrank;
+                    // new lineage (if any) was pushed at the end.
+                    lin_len_tree.set(chosen_idx, active[chosen_idx].cached_len);
+                    if len_after_split > len_before_split {
+                        let new_idx = len_after_split - 1;
+                        lin_len_tree.grow(new_idx + 1);
+                        lin_len_tree.set(new_idx, active[new_idx].cached_len);
+                    }
+                    // Incremental cache update.
+                    if any_barrier && !cache_dirty {
+                        if len_after_split > len_before_split {
+                            // Specialised split path: skip recompute for
+                            // pairs whose "other" lineage lies entirely
+                            // on one side of the split point; move slot
+                            // data rather than rerun compute_overlap.
+                            rate_cache.apply_recomb_split(
+                                chosen_idx, len_after_split - 1, x,
+                                active, arena);
+                        } else {
+                            // No split happened (edge case): row idx
+                            // still needs refresh.
+                            rate_cache.recompute_for(chosen_idx, active, arena);
+                        }
+                    }
+                    if any_barrier && !flux_dirty {
+                        flux_update_for(chosen_idx, &mut flux_per_lin,
+                                         &mut flux_total, active, inversions,
+                                         arena, &barrier_active);
+                        if len_after_split > len_before_split {
+                            flux_push(len_after_split - 1, &mut flux_per_lin,
+                                      &mut flux_total, active, inversions,
+                                      arena, &barrier_active);
+                        }
+                    }
                     // GC sole-carrier lineages — only after recomb
                     // (matches Python). GC after coalescence is wrong:
                     // the merged lineage's solo bits (non-overlap parts
                     // from the two parents) still need to coalesce with
                     // others, but if no current other lineage covers
                     // them they get incorrectly discarded.
-                    let n_before_gc = active.len();
-                    gc_sole_lineages(active, arena);
-                    if active.len() != n_before_gc {
-                        total_material = active.iter()
-                            .map(|l| l.cached_len).sum();
+                    // Throttled: run every GC_STRIDE recombs. Sole
+                    // carriers have zero coalescence rate, so delaying
+                    // removal a few events is correctness-preserving.
+                    gc_counter += 1;
+                    if gc_counter >= GC_STRIDE {
+                        gc_counter = 0;
+                        let n_before_gc = active.len();
+                        let removed = gc_sole_lineages_with_removed(active, arena);
+                        if !removed.is_empty() {
+                            total_material = active.iter()
+                                .map(|l| l.cached_len).sum();
+                            // Mirror each swap_remove on the auxiliary
+                            // caches. `removed` is in descending order
+                            // so bookkeeping stays monotone.
+                            let mut len_snapshot = n_before_gc;
+                            for &idx in &removed {
+                                let last_idx = len_snapshot - 1;
+                                if any_barrier && !cache_dirty {
+                                    rate_cache.remove_lineage(idx);
+                                    rate_cache.swap_update(idx, last_idx);
+                                }
+                                if any_barrier && !flux_dirty {
+                                    flux_swap_remove(idx, &mut flux_per_lin,
+                                                      &mut flux_total);
+                                }
+                                tree_swap_remove(&mut lin_len_tree,
+                                                  idx, last_idx);
+                                len_snapshot -= 1;
+                            }
+                        }
                     }
                 }
-                Event::Flux { lineage_idx, inv_idx } => {
-                    let (li, ii) = (*lineage_idx, *inv_idx);
+                Event::FluxAggregate { inv_idx } => {
+                    let ii = *inv_idx;
+                    if ii >= flux_total.len() { continue; }
+                    let total = flux_total[ii];
+                    if total <= 0.0 { continue; }
+                    // Weighted lineage pick from per-lineage flux cache.
+                    let u: f64 = rng.random::<f64>() * total;
+                    let mut running = 0.0;
+                    let mut chose_li: Option<usize> = None;
+                    for (li_idx, entries) in flux_per_lin.iter().enumerate() {
+                        for (iii, rate) in entries.iter() {
+                            if *iii == ii {
+                                running += *rate;
+                                if running >= u {
+                                    chose_li = Some(li_idx);
+                                    break;
+                                }
+                            }
+                        }
+                        if chose_li.is_some() { break; }
+                    }
+                    let li = match chose_li { Some(l) => l, None => continue };
                     let inv = &inversions[ii];
+                    let pre_len_flux = active.len();
                     if let Some(x_event) = self.sample_flux_position(
                         active, li, inv, arena, rng)
                     {
@@ -437,7 +718,38 @@ impl HullSimulator {
                                              arena, next_uid);
                         }
                         engine_dirty = true;
+                        total_material = active.iter()
+                            .map(|l| l.cached_len).sum();
+                        lin_tree_dirty = true;
+                        // Incremental rate_cache update: apply_gene_flux
+                        // only mutates `li` plus any appended lineages.
+                        // Recomputing those rows instead of the whole
+                        // O(n² × segs) rebuild is a large win at rho ≥
+                        // 1000 where flux events fire thousands of times.
+                        let post_len = active.len();
+                        if any_barrier && !cache_dirty {
+                            rate_cache.recompute_for(li, active, arena);
+                            for new_idx in pre_len_flux..post_len {
+                                rate_cache.recompute_for(new_idx, active, arena);
+                            }
+                        }
+                        if !flux_dirty {
+                            flux_update_for(li, &mut flux_per_lin,
+                                             &mut flux_total, active,
+                                             inversions, arena, &barrier_active);
+                            for new_idx in pre_len_flux..post_len {
+                                flux_push(new_idx, &mut flux_per_lin,
+                                          &mut flux_total, active,
+                                          inversions, arena, &barrier_active);
+                            }
+                        }
                     }
+                }
+                Event::Flux { lineage_idx: _, inv_idx: _ } => {
+                    // Legacy per-lineage flux event — no longer emitted
+                    // on the hot path. Keep the variant reachable as a
+                    // no-op to avoid breaking any external use.
+                    continue;
                 }
                 Event::Migration { lineage_idx, dst_pop } => {
                     let idx = *lineage_idx;
@@ -445,6 +757,16 @@ impl HullSimulator {
                         active[idx].population = *dst_pop;
                     }
                     engine_dirty = true;  // pop assignment changed
+                    if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
+                        flux_update_for(idx, &mut flux_per_lin,
+                                         &mut flux_total, active, inversions,
+                                         arena, &barrier_active);
+                    }
+                    // Pop change affects pair eligibility for this
+                    // lineage; recompute its row.
+                    if any_barrier && !cache_dirty {
+                        rate_cache.recompute_for(idx, active, arena);
+                    }
                 }
             }
 
@@ -634,68 +956,217 @@ impl HullSimulator {
 // Free functions
 // ---------------------------------------------------------------
 
-/// Remove lineages that are the sole carrier at every position they
-/// cover — these can't produce more edges under SMC'.
-fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
-    if active.len() <= 1 {
-        return;
-    }
-    // For each lineage, check if any other lineage overlaps it at
-    // any position. If not, remove it.
-    let mut to_remove: Vec<usize> = Vec::new();
-    'outer: for (i, lin_i) in active.iter().enumerate() {
-        let mut cur = lin_i.head;
-        while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            // Check if any other lineage has material overlapping [seg.left, seg.right).
-            for (j, lin_j) in active.iter().enumerate() {
-                if j == i { continue; }
-                // Quick check: does lin_j have any segment overlapping seg?
-                let mut cur_j = lin_j.head;
-                while cur_j != SEG_NIL {
-                    let sj = arena.get(cur_j);
-                    if sj.right > seg.left && sj.left < seg.right {
-                        // Overlap found — this lineage still matters.
-                        continue 'outer;
-                    }
-                    if sj.left >= seg.right {
-                        break; // segments sorted, no more overlap possible
-                    }
-                    cur_j = sj.next;
-                }
-            }
-            cur = arena.get(cur).next;
+/// Per-lineage cached gene-flux rates: list of (inv_idx, rate) entries
+/// for inversions where the lineage contributes non-zero hazard.
+type FluxPerLin = SmallVec<[(usize, f64); 2]>;
+
+/// Compute the flux contribution of a single lineage across all active
+/// inversions — same logic as `compute_flux_rates_static` but scoped to
+/// one lineage so it can be called on-demand from incremental updates.
+fn compute_lin_flux(
+    lin: &Lineage,
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
+    barrier_active: &[bool],
+) -> FluxPerLin {
+    let mut out = FluxPerLin::new();
+    for (ii, inv) in inversions.iter().enumerate() {
+        if !barrier_active[ii] { continue; }
+        if inv.gene_conversion_rate <= 0.0 { continue; }
+        let pop = lin.population;
+        let p_inv_pop = inv.p_inv_for(pop);
+        let p_std_pop = 1.0 - p_inv_pop;
+        let kary = lineage_class_for_inv(lin, inv, arena);
+        let p_other = match kary {
+            Some(Karyotype::S) => p_inv_pop,
+            Some(Karyotype::I) => p_std_pop,
+            None => continue,
+        };
+        if p_other <= 0.0 { continue; }
+        let w = flux_lineage_weight(lin, inv, arena);
+        if w <= 0.0 { continue; }
+        let rate = inv.gene_conversion_rate * p_other * w;
+        if rate > 0.0 {
+            out.push((ii, rate));
         }
-        // No other lineage overlaps lin_i at any position.
-        to_remove.push(i);
     }
-    // Remove in reverse order to preserve indices.
-    for &idx in to_remove.iter().rev() {
-        active.swap_remove(idx);
+    out
+}
+
+/// Rebuild the full flux cache from scratch — call on boundaries,
+/// sweeps, GC, or any event that invalidates many lineages.
+fn flux_rebuild_full(
+    flux_per_lin: &mut Vec<FluxPerLin>,
+    flux_total: &mut [f64],
+    active: &[Lineage],
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
+    barrier_active: &[bool],
+) {
+    flux_per_lin.clear();
+    for t in flux_total.iter_mut() { *t = 0.0; }
+    for lin in active {
+        let entries = compute_lin_flux(lin, inversions, arena, barrier_active);
+        for (ii, rate) in entries.iter() {
+            flux_total[*ii] += *rate;
+        }
+        flux_per_lin.push(entries);
     }
 }
 
-/// Emit coalescence events from the RateCache. O(n^2) iteration of
-/// cached pairs, but the CACHE itself is maintained incrementally —
-/// only O(n) pairs are recomputed after each event.
+/// Recompute flux for one lineage at `li` and update totals by diff.
+fn flux_update_for(
+    li: usize,
+    flux_per_lin: &mut [FluxPerLin],
+    flux_total: &mut [f64],
+    active: &[Lineage],
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
+    barrier_active: &[bool],
+) {
+    for (ii, rate) in flux_per_lin[li].iter() {
+        flux_total[*ii] -= *rate;
+    }
+    flux_per_lin[li] = compute_lin_flux(
+        &active[li], inversions, arena, barrier_active);
+    for (ii, rate) in flux_per_lin[li].iter() {
+        flux_total[*ii] += *rate;
+    }
+}
+
+/// Mirror `active.swap_remove(idx)` on the flux cache: subtract removed
+/// entries from totals and let Vec::swap_remove relocate the last slot.
+fn flux_swap_remove(
+    idx: usize,
+    flux_per_lin: &mut Vec<FluxPerLin>,
+    flux_total: &mut [f64],
+) {
+    if idx >= flux_per_lin.len() { return; }
+    for (ii, rate) in flux_per_lin[idx].iter() {
+        flux_total[*ii] -= *rate;
+    }
+    flux_per_lin.swap_remove(idx);
+}
+
+/// Append a new lineage's flux entries and credit its totals.
+fn flux_push(
+    li: usize,
+    flux_per_lin: &mut Vec<FluxPerLin>,
+    flux_total: &mut [f64],
+    active: &[Lineage],
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
+    barrier_active: &[bool],
+) {
+    let entries = compute_lin_flux(
+        &active[li], inversions, arena, barrier_active);
+    for (ii, rate) in entries.iter() {
+        flux_total[*ii] += *rate;
+    }
+    flux_per_lin.push(entries);
+}
+
+/// Mirror `active.swap_remove(idx)` on a length Fenwick by moving the
+/// last slot's value into `idx` and zeroing the last slot. The tree's
+/// logical size shrinks by 1 (trailing zero is inert for `find`).
+#[inline]
+fn tree_swap_remove(
+    tree: &mut crate::fenwick::Fenwick,
+    idx: usize,
+    last_idx: usize,
+) {
+    if tree.len() == 0 { return; }
+    if idx == last_idx {
+        tree.set(idx, 0.0);
+        return;
+    }
+    let val_last = tree.range_sum(last_idx, last_idx + 1);
+    tree.set(idx, val_last);
+    tree.set(last_idx, 0.0);
+}
+
+/// Remove lineages that are the sole carrier at every position they
+/// cover — these can't produce more edges under SMC'.
+///
+/// Sweepline implementation: collect all segments tagged with owner,
+/// sort by left, walk left-to-right maintaining an "open" set of
+/// segments whose right > current left. A lineage has external
+/// overlap iff at some point its open segment coexists with an open
+/// segment from a different owner. Lineages never marked are
+/// sole-carriers and get swap_removed.
+fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
+    let _ = gc_sole_lineages_with_removed(active, arena);
+}
+
+/// Sweepline GC that also returns the list of lineage indices it
+/// removed (in ascending reverse-iteration order — the same order the
+/// caller can replay on auxiliary caches via swap_remove).
+fn gc_sole_lineages_with_removed(
+    active: &mut Vec<Lineage>,
+    arena: &SegmentArena,
+) -> Vec<usize> {
+    let n = active.len();
+    if n <= 1 { return Vec::new(); }
+
+    let mut segs: Vec<(f64, f64, u32)> = Vec::with_capacity(n * 2);
+    for (i, lin) in active.iter().enumerate() {
+        let mut cur = lin.head;
+        while cur != SEG_NIL {
+            let s = arena.get(cur);
+            segs.push((s.left, s.right, i as u32));
+            cur = s.next;
+        }
+    }
+    if segs.is_empty() { return Vec::new(); }
+    segs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let mut has_overlap = vec![false; n];
+    let mut open: Vec<(f64, u32)> = Vec::with_capacity(64);
+    for &(l, r, owner) in &segs {
+        open.retain(|&(rr, _)| rr > l);
+        let owner_idx = owner as usize;
+        for &(_, o2) in &open {
+            if o2 != owner {
+                has_overlap[owner_idx] = true;
+                has_overlap[o2 as usize] = true;
+            }
+        }
+        open.push((r, owner));
+    }
+
+    let mut removed = Vec::new();
+    for i in (0..n).rev() {
+        if !has_overlap[i] {
+            active.swap_remove(i);
+            removed.push(i);
+        }
+    }
+    removed
+}
+
+/// Emit aggregate coalescence events from the RateCache. Walks the
+/// incrementally-maintained (pop, class, total_overlap) table — O(k)
+/// where k = number of distinct (pop, class) combinations, typically
+/// ≤ pops × 2^|inversions|. Dispatch samples a specific pair from
+/// iter_pairs when the aggregate fires.
 fn emit_coal_events_from_cache(
     cache: &RateCache,
-    active: &[Lineage],
+    _active: &[Lineage],
     demo: &Demography,
     t: f64,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
 ) {
-    for (i, j, overlaps) in cache.iter_pairs() {
-        let pop = active[i].population;
+    // Read counts from the incrementally-maintained class_totals table.
+    // O(pops × classes) per emit — the main scaling win at rho ≥ 500.
+    for (pop, cls, count) in cache.iter_class_totals() {
+        if count <= 0.0 { continue; }
+        let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
+        if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
-        for (cls, _ov_len) in overlaps {
-            let p_class = p_class_for_tag(*cls, inversions, barrier_active, t, pop);
-            if p_class <= 0.0 { continue; }
-            let rate = 1.0 / (2.0 * ne * p_class);
-            events.push((rate, Event::CoalPair { i, j, class: *cls }));
-        }
+        let rate = count / (2.0 * ne * p_class);
+        events.push((rate, Event::CoalAggregate { pop, class: cls }));
     }
 }
 

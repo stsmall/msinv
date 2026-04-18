@@ -21,6 +21,12 @@ use smallvec::SmallVec;
 /// the per-slot footprint small (matters at n² scale at rho ≥ 500).
 type PairOverlap = SmallVec<[(BranchClass, f64); 2]>;
 
+/// Flat per-lineage segment view: (left, right, class). Stored contiguously
+/// per lineage so `compute_overlap`'s two-pointer walk hits sequential
+/// memory instead of chasing arena indices scattered by free-list recycling.
+type FlatSeg = (f64, f64, BranchClass);
+type LineageSegs = SmallVec<[FlatSeg; 4]>;
+
 /// Flat index for a pair (i, j) where i < j, into a triangular array.
 #[inline]
 pub fn pair_idx(i: usize, j: usize, n: usize) -> usize {
@@ -45,6 +51,11 @@ pub struct RateCache {
     /// `active` vector. Needed so that class_totals diffs on per-pair
     /// updates can attribute overlap to the right (pop, class) bucket.
     lineage_pop: Vec<u32>,
+    /// Per-lineage flat segment list: materialised copy of each lineage's
+    /// linked segment chain in contiguous memory. `compute_overlap` reads
+    /// these slices instead of walking the arena, which killed ~15% of
+    /// wall time at rho=2000 to arena random-index reads.
+    lineage_segs: Vec<LineageSegs>,
     /// Dense (pop, class, pair_count) table. Counts the number of
     /// cached pairs whose overlap touches `class` in `pop`. Coalescence
     /// hazard between any two lineages in the same (pop, class) bucket
@@ -82,6 +93,7 @@ impl RateCache {
             overlaps: vec![SmallVec::new(); n_pairs],
             nonempty_bits: vec![0u64; nbits_words(n_pairs)],
             lineage_pop: Vec::with_capacity(cap),
+            lineage_segs: Vec::with_capacity(cap),
             class_totals: SmallVec::new(),
             n: 0,
             capacity: cap,
@@ -94,6 +106,41 @@ impl RateCache {
             let n_pairs = tri_size(self.capacity);
             self.overlaps.resize(n_pairs, SmallVec::new());
             self.nonempty_bits.resize(nbits_words(n_pairs), 0u64);
+        }
+    }
+
+    /// Materialise lineage `idx`'s segment chain into `lineage_segs[idx]`.
+    /// Clear-then-extend to reuse the SmallVec's allocation. Callers must
+    /// invoke this whenever `idx`'s segment list changes (coalescence,
+    /// recombination split, gene flux mutation).
+    fn rebuild_lineage_segs(
+        &mut self,
+        idx: usize,
+        active: &[Lineage],
+        arena: &SegmentArena,
+    ) {
+        use crate::segment::SEG_NIL;
+        if self.lineage_segs.len() <= idx {
+            self.lineage_segs.resize_with(idx + 1, SmallVec::new);
+        }
+        let slot = &mut self.lineage_segs[idx];
+        slot.clear();
+        let mut sa = active[idx].head;
+        while sa != SEG_NIL {
+            let s = arena.get(sa);
+            slot.push((s.left, s.right, s.branch_class));
+            sa = s.next;
+        }
+    }
+
+    /// Hull [left, right] derived from the flat segs; returns an empty
+    /// interval sentinel when the lineage has no segments.
+    #[inline]
+    fn hull_from_segs(segs: &[FlatSeg]) -> (f64, f64) {
+        if segs.is_empty() {
+            (f64::INFINITY, f64::NEG_INFINITY)
+        } else {
+            (segs[0].0, segs[segs.len() - 1].1)
         }
     }
 
@@ -169,13 +216,24 @@ impl RateCache {
         self.class_totals.clear();
         self.lineage_pop.clear();
         self.lineage_pop.extend(active.iter().map(|l| l.population));
-        // Compute all pairs.
+        // Rebuild per-lineage flat segment views. Truncate any stragglers
+        // from a prior (longer) population.
+        if self.lineage_segs.len() < self.n {
+            self.lineage_segs.resize_with(self.n, SmallVec::new);
+        } else {
+            self.lineage_segs.truncate(self.n);
+        }
+        for i in 0..self.n {
+            self.rebuild_lineage_segs(i, active, arena);
+        }
+        // Compute all pairs from the flat views.
         for i in 0..self.n {
             for j in (i + 1)..self.n {
                 if active[i].population != active[j].population {
                     continue;
                 }
-                let ovl = compute_overlap(active[i].head, active[j].head, arena);
+                let ovl = compute_overlap(
+                    &self.lineage_segs[i], &self.lineage_segs[j]);
                 if !ovl.is_empty() {
                     let pop = active[i].population;
                     for (cls, _ov) in ovl.iter() {
@@ -204,20 +262,11 @@ impl RateCache {
             self.lineage_pop.resize(self.n, 0);
         }
         self.lineage_pop[idx] = active[idx].population;
-        // Cache the changed lineage's hull — cheap extent bounds used
-        // to skip the full segment walk when hulls don't intersect.
-        let changed_head = active[idx].head;
-        let changed_tail = active[idx].tail;
-        let changed_hull_l = if changed_head == crate::segment::SEG_NIL {
-            f64::INFINITY
-        } else {
-            arena.get(changed_head).left
-        };
-        let changed_hull_r = if changed_tail == crate::segment::SEG_NIL {
-            f64::NEG_INFINITY
-        } else {
-            arena.get(changed_tail).right
-        };
+        // Refresh the flat segment view for `idx`. Callers invoke
+        // recompute_for after any mutation to `idx`'s chain.
+        self.rebuild_lineage_segs(idx, active, arena);
+        let (changed_hull_l, changed_hull_r) =
+            Self::hull_from_segs(&self.lineage_segs[idx]);
 
         let changed_pop = active[idx].population;
         for other in 0..self.n {
@@ -228,18 +277,16 @@ impl RateCache {
             let other_pop = self.lineage_pop.get(other).copied()
                 .unwrap_or(active[other].population);
             let pops_match = changed_pop == other_pop;
-            // Hull prescreen cost: two arena reads. Still cheap compared
-            // to compute_overlap's segment walk.
+            // Hull prescreen from the cached flat segs — no arena reads.
             let (hulls_overlap, other_head_is_nil) = if !pops_match {
                 (false, false)
             } else {
-                let other_head = active[other].head;
-                if other_head == crate::segment::SEG_NIL {
+                let other_segs: &[FlatSeg] = self.lineage_segs
+                    .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
+                if other_segs.is_empty() {
                     (false, true)
                 } else {
-                    let other_tail = active[other].tail;
-                    let other_l = arena.get(other_head).left;
-                    let other_r = arena.get(other_tail).right;
+                    let (other_l, other_r) = Self::hull_from_segs(other_segs);
                     (other_r > changed_hull_l && changed_hull_r > other_l,
                      false)
                 }
@@ -255,7 +302,8 @@ impl RateCache {
             bit_clear(&mut self.nonempty_bits, pidx);
             if !pops_match || !hulls_overlap { continue; }
             // Compute new overlap (pops match, hulls intersect).
-            let ovl = compute_overlap(active[i].head, active[j].head, arena);
+            let ovl = compute_overlap(
+                &self.lineage_segs[i], &self.lineage_segs[j]);
             if !ovl.is_empty() {
                 for (cls, _ov) in ovl.iter() {
                     self.totals_add(changed_pop, *cls, 1.0);
@@ -299,24 +347,13 @@ impl RateCache {
         self.lineage_pop[idx] = active[idx].population;
         self.lineage_pop[new_idx] = active[new_idx].population;
         let changed_pop = active[idx].population;
-        // Left (idx) and right (new_idx) hull extents for the fall-back
-        // spanning-case computations.
-        let left_head = active[idx].head;
-        let left_tail = active[idx].tail;
-        let left_hull_l = if left_head == crate::segment::SEG_NIL {
-            f64::INFINITY
-        } else { arena.get(left_head).left };
-        let left_hull_r = if left_tail == crate::segment::SEG_NIL {
-            f64::NEG_INFINITY
-        } else { arena.get(left_tail).right };
-        let right_head = active[new_idx].head;
-        let right_tail = active[new_idx].tail;
-        let right_hull_l = if right_head == crate::segment::SEG_NIL {
-            f64::INFINITY
-        } else { arena.get(right_head).left };
-        let right_hull_r = if right_tail == crate::segment::SEG_NIL {
-            f64::NEG_INFINITY
-        } else { arena.get(right_tail).right };
+        // Refresh both halves' flat segment views before any compute_overlap.
+        self.rebuild_lineage_segs(idx, active, arena);
+        self.rebuild_lineage_segs(new_idx, active, arena);
+        let (left_hull_l, left_hull_r) =
+            Self::hull_from_segs(&self.lineage_segs[idx]);
+        let (right_hull_l, right_hull_r) =
+            Self::hull_from_segs(&self.lineage_segs[new_idx]);
 
         for other in 0..self.n {
             if other == idx || other == new_idx { continue; }
@@ -325,11 +362,10 @@ impl RateCache {
                 // Nothing to do — cross-pop pairs were never stored.
                 continue;
             }
-            let other_head = active[other].head;
-            if other_head == crate::segment::SEG_NIL { continue; }
-            let other_tail = active[other].tail;
-            let other_l = arena.get(other_head).left;
-            let other_r = arena.get(other_tail).right;
+            let other_segs: &[FlatSeg] = self.lineage_segs
+                .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
+            if other_segs.is_empty() { continue; }
+            let (other_l, other_r) = Self::hull_from_segs(other_segs);
 
             // Old pair: (min(idx, other), max(idx, other)).
             let (oi, oj) = if other < idx { (other, idx) } else { (idx, other) };
@@ -390,7 +426,7 @@ impl RateCache {
             // Hull prescreen for left-half ∩ other.
             if other_r > left_hull_l && left_hull_r > other_l {
                 let ovl = compute_overlap(
-                    active[oi].head, active[oj].head, arena);
+                    &self.lineage_segs[oi], &self.lineage_segs[oj]);
                 if !ovl.is_empty() {
                     for (cls, _) in ovl.iter() {
                         self.totals_add(changed_pop, *cls, 1.0);
@@ -407,7 +443,7 @@ impl RateCache {
             }
             if other_r > right_hull_l && right_hull_r > other_l {
                 let ovl = compute_overlap(
-                    active[ni].head, active[nj].head, arena);
+                    &self.lineage_segs[ni], &self.lineage_segs[nj]);
                 if !ovl.is_empty() {
                     for (cls, _) in ovl.iter() {
                         self.totals_add(changed_pop, *cls, 1.0);
@@ -442,6 +478,9 @@ impl RateCache {
             if !self.lineage_pop.is_empty() {
                 self.lineage_pop.pop();
             }
+            if !self.lineage_segs.is_empty() {
+                self.lineage_segs.pop();
+            }
             self.n -= 1;
             return;
         }
@@ -469,6 +508,13 @@ impl RateCache {
             let moved_pop = self.lineage_pop[old_last];
             self.lineage_pop[removed_idx] = moved_pop;
             self.lineage_pop.pop();
+        }
+        // Same swap_remove for the flat segment view. Move allocation
+        // from old_last into removed_idx instead of cloning.
+        if old_last < self.lineage_segs.len() {
+            let moved = std::mem::take(&mut self.lineage_segs[old_last]);
+            self.lineage_segs[removed_idx] = moved;
+            self.lineage_segs.pop();
         }
         self.n -= 1;
     }
@@ -583,33 +629,30 @@ impl<'a> Iterator for NonEmptyPairIter<'a> {
     }
 }
 
-/// Compute overlap-by-class between two segment chains.
-/// Same logic as the existing `overlap_by_class` but returns SmallVec.
-fn compute_overlap(
-    head_a: crate::segment::SegIdx,
-    head_b: crate::segment::SegIdx,
-    arena: &SegmentArena,
-) -> PairOverlap {
-    use crate::segment::SEG_NIL;
+/// Compute overlap-by-class between two lineages' flat segment slices.
+/// Two-pointer walk over contiguous `(left, right, class)` tuples —
+/// same algorithm as the arena-chain version, but without arena
+/// random-access reads (the segments are recycled via free-list, so
+/// their indices are scattered even when the owning lineage's list is
+/// logically contiguous).
+fn compute_overlap(a: &[FlatSeg], b: &[FlatSeg]) -> PairOverlap {
     let mut result = PairOverlap::new();
-    let mut sa = head_a;
-    let mut sb = head_b;
-    while sa != SEG_NIL && sb != SEG_NIL {
-        let a = arena.get(sa);
-        let b = arena.get(sb);
-        if a.right <= b.left { sa = a.next; continue; }
-        if b.right <= a.left { sb = b.next; continue; }
-        let l = a.left.max(b.left);
-        let r = a.right.min(b.right);
-        if r > l && a.branch_class == b.branch_class {
-            let cls = a.branch_class;
-            if let Some(entry) = result.iter_mut().find(|(c, _)| *c == cls) {
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        let (al, ar, ac) = a[i];
+        let (bl, br, bc) = b[j];
+        if ar <= bl { i += 1; continue; }
+        if br <= al { j += 1; continue; }
+        let l = al.max(bl);
+        let r = ar.min(br);
+        if r > l && ac == bc {
+            if let Some(entry) = result.iter_mut().find(|(c, _)| *c == ac) {
                 entry.1 += r - l;
             } else {
-                result.push((cls, r - l));
+                result.push((ac, r - l));
             }
         }
-        if a.right < b.right { sa = a.next; } else { sb = b.next; }
+        if ar < br { i += 1; } else { j += 1; }
     }
     result
 }

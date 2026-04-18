@@ -341,16 +341,16 @@ impl RateCache {
 
             // Case A: other entirely left of split_pos.
             if other_r <= split_pos {
-                // Old pair with the left-half is unchanged. New pair
-                // with the right-half is empty by construction (right
-                // half starts at split_pos).
-                // Defensive: ensure new_pidx is empty (it should be,
-                // but a push into a re-used slot needs this guard).
-                if bit_get(&self.nonempty_bits, new_pidx) {
-                    self.totals_sub_pair(ni, nj);
-                    self.overlaps[new_pidx].clear();
-                    bit_clear(&mut self.nonempty_bits, new_pidx);
-                }
+                // Old pair with the left-half is unchanged. `new_idx`
+                // is the just-pushed slot, and the swap_update protocol
+                // guarantees that every pair slot involving `new_idx`
+                // was scrubbed before any subsequent push — so no stale
+                // data lingers. Release builds skip the check entirely;
+                // debug builds assert the invariant.
+                debug_assert!(
+                    !bit_get(&self.nonempty_bits, new_pidx),
+                    "apply_recomb_split Case A: new_pidx should be empty",
+                );
                 continue;
             }
 

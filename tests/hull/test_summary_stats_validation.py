@@ -61,17 +61,28 @@ def _afs_l2(a, b):
 # Panmictic seg sites — low and high rho
 # ---------------------------------------------------------------
 
-@pytest.mark.parametrize("rho,tol", [(20.0, 0.06), (200.0, 0.06), (500.0, 0.08)])
+@pytest.mark.parametrize("rho,tol", [
+    (20.0, 0.06), (200.0, 0.06), (500.0, 0.08),
+    (1000.0, 0.10), (2000.0, 0.15),
+])
 def test_panmictic_segsites_vs_msprime(rho, tol):
     """Mean segregating sites should match msprime within tol at
     each rho point. rho=500 exercises the bitmap iter_pairs + sweepline
-    GC paths added on feature/rho-optimization."""
+    GC paths added on feature/rho-optimization; rho=1000 and 2000 are
+    the target regime for the optimization itself."""
     Ne = 1_000
     L = 100_000.0
     r = rho / (4.0 * Ne * L)
     mu = 1e-8
     n = 10
-    nreps = 400 if rho < 500 else 200
+    if rho >= 2000.0:
+        nreps = 80
+    elif rho >= 1000.0:
+        nreps = 150
+    elif rho >= 500.0:
+        nreps = 200
+    else:
+        nreps = 400
 
     hull_s = []
     msp_s = []

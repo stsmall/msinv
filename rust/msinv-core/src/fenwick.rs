@@ -141,11 +141,14 @@ impl Fenwick {
         if new_n <= self.n { return; }
         let need = new_n + 1;
         if self.tree.len() < need {
-            self.tree.resize(need, 0.0);
-        } else {
-            for x in self.tree[self.n + 1..need].iter_mut() {
-                *x = 0.0;
-            }
+            // Amortize allocations: repeated single-slot growths from
+            // the simulator's event loop would otherwise realloc every
+            // push. Double capacity when we have to resize.
+            let new_cap = (self.tree.len() * 2).max(need);
+            self.tree.resize(new_cap, 0.0);
+        }
+        for x in self.tree[self.n + 1..need].iter_mut() {
+            *x = 0.0;
         }
         self.n = new_n;
     }

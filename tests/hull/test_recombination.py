@@ -14,6 +14,8 @@ import pytest
 
 from msinv.hull import HullSimulator, InversionSpec
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 def test_panmictic_recomb_produces_multiple_trees():
     """With recombination, expect more than 1 tree."""
@@ -32,17 +34,16 @@ def test_panmictic_recomb_produces_multiple_trees():
         assert tree.num_roots == 1
 
 
-def test_no_recomb_gives_single_tree():
-    """Baseline: without recombination, exactly 1 tree."""
-    sim = HullSimulator(
-        n_std=4, n_inv=0,
-        population_size=500,
-        sequence_length=200.0,
-        recombination_rate=0.0,
-        seed=42,
-    )
-    ts = sim.simulate()
-    assert ts.num_trees == 1
+def test_rho_zero_is_rejected():
+    """rho=0 is forbidden globally — must raise ValueError."""
+    with pytest.raises(ValueError, match="recombination_rate must be > 0"):
+        HullSimulator(
+            n_std=4, n_inv=0,
+            population_size=500,
+            sequence_length=200.0,
+            recombination_rate=0.0,
+            seed=42,
+        )
 
 
 def test_recomb_with_inversion_valid_trees():
@@ -76,7 +77,7 @@ def test_recomb_class_barrier_preserved(seed):
         recombination_rate=1e-8,
         bp_left=30_000.0, bp_right=70_000.0,
         p_inv=0.5, t_inv=t_inv,
-        gene_conversion_rate=0.0,
+        gene_conversion_rate=NEGLIGIBLE_GAMMA,
         seed=seed,
     )
     ts = sim.simulate()
@@ -91,18 +92,18 @@ def test_recomb_class_barrier_preserved(seed):
                 f"expected >= {t_inv}")
 
 
-def test_recomb_more_nodes_than_no_recomb():
-    """With recombination, more nodes from additional coalescences."""
+def test_higher_recomb_more_nodes():
+    """Higher recombination rate yields more coalescence nodes."""
     params = dict(
         n_std=5, n_inv=0,
         population_size=5000,
         sequence_length=50_000.0,
         seed=7,
     )
-    ts_no = HullSimulator(**params, recombination_rate=0.0).simulate()
-    ts_yes = HullSimulator(**params, recombination_rate=1e-8).simulate()
-    assert ts_yes.num_nodes > ts_no.num_nodes, (
-        f"recomb: {ts_yes.num_nodes} nodes vs no-recomb: {ts_no.num_nodes}")
+    ts_lo = HullSimulator(**params, recombination_rate=1e-9).simulate()
+    ts_hi = HullSimulator(**params, recombination_rate=1e-7).simulate()
+    assert ts_hi.num_nodes > ts_lo.num_nodes, (
+        f"high rho: {ts_hi.num_nodes} nodes vs low rho: {ts_lo.num_nodes}")
 
 
 def test_recomb_with_multi_inv():

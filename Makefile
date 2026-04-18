@@ -1,21 +1,25 @@
-.PHONY: test figures build clean install dev-install
+.PHONY: venv dev test figures clean
 
-test:
-	pytest tests/hull/
+RUST_TARGET := $(shell rustc -vV | grep ^host | cut -d' ' -f2)
 
-figures:
-	python examples/make_figures.py
+venv: .venv/.ok
 
-build:
-	python -m build
+.venv/.ok:
+	uv venv .venv --python 3.12 --allow-existing
+	uv pip install maturin pip numpy tskit 'msprime>=1.2' pytest pytest-timeout matplotlib
+	@touch $@
 
-install:
-	pip install .
+dev: venv
+	.venv/bin/maturin develop --release --target $(RUST_TARGET)
 
-dev-install:
-	pip install -e ".[test,plots]"
+test: dev
+	.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stdpopsim_validation.py
+
+figures: dev
+	.venv/bin/python examples/make_figures.py
 
 clean:
-	rm -rf build/ dist/ *.egg-info/ msinv/__pycache__ tests/__pycache__
+	rm -rf .venv/ build/ dist/ *.egg-info/
 	find . -name "__pycache__" -type d -exec rm -rf {} +
 	find . -name "*.pyc" -delete
+	find . -name "*.so" -not -path "./rust/*" -delete

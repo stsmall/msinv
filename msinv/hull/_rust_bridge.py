@@ -8,10 +8,14 @@ conditionally imports from here when the Rust extension is available.
 import tskit
 
 try:
-    from _msinv_core import simulate_raw as _simulate_raw
+    from msinv._msinv_core import simulate_raw as _simulate_raw
     RUST_AVAILABLE = True
 except ImportError:
-    RUST_AVAILABLE = False
+    try:
+        from _msinv_core import simulate_raw as _simulate_raw
+        RUST_AVAILABLE = True
+    except ImportError:
+        RUST_AVAILABLE = False
 
 
 def rust_simulate(simulator) -> 'tskit.TreeSequence':
@@ -36,12 +40,13 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         sample_list.append((kary_str, int(pop), int(count)))
 
     # --- Inversions ---
+    n_pops = simulator.demography.n_pops
     inv_dicts = []
     for inv in simulator.inversions:
         inv_dicts.append({
             'bp_left': float(inv.bp_left),
             'bp_right': float(inv.bp_right),
-            'p_inv': float(inv.p_inv),
+            'p_inv': inv._p_inv_as_list(n_pops),
             't_inv': float(inv.t_inv),
             'gene_conversion_rate': float(inv.gene_conversion_rate),
             'flux_window': float(inv.flux_window),
@@ -56,6 +61,10 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
             'target_class': getattr(sw, 'target_class', 'any'),
             'population': getattr(sw, 'population', None),
             'sweep_window': float(sw.sweep_window),
+            'selection_coefficient': float(
+                getattr(sw, 'selection_coefficient', 0.0)),
+            'starting_frequency': float(
+                getattr(sw, 'starting_frequency', 0.0)),
         })
 
     # --- Demography ---
@@ -100,4 +109,5 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         child=raw['edge_child'],
     )
     tc.sort()
-    return tc.tree_sequence()
+    ts = tc.tree_sequence()
+    return ts.simplify()

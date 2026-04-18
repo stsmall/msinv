@@ -129,7 +129,7 @@ def fig1_inversion_signal():
     n = len(reps)
     dxy /= n; pi_S /= n; pi_I /= n
     da = dxy - (pi_S + pi_I) / 2
-    fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
+    fst = np.clip(1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20), 0.0, 1.0)
 
     np.savez(os.path.join(OUTDIR, 'fig1_data.npz'),
              mid=mid, dxy=dxy, pi_S=pi_S, pi_I=pi_I, da=da, fst=fst,
@@ -195,7 +195,7 @@ def fig1_inversion_signal():
         ax.axvline(bp_r, color='red', ls=':', lw=1, alpha=0.5)
 
     caption = (
-        f'Figure 1. Chromosomal inversion divergence signal simulated with msinv (hull algorithm). '
+        f'Figure 1. Chromosomal inversion divergence signal simulated with msinv (Rust ARG core). '
         f'(A) Per-bp absolute divergence ($d_{{XY}}$) between Standard (S) and Inverted (I) '
         f'karyotypes is elevated inside the inversion (grey shading, {bp_l/1e3:.0f}–{bp_r/1e3:.0f} kb), '
         f'while within-class diversity ($\\pi_S$, $\\pi_I$) remains at background levels. '
@@ -267,7 +267,7 @@ def fig2_msprime_comparison():
     fig, ax = plt.subplots(figsize=(7, 4.5))
     x = np.arange(len(rho_vals))
     w = 0.35
-    ax.bar(x - w / 2, ms_S, w, label='msinv (hull)', color='#1976D2')
+    ax.bar(x - w / 2, ms_S, w, label='msinv (Rust)', color='#1976D2')
     ax.bar(x + w / 2, mp_S, w, label='msprime', color='#E65100')
     ax.axhline(expected, color='gray', ls='--', lw=1.2,
                 label=f'Watterson E[S] = {expected:.0f}')
@@ -275,13 +275,13 @@ def fig2_msprime_comparison():
     ax.set_xticklabels([f'$\\rho$={r}' for r in rho_vals])
     ax.set_ylabel('Mean segregating sites (10 samples, 100 kb)')
     ax.legend(fontsize=10)
-    ax.set_title('msinv hull matches msprime in the no-inversion limit')
+    ax.set_title('msinv (Rust) matches msprime in the no-inversion limit')
 
     caption = (
         f'Figure 2. msinv validation against msprime in the no-inversion limit. '
         f'Mean number of segregating sites from 10 haploid samples across {NREPS} replicates '
         f'at three recombination rates ($\\rho$ = 4$N_e$rL). '
-        f'Without an inversion, the hull simulator produces the same distribution of genealogies '
+        f'Without an inversion, msinv produces the same distribution of genealogies '
         f'as msprime — the two are statistically indistinguishable. '
         f'Dashed line: Watterson expectation E[S] = $\\theta \\sum_{{i=1}}^{{n-1}} 1/i$ = {expected:.0f}. '
         f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, $\\mu$=1e-8, n=10, {NREPS} replicates per $\\rho$.\n'
@@ -336,7 +336,7 @@ def fig3_real_inversions():
                 inversions=[InversionSpec(
                     bp_left=p['bp_l'], bp_right=p['bp_r'],
                     p_inv=p['p_inv'], t_inv=p['t_inv'],
-                    gene_conversion_rate=p.get('gamma', 0.0))],
+                    gene_conversion_rate=p.get('gamma', 1e-9))],
                 recombination_rate=1e-8,
                 seed=7000 + rep,
             )
@@ -351,7 +351,7 @@ def fig3_real_inversions():
         n = max(len(reps), 1)
         dxy /= n; pi_S /= n; pi_I /= n
         da = dxy - (pi_S + pi_I) / 2
-        fst = 1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20)
+        fst = np.clip(1.0 - (pi_S + pi_I) / 2 / np.maximum(dxy, 1e-20), 0.0, 1.0)
 
         tag = 'funestus' if col == 0 else 'mapt'
         np.savez(os.path.join(OUTDIR, f'fig3_{tag}_data.npz'),
@@ -490,8 +490,8 @@ def fig4_multiple_inversions():
     n = len(reps)
     dxy_A /= n; dxy_B /= n
     piA_S /= n; piA_I /= n; piB_S /= n; piB_I /= n
-    fst_A = 1.0 - (piA_S + piA_I) / 2 / np.maximum(dxy_A, 1e-20)
-    fst_B = 1.0 - (piB_S + piB_I) / 2 / np.maximum(dxy_B, 1e-20)
+    fst_A = np.clip(1.0 - (piA_S + piA_I) / 2 / np.maximum(dxy_A, 1e-20), 0.0, 1.0)
+    fst_B = np.clip(1.0 - (piB_S + piB_I) / 2 / np.maximum(dxy_B, 1e-20), 0.0, 1.0)
 
     np.savez(os.path.join(OUTDIR, 'fig4_data.npz'),
              mid=mid, dxy_A=dxy_A, dxy_B=dxy_B, fst_A=fst_A, fst_B=fst_B,
@@ -753,18 +753,17 @@ def fig6_phi_profile():
 # ============================================================
 
 def fig7_performance():
-    print("Fig 7: Performance...")
+    print("Fig 7: Performance (scaling + Python vs Rust)...")
     Ne = 10_000
-    mu = 1e-8
     L = 100_000
     NREPS = 20
 
+    # ---- Panel A: Rust scaling with rho ----
     rho_vals = [5, 10, 20, 40]
     times_inv = []
     times_no = []
     for rho in rho_vals:
         r = rho / (4 * Ne * L)
-        # With one inversion
         t0 = time.time()
         for s in range(NREPS):
             sim = HullSimulator(
@@ -777,10 +776,9 @@ def fig7_performance():
                                            gene_conversion_rate=1e-9)],
                 seed=s + 50,
             )
-            sim.simulate()
+            sim.simulate(use_rust=True)
         times_inv.append((time.time() - t0) / NREPS * 1000)
 
-        # Without inversion (baseline)
         t0 = time.time()
         for s in range(NREPS):
             sim = HullSimulator(
@@ -790,30 +788,93 @@ def fig7_performance():
                 recombination_rate=r,
                 seed=s + 50,
             )
-            sim.simulate()
+            sim.simulate(use_rust=True)
         times_no.append((time.time() - t0) / NREPS * 1000)
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.plot(rho_vals, times_no, 'o-', color='#1976D2', lw=2, markersize=8,
-             label='no inversion (hull baseline)')
-    ax.plot(rho_vals, times_inv, 's-', color='#C62828', lw=2, markersize=8,
+    # ---- Panel B: Python vs Rust speedup across problem sizes ----
+    bench = [
+        ('n=10\nL=50kb\nρ=10',
+         dict(n_std=10, n_inv=0, population_size=5000,
+              sequence_length=50_000.0, recombination_rate=1e-8)),
+        ('n=20\nL=200kb\nρ=80',
+         dict(n_std=20, n_inv=0, population_size=10000,
+              sequence_length=200_000.0, recombination_rate=1e-8)),
+        ('n=10 +inv\nL=100kb\nρ=20',
+         dict(n_std=5, n_inv=5, population_size=5000,
+              sequence_length=100_000.0, recombination_rate=1e-8,
+              inversions=[InversionSpec(bp_left=30_000, bp_right=70_000,
+                  p_inv=0.5, t_inv=100_000, gene_conversion_rate=1e-9)])),
+        ('n=30\nL=500kb\nρ=200',
+         dict(n_std=30, n_inv=0, population_size=10000,
+              sequence_length=500_000.0, recombination_rate=1e-8)),
+    ]
+    NB = 5
+    py_t = []; rs_t = []
+    for label, params in bench:
+        py_runs = []; rs_runs = []
+        for s in range(NB):
+            sim = HullSimulator(seed=s, **params)
+            t = time.perf_counter()
+            sim.simulate(use_rust=False)
+            py_runs.append((time.perf_counter() - t) * 1000)
+            sim2 = HullSimulator(seed=s, **params)
+            t = time.perf_counter()
+            sim2.simulate(use_rust=True)
+            rs_runs.append((time.perf_counter() - t) * 1000)
+        py_t.append(np.median(py_runs))
+        rs_t.append(np.median(rs_runs))
+    speedups = [p / r for p, r in zip(py_t, rs_t)]
+    bench_labels = [b[0] for b in bench]
+
+    np.savez(os.path.join(OUTDIR, 'fig7_data.npz'),
+             rho_vals=rho_vals, times_inv=times_inv, times_no=times_no,
+             bench_labels=np.array(bench_labels), py_t=py_t, rs_t=rs_t,
+             speedups=speedups)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.8))
+
+    # Panel A: scaling
+    ax1.plot(rho_vals, times_no, 'o-', color='#1976D2', lw=2, markersize=8,
+             label='no inversion')
+    ax1.plot(rho_vals, times_inv, 's-', color='#C62828', lw=2, markersize=8,
              label='one inversion (S/I barrier)')
-    ax.set_xlabel(r'$\rho = 4 N_e r L$')
-    ax.set_ylabel('Time per replicate (ms)')
-    ax.set_title('Hull simulator scaling (n=10, L=100kb)')
-    ax.legend(fontsize=10)
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.grid(True, alpha=0.3, which='both')
+    ax1.set_xlabel(r'$\rho = 4 N_e r L$')
+    ax1.set_ylabel('Time per replicate (ms)')
+    ax1.set_title('A. Rust scaling with $\\rho$ (n=10, L=100kb)')
+    ax1.legend(fontsize=10)
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax1.grid(True, alpha=0.3, which='both')
+
+    # Panel B: Python vs Rust grouped bars on log scale
+    x = np.arange(len(bench))
+    w = 0.38
+    bars_py = ax2.bar(x - w/2, py_t, w, label='Python', color='#FF9800')
+    bars_rs = ax2.bar(x + w/2, rs_t, w, label='Rust',   color='#388E3C')
+    ax2.set_yscale('log')
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(bench_labels, fontsize=9)
+    ax2.set_ylabel('Time per replicate (ms, log scale)')
+    ax2.set_title('B. Python vs Rust (median of 5 reps)')
+    ax2.legend(fontsize=10, loc='upper left')
+    ax2.grid(True, alpha=0.3, axis='y', which='both')
+    # Speedup annotations above each pair
+    ymax = max(py_t) * 1.2
+    for xi, sp in zip(x, speedups):
+        ax2.text(xi, ymax, f'{sp:.0f}×', ha='center', va='bottom',
+                 fontsize=11, color='#1A237E', weight='bold')
+    ax2.set_ylim(top=ymax * 4)
 
     caption = (
-        'Figure 7. Hull simulator performance scaling with recombination rate. '
-        'Wall-clock time per replicate (ms) for 10 haploid samples on a 100 kb sequence. '
-        'Blue: no inversion (baseline panmictic coalescent). '
-        'Red: one inversion with S/I karyotype barrier (bp_left=30kb, bp_right=70kb, t_inv=100,000 gen). '
-        'The inversion adds overhead from per-segment class tracking and gene-flux events, '
-        'but cost scales sublinearly with $\\rho$. '
-        f'Parameters: Ne={Ne:,}, L={L/1e3:.0f} kb, n=10, {NREPS} replicates per point.\n'
+        'Figure 7. msinv (Rust) performance. '
+        '(A) Wall-clock time per replicate scales sublinearly with recombination '
+        '$\\rho = 4 N_e r L$. The S/I class barrier adds modest overhead from '
+        'per-segment class tracking and gene-flux events. '
+        '(B) Python vs Rust on four representative scenarios; speedup (above bars) '
+        'grows with problem size. The Rust core is the default backend in msinv >= 0.4.0; '
+        'the legacy Python implementation is retained for cross-validation. '
+        f'Panel A: Ne={Ne:,}, L={L/1e3:.0f} kb, n=10, {NREPS} replicates per point. '
+        f'Panel B: median of {NB} replicates per scenario.\n'
         'Command: pixi run -e all python examples/make_figures.py'
     )
     fig.text(0.5, -0.02, caption, ha='center', fontsize=7, wrap=True,
@@ -822,7 +883,7 @@ def fig7_performance():
                        edgecolor='#BDBDBD', alpha=0.9))
 
     plt.tight_layout()
-    fig.subplots_adjust(bottom=0.28)
+    fig.subplots_adjust(bottom=0.30)
     plt.savefig(os.path.join(OUTDIR, 'fig7_performance.pdf'),
                 bbox_inches='tight')
     plt.close()
@@ -881,7 +942,7 @@ def fig8_feature_summary():
         'multiple/nested inversions, and per-population frequencies. '
         'Unlike SLiM (forward-time), msinv is coalescent-based: fast for neutral scenarios '
         'and directly produces tree sequences for downstream analysis with tskit. '
-        f'msinv v{msinv.__version__}, hull algorithm (per-position ancestral material tracking).\n'
+        f'msinv v{msinv.__version__}, Rust ARG core (per-position ancestral material tracking).\n'
         'Command: pixi run -e all python examples/make_figures.py'
     )
     fig.text(0.5, 0.02, caption, ha='center', fontsize=7, wrap=True,
@@ -901,7 +962,7 @@ def fig8_feature_summary():
 # ============================================================
 
 def main():
-    print("Generating presentation figures (msinv hull simulator)...\n")
+    print("Generating presentation figures (msinv Rust simulator)...\n")
     t0 = time.time()
     fig1_inversion_signal()
     fig2_msprime_comparison()

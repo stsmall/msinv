@@ -17,6 +17,8 @@ import pytest
 from msinv.hull import HullSimulator, InversionSpec
 from msinv.hull.sweep import Sweep
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 # ---------------------------------------------------------------------------
 # Sweep event basic behaviour
@@ -386,6 +388,7 @@ def test_sweep_hitchhiking_inside_inversion_with_recombination():
             sequence_length=L,
             p_inv=0.5, t_inv=t_inv,
             bp_left=20_000.0, bp_right=80_000.0,
+            gene_conversion_rate=NEGLIGIBLE_GAMMA,
             recombination_rate=1e-8,
             sweeps=[sweep],
             seed=seed,
@@ -410,3 +413,153 @@ def test_sweep_hitchhiking_inside_inversion_with_recombination():
                 assert si_mrca >= t_inv - 1e-6, (
                     f"Cross-class barrier violated: "
                     f"S-I T_MRCA={si_mrca} < t_inv={t_inv}")
+
+
+# ---------------------------------------------------------------------------
+# Soft sweep diversity signature
+# ---------------------------------------------------------------------------
+
+def test_soft_sweep_diversity_signature():
+    """Soft sweep (f0=0.2 → K=5 founders) should produce T_MRCA at
+    x_sel that is larger than a hard sweep.
+
+    Hard sweep:  T_MRCA at x_sel reduced (most lineages coalesce)
+    Soft sweep:  T_MRCA at x_sel larger (K founders continue at
+                 the neutral coalescent rate)
+
+    In hitchhiking mode, neither hard nor soft sweeps guarantee
+    T_MRCA == t_event (probabilistic segment inclusion). The key
+    signature is the RELATIVE difference: soft > hard.
+    """
+    import numpy as np
+
+    Ne = 10_000
+    L = 100_000.0
+    t_sweep = 500.0
+    n = 20
+
+    # -- Hard sweep (f0=0 → K=1) --
+    tmrca_hard = []
+    for seed in range(20):
+        sim = HullSimulator(
+            samples=n,
+            population_size=Ne,
+            sequence_length=L,
+            recombination_rate=1e-8,
+            sweeps=[Sweep(
+                x_sel=50_000.0, t_event=t_sweep,
+                target_class='P', selection_coefficient=0.01,
+                starting_frequency=0.0,
+            )],
+            seed=seed,
+        )
+        ts = sim.simulate()
+        tree = ts.at(50_000.0)
+        samples = list(ts.samples())
+        tmrca_hard.append(tree.time(tree.mrca(*samples)))
+
+    # -- Soft sweep (f0=0.2 → K=5) --
+    tmrca_soft = []
+    for seed in range(20):
+        sim = HullSimulator(
+            samples=n,
+            population_size=Ne,
+            sequence_length=L,
+            recombination_rate=1e-8,
+            sweeps=[Sweep(
+                x_sel=50_000.0, t_event=t_sweep,
+                target_class='P', selection_coefficient=0.01,
+                starting_frequency=0.2,
+            )],
+            seed=seed,
+        )
+        ts = sim.simulate()
+        tree = ts.at(50_000.0)
+        samples = list(ts.samples())
+        tmrca_soft.append(tree.time(tree.mrca(*samples)))
+
+    mean_hard = np.mean(tmrca_hard)
+    mean_soft = np.mean(tmrca_soft)
+
+    # Soft sweep T_MRCA should be larger than hard sweep T_MRCA.
+    # K=5 founders in the soft sweep continue at the neutral rate,
+    # while the hard sweep coalesces to a single ancestor.
+    assert mean_soft > mean_hard, (
+        f"Soft sweep T_MRCA ({mean_soft:.1f}) should be larger "
+        f"than hard sweep ({mean_hard:.1f})")
+    # Soft sweep T_MRCA should be well above t_event (founders coalesce
+    # at the neutral rate: E[T_MRCA] for K=5 is ~2*Ne*(1-1/5) = 16000).
+    assert mean_soft > t_sweep * 3, (
+        f"Soft sweep T_MRCA ({mean_soft:.1f}) should be >> "
+        f"t_event={t_sweep} (multiple founders survive)")
+
+
+# ---------------------------------------------------------------------------
+# Simultaneous sweeps at identical t_event (regression: TSK_ERR_BAD_NODE_TIME_ORDERING)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("use_rust", [False, True])
+@pytest.mark.parametrize("seed", range(5))
+def test_two_simultaneous_window_sweeps(seed, use_rust):
+    """Two window-mode sweeps at the exact same t_event must not
+    corrupt node-time ordering. Regression for the bug where each
+    sweep restarted its eps counter at 1, so the second sweep could
+    place a parent at t+eps below a child created by the first sweep
+    at t+k*eps."""
+    if use_rust:
+        try:
+            from msinv.hull._rust_bridge import RUST_AVAILABLE
+            if not RUST_AVAILABLE:
+                pytest.skip("Rust backend unavailable")
+        except ImportError:
+            pytest.skip("Rust bridge missing")
+
+    Ne = 10_000
+    L = 100_000.0
+    t_sweep = 300.0
+    sweeps = [
+        Sweep(x_sel=25_000.0, t_event=t_sweep,
+              target_class='P', sweep_window=2_000.0),
+        Sweep(x_sel=75_000.0, t_event=t_sweep,
+              target_class='P', sweep_window=2_000.0),
+    ]
+    sim = HullSimulator(
+        samples=10, population_size=Ne, sequence_length=L,
+        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
+    ts = sim.simulate(use_rust=use_rust)
+
+    samples = list(ts.samples())
+    for x_sel in (25_000.0, 75_000.0):
+        tree = ts.at(x_sel)
+        tmrca = tree.time(tree.mrca(*samples))
+        assert tmrca <= t_sweep + 10.0, (
+            f"sweep at x={x_sel}: T_MRCA={tmrca} > t_event={t_sweep}")
+
+
+@pytest.mark.parametrize("use_rust", [False, True])
+@pytest.mark.parametrize("seed", range(5))
+def test_two_simultaneous_hitchhiking_sweeps(seed, use_rust):
+    """Two hitchhiking sweeps at the exact same t_event."""
+    if use_rust:
+        try:
+            from msinv.hull._rust_bridge import RUST_AVAILABLE
+            if not RUST_AVAILABLE:
+                pytest.skip("Rust backend unavailable")
+        except ImportError:
+            pytest.skip("Rust bridge missing")
+
+    Ne = 10_000
+    L = 100_000.0
+    t_sweep = 300.0
+    sweeps = [
+        Sweep(x_sel=25_000.0, t_event=t_sweep, target_class='P',
+              selection_coefficient=0.01),
+        Sweep(x_sel=75_000.0, t_event=t_sweep, target_class='P',
+              selection_coefficient=0.01),
+    ]
+    sim = HullSimulator(
+        samples=10, population_size=Ne, sequence_length=L,
+        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
+    # Must not raise TSK_ERR_BAD_NODE_TIME_ORDERING.
+    ts = sim.simulate(use_rust=use_rust)
+    assert ts.num_samples == 10

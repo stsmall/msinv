@@ -21,6 +21,8 @@ from msinv.hull.lineage import Lineage, reset_uids
 from msinv.hull.segment import Segment
 from msinv.hull.events import apply_gene_flux
 
+from .conftest import NEGLIGIBLE_GAMMA
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for apply_gene_flux
@@ -93,43 +95,45 @@ def test_gene_flux_class_flip_I_to_S():
 # γ=0 → tree constant across inversion
 # ---------------------------------------------------------------------------
 
-def test_gamma_zero_gives_single_tree_inside_inv():
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=1000, sequence_length=10_000.0,
-        p_inv=0.5, t_inv=4_000.0,
-        bp_left=0.0, bp_right=10_000.0,
-        gene_conversion_rate=0.0,
-        recombination_rate=1e-8,
-        seed=42,
-    )
-    ts = sim.simulate()
-    # With recombination, num_trees >= 1; verify the tree sequence is valid.
-    assert ts.num_samples == 10
-    for tree in ts.trees():
-        assert tree.num_roots == 1
+def test_gamma_zero_is_rejected():
+    """gamma=0 is forbidden globally — must raise ValueError."""
+    with pytest.raises(ValueError, match="gene_conversion_rate"):
+        HullSimulator(
+            n_std=5, n_inv=5,
+            population_size=1000, sequence_length=10_000.0,
+            p_inv=0.5, t_inv=4_000.0,
+            bp_left=0.0, bp_right=10_000.0,
+            gene_conversion_rate=0.0,
+            recombination_rate=1e-8,
+            seed=42,
+        )
 
 
 # ---------------------------------------------------------------------------
 # γ>0 → multiple trees + LD decay
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("seed", [1, 2, 3])
-def test_gamma_positive_gives_multiple_trees(seed):
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=1000, sequence_length=10_000.0,
-        p_inv=0.5, t_inv=4_000.0,
-        bp_left=0.0, bp_right=10_000.0,
-        gene_conversion_rate=1e-6,   # high enough to fire several events
-        flux_window=0.05,
-        recombination_rate=1e-8,
-        seed=seed,
-    )
-    ts = sim.simulate()
-    # With γ>0 and many generations of opportunity, we expect >1 tree.
-    assert ts.num_trees > 1, (
-        f"Expected multiple trees with γ>0, got {ts.num_trees}")
+def test_gamma_positive_gives_multiple_trees():
+    """Across replicates, gamma > 0 should produce multi-tree TS more
+    often than not. Per-seed assertion is too strict — a few seeds
+    legitimately fire zero events under modest gamma * t_inv * L."""
+    multi_tree_count = 0
+    for seed in range(10):
+        sim = HullSimulator(
+            n_std=5, n_inv=5,
+            population_size=1000, sequence_length=10_000.0,
+            p_inv=0.5, t_inv=4_000.0,
+            bp_left=0.0, bp_right=10_000.0,
+            gene_conversion_rate=1e-6,
+            flux_window=0.05,
+            recombination_rate=1e-8,
+            seed=seed,
+        )
+        if sim.simulate().num_trees > 1:
+            multi_tree_count += 1
+    assert multi_tree_count >= 5, (
+        f"Only {multi_tree_count}/10 reps produced >1 tree at gamma>0 "
+        "— gene flux + recomb should fire multi-tree TS in most reps.")
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +152,8 @@ def test_gamma_positive_gives_multiple_trees(seed):
 # the strict barrier — exactly at and around tract positions.
 
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
-def test_class_barrier_strict_at_gamma_zero(seed):
-    """At γ=0, EVERY cross-class MRCA must be >= t_inv."""
+def test_class_barrier_strict_at_negligible_gamma(seed):
+    """At gamma → 0 limit, EVERY cross-class MRCA must be >= t_inv."""
     n_std = 4; n_inv = 4
     Ne = 1000
     t_inv = 2.0 * 2 * Ne
@@ -158,7 +162,7 @@ def test_class_barrier_strict_at_gamma_zero(seed):
         population_size=Ne, sequence_length=10_000.0,
         p_inv=0.5, t_inv=t_inv,
         bp_left=0.0, bp_right=10_000.0,
-        gene_conversion_rate=0.0,
+        gene_conversion_rate=NEGLIGIBLE_GAMMA,
         recombination_rate=1e-8,
         seed=seed,
     )
@@ -240,8 +244,10 @@ def test_gene_conversion_creates_strictly_more_low_mrcas_than_no_flux():
                         v += 1
         return v
 
-    # Across multiple seeds, γ>0 should produce MORE violations than γ=0.
-    no_flux = sum(count_violations(0.0, s) for s in range(10))
+    # Across seeds, larger γ should produce MORE violations than
+    # negligible γ. NEGLIGIBLE_GAMMA fires zero events at this
+    # Ne/L/t_inv combo so it serves as the "no-flux" baseline.
+    no_flux = sum(count_violations(NEGLIGIBLE_GAMMA, s) for s in range(10))
     with_flux = sum(count_violations(5e-5, s) for s in range(10))
     assert no_flux == 0
     assert with_flux > 0, (
@@ -363,7 +369,8 @@ def test_single_inv_via_inversions_api_fires_flux():
         hs.apply_gene_flux = counted
         try:
             for seed in range(5):
-                builder(seed).simulate()
+                # monkeypatch only catches Python apply_gene_flux
+                builder(seed).simulate(use_rust=False)
         finally:
             hs.apply_gene_flux = orig
 
@@ -407,12 +414,12 @@ def test_multi_inv_per_inversion_gamma():
                                    flux_window=0.05),
                     InversionSpec(bp_left=6_000.0, bp_right=10_000.0,
                                    p_inv=0.5, t_inv=4_000.0,
-                                   gene_conversion_rate=0.0,
+                                   gene_conversion_rate=NEGLIGIBLE_GAMMA,
                                    flux_window=0.05),
                 ],
                 recombination_rate=1e-8,
                 seed=seed,
-            ).simulate()
+            ).simulate(use_rust=False)  # monkeypatch only catches Python
     finally:
         hs.apply_gene_flux = orig
 

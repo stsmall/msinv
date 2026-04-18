@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
-"""Parallel Kir/Fol simulation — 1000 replicates across 10 workers.
+"""Kir/Fol neutral baseline — incremental rho sweep with realistic demography.
 
-Each worker runs 100 reps of the An. funestus 3Ra/3Rb simulation,
-accumulates per-window stats, and returns the sums. The main process
-combines all workers and plots.
+Runs each (rho, Ne_anc) combination sequentially, saves .npz + updates
+plot after each combo completes. Cached results are reused on re-run.
 
 Usage:
-    pixi run -e all python examples/empirical_kir_fol_parallel.py
+    .venv/bin/python examples/empirical_kir_fol_parallel.py
+    .venv/bin/python examples/empirical_kir_fol_parallel.py --rho 40,100 --Ne-anc 1000000
+    .venv/bin/python examples/empirical_kir_fol_parallel.py --rho 40 --reps 50
 """
+import argparse
+import os
 import sys
 import time
 import numpy as np
-from multiprocessing import Pool
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 
 import msprime
 
 from msinv import HullSimulator, InversionSpec, Demography
 
 
-# --- Parameters (same as empirical_kir_fol.py) ---
+# --- Fixed parameters (Small et al. 2023) ---
 Ne = 44_000
 mu = 3.55e-9
-r = 4.0e-8          # An. funestus recombination rate (rho ~ 704)
 L = 100_000
 t_split_gen = 14_000
 t_inv_gen = 385_000
+Ne_mid = 100_000       # 14k-60k gen ago
+t_Ne_mid = 60_000      # transition to mid-size
+
+p_inv_3Ra = {0: 0.0, 1: 0.73}
+p_inv_3Rb = {0: 0.0, 1: 0.40}
 p_inv_anc = 0.3
 
 inv_3Ra = (15_000, 45_000)
@@ -39,18 +44,18 @@ n_kir = 10
 n_fol_S = 5
 n_fol_I = 5
 
-N_WORKERS = 10
-REPS_PER_WORKER = 10
 NW = 40
 
-# Sample group indices (set by sample_config order)
 kir = list(range(n_kir))
 fol_same = list(range(n_kir, n_kir + n_fol_S))
 fol_alt = list(range(n_kir + n_fol_S, n_kir + n_fol_S + n_fol_I))
 
 
+def rho_to_r(rho):
+    return rho / (4 * Ne * L)
+
+
 def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
-    """Compute per-window dxy or pi."""
     wins = np.linspace(0, L, NW + 1)
     vals = np.zeros(NW)
     for w in range(NW):
@@ -64,7 +69,7 @@ def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
                     d += (haps[a, mask] != haps[b, mask]).sum()
                     n += 1
             vals[w] = d / max(n, 1) / (wins[w + 1] - wins[w])
-        else:  # pi
+        else:
             d = 0; n = 0
             ga = list(group_a)
             for i in range(len(ga)):
@@ -75,20 +80,45 @@ def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
     return vals
 
 
-def worker_chunk(args):
-    """Run REPS_PER_WORKER reps and return accumulated stats + count."""
-    worker_id, seed_base = args
-    mut_rng = np.random.default_rng(seed_base)
+def run_one(rho, ne_anc, n_reps):
+    """Run one (rho, Ne_anc) combo sequentially. Returns result dict."""
+    r = rho_to_r(rho)
+    tag = f"rho{rho}_Nanc{ne_anc // 1000}k"
+
+    # Check cache
+    npz_path = f'figures/kir_fol_{tag}.npz'
+    if os.path.exists(npz_path):
+        print(f"  Loading cached: {npz_path}")
+        sys.stdout.flush()
+        data = dict(np.load(npz_path, allow_pickle=True))
+        for k in ('rho', 'Ne_anc', 'total_ok'):
+            data[k] = int(data[k])
+        for k in ('elapsed', 'fst_ratio', 'fst_inv', 'fst_col', 'r'):
+            data[k] = float(data[k])
+        return data
+
+    print(f"\n{'='*60}")
+    print(f"{tag}  r={r:.3e}  ({n_reps} reps, sequential)")
+    print(f"{'='*60}")
+    sys.stdout.flush()
+    t0 = time.time()
 
     acc = {k: np.zeros(NW) for k in
            ['dxy_kf_same', 'dxy_kf_alt', 'dxy_fs_fi',
             'pi_K', 'pi_FS', 'pi_FI']}
     n_ok = 0
+    mut_rng = np.random.default_rng(2026)
 
-    for rep in range(REPS_PER_WORKER):
-        seed = seed_base + rep
+    for rep in range(n_reps):
+        seed = 10_000 + rep
         demo = Demography(pop_sizes=[Ne, Ne])
         demo.add_event(('ej', t_split_gen, 1, 0))
+        demo.add_inversion_freq_change(t_split_gen, 0, inv_id=0,
+                                       p_inv=p_inv_anc)
+        demo.add_inversion_freq_change(t_split_gen, 0, inv_id=1,
+                                       p_inv=p_inv_anc)
+        demo.add_event(('en', t_split_gen, 0, Ne_mid))
+        demo.add_event(('en', t_Ne_mid, 0, ne_anc))
 
         sim = HullSimulator(
             sample_config={
@@ -100,9 +130,9 @@ def worker_chunk(args):
             sequence_length=L,
             inversions=[
                 InversionSpec(bp_left=inv_3Ra[0], bp_right=inv_3Ra[1],
-                              p_inv=p_inv_anc, t_inv=t_inv_gen),
+                              p_inv=p_inv_3Ra, t_inv=t_inv_gen),
                 InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
-                              p_inv=p_inv_anc, t_inv=t_inv_gen),
+                              p_inv=p_inv_3Rb, t_inv=t_inv_gen),
             ],
             recombination_rate=r,
             seed=seed,
@@ -110,7 +140,8 @@ def worker_chunk(args):
         try:
             ts = sim.simulate()
         except Exception as e:
-            print(f"  Worker {worker_id} rep {rep}: {e}", file=sys.stderr)
+            print(f"  rep {rep}: FAILED {e}", file=sys.stderr)
+            sys.stderr.flush()
             continue
 
         mseed = int(mut_rng.integers(1, 2**31))
@@ -128,185 +159,180 @@ def worker_chunk(args):
         acc['pi_FI'] += per_window_stats(haps, pos_bp, fol_alt, None, 'pi')
         n_ok += 1
 
-        if (rep + 1) % 25 == 0:
-            print(f"  Worker {worker_id}: {rep + 1}/{REPS_PER_WORKER}")
+        if (rep + 1) % 5 == 0:
+            elapsed_so_far = time.time() - t0
+            rate = elapsed_so_far / (rep + 1)
+            eta = rate * (n_reps - rep - 1)
+            print(f"  {rep + 1}/{n_reps}  ok={n_ok}  "
+                  f"{elapsed_so_far:.0f}s  ETA {eta:.0f}s")
+            sys.stdout.flush()
 
-    return acc, n_ok
-
-
-def main():
-    print(f"Kir/Fol parallel: {N_WORKERS} workers x {REPS_PER_WORKER} reps "
-          f"= {N_WORKERS * REPS_PER_WORKER} total")
-    t0 = time.time()
-
-    # Each worker gets a non-overlapping seed range
-    tasks = [(w, 10_000 + w * REPS_PER_WORKER) for w in range(N_WORKERS)]
-
-    with Pool(N_WORKERS) as pool:
-        results = pool.map(worker_chunk, tasks)
-
-    # Combine
-    combined = {k: np.zeros(NW) for k in
-                ['dxy_kf_same', 'dxy_kf_alt', 'dxy_fs_fi',
-                 'pi_K', 'pi_FS', 'pi_FI']}
-    total_ok = 0
-    for acc, n_ok in results:
-        for k in combined:
-            combined[k] += acc[k]
-        total_ok += n_ok
-
-    if total_ok > 0:
-        for k in combined:
-            combined[k] /= total_ok
+    if n_ok > 0:
+        for k in acc:
+            acc[k] /= n_ok
 
     elapsed = time.time() - t0
-    print(f"\nDone: {total_ok}/{N_WORKERS * REPS_PER_WORKER} reps "
-          f"in {elapsed:.0f}s ({elapsed/60:.1f} min)")
 
-    # Unpack
-    dxy_kf_same = combined['dxy_kf_same']
-    dxy_kf_alt = combined['dxy_kf_alt']
-    dxy_fs_fi = combined['dxy_fs_fi']
-    pi_K = combined['pi_K']
-    pi_FS = combined['pi_FS']
-    pi_FI = combined['pi_FI']
+    # Derived stats
+    d = acc
+    da_kf_same = d['dxy_kf_same'] - (d['pi_K'] + d['pi_FS']) / 2
+    da_kf_alt = d['dxy_kf_alt'] - (d['pi_K'] + d['pi_FI']) / 2
+    da_fs_fi = d['dxy_fs_fi'] - (d['pi_FS'] + d['pi_FI']) / 2
+    fst_kf_same = 1.0 - (d['pi_K'] + d['pi_FS']) / 2 / np.maximum(d['dxy_kf_same'], 1e-20)
+    fst_kf_alt = 1.0 - (d['pi_K'] + d['pi_FI']) / 2 / np.maximum(d['dxy_kf_alt'], 1e-20)
+    fst_fs_fi = 1.0 - (d['pi_FS'] + d['pi_FI']) / 2 / np.maximum(d['dxy_fs_fi'], 1e-20)
 
-    # Net divergence (Da)
-    da_kf_same = dxy_kf_same - (pi_K + pi_FS) / 2
-    da_kf_alt = dxy_kf_alt - (pi_K + pi_FI) / 2
-    da_fs_fi = dxy_fs_fi - (pi_FS + pi_FI) / 2
+    # FST ratio
+    wins = np.linspace(0, L, NW + 1)
+    mid = (wins[:-1] + wins[1:]) / 2
+    inv_w = [w for w in range(NW)
+             if (inv_3Ra[0] < mid[w] < inv_3Ra[1]) or
+                (inv_3Rb[0] < mid[w] < inv_3Rb[1])]
+    col_w = [w for w in range(NW) if w not in inv_w]
+    fi = float(np.mean([fst_kf_alt[w] for w in inv_w]))
+    fc = float(np.mean([fst_kf_alt[w] for w in col_w]))
+    fst_ratio = fi / fc if fc != 0 else float('nan')
 
-    # FST = 1 - pi_within / pi_total  (Hudson estimator)
-    # pi_within = (pi_a + pi_b) / 2;  pi_total ~ dxy
-    fst_kf_same = 1.0 - (pi_K + pi_FS) / 2 / np.maximum(dxy_kf_same, 1e-20)
-    fst_kf_alt = 1.0 - (pi_K + pi_FI) / 2 / np.maximum(dxy_kf_alt, 1e-20)
-    fst_fs_fi = 1.0 - (pi_FS + pi_FI) / 2 / np.maximum(dxy_fs_fi, 1e-20)
+    res = {
+        'rho': rho, 'r': r, 'Ne_anc': ne_anc,
+        'total_ok': n_ok, 'elapsed': elapsed,
+        'fst_ratio': fst_ratio, 'fst_inv': fi, 'fst_col': fc,
+        **acc,
+        'da_kf_same': da_kf_same, 'da_kf_alt': da_kf_alt,
+        'da_fs_fi': da_fs_fi,
+        'fst_kf_same': fst_kf_same, 'fst_kf_alt': fst_kf_alt,
+        'fst_fs_fi': fst_fs_fi,
+    }
 
-    # Save raw arrays for reuse
-    np.savez('figures/empirical_kir_fol_data.npz',
-             dxy_kf_same=dxy_kf_same, dxy_kf_alt=dxy_kf_alt,
-             dxy_fs_fi=dxy_fs_fi, pi_K=pi_K, pi_FS=pi_FS, pi_FI=pi_FI,
-             da_kf_same=da_kf_same, da_kf_alt=da_kf_alt, da_fs_fi=da_fs_fi,
-             fst_kf_same=fst_kf_same, fst_kf_alt=fst_kf_alt,
-             fst_fs_fi=fst_fs_fi,
-             total_ok=total_ok, elapsed=elapsed)
-    print("Saved: figures/empirical_kir_fol_data.npz")
+    # Save npz
+    np.savez(npz_path, **{k: v for k, v in res.items()
+                          if isinstance(v, (np.ndarray, int, float))})
 
-    # ---- Plot (3 panels: dxy, Da, FST) ----
-    def smooth(y, k=3):
-        return np.convolve(y, np.ones(k) / k, mode='same')
+    print(f"Done: {n_ok}/{n_reps} in {elapsed:.0f}s ({elapsed/60:.1f} min)")
+    print(f"  FST(K vs F_I): inv={fi:.4f}  col={fc:.4f}  ratio={fst_ratio:.1f}x")
+    print(f"  Saved: {npz_path}")
+    sys.stdout.flush()
+
+    return res
+
+
+def plot_results(all_results):
+    """Plot all completed results."""
+    n = len(all_results)
+    if n == 0:
+        return
 
     wins = np.linspace(0, L, NW + 1)
     mid = (wins[:-1] + wins[1:]) / 2
 
-    fig = plt.figure(figsize=(12, 11))
-    gs = GridSpec(3, 1, hspace=0.30)
+    def smooth(y, k=3):
+        return np.convolve(y, np.ones(k) / k, mode='same')
+
+    fig, axes = plt.subplots(3, n, figsize=(5 * n, 10),
+                             sharey='row', sharex=True, squeeze=False)
 
     c_kf_same = '#2E7D32'
     c_fs_fi = '#FF8F00'
     c_kf_alt = '#00838F'
 
-    def shade_inv(ax):
-        for (lo, hi), lbl in [(inv_3Ra, '3Ra'), (inv_3Rb, '3Rb')]:
-            ax.axvspan(lo, hi, alpha=0.10, color='#90A4AE', zorder=0)
-            ax.axvline(lo, color='#78909C', ls='--', alpha=0.4, lw=0.8)
-            ax.axvline(hi, color='#78909C', ls='--', alpha=0.4, lw=0.8)
-            ax.text((lo + hi) / 2, ax.get_ylim()[1] * 0.95, lbl,
-                    ha='center', va='top', fontsize=9, fontstyle='italic',
-                    color='#546E7A')
+    for col, res in enumerate(all_results):
+        rho = res['rho']
+        ne_anc = res['Ne_anc']
+        ax_dxy = axes[0, col]
+        ax_da = axes[1, col]
+        ax_fst = axes[2, col]
 
-    # Panel A: dxy
-    ax_dxy = fig.add_subplot(gs[0])
-    ax_dxy.plot(mid, smooth(dxy_kf_same), '-', color=c_kf_same, lw=2,
-                label=r'K vs F$_S$ (same karyotype)')
-    ax_dxy.plot(mid, smooth(dxy_fs_fi), '-', color=c_fs_fi, lw=2,
-                label=r'F$_S$ vs F$_I$ (within Folonzo)')
-    ax_dxy.plot(mid, smooth(dxy_kf_alt), '-', color=c_kf_alt, lw=2,
-                label=r'K vs F$_I$ (alt karyotype)')
-    shade_inv(ax_dxy)
-    ax_dxy.set_ylabel(r'$d_{XY}$ (per bp)', fontsize=11)
-    ax_dxy.set_xlim(0, L)
-    ax_dxy.legend(fontsize=9, loc='upper right')
-    ax_dxy.set_title(r'A.  Absolute divergence $d_{XY}$',
-                     fontsize=11, fontweight='bold', loc='left')
-    ax_dxy.tick_params(labelbottom=False)
+        ax_dxy.plot(mid, smooth(res['dxy_kf_same']), '-', color=c_kf_same, lw=2,
+                    label=r'K vs F$_S$')
+        ax_dxy.plot(mid, smooth(res['dxy_fs_fi']), '-', color=c_fs_fi, lw=2,
+                    label=r'F$_S$ vs F$_I$')
+        ax_dxy.plot(mid, smooth(res['dxy_kf_alt']), '-', color=c_kf_alt, lw=2,
+                    label=r'K vs F$_I$')
+        ax_dxy.set_title(f'$\\rho$={rho}, N_anc={ne_anc//1000}k\n'
+                         f'{res["total_ok"]} reps, {res["elapsed"]:.0f}s',
+                         fontsize=9, fontweight='bold')
+        for (lo, hi) in [inv_3Ra, inv_3Rb]:
+            ax_dxy.axvspan(lo, hi, alpha=0.10, color='#90A4AE', zorder=0)
+        ax_dxy.set_xlim(0, L)
+        if col == 0:
+            ax_dxy.set_ylabel(r'$d_{XY}$ (per bp)', fontsize=11)
+            ax_dxy.legend(fontsize=7, loc='upper right')
 
-    # Panel B: Da
-    ax_da = fig.add_subplot(gs[1])
-    ax_da.plot(mid, smooth(da_kf_same), '-', color=c_kf_same, lw=2,
-               label=r'K vs F$_S$')
-    ax_da.plot(mid, smooth(da_fs_fi), '-', color=c_fs_fi, lw=2,
-               label=r'F$_S$ vs F$_I$')
-    ax_da.plot(mid, smooth(da_kf_alt), '-', color=c_kf_alt, lw=2,
-               label=r'K vs F$_I$')
-    shade_inv(ax_da)
-    ax_da.axhline(0, color='#555', ls=':', lw=0.8)
-    ax_da.set_ylabel(r'$D_a = d_{XY} - (\pi_A + \pi_B)/2$ (per bp)',
-                     fontsize=11)
-    ax_da.set_xlim(0, L)
-    ax_da.legend(fontsize=9, loc='upper right')
-    ax_da.set_title(r'B.  Net divergence $D_a$',
-                    fontsize=11, fontweight='bold', loc='left')
-    ax_da.tick_params(labelbottom=False)
+        ax_da.plot(mid, smooth(res['da_kf_same']), '-', color=c_kf_same, lw=2)
+        ax_da.plot(mid, smooth(res['da_fs_fi']), '-', color=c_fs_fi, lw=2)
+        ax_da.plot(mid, smooth(res['da_kf_alt']), '-', color=c_kf_alt, lw=2)
+        ax_da.axhline(0, color='#555', ls=':', lw=0.8)
+        for (lo, hi) in [inv_3Ra, inv_3Rb]:
+            ax_da.axvspan(lo, hi, alpha=0.10, color='#90A4AE', zorder=0)
+        if col == 0:
+            ax_da.set_ylabel(r'$D_a$ (per bp)', fontsize=11)
 
-    # Panel C: FST
-    ax_fst = fig.add_subplot(gs[2])
-    ax_fst.plot(mid, smooth(fst_kf_same), '-', color=c_kf_same, lw=2,
-                label=r'K vs F$_S$')
-    ax_fst.plot(mid, smooth(fst_fs_fi), '-', color=c_fs_fi, lw=2,
-                label=r'F$_S$ vs F$_I$')
-    ax_fst.plot(mid, smooth(fst_kf_alt), '-', color=c_kf_alt, lw=2,
-                label=r'K vs F$_I$')
-    shade_inv(ax_fst)
-    ax_fst.axhline(0, color='#555', ls=':', lw=0.8)
-    ax_fst.set_ylabel(r'$F_{ST}$ (Hudson)', fontsize=11)
-    ax_fst.set_xlabel('Position (bp)', fontsize=10)
-    ax_fst.set_xlim(0, L)
-    ax_fst.legend(fontsize=9, loc='upper right')
-    ax_fst.set_title(r'C.  Hudson $F_{ST}$',
-                     fontsize=11, fontweight='bold', loc='left')
+        ax_fst.plot(mid, smooth(res['fst_kf_same']), '-', color=c_kf_same, lw=2)
+        ax_fst.plot(mid, smooth(res['fst_fs_fi']), '-', color=c_fs_fi, lw=2)
+        ax_fst.plot(mid, smooth(res['fst_kf_alt']), '-', color=c_kf_alt, lw=2)
+        ax_fst.axhline(0, color='#555', ls=':', lw=0.8)
+        for (lo, hi) in [inv_3Ra, inv_3Rb]:
+            ax_fst.axvspan(lo, hi, alpha=0.10, color='#90A4AE', zorder=0)
+        ax_fst.set_xlabel('Position (bp)', fontsize=10)
+        if col == 0:
+            ax_fst.set_ylabel(r'$F_{ST}$ (Hudson)', fontsize=11)
 
-    caption = (
-        f'Figure. An. funestus Kiribina/Folonzo cross-karyotype divergence for 3Ra and 3Rb '
-        f'inversions on chromosome arm 3R, simulated with msinv (hull algorithm, {total_ok} replicates). '
-        f'(A) Absolute divergence $d_{{XY}}$. K vs F$_I$ (alt karyotype) shows elevated $d_{{XY}}$ inside '
-        f'both inversions due to the recombination barrier. '
-        f'(B) Net divergence $D_a = d_{{XY}} - (\\pi_A + \\pi_B)/2$. '
-        f'(C) Hudson $F_{{ST}} = 1 - \\pi_W / d_{{XY}}$, showing the relative differentiation signal. '
-        f'Parameters: Ne={Ne:,}, T$_{{split}}$={t_split_gen:,} gen, '
-        f'T$_{{inv}}$={t_inv_gen:,} gen, $\\mu$={mu:.2e}, r={r:.1e}, '
-        f'$\\gamma$=0, {N_WORKERS} workers x {REPS_PER_WORKER} reps.\n'
-        f'Command: pixi run -e all python examples/empirical_kir_fol_parallel.py'
-    )
-    fig.text(0.5, -0.01, caption, ha='center', fontsize=7, wrap=True,
-             fontstyle='italic', color='#333',
-             bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
-                       edgecolor='#BDBDBD', alpha=0.9))
+        ax_fst.text(0.98, 0.95, f'FST ratio: {res["fst_ratio"]:.1f}x',
+                    transform=ax_fst.transAxes, ha='right', va='top',
+                    fontsize=9, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3',
+                              facecolor='white', alpha=0.8))
 
     fig.suptitle(
-        'An. funestus Kir/Fol — 3Ra + 3Rb inversion divergence (hull simulator)',
-        fontsize=12, fontweight='bold', y=0.99)
+        'An. funestus Kir/Fol neutral baseline\n'
+        f'Ne: 44k → 100k (14k gen) → N_anc (60k gen)',
+        fontsize=11, fontweight='bold', y=1.02)
 
-    fig.savefig('figures/empirical_kir_fol.pdf',
-                bbox_inches='tight', dpi=150)
+    fig.tight_layout()
+    out = 'figures/empirical_kir_fol.pdf'
+    fig.savefig(out, bbox_inches='tight', dpi=150)
     plt.close()
-    print('Saved: figures/empirical_kir_fol.pdf')
+    print(f'Updated plot: {out}')
+    sys.stdout.flush()
 
-    # Summary table
-    inv_w = [w for w in range(NW)
-             if (inv_3Ra[0] < mid[w] < inv_3Ra[1]) or
-                (inv_3Rb[0] < mid[w] < inv_3Rb[1])]
-    col_w = [w for w in range(NW) if w not in inv_w]
-    print(f"\n{'metric':<14} {'inv':>10} {'col':>10} {'ratio':>10}")
-    for label, arr in [('dxy K-Fs', dxy_kf_same), ('dxy Fs-Fi', dxy_fs_fi),
-                        ('dxy K-Fi', dxy_kf_alt), ('Da K-Fs', da_kf_same),
-                        ('Da Fs-Fi', da_fs_fi), ('Da K-Fi', da_kf_alt),
-                        ('Fst K-Fs', fst_kf_same), ('Fst Fs-Fi', fst_fs_fi),
-                        ('Fst K-Fi', fst_kf_alt)]:
-        i_m = float(np.mean([arr[w] for w in inv_w]))
-        c_m = float(np.mean([arr[w] for w in col_w]))
-        ratio = i_m / c_m if c_m != 0 else float('nan')
-        print(f"  {label:<14} {i_m:>10.6g} {c_m:>10.6g} {ratio:>10.2f}")
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--rho', type=str, default='40',
+                        help='Comma-separated rho values (default: 40)')
+    parser.add_argument('--Ne-anc', type=str, default='1000000',
+                        help='Comma-separated Ne_anc values (default: 1000000)')
+    parser.add_argument('--reps', type=int, default=25,
+                        help='Number of replicates (default: 25)')
+    args = parser.parse_args()
+
+    rho_values = [int(x.strip()) for x in args.rho.split(',')]
+    ne_anc_values = [int(x.strip()) for x in args.Ne_anc.split(',')]
+
+    combos = [(rho, na) for rho in rho_values for na in ne_anc_values]
+    print(f"Kir/Fol neutral baseline — {len(combos)} combos, {args.reps} reps each:")
+    for rho, na in combos:
+        print(f"  rho={rho}, Ne_anc={na:,}")
+    sys.stdout.flush()
+
+    all_results = []
+    for rho, na in combos:
+        res = run_one(rho, na, args.reps)
+        all_results.append(res)
+        all_results.sort(key=lambda x: (x['Ne_anc'], x['rho']))
+        plot_results(all_results)
+
+    # Final summary
+    print(f"\n{'='*60}")
+    print(f"SUMMARY")
+    print(f"{'='*60}")
+    print(f"{'rho':>6} {'Ne_anc':>10} {'reps':>6} {'time':>8} "
+          f"{'FST_inv':>10} {'FST_col':>10} {'ratio':>8}")
+    for res in all_results:
+        print(f"  {res['rho']:>4} {int(res['Ne_anc']):>10,} "
+              f"{res['total_ok']:>6} {res['elapsed']:>7.0f}s "
+              f"{res['fst_inv']:>10.4f} {res['fst_col']:>10.4f} "
+              f"{res['fst_ratio']:>7.2f}x")
 
 
 if __name__ == '__main__':

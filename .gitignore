@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 __pycache__/
 slim_validation/output_*/
+slim_validation/output/*.trees
 slim_validation/*.log
 slim_validation/validation_results.txt
 docs/_build/
@@ -15,7 +16,6 @@ docs/source/_build/
 build/
 dist/
 .pytest_cache/
-slim_validation/scenarios/
 slim_validation/demography/output/
 slim_validation/master.log
 slim_validation/final_results.txt
@@ -25,3 +25,6 @@ slim_validation/inversion/*.state
 slim_validation/inversion_validation.log
 slim_validation/inversion_results.txt
 rust/target/
+.venv/
+.pixi/
+pixi.lock

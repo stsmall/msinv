@@ -22,6 +22,8 @@ pub enum DemoEvent {
     Em { t: f64, dst: u32, src: u32, m: f64 },
     /// Merge: move all lineages in src into dst (going backward).
     Ej { t: f64, src: u32, dst: u32 },
+    /// Change inversion frequency for a specific population.
+    Eig { t: f64, pop: u32, inv_id: u16, p_inv: f64 },
 }
 
 impl DemoEvent {
@@ -34,6 +36,7 @@ impl DemoEvent {
             DemoEvent::EM { t, .. } => *t,
             DemoEvent::Em { t, .. } => *t,
             DemoEvent::Ej { t, .. } => *t,
+            DemoEvent::Eig { t, .. } => *t,
         }
     }
 }
@@ -99,8 +102,13 @@ impl Demography {
 
     /// Apply all events scheduled at time `t`, mutating pop sizes /
     /// growth / migration and moving lineages for merge events.
-    pub fn apply_events_at(&mut self, t: f64, active: &mut [Lineage]) {
+    /// Returns a list of (inv_id, pop, p_inv) for any Eig events that
+    /// fired — the caller must apply these to its InversionSpec vec.
+    pub fn apply_events_at(&mut self, t: f64, active: &mut [Lineage])
+        -> Vec<(u16, u32, f64)>
+    {
         let mut remaining = Vec::new();
+        let mut inv_changes: Vec<(u16, u32, f64)> = Vec::new();
         let events = std::mem::take(&mut self.events);
         for ev in events {
             if (ev.time() - t).abs() > 1e-9 {
@@ -172,9 +180,13 @@ impl Demography {
                         self.migration_matrix[k][src as usize] = 0.0;
                     }
                 }
+                DemoEvent::Eig { pop, inv_id, p_inv, .. } => {
+                    inv_changes.push((inv_id, pop, p_inv));
+                }
             }
         }
         self.events = remaining;
+        inv_changes
     }
 
     /// Compute per-lineage migration rates. Returns (rate, lineage_idx, dst_pop).
@@ -249,8 +261,8 @@ mod tests {
         let seg1 = arena.alloc(0.0, 100.0, 1,
             crate::class_tag::BranchClass::PANMICTIC);
         let mut active = vec![
-            Lineage::new(seg0, seg0, 0, 0),
-            Lineage::new(seg1, seg1, 1, 1),
+            Lineage::new(seg0, seg0, 0, 0, &arena),
+            Lineage::new(seg1, seg1, 1, 1, &arena),
         ];
 
         d.apply_events_at(100.0, &mut active);

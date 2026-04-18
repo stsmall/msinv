@@ -1,0 +1,117 @@
+// Scenario 1: single inversion, neutral, with gene flux.
+//
+// WF, Ne=1000 diploids, L=100kb, inversion at [inv_left, inv_right],
+// p_inv=0.5 at t_inv gen ago. 8Ne burnin then inversion arises,
+// then t_inv gen until sampling. Samples: 10 SS + 10 II homozygotes.
+//
+// Tree-seq recording: mutations are added later in Python via msprime
+// (mu=0 in SLIM). m2 is the karyotype marker at inv_left.
+//
+// Recombination within inversion is suppressed between different
+// karyotypes via a recombination() callback that drops breakpoints
+// falling in [inv_left, inv_right] when the two parental gametes
+// carry different m2 states. Gene conversion (short-tract swap)
+// is still allowed by the callback when the tract is entirely
+// inside the inversion — provides msinv-style gene flux.
+
+initialize() {
+    if (!exists("Ne")) defineConstant("Ne", 1000);
+    if (!exists("L")) defineConstant("L", 100000);
+    if (!exists("inv_left")) defineConstant("inv_left", 30000);
+    if (!exists("inv_right")) defineConstant("inv_right", 70000);
+    if (!exists("r_rate")) defineConstant("r_rate", 1e-7);
+    if (!exists("gc_rate")) defineConstant("gc_rate", 1e-8);
+    if (!exists("gc_tract")) defineConstant("gc_tract", 100.0);
+    if (!exists("burnin_factor")) defineConstant("burnin_factor", 8);
+    if (!exists("t_inv_factor")) defineConstant("t_inv_factor", 4);
+    if (!exists("s_bal")) defineConstant("s_bal", 0.01);   // het advantage
+    if (!exists("seed")) defineConstant("seed", 42);
+    if (!exists("trees_path")) defineConstant("trees_path", "output/scenario1.trees");
+
+    defineConstant("burnin_gen", burnin_factor * Ne);
+    defineConstant("t_inv_gen", t_inv_factor * Ne);
+    defineConstant("sample_gen", burnin_gen + t_inv_gen);
+
+    setSeed(seed);
+
+    initializeTreeSeq();
+    initializeMutationRate(0.0);
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    initializeMutationType("m2", 0.5, "f", 0.0);  // karyotype marker
+    m2.convertToSubstitution = F;
+    m2.color = "red";
+
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, L - 1);
+
+    total_rate = r_rate + gc_rate;
+    nc_frac = gc_rate / total_rate;
+    initializeRecombinationRate(total_rate);
+    initializeGeneConversion(nc_frac, gc_tract, 1.0);
+}
+
+// Balancing selection: heterozygotes for m2 get a small advantage,
+// homozygotes (either class) are penalised mildly. This keeps
+// inversion polymorphic over 4Ne generations without inflating
+// within-class pi meaningfully (s_bal ~ 1/(2Ne)).
+mutationEffect(m2) {
+    if (homozygous) return 1.0 - s_bal;
+    return 1.0 + s_bal;
+}
+
+// Suppress crossovers inside inversion between different karyotypes.
+// GC tracts entirely inside inv still swap alleles between karyotypes
+// (providing gene flux), which matches the msinv model.
+recombination() {
+    k1 = genome1.countOfMutationsOfType(m2) > 0;
+    k2 = genome2.countOfMutationsOfType(m2) > 0;
+    if (k1 == k2) return F;  // same karyotype: no suppression
+    // Different karyotypes: drop any crossover breakpoints inside the
+    // inversion. Gene-conversion-only recombinations (where SLIM sets
+    // gcStarts/gcEnds) still proceed — breakpoints[] contains both.
+    keep = !(breakpoints >= inv_left & breakpoints <= inv_right);
+    new_bp = breakpoints[keep];
+    if (size(new_bp) != size(breakpoints)) {
+        breakpoints = new_bp;
+        return T;
+    }
+    return F;
+}
+
+1 early() {
+    sim.addSubpop("p1", Ne);
+    community.rescheduleScriptBlock(s1, burnin_gen, burnin_gen);
+    community.rescheduleScriptBlock(s2, sample_gen, sample_gen);
+}
+
+// Inject inversion at p_inv=0.5 after burnin. Initial tick=2 is a
+// placeholder; reschedule above moves it to burnin_gen.
+s1 2 early() {
+    genomes = p1.genomes;
+    carriers = sample(genomes, asInteger(size(genomes) * 0.5));
+    carriers.addNewDrawnMutation(m2, inv_left);
+    cat("gen " + sim.cycle + ": added m2 to " + size(carriers)
+        + "/" + size(genomes) + " genomes\n");
+}
+
+s2 2 late() {
+    // Remember enough individuals that Python can find 10 S-genomes
+    // and 10 I-genomes (haploid chromosomes) regardless of genotype.
+    inds = p1.individuals;
+    n_remember = min(size(inds), 100);
+    sampled = sample(inds, n_remember);
+    sim.treeSeqRememberIndividuals(sampled);
+
+    // Report karyotype composition for validation.
+    counts = sapply(sampled, "sum(applyValue.genomes.countOfMutationsOfType(m2));");
+    n_s_gen = 2 * sum(counts == 0) + sum(counts == 1);
+    n_i_gen = 2 * sum(counts == 2) + sum(counts == 1);
+    cat("gen " + sim.cycle + ": Remember " + n_remember + " inds, "
+        + "S-genomes=" + n_s_gen + " I-genomes=" + n_i_gen + "\n");
+    if (n_s_gen < 10 | n_i_gen < 10) {
+        cat("WARNING: fewer than 10 genomes of each class — skipping\n");
+    }
+    sim.treeSeqOutput(trees_path);
+    cat("saved " + trees_path + "\n");
+    sim.simulationFinished();
+}

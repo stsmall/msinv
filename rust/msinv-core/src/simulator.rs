@@ -265,10 +265,6 @@ impl HullSimulator {
         let mut flux_per_lin: Vec<FluxPerLin> = Vec::new();
         let mut flux_total: Vec<f64> = vec![0.0; inversions.len()];
         let mut flux_dirty = true;
-        // Reusable scratch for CoalAggregate dispatch — filled per fire
-        // with (i, j) pairs that have overlap in the bucket's class, so
-        // sampling doesn't have to walk iter_pairs twice.
-        let mut coal_candidates: Vec<(usize, usize)> = Vec::with_capacity(256);
         let mut engine_dirty = true;  // force full rebuild of event list
         let mut cache_dirty = true;   // force full rebuild of rate_cache
         // Counter throttling gc_sole_lineages — run every GC_STRIDE
@@ -439,24 +435,39 @@ impl HullSimulator {
                 Event::CoalAggregate { pop, class } => {
                     let pop = *pop;
                     let cls = *class;
-                    // Single-pass collect of matching (i, j) candidates
-                    // so we only walk iter_pairs once per coal dispatch.
-                    // The earlier two-pass (count then sample) version
-                    // dominated the rho=2000 flamegraph via SmallVec
-                    // deref overhead.
-                    coal_candidates.clear();
-                    for (ii, jj, overlaps) in rate_cache.iter_pairs() {
-                        if active[ii].population != pop { continue; }
-                        for (c, _) in overlaps {
-                            if *c == cls {
-                                coal_candidates.push((ii, jj));
-                                break;
-                            }
+                    // class_totals tracks count of matching pairs for
+                    // (pop, cls). Pre-pick target k, walk iter_pairs
+                    // once with early exit at kth match. Avoids the
+                    // Vec::push per candidate that dominated the
+                    // rho=2000 flamegraph (~22% of wall).
+                    let mut count: usize = 0;
+                    for (p, c, n) in rate_cache.iter_class_totals() {
+                        if p == pop && c == cls {
+                            count = n as usize;
+                            break;
                         }
                     }
-                    if coal_candidates.is_empty() { continue; }
-                    let pick = rng.random_range(0..coal_candidates.len());
-                    let (i, j) = coal_candidates[pick];
+                    if count == 0 { continue; }
+                    let target = rng.random_range(0..count);
+                    let mut seen: usize = 0;
+                    let mut chosen: Option<(usize, usize)> = None;
+                    for (ii, jj, overlaps) in rate_cache.iter_pairs() {
+                        if active[ii].population != pop { continue; }
+                        let mut has = false;
+                        for (c, _) in overlaps {
+                            if *c == cls { has = true; break; }
+                        }
+                        if !has { continue; }
+                        if seen == target {
+                            chosen = Some((ii, jj));
+                            break;
+                        }
+                        seen += 1;
+                    }
+                    let (i, j) = match chosen {
+                        Some(p) => p,
+                        None => continue,
+                    };
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;

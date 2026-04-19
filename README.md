@@ -1,3 +1,4 @@
+
 <img width="2932" height="800" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
 
 
@@ -170,6 +171,8 @@ All 98 hull tests should pass in a few seconds.
 ## Citation
 
 If you use msinv, please cite:
+
+<img width="90" height="30" alt="image2" src="https://github.com/user-attachments/assets/e83e710c-7c94-4c00-943e-01451564a902" />
 
 ```bibtex
 @software{msinv,

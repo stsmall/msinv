@@ -60,6 +60,12 @@ enum Event {
     /// on every event-list rebuild.
     FluxAggregate { inv_idx: usize },
     Migration { lineage_idx: usize, dst_pop: u32 },
+    /// Aggregate migration: all lineages in `src_pop` migrating to
+    /// `dst_pop` with the same per-lineage rate. Firing picks one
+    /// lineage uniformly from `pop_buckets[src_pop]` and migrates it.
+    /// Replaces the O(n · n_pops) per-lineage Migration events that
+    /// dominated multi-pop event-list builds at ~9.5% of run_loop.
+    MigrationAggregate { src_pop: u32, dst_pop: u32 },
 }
 
 // ---------------------------------------------------------------
@@ -380,22 +386,41 @@ impl HullSimulator {
                         }
                     }
                 }
-                // Migration.
-                for (rate, lin_idx, dst) in demo.migration_rates(active) {
-                    all_events.push((rate, Event::Migration {
-                        lineage_idx: lin_idx, dst_pop: dst,
-                    }));
+                // Rebuild per-pop index buckets. Only needed when
+                // multiple pops exist — single-pop takes the fast
+                // path in CoalPanmicticPop and has no aggregate
+                // migration to emit. One-pass walk; amortized with
+                // other engine rebuild work.
+                if demo.n_pops >= 2 {
+                    while pop_buckets.len() < demo.n_pops as usize {
+                        pop_buckets.push(Vec::new());
+                    }
+                    for b in pop_buckets.iter_mut() { b.clear(); }
+                    for (i, l) in active.iter().enumerate() {
+                        pop_buckets[l.population as usize].push(i as u32);
+                    }
                 }
 
-                // Rebuild per-pop index buckets. One-pass walk —
-                // amortized with other engine rebuild work. Gives O(1)
-                // pair picks in multi-pop CoalPanmicticPop.
-                while pop_buckets.len() < demo.n_pops as usize {
-                    pop_buckets.push(Vec::new());
-                }
-                for b in pop_buckets.iter_mut() { b.clear(); }
-                for (i, l) in active.iter().enumerate() {
-                    pop_buckets[l.population as usize].push(i as u32);
+                // Migration — aggregate one event per (src, dst) pair.
+                // rate = |pop_buckets[src]| * m[dst][src]. Firing picks
+                // a lineage uniformly from pop_buckets[src]. Replaces
+                // O(n · n_pops) per-lineage entries with O(n_pops²).
+                if demo.n_pops >= 2 {
+                    for src in 0..demo.n_pops as usize {
+                        let count = pop_buckets[src].len() as f64;
+                        if count == 0.0 { continue; }
+                        for dst in 0..demo.n_pops as usize {
+                            if dst == src { continue; }
+                            let m = demo.migration_matrix[dst][src];
+                            if m > 0.0 {
+                                all_events.push((count * m,
+                                    Event::MigrationAggregate {
+                                        src_pop: src as u32,
+                                        dst_pop: dst as u32,
+                                    }));
+                            }
+                        }
+                    }
                 }
 
                 // Rebuild Fenwick tree. O(n) batch build via build_from.
@@ -832,6 +857,24 @@ impl HullSimulator {
                         rate_cache.recompute_for(idx, active, arena);
                     }
                 }
+                Event::MigrationAggregate { src_pop, dst_pop } => {
+                    let src = *src_pop;
+                    let dst = *dst_pop;
+                    let bucket = &pop_buckets[src as usize];
+                    if bucket.is_empty() { continue; }
+                    let pick = rng.random_range(0..bucket.len());
+                    let idx = bucket[pick] as usize;
+                    active[idx].population = dst;
+                    engine_dirty = true;
+                    if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
+                        flux_update_for(idx, &mut flux_per_lin,
+                                         &mut flux_total, active, inversions,
+                                         arena, &barrier_active);
+                    }
+                    if any_barrier && !cache_dirty {
+                        rate_cache.recompute_for(idx, active, arena);
+                    }
+                }
             }
 
             // Keep recomb rate in sync.
@@ -1034,6 +1077,21 @@ fn compute_lin_flux(
     barrier_active: &[bool],
 ) -> FluxPerLin {
     let mut out = FluxPerLin::new();
+    compute_lin_flux_into(&mut out, lin, inversions, arena, barrier_active);
+    out
+}
+
+/// In-place variant: fills `out` (cleared first) with the lineage's flux
+/// entries. Avoids the ~48-byte SmallVec copy seen in flamegraphs when
+/// flux_rebuild_full pushed a freshly-returned SmallVec per lineage.
+fn compute_lin_flux_into(
+    out: &mut FluxPerLin,
+    lin: &Lineage,
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
+    barrier_active: &[bool],
+) {
+    out.clear();
     for (ii, inv) in inversions.iter().enumerate() {
         if !barrier_active[ii] { continue; }
         if inv.gene_conversion_rate <= 0.0 { continue; }
@@ -1054,7 +1112,6 @@ fn compute_lin_flux(
             out.push((ii, rate));
         }
     }
-    out
 }
 
 /// Rebuild the full flux cache from scratch — call on boundaries,
@@ -1067,14 +1124,18 @@ fn flux_rebuild_full(
     arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    flux_per_lin.clear();
+    // Fill entries in place to avoid the per-lineage SmallVec return +
+    // push copy (~48 bytes) that showed up as ~20% of run_loop self-time
+    // in the multi-pop flamegraph at rho=2000.
+    flux_per_lin.resize_with(active.len(), FluxPerLin::new);
+    flux_per_lin.truncate(active.len());
     for t in flux_total.iter_mut() { *t = 0.0; }
-    for lin in active {
-        let entries = compute_lin_flux(lin, inversions, arena, barrier_active);
-        for (ii, rate) in entries.iter() {
+    for (i, lin) in active.iter().enumerate() {
+        compute_lin_flux_into(&mut flux_per_lin[i], lin, inversions,
+                               arena, barrier_active);
+        for (ii, rate) in flux_per_lin[i].iter() {
             flux_total[*ii] += *rate;
         }
-        flux_per_lin.push(entries);
     }
 }
 
@@ -1091,7 +1152,7 @@ fn flux_update_for(
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] -= *rate;
     }
-    flux_per_lin[li] = compute_lin_flux(
+    compute_lin_flux_into(&mut flux_per_lin[li],
         &active[li], inversions, arena, barrier_active);
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] += *rate;
@@ -1122,12 +1183,14 @@ fn flux_push(
     arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    let entries = compute_lin_flux(
+    // Grow then fill in place (vs push of a returned SmallVec).
+    flux_per_lin.push(FluxPerLin::new());
+    let last = flux_per_lin.len() - 1;
+    compute_lin_flux_into(&mut flux_per_lin[last],
         &active[li], inversions, arena, barrier_active);
-    for (ii, rate) in entries.iter() {
+    for (ii, rate) in flux_per_lin[last].iter() {
         flux_total[*ii] += *rate;
     }
-    flux_per_lin.push(entries);
 }
 
 /// Mirror `active.swap_remove(idx)` on a length Fenwick by moving the

@@ -559,19 +559,33 @@ impl HullSimulator {
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
-                    pool_buf.clear();
-                    for (i, l) in active.iter().enumerate() {
-                        if l.population == pop {
-                            pool_buf.push(i);
+                    // Single-pop fast path: every lineage matches, so
+                    // skip the filter+push walk over active. Eliminates
+                    // ~22% of run_loop at rho=2000 post-barrier where
+                    // this event fires O(n²) times.
+                    let (a, b) = if demo.n_pops == 1 {
+                        let n_act = active.len();
+                        if n_act < 2 { continue; }
+                        let ii = rng.random_range(0..n_act);
+                        let mut jj = rng.random_range(0..n_act - 1);
+                        if jj >= ii { jj += 1; }
+                        (ii, jj)
+                    } else {
+                        pool_buf.clear();
+                        for (i, l) in active.iter().enumerate() {
+                            if l.population == pop {
+                                pool_buf.push(i);
+                            }
                         }
-                    }
-                    if pool_buf.len() >= 2 {
+                        if pool_buf.len() < 2 { continue; }
                         let ii = rng.random_range(0..pool_buf.len());
                         let mut jj = rng.random_range(0..pool_buf.len() - 1);
                         if jj >= ii { jj += 1; }
+                        (pool_buf[ii], pool_buf[jj])
+                    };
+                    {
                         // Phase F: hull prescreen — skip if lineage
                         // extents don't overlap (cheap rejection).
-                        let (a, b) = (pool_buf[ii], pool_buf[jj]);
                         if !active[a].hulls_overlap(&active[b], arena) {
                             continue; // no-op, draw next event
                         }

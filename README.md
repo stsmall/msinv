@@ -1,3 +1,4 @@
+<img width="3233" height="1643" alt="msinv" src="https://github.com/user-attachments/assets/0c1cb147-1412-437a-b322-c4022bf151f7" />
 # msinv
 
 **Coalescent simulator with chromosomal inversions**

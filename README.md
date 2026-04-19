@@ -1,4 +1,4 @@
-<img width="626" height="321" alt="image1" src="https://github.com/user-attachments/assets/d9782087-f824-4623-892f-0109c254793e" />
+<img width="2932" height="900" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
 
 **Coalescent simulator with chromosomal inversions**
 

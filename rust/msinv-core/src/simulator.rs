@@ -251,7 +251,12 @@ impl HullSimulator {
         // changes; reused when only recombination happens.
         let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
         let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
-        let mut pool_buf: Vec<usize> = Vec::with_capacity(64);
+        // Per-pop lineage counts — refreshed inside the `engine_dirty`
+        // rebuild block so CoalPanmicticPop can skip the pool_buf build
+        // walk and use rank-based single-walk selection. Piggybacks on
+        // the existing O(n) engine rebuild; same amortized cost as the
+        // previous per-fire filter walk, zero per-fire Vec pushes.
+        let mut pop_counts: Vec<u32> = vec![0; demo.n_pops as usize];
         let mut event_tree = crate::fenwick::Fenwick::new(0);
         // Fenwick over lineage cached_lens. Enables O(log n) proportional
         // selection for recombination, replacing the O(n) linear scan
@@ -362,6 +367,18 @@ impl HullSimulator {
                     all_events.push((rate, Event::Migration {
                         lineage_idx: lin_idx, dst_pop: dst,
                     }));
+                }
+
+                // Rebuild per-pop lineage counts (used by the multi-pop
+                // CoalPanmicticPop rank-selection fast path). One-pass
+                // walk over active — amortized across all events fired
+                // until the next engine rebuild.
+                if pop_counts.len() != demo.n_pops as usize {
+                    pop_counts.resize(demo.n_pops as usize, 0);
+                }
+                for c in pop_counts.iter_mut() { *c = 0; }
+                for l in active.iter() {
+                    pop_counts[l.population as usize] += 1;
                 }
 
                 // Rebuild Fenwick tree. O(n) batch build via build_from.
@@ -560,9 +577,13 @@ impl HullSimulator {
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
                     // Single-pop fast path: every lineage matches, so
-                    // skip the filter+push walk over active. Eliminates
-                    // ~22% of run_loop at rho=2000 post-barrier where
-                    // this event fires O(n²) times.
+                    // skip the filter walk over active entirely.
+                    // Multi-pop path: read the count from `pop_counts`
+                    // (refreshed during engine rebuild), pre-pick two
+                    // distinct ranks, then walk active once with early
+                    // exit at the higher rank. Avoids the pool_buf
+                    // build (Vec::push per match) — only the filter
+                    // walk remains.
                     let (a, b) = if demo.n_pops == 1 {
                         let n_act = active.len();
                         if n_act < 2 { continue; }
@@ -571,17 +592,32 @@ impl HullSimulator {
                         if jj >= ii { jj += 1; }
                         (ii, jj)
                     } else {
-                        pool_buf.clear();
-                        for (i, l) in active.iter().enumerate() {
-                            if l.population == pop {
-                                pool_buf.push(i);
+                        let count = pop_counts[pop as usize] as usize;
+                        if count < 2 { continue; }
+                        let rk_a = rng.random_range(0..count);
+                        let mut rk_b = rng.random_range(0..count - 1);
+                        if rk_b >= rk_a { rk_b += 1; }
+                        let (rk_min, rk_max) = if rk_a < rk_b {
+                            (rk_a, rk_b)
+                        } else {
+                            (rk_b, rk_a)
+                        };
+                        let mut matched: usize = 0;
+                        let mut idx_min = usize::MAX;
+                        let mut idx_max = usize::MAX;
+                        for (idx, l) in active.iter().enumerate() {
+                            if l.population != pop { continue; }
+                            if matched == rk_min { idx_min = idx; }
+                            if matched == rk_max {
+                                idx_max = idx;
+                                break;
                             }
+                            matched += 1;
                         }
-                        if pool_buf.len() < 2 { continue; }
-                        let ii = rng.random_range(0..pool_buf.len());
-                        let mut jj = rng.random_range(0..pool_buf.len() - 1);
-                        if jj >= ii { jj += 1; }
-                        (pool_buf[ii], pool_buf[jj])
+                        if idx_min == usize::MAX || idx_max == usize::MAX {
+                            continue;
+                        }
+                        (idx_min, idx_max)
                     };
                     {
                         // Phase F: hull prescreen — skip if lineage

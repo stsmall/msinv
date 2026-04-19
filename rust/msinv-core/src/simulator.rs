@@ -239,7 +239,7 @@ impl HullSimulator {
 
         // Phase D: incremental pair rate cache.
         let max_lins = (active.len() * 20).max(256);
-        let mut rate_cache = RateCache::new(max_lins);
+        let mut rate_cache = RateCache::new(max_lins, self.sequence_length);
         rate_cache.rebuild(&active, arena);
 
         // Persistent event list + Fenwick tree. Rebuilt on structural

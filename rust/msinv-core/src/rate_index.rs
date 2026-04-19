@@ -56,6 +56,18 @@ pub struct RateCache {
     /// these slices instead of walking the arena, which killed ~15% of
     /// wall time at rho=2000 to arena random-index reads.
     lineage_segs: Vec<LineageSegs>,
+    /// Per-lineage 64-bin positional bitmap. Bin `b` is set iff some
+    /// segment covers any position in [b * seq_len / 64, (b+1) * seq_len
+    /// / 64). Two lineages whose bitmaps AND to 0 share no positional
+    /// overlap, so `compute_overlap` would return empty — skip it. Hull
+    /// prescreen already filters the worst cases; this catches the
+    /// common rho ≥ 16000 pattern where both hulls span the full
+    /// sequence via a few scattered fragments that don't actually
+    /// intersect.
+    lineage_pos_bits: Vec<u64>,
+    /// Sequence length. Used to compute `lineage_pos_bits` bin indices.
+    /// Must stay stable across rebuilds/updates so bit AND is valid.
+    seq_len: f64,
     /// Dense (pop, class, pair_count) table. Counts the number of
     /// cached pairs whose overlap touches `class` in `pop`. Coalescence
     /// hazard between any two lineages in the same (pop, class) bucket
@@ -86,7 +98,7 @@ fn bit_get(bits: &[u64], i: usize) -> bool {
 fn nbits_words(n_bits: usize) -> usize { (n_bits + 63) / 64 }
 
 impl RateCache {
-    pub fn new(max_lineages: usize) -> Self {
+    pub fn new(max_lineages: usize, seq_len: f64) -> Self {
         let cap = max_lineages;
         let n_pairs = tri_size(cap);
         Self {
@@ -94,10 +106,34 @@ impl RateCache {
             nonempty_bits: vec![0u64; nbits_words(n_pairs)],
             lineage_pop: Vec::with_capacity(cap),
             lineage_segs: Vec::with_capacity(cap),
+            lineage_pos_bits: Vec::with_capacity(cap),
+            seq_len,
             class_totals: SmallVec::new(),
             n: 0,
             capacity: cap,
         }
+    }
+
+    /// Compute the 64-bin positional bitmap for a segment list.
+    /// Bin b = floor(pos / seq_len * 64). Segments spanning multiple
+    /// bins set all covered bins (floor(l)..=ceil(r)-1 clamped to 63).
+    #[inline]
+    fn seg_bits_for(seq_len: f64, segs: &[FlatSeg]) -> u64 {
+        if seq_len <= 0.0 || segs.is_empty() { return !0u64; }
+        let inv = 64.0 / seq_len;
+        let mut bits = 0u64;
+        for (l, r, _) in segs {
+            let bl = (*l * inv).floor() as i64;
+            let br = (*r * inv).ceil() as i64;
+            let bl = bl.max(0) as u64;
+            let br = br.min(64).max(0) as u64;
+            if bl >= br { continue; }
+            let span = br - bl;
+            let mask = if span >= 64 { !0u64 }
+                else { ((1u64 << span) - 1) << bl };
+            bits |= mask;
+        }
+        bits
     }
 
     fn ensure_capacity(&mut self, need: usize) {
@@ -123,6 +159,9 @@ impl RateCache {
         if self.lineage_segs.len() <= idx {
             self.lineage_segs.resize_with(idx + 1, SmallVec::new);
         }
+        if self.lineage_pos_bits.len() <= idx {
+            self.lineage_pos_bits.resize(idx + 1, 0u64);
+        }
         let slot = &mut self.lineage_segs[idx];
         slot.clear();
         let mut sa = active[idx].head;
@@ -131,6 +170,7 @@ impl RateCache {
             slot.push((s.left, s.right, s.branch_class));
             sa = s.next;
         }
+        self.lineage_pos_bits[idx] = Self::seg_bits_for(self.seq_len, slot);
     }
 
     /// Hull [left, right] derived from the flat segs; returns an empty
@@ -223,6 +263,11 @@ impl RateCache {
         } else {
             self.lineage_segs.truncate(self.n);
         }
+        if self.lineage_pos_bits.len() < self.n {
+            self.lineage_pos_bits.resize(self.n, 0u64);
+        } else {
+            self.lineage_pos_bits.truncate(self.n);
+        }
         for i in 0..self.n {
             self.rebuild_lineage_segs(i, active, arena);
         }
@@ -230,6 +275,9 @@ impl RateCache {
         for i in 0..self.n {
             for j in (i + 1)..self.n {
                 if active[i].population != active[j].population {
+                    continue;
+                }
+                if self.lineage_pos_bits[i] & self.lineage_pos_bits[j] == 0 {
                     continue;
                 }
                 let ovl = compute_overlap(
@@ -277,7 +325,12 @@ impl RateCache {
             let other_pop = self.lineage_pop.get(other).copied()
                 .unwrap_or(active[other].population);
             let pops_match = changed_pop == other_pop;
-            // Hull prescreen from the cached flat segs — no arena reads.
+            // Hull + positional-bit prescreen from the cached flat segs —
+            // no arena reads. Bit prescreen catches the common rho ≥ 16000
+            // pattern where both hulls span the full sequence via a few
+            // scattered fragments that never actually intersect.
+            let changed_bits = self.lineage_pos_bits
+                .get(idx).copied().unwrap_or(0);
             let (hulls_overlap, other_head_is_nil) = if !pops_match {
                 (false, false)
             } else {
@@ -287,8 +340,14 @@ impl RateCache {
                     (false, true)
                 } else {
                     let (other_l, other_r) = Self::hull_from_segs(other_segs);
-                    (other_r > changed_hull_l && changed_hull_r > other_l,
-                     false)
+                    let hulls_ok = other_r > changed_hull_l && changed_hull_r > other_l;
+                    if hulls_ok {
+                        let other_bits = self.lineage_pos_bits
+                            .get(other).copied().unwrap_or(0);
+                        (changed_bits & other_bits != 0, false)
+                    } else {
+                        (false, false)
+                    }
                 }
             };
             // Fast path: pair was empty and will stay empty — skip
@@ -423,8 +482,13 @@ impl RateCache {
                 self.overlaps[old_pidx].clear();
                 bit_clear(&mut self.nonempty_bits, old_pidx);
             }
-            // Hull prescreen for left-half ∩ other.
-            if other_r > left_hull_l && left_hull_r > other_l {
+            // Hull + positional-bit prescreen for left-half ∩ other.
+            let left_bits = self.lineage_pos_bits
+                .get(idx).copied().unwrap_or(0);
+            let other_bits = self.lineage_pos_bits
+                .get(other).copied().unwrap_or(0);
+            if other_r > left_hull_l && left_hull_r > other_l
+                && left_bits & other_bits != 0 {
                 let ovl = compute_overlap(
                     &self.lineage_segs[oi], &self.lineage_segs[oj]);
                 if !ovl.is_empty() {
@@ -441,7 +505,10 @@ impl RateCache {
                 self.overlaps[new_pidx].clear();
                 bit_clear(&mut self.nonempty_bits, new_pidx);
             }
-            if other_r > right_hull_l && right_hull_r > other_l {
+            let right_bits = self.lineage_pos_bits
+                .get(new_idx).copied().unwrap_or(0);
+            if other_r > right_hull_l && right_hull_r > other_l
+                && right_bits & other_bits != 0 {
                 let ovl = compute_overlap(
                     &self.lineage_segs[ni], &self.lineage_segs[nj]);
                 if !ovl.is_empty() {
@@ -481,6 +548,9 @@ impl RateCache {
             if !self.lineage_segs.is_empty() {
                 self.lineage_segs.pop();
             }
+            if !self.lineage_pos_bits.is_empty() {
+                self.lineage_pos_bits.pop();
+            }
             self.n -= 1;
             return;
         }
@@ -515,6 +585,11 @@ impl RateCache {
             let moved = std::mem::take(&mut self.lineage_segs[old_last]);
             self.lineage_segs[removed_idx] = moved;
             self.lineage_segs.pop();
+        }
+        if old_last < self.lineage_pos_bits.len() {
+            let moved = self.lineage_pos_bits[old_last];
+            self.lineage_pos_bits[removed_idx] = moved;
+            self.lineage_pos_bits.pop();
         }
         self.n -= 1;
     }
@@ -687,7 +762,7 @@ mod tests {
         let lin1 = Lineage::new(s1, s1, 0, 1, &arena);
         let active = vec![lin0, lin1];
 
-        let mut cache = RateCache::new(10);
+        let mut cache = RateCache::new(10, 100.0);
         cache.rebuild(&active, &arena);
 
         let ovl = cache.get_pair(0, 1);

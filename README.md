@@ -1,6 +1,5 @@
-<img width="2932" height="900" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
+<img width="2932" height="800" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
 
-**Coalescent simulator with chromosomal inversions**
 
 [![Tests](https://img.shields.io/badge/tests-98%2F98%20passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue)](https://www.python.org/)

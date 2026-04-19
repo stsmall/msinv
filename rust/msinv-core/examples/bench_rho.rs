@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use msinv_core::demography::Demography;
 use msinv_core::inversion::InversionSpec;
+use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry};
 use msinv_core::class_tag::Karyotype;
 
@@ -35,6 +36,7 @@ fn main() {
     };
 
     println!("rho={rho} reps={reps} n_pops={n_pops} Ne={ne} L={l}");
+    let mut rate_cache = RateCache::new(0, l);
     let t0 = Instant::now();
     for rep in 0..reps {
         let sim = if n_pops == 1 {
@@ -43,7 +45,7 @@ fn main() {
         } else {
             build_multi_pop(n_pops, ne, l, r, vec![inv.clone()], 3000 + rep)
         };
-        let _result = sim.simulate();
+        let _result = sim.simulate_with_cache(&mut rate_cache);
     }
     let total = t0.elapsed().as_secs_f64();
     println!("total {:.3} s  mean {:.3} s/rep  {:.1} reps/s",

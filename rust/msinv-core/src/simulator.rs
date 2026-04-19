@@ -136,6 +136,18 @@ impl HullSimulator {
     }
 
     pub fn simulate(&self) -> SimResult {
+        let mut rate_cache = RateCache::new(0, self.sequence_length);
+        self.simulate_with_cache(&mut rate_cache)
+    }
+
+    /// Simulate, reusing the caller-owned `rate_cache`. The cache is
+    /// `reset()` before this rep and its heap allocations survive for
+    /// the next call. Use when driving many reps from one thread (e.g.
+    /// bench binaries, single-process ABC loops) to amortise the
+    /// triangular overlap array allocation across reps.
+    pub fn simulate_with_cache(
+        &self, rate_cache: &mut RateCache,
+    ) -> SimResult {
         // rho=0 is forbidden globally (matches Python). Without
         // recombination, partial coalescence fragments lineages that
         // can never recombine back together. For independent loci,
@@ -170,7 +182,7 @@ impl HullSimulator {
 
         self.run_loop(&mut active, &mut arena, &mut tables,
                        &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions);
+                       &mut inversions, rate_cache);
 
         // NOTE: sort_edges disabled — was producing wrong tree
         // sequences. Python bridge does tc.sort() anyway.
@@ -216,6 +228,7 @@ impl HullSimulator {
         rng: &mut Xoshiro256PlusPlus,
         demo: &mut Demography,
         inversions: &mut Vec<InversionSpec>,
+        rate_cache: &mut RateCache,
     ) {
         let mut t: f64 = 0.0;
 
@@ -244,7 +257,7 @@ impl HullSimulator {
         // for rho ≤ 8000 without wasting meaningful memory (triangular
         // array stays sparse).
         let max_lins = (active.len() * 40).max(2048);
-        let mut rate_cache = RateCache::new(max_lins, self.sequence_length);
+        rate_cache.reset(max_lins, self.sequence_length);
         rate_cache.rebuild(&active, arena);
 
         // Persistent event list + Fenwick tree. Rebuilt on structural

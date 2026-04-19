@@ -114,6 +114,25 @@ impl RateCache {
         }
     }
 
+    /// Reset this cache for a new simulation while keeping all heap
+    /// allocations. Subsequent `rebuild` populates the cleared state;
+    /// `ensure_capacity` grows if `max_lineages` exceeds current cap.
+    /// Used by pooled callers (e.g. multi-rep benches / ABC drivers)
+    /// so the large triangular `overlaps` Vec is allocated once per
+    /// process rather than per rep.
+    pub fn reset(&mut self, max_lineages: usize, seq_len: f64) {
+        self.seq_len = seq_len;
+        self.n = 0;
+        self.class_totals.clear();
+        self.lineage_pop.clear();
+        for slot in self.lineage_segs.iter_mut() { slot.clear(); }
+        self.lineage_segs.clear();
+        self.lineage_pos_bits.clear();
+        for entry in self.overlaps.iter_mut() { entry.clear(); }
+        for w in self.nonempty_bits.iter_mut() { *w = 0; }
+        self.ensure_capacity(max_lineages);
+    }
+
     /// Compute the 64-bin positional bitmap for a segment list.
     /// Bin b = floor(pos / seq_len * 64). Segments spanning multiple
     /// bins set all covered bins (floor(l)..=ceil(r)-1 clamped to 63).

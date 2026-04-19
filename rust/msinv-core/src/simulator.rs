@@ -251,12 +251,17 @@ impl HullSimulator {
         // changes; reused when only recombination happens.
         let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
         let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
-        // Per-pop lineage counts — refreshed inside the `engine_dirty`
-        // rebuild block so CoalPanmicticPop can skip the pool_buf build
-        // walk and use rank-based single-walk selection. Piggybacks on
-        // the existing O(n) engine rebuild; same amortized cost as the
-        // previous per-fire filter walk, zero per-fire Vec pushes.
-        let mut pop_counts: Vec<u32> = vec![0; demo.n_pops as usize];
+        // Per-pop lineage index buckets — refreshed inside the
+        // `engine_dirty` rebuild block. One-pass walk over active at
+        // rebuild time (same asymptotic cost as any other per-iter
+        // walk) gives O(1) pair picks in the multi-pop CoalPanmicticPop
+        // handler. Pre-this, the handler walked active once per fire,
+        // which dominated multi-pop runs (~79% of wall at rho=2000).
+        // Buckets stay valid between rebuilds because events that
+        // mutate `active` also set engine_dirty=true, forcing a rebuild
+        // on the next iteration before the next aggregate fire.
+        let mut pop_buckets: Vec<Vec<u32>> =
+            (0..demo.n_pops).map(|_| Vec::new()).collect();
         let mut event_tree = crate::fenwick::Fenwick::new(0);
         // Fenwick over lineage cached_lens. Enables O(log n) proportional
         // selection for recombination, replacing the O(n) linear scan
@@ -369,16 +374,15 @@ impl HullSimulator {
                     }));
                 }
 
-                // Rebuild per-pop lineage counts (used by the multi-pop
-                // CoalPanmicticPop rank-selection fast path). One-pass
-                // walk over active — amortized across all events fired
-                // until the next engine rebuild.
-                if pop_counts.len() != demo.n_pops as usize {
-                    pop_counts.resize(demo.n_pops as usize, 0);
+                // Rebuild per-pop index buckets. One-pass walk —
+                // amortized with other engine rebuild work. Gives O(1)
+                // pair picks in multi-pop CoalPanmicticPop.
+                while pop_buckets.len() < demo.n_pops as usize {
+                    pop_buckets.push(Vec::new());
                 }
-                for c in pop_counts.iter_mut() { *c = 0; }
-                for l in active.iter() {
-                    pop_counts[l.population as usize] += 1;
+                for b in pop_buckets.iter_mut() { b.clear(); }
+                for (i, l) in active.iter().enumerate() {
+                    pop_buckets[l.population as usize].push(i as u32);
                 }
 
                 // Rebuild Fenwick tree. O(n) batch build via build_from.
@@ -592,32 +596,13 @@ impl HullSimulator {
                         if jj >= ii { jj += 1; }
                         (ii, jj)
                     } else {
-                        let count = pop_counts[pop as usize] as usize;
+                        let bucket = &pop_buckets[pop as usize];
+                        let count = bucket.len();
                         if count < 2 { continue; }
-                        let rk_a = rng.random_range(0..count);
-                        let mut rk_b = rng.random_range(0..count - 1);
-                        if rk_b >= rk_a { rk_b += 1; }
-                        let (rk_min, rk_max) = if rk_a < rk_b {
-                            (rk_a, rk_b)
-                        } else {
-                            (rk_b, rk_a)
-                        };
-                        let mut matched: usize = 0;
-                        let mut idx_min = usize::MAX;
-                        let mut idx_max = usize::MAX;
-                        for (idx, l) in active.iter().enumerate() {
-                            if l.population != pop { continue; }
-                            if matched == rk_min { idx_min = idx; }
-                            if matched == rk_max {
-                                idx_max = idx;
-                                break;
-                            }
-                            matched += 1;
-                        }
-                        if idx_min == usize::MAX || idx_max == usize::MAX {
-                            continue;
-                        }
-                        (idx_min, idx_max)
+                        let ii = rng.random_range(0..count);
+                        let mut jj = rng.random_range(0..count - 1);
+                        if jj >= ii { jj += 1; }
+                        (bucket[ii] as usize, bucket[jj] as usize)
                     };
                     {
                         // Phase F: hull prescreen — skip if lineage

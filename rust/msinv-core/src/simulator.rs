@@ -237,8 +237,13 @@ impl HullSimulator {
             .map(|l| l.cached_len).sum();
         let mut total_recomb_rate: f64 = total_material * self.recombination_rate;
 
-        // Phase D: incremental pair rate cache.
-        let max_lins = (active.len() * 20).max(256);
+        // Phase D: incremental pair rate cache. Pre-size generously:
+        // `pair_idx` is capacity-dependent, so every `ensure_capacity`
+        // growth must reindex (O(n²)) to preserve correctness of
+        // class_totals. Oversizing up front avoids most mid-run grows
+        // for rho ≤ 8000 without wasting meaningful memory (triangular
+        // array stays sparse).
+        let max_lins = (active.len() * 40).max(2048);
         let mut rate_cache = RateCache::new(max_lins, self.sequence_length);
         rate_cache.rebuild(&active, arena);
 

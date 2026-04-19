@@ -136,12 +136,40 @@ impl RateCache {
         bits
     }
 
+    /// Grow capacity and reindex existing pair data. `pair_idx` layout
+    /// is capacity-dependent, so a raw `Vec::resize` invalidates every
+    /// previously-stored pidx — old overlaps land at positions that now
+    /// encode different (i, j) under the new mapping. Reindex-in-place
+    /// walks only the `walk_n × walk_n` triangle actually populated
+    /// under old capacity, moving each non-empty slot to its new pidx.
+    /// Amortised O(1) per slot across the geometric doubling schedule;
+    /// far cheaper than re-running `compute_overlap` on every pair.
     fn ensure_capacity(&mut self, need: usize) {
         if need > self.capacity {
-            self.capacity = need * 2;
-            let n_pairs = tri_size(self.capacity);
-            self.overlaps.resize(n_pairs, SmallVec::new());
-            self.nonempty_bits.resize(nbits_words(n_pairs), 0u64);
+            let old_cap = self.capacity;
+            let new_cap = need * 2;
+            let new_n_pairs = tri_size(new_cap);
+            let mut new_overlaps: Vec<PairOverlap> =
+                vec![SmallVec::new(); new_n_pairs];
+            let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
+            // Old pair data only exists for (i, j) with j < old_cap —
+            // reading past old_cap would step out of the prior
+            // triangular bitmap region.
+            let walk_n = self.n.min(old_cap);
+            for i in 0..walk_n {
+                for j in (i + 1)..walk_n {
+                    let old_pidx = pair_idx(i, j, old_cap);
+                    if bit_get(&self.nonempty_bits, old_pidx) {
+                        let new_pidx = pair_idx(i, j, new_cap);
+                        new_overlaps[new_pidx] =
+                            std::mem::take(&mut self.overlaps[old_pidx]);
+                        bit_set(&mut new_bits, new_pidx);
+                    }
+                }
+            }
+            self.overlaps = new_overlaps;
+            self.nonempty_bits = new_bits;
+            self.capacity = new_cap;
         }
     }
 

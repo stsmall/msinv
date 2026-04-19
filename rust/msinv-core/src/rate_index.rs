@@ -225,25 +225,6 @@ impl RateCache {
         self.class_totals.push((pop, cls, delta));
     }
 
-    /// Rebuild class_totals from the authoritative per-pair data. Used
-    /// periodically to bound any drift from subtle swap/migration
-    /// ordering issues — totals-based rate emission only needs to stay
-    /// close to truth to keep the waiting-time distribution correct.
-    pub fn reconcile_class_totals(&mut self, active: &[Lineage]) {
-        // Collect first to decouple from the immutable borrow on iter_pairs.
-        let mut snapshot: SmallVec<[(u32, BranchClass); 8]> = SmallVec::new();
-        for (i, _j, overlaps) in self.iter_pairs() {
-            let pop = active[i].population;
-            for (cls, _ov) in overlaps {
-                snapshot.push((pop, *cls));
-            }
-        }
-        self.class_totals.clear();
-        for (pop, cls) in snapshot {
-            self.totals_add(pop, cls, 1.0);
-        }
-    }
-
     /// Subtract pair (i, j)'s current class contributions from totals.
     /// Each stored (class, _) entry in the pair counts as one hazard
     /// slot in its (pop, class) bucket.

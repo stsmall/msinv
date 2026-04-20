@@ -51,15 +51,11 @@ enum Event {
     CoalAggregate { pop: u32, class: BranchClass },
     CoalPanmicticPop { pop: u32 },
     Recombination,
-    /// Per-lineage flux (kept for compute_flux_rates_static compatibility
-    /// and any legacy callers). The hot path uses FluxAggregate.
-    Flux { lineage_idx: usize, inv_idx: usize },
     /// Aggregate gene-flux rate for all lineages interacting with
     /// `inv_idx`. Firing samples a lineage proportional to its cached
     /// per-lineage flux rate — avoids the O(n * segs) full flux scan
     /// on every event-list rebuild.
     FluxAggregate { inv_idx: usize },
-    Migration { lineage_idx: usize, dst_pop: u32 },
     /// Aggregate migration: all lineages in `src_pop` migrating to
     /// `dst_pop` with the same per-lineage rate. Firing picks one
     /// lineage uniformly from `pop_buckets[src_pop]` and migrates it.
@@ -833,29 +829,6 @@ impl HullSimulator {
                         }
                     }
                 }
-                Event::Flux { lineage_idx: _, inv_idx: _ } => {
-                    // Legacy per-lineage flux event — no longer emitted
-                    // on the hot path. Keep the variant reachable as a
-                    // no-op to avoid breaking any external use.
-                    continue;
-                }
-                Event::Migration { lineage_idx, dst_pop } => {
-                    let idx = *lineage_idx;
-                    if idx < active.len() {
-                        active[idx].population = *dst_pop;
-                    }
-                    engine_dirty = true;  // pop assignment changed
-                    if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
-                        flux_update_for(idx, &mut flux_per_lin,
-                                         &mut flux_total, active, inversions,
-                                         arena, &barrier_active);
-                    }
-                    // Pop change affects pair eligibility for this
-                    // lineage; recompute its row.
-                    if any_barrier && !cache_dirty {
-                        rate_cache.recompute_for(idx, active, arena);
-                    }
-                }
                 Event::MigrationAggregate { src_pop, dst_pop } => {
                     let src = *src_pop;
                     let dst = *dst_pop;
@@ -912,45 +885,6 @@ impl HullSimulator {
                     let rate = 1.0 / (2.0 * ne_pop * p_class);
                     events.push((rate, Event::CoalPair {
                         i, j, class: *cls,
-                    }));
-                }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Gene flux rates
-    // ---------------------------------------------------------------
-    fn compute_flux_rates_static(
-        inversions: &[InversionSpec],
-        active: &[Lineage],
-        arena: &SegmentArena,
-        barrier_active: &[bool],
-        events: &mut Vec<(f64, Event)>,
-    ) {
-        for (inv_idx, inv) in inversions.iter().enumerate() {
-            if !barrier_active[inv_idx] { continue; }
-            if inv.gene_conversion_rate <= 0.0 { continue; }
-            for (lin_idx, lin) in active.iter().enumerate() {
-                // Per-population inversion frequency for this lineage's pop.
-                let pop = lin.population;
-                let p_inv_pop = inv.p_inv_for(pop);
-                let p_std_pop = 1.0 - p_inv_pop;
-                // Determine lineage's class for this inversion.
-                let kary = lineage_class_for_inv(lin, inv, arena);
-                let p_other = match kary {
-                    Some(Karyotype::S) => p_inv_pop,
-                    Some(Karyotype::I) => p_std_pop,
-                    None => continue,
-                };
-                if p_other <= 0.0 { continue; }
-                let weight = flux_lineage_weight(lin, inv, arena);
-                if weight <= 0.0 { continue; }
-                let rate = inv.gene_conversion_rate * p_other * weight;
-                if rate > 0.0 {
-                    events.push((rate, Event::Flux {
-                        lineage_idx: lin_idx,
-                        inv_idx,
                     }));
                 }
             }
@@ -1066,23 +1000,9 @@ impl HullSimulator {
 /// for inversions where the lineage contributes non-zero hazard.
 type FluxPerLin = SmallVec<[(usize, f64); 2]>;
 
-/// Compute the flux contribution of a single lineage across all active
-/// inversions — same logic as `compute_flux_rates_static` but scoped to
-/// one lineage so it can be called on-demand from incremental updates.
-fn compute_lin_flux(
-    lin: &Lineage,
-    inversions: &[InversionSpec],
-    arena: &SegmentArena,
-    barrier_active: &[bool],
-) -> FluxPerLin {
-    let mut out = FluxPerLin::new();
-    compute_lin_flux_into(&mut out, lin, inversions, arena, barrier_active);
-    out
-}
-
-/// In-place variant: fills `out` (cleared first) with the lineage's flux
-/// entries. Avoids the ~48-byte SmallVec copy seen in flamegraphs when
-/// flux_rebuild_full pushed a freshly-returned SmallVec per lineage.
+/// Fill `out` (cleared first) with the lineage's flux entries across
+/// all active inversions. In-place to avoid the ~48-byte SmallVec
+/// return+push copy that dominated `flux_rebuild_full` pre-rewrite.
 fn compute_lin_flux_into(
     out: &mut FluxPerLin,
     lin: &Lineage,
@@ -1215,18 +1135,13 @@ fn tree_swap_remove(
 /// cover — these can't produce more edges under SMC'.
 ///
 /// Sweepline implementation: collect all segments tagged with owner,
-/// sort by left, walk left-to-right maintaining an "open" set of
-/// segments whose right > current left. A lineage has external
-/// overlap iff at some point its open segment coexists with an open
-/// segment from a different owner. Lineages never marked are
-/// sole-carriers and get swap_removed.
-fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
-    let _ = gc_sole_lineages_with_removed(active, arena);
-}
-
-/// Sweepline GC that also returns the list of lineage indices it
-/// removed (in ascending reverse-iteration order — the same order the
-/// caller can replay on auxiliary caches via swap_remove).
+/// Sweepline GC for sole-carrier lineages. Sorts all segments by left,
+/// walks left-to-right maintaining an "open" set of segments whose
+/// right > current left. A lineage has external overlap iff at some
+/// point its open segment coexists with an open segment from a
+/// different owner. Lineages never marked are sole-carriers and get
+/// swap_removed. Returns the removed indices in descending order so
+/// the caller can replay swap_removes on auxiliary caches.
 fn gc_sole_lineages_with_removed(
     active: &mut Vec<Lineage>,
     arena: &SegmentArena,

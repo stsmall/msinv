@@ -28,3 +28,6 @@ rust/target/
 .venv/
 .pixi/
 pixi.lock
+.claude/
+perf.data*
+flamegraph*.svg

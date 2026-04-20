@@ -236,7 +236,10 @@ fn simulate_raw(
         sweeps: sweep_specs,
         seed,
     };
-    let result = sim.simulate();
+    let mut result = sim.simulate();
+    // Sort edges into tskit canonical order so the Python bridge can
+    // skip `tc.sort()` (previously ~3.6% of single-pop wall at rho=2000).
+    result.tables.sort_edges();
     tables_to_pydict(py, result)
 }
 

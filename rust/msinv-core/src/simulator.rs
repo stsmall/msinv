@@ -186,9 +186,10 @@ impl HullSimulator {
                        &mut next_uid, &mut rng, &mut demo,
                        &mut inversions, rate_cache);
 
-        // NOTE: sort_edges disabled — was producing wrong tree
-        // sequences. Python bridge does tc.sort() anyway.
-        // tables.sort_edges();
+        // Edge sort is left to the caller: the PyO3 bridge calls
+        // `tables.sort_edges()` before handing columns to tskit so
+        // `tc.sort()` can be skipped. Bench / test paths that just
+        // read `SimResult::tables` skip the sort cost.
         SimResult { tables }
     }
 

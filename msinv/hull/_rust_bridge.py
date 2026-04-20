@@ -108,6 +108,7 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         parent=raw['edge_parent'],
         child=raw['edge_child'],
     )
-    tc.sort()
+    # Rust emits edges pre-sorted in tskit canonical order
+    # (time[parent] asc, parent, child, left); skip tc.sort().
     ts = tc.tree_sequence()
     return ts.simplify()

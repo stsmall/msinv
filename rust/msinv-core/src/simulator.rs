@@ -14,7 +14,7 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
-use crate::rate_index::RateCache;
+use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
@@ -326,6 +326,7 @@ impl HullSimulator {
                 }
                 flux_rebuild_full(
                     &mut flux_per_lin, &mut flux_total,
+                    rate_cache,
                     active, inversions, arena, &barrier_active);
                 flux_dirty = false;
             }
@@ -562,9 +563,14 @@ impl HullSimulator {
                         flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                         flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                         for new_idx in (pre_len - 2)..post_len {
-                            flux_push(new_idx, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            if cache_dirty {
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                            }
+                            let pop = active[new_idx].population;
+                            let segs = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs, pop,
+                                      inversions, &barrier_active);
                         }
                     }
                 }
@@ -605,9 +611,14 @@ impl HullSimulator {
                         flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                         flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                         for new_idx in (pre_len - 2)..post_len {
-                            flux_push(new_idx, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            if cache_dirty {
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                            }
+                            let pop = active[new_idx].population;
+                            let segs = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs, pop,
+                                      inversions, &barrier_active);
                         }
                     }
                 }
@@ -667,9 +678,12 @@ impl HullSimulator {
                             flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                             flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                             for new_idx in (pre_len - 2)..post_len {
-                                flux_push(new_idx, &mut flux_per_lin,
-                                          &mut flux_total, active, inversions,
-                                          arena, &barrier_active);
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                                let pop = active[new_idx].population;
+                                let segs = rate_cache.lineage_segs(new_idx);
+                                flux_push(&mut flux_per_lin,
+                                          &mut flux_total, segs, pop,
+                                          inversions, &barrier_active);
                             }
                         }
                         engine_dirty = true;
@@ -722,13 +736,25 @@ impl HullSimulator {
                         }
                     }
                     if any_barrier && !flux_dirty {
+                        if cache_dirty {
+                            rate_cache.rebuild_segs_for(chosen_idx, active, arena);
+                            if len_after_split > len_before_split {
+                                rate_cache.rebuild_segs_for(
+                                    len_after_split - 1, active, arena);
+                            }
+                        }
+                        let pop_c = active[chosen_idx].population;
+                        let segs_c = rate_cache.lineage_segs(chosen_idx);
                         flux_update_for(chosen_idx, &mut flux_per_lin,
-                                         &mut flux_total, active, inversions,
-                                         arena, &barrier_active);
+                                         &mut flux_total, segs_c, pop_c,
+                                         inversions, &barrier_active);
                         if len_after_split > len_before_split {
-                            flux_push(len_after_split - 1, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            let new_idx = len_after_split - 1;
+                            let pop_n = active[new_idx].population;
+                            let segs_n = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs_n, pop_n,
+                                      inversions, &barrier_active);
                         }
                     }
                     // GC sole-carrier lineages — only after recomb
@@ -818,13 +844,23 @@ impl HullSimulator {
                             }
                         }
                         if !flux_dirty {
+                            if cache_dirty || !any_barrier {
+                                rate_cache.rebuild_segs_for(li, active, arena);
+                                for new_idx in pre_len_flux..post_len {
+                                    rate_cache.rebuild_segs_for(new_idx, active, arena);
+                                }
+                            }
+                            let pop_li = active[li].population;
+                            let segs_li = rate_cache.lineage_segs(li);
                             flux_update_for(li, &mut flux_per_lin,
-                                             &mut flux_total, active,
-                                             inversions, arena, &barrier_active);
+                                             &mut flux_total, segs_li, pop_li,
+                                             inversions, &barrier_active);
                             for new_idx in pre_len_flux..post_len {
-                                flux_push(new_idx, &mut flux_per_lin,
-                                          &mut flux_total, active,
-                                          inversions, arena, &barrier_active);
+                                let pop_n = active[new_idx].population;
+                                let segs_n = rate_cache.lineage_segs(new_idx);
+                                flux_push(&mut flux_per_lin,
+                                          &mut flux_total, segs_n, pop_n,
+                                          inversions, &barrier_active);
                             }
                         }
                     }
@@ -839,9 +875,14 @@ impl HullSimulator {
                     active[idx].population = dst;
                     engine_dirty = true;
                     if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
+                        if cache_dirty {
+                            rate_cache.rebuild_segs_for(idx, active, arena);
+                        }
+                        let pop = active[idx].population;
+                        let segs = rate_cache.lineage_segs(idx);
                         flux_update_for(idx, &mut flux_per_lin,
-                                         &mut flux_total, active, inversions,
-                                         arena, &barrier_active);
+                                         &mut flux_total, segs, pop,
+                                         inversions, &barrier_active);
                     }
                     if any_barrier && !cache_dirty {
                         rate_cache.recompute_for(idx, active, arena);
@@ -1003,28 +1044,30 @@ type FluxPerLin = SmallVec<[(usize, f64); 2]>;
 /// Fill `out` (cleared first) with the lineage's flux entries across
 /// all active inversions. In-place to avoid the ~48-byte SmallVec
 /// return+push copy that dominated `flux_rebuild_full` pre-rewrite.
+/// Reads the lineage's segment view as a flat `&[FlatSeg]` slice
+/// (provided by `RateCache::lineage_segs`) so the per-inversion walk
+/// hits sequential memory instead of chasing arena indices.
 fn compute_lin_flux_into(
     out: &mut FluxPerLin,
-    lin: &Lineage,
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
     out.clear();
     for (ii, inv) in inversions.iter().enumerate() {
         if !barrier_active[ii] { continue; }
         if inv.gene_conversion_rate <= 0.0 { continue; }
-        let pop = lin.population;
         let p_inv_pop = inv.p_inv_for(pop);
         let p_std_pop = 1.0 - p_inv_pop;
-        let kary = lineage_class_for_inv(lin, inv, arena);
+        let kary = lineage_class_for_inv_segs(segs, inv);
         let p_other = match kary {
             Some(Karyotype::S) => p_inv_pop,
             Some(Karyotype::I) => p_std_pop,
             None => continue,
         };
         if p_other <= 0.0 { continue; }
-        let w = flux_lineage_weight(lin, inv, arena);
+        let w = flux_lineage_weight_segs(segs, inv);
         if w <= 0.0 { continue; }
         let rate = inv.gene_conversion_rate * p_other * w;
         if rate > 0.0 {
@@ -1034,24 +1077,34 @@ fn compute_lin_flux_into(
 }
 
 /// Rebuild the full flux cache from scratch — call on boundaries,
-/// sweeps, GC, or any event that invalidates many lineages.
+/// sweeps, GC, or any event that invalidates many lineages. Refreshes
+/// `rate_cache.lineage_segs` first so the per-lineage inner loop reads
+/// flat slices.
 fn flux_rebuild_full(
     flux_per_lin: &mut Vec<FluxPerLin>,
     flux_total: &mut [f64],
+    rate_cache: &mut RateCache,
     active: &[Lineage],
     inversions: &[InversionSpec],
     arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    // Fill entries in place to avoid the per-lineage SmallVec return +
-    // push copy (~48 bytes) that showed up as ~20% of run_loop self-time
-    // in the multi-pop flamegraph at rho=2000.
     flux_per_lin.resize_with(active.len(), FluxPerLin::new);
     flux_per_lin.truncate(active.len());
     for t in flux_total.iter_mut() { *t = 0.0; }
+    // Pre-barrier epochs have no flux; skip the O(n · segs) refresh and
+    // leave every entry empty. Matches prior behaviour where the inner
+    // `barrier_active` guard short-circuited each lineage's inv loop.
+    let any_barrier_active = barrier_active.iter().any(|&b| b);
+    if !any_barrier_active {
+        for entry in flux_per_lin.iter_mut() { entry.clear(); }
+        return;
+    }
+    rate_cache.refresh_lineage_segs(active, arena);
     for (i, lin) in active.iter().enumerate() {
-        compute_lin_flux_into(&mut flux_per_lin[i], lin, inversions,
-                               arena, barrier_active);
+        let segs = rate_cache.lineage_segs(i);
+        compute_lin_flux_into(&mut flux_per_lin[i], segs, lin.population,
+                               inversions, barrier_active);
         for (ii, rate) in flux_per_lin[i].iter() {
             flux_total[*ii] += *rate;
         }
@@ -1059,20 +1112,22 @@ fn flux_rebuild_full(
 }
 
 /// Recompute flux for one lineage at `li` and update totals by diff.
+/// Caller must have refreshed `rate_cache.lineage_segs(li)` if it
+/// could be stale (see `RateCache::rebuild_segs_for`).
 fn flux_update_for(
     li: usize,
     flux_per_lin: &mut [FluxPerLin],
     flux_total: &mut [f64],
-    active: &[Lineage],
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] -= *rate;
     }
-    compute_lin_flux_into(&mut flux_per_lin[li],
-        &active[li], inversions, arena, barrier_active);
+    compute_lin_flux_into(&mut flux_per_lin[li], segs, pop,
+                          inversions, barrier_active);
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] += *rate;
     }
@@ -1092,21 +1147,21 @@ fn flux_swap_remove(
     flux_per_lin.swap_remove(idx);
 }
 
-/// Append a new lineage's flux entries and credit its totals.
+/// Append a new lineage's flux entries and credit its totals. Caller
+/// supplies the fresh `segs` slice (typically `rate_cache.lineage_segs`
+/// after an appropriate rebuild) and the lineage's population.
 fn flux_push(
-    li: usize,
     flux_per_lin: &mut Vec<FluxPerLin>,
     flux_total: &mut [f64],
-    active: &[Lineage],
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    // Grow then fill in place (vs push of a returned SmallVec).
     flux_per_lin.push(FluxPerLin::new());
     let last = flux_per_lin.len() - 1;
-    compute_lin_flux_into(&mut flux_per_lin[last],
-        &active[li], inversions, arena, barrier_active);
+    compute_lin_flux_into(&mut flux_per_lin[last], segs, pop,
+                          inversions, barrier_active);
     for (ii, rate) in flux_per_lin[last].iter() {
         flux_total[*ii] += *rate;
     }
@@ -1382,50 +1437,45 @@ fn overlap_by_class(
     result
 }
 
-/// Determine a lineage's karyotype for one inversion.
-fn lineage_class_for_inv(
-    lin: &Lineage, inv: &InversionSpec, arena: &SegmentArena,
+/// Determine a lineage's karyotype for one inversion, reading flat segs.
+fn lineage_class_for_inv_segs(
+    segs: &[FlatSeg], inv: &InversionSpec,
 ) -> Option<Karyotype> {
     let mut seen_s = false;
     let mut seen_i = false;
-    let mut cur = lin.head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
+    for &(sl, sr, cls) in segs {
+        let l = sl.max(inv.bp_left);
+        let r = sr.min(inv.bp_right);
         if r > l {
-            match seg.branch_class.get_inv(inv.inv_id) {
+            match cls.get_inv(inv.inv_id) {
                 Some(Karyotype::S) => seen_s = true,
                 Some(Karyotype::I) => seen_i = true,
                 None => {}
             }
         }
-        cur = seg.next;
     }
     if seen_s && !seen_i { Some(Karyotype::S) }
     else if seen_i && !seen_s { Some(Karyotype::I) }
     else { None }
 }
 
-/// Per-lineage flux weight: integral of phi(x) over in-inv material.
-fn flux_lineage_weight(
-    lin: &Lineage, inv: &InversionSpec, arena: &SegmentArena,
+/// Per-lineage flux weight reading flat segs: integral of phi(x) over
+/// in-inv material.
+fn flux_lineage_weight_segs(
+    segs: &[FlatSeg], inv: &InversionSpec,
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
     let w = inv.flux_window;
     let mut weight = 0.0;
-    let mut cur = lin.head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
+    for &(sl, sr, _) in segs {
+        let l = sl.max(inv.bp_left);
+        let r = sr.min(inv.bp_right);
         if r > l {
             let a = (l - inv.bp_left) / inv_len;
             let b = (r - inv.bp_left) / inv_len;
             weight += phi_integral(a, b, w) * inv_len;
         }
-        cur = seg.next;
     }
     weight
 }

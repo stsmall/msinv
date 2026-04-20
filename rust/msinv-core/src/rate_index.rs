@@ -24,7 +24,7 @@ type PairOverlap = SmallVec<[(BranchClass, f64); 2]>;
 /// Flat per-lineage segment view: (left, right, class). Stored contiguously
 /// per lineage so `compute_overlap`'s two-pointer walk hits sequential
 /// memory instead of chasing arena indices scattered by free-list recycling.
-type FlatSeg = (f64, f64, BranchClass);
+pub type FlatSeg = (f64, f64, BranchClass);
 type LineageSegs = SmallVec<[FlatSeg; 4]>;
 
 /// Flat index for a pair (i, j) where i < j, into a triangular array.
@@ -643,6 +643,54 @@ impl RateCache {
     pub fn get_pair(&self, i: usize, j: usize) -> &PairOverlap {
         let (a, b) = if i < j { (i, j) } else { (j, i) };
         &self.overlaps[pair_idx(a, b, self.capacity)]
+    }
+
+    /// Flat segment slice for lineage `idx`. Empty slice if `idx` is out
+    /// of range (caller should invoke `refresh_lineage_segs` beforehand
+    /// for any lineage whose segs were not already maintained by an
+    /// incremental path like `recompute_for` / `apply_recomb_split`).
+    #[inline]
+    pub fn lineage_segs(&self, idx: usize) -> &[FlatSeg] {
+        self.lineage_segs.get(idx).map_or(&[][..], |v| v.as_slice())
+    }
+
+    /// Rebuild every lineage's flat-segs view (and its positional bitmap)
+    /// without touching the pair-overlap cache. Cheap — O(n · avg_segs) —
+    /// so the flux path can safely run it before `flux_rebuild_full`
+    /// regardless of whether the overlap cache is about to be rebuilt.
+    pub fn refresh_lineage_segs(
+        &mut self,
+        active: &[Lineage],
+        arena: &SegmentArena,
+    ) {
+        let n = active.len();
+        if self.lineage_segs.len() < n {
+            self.lineage_segs.resize_with(n, SmallVec::new);
+        } else {
+            self.lineage_segs.truncate(n);
+        }
+        if self.lineage_pos_bits.len() < n {
+            self.lineage_pos_bits.resize(n, 0u64);
+        } else {
+            self.lineage_pos_bits.truncate(n);
+        }
+        for i in 0..n {
+            self.rebuild_lineage_segs(i, active, arena);
+        }
+    }
+
+    /// Refresh flat-segs view for a single lineage `idx`. Used by flux
+    /// call sites that mutate `idx` without otherwise calling
+    /// `recompute_for` / `apply_recomb_split` (e.g. CoalPanmicticPop,
+    /// FluxAggregate paths where cache_dirty is set instead of
+    /// incremental).
+    pub fn rebuild_segs_for(
+        &mut self,
+        idx: usize,
+        active: &[Lineage],
+        arena: &SegmentArena,
+    ) {
+        self.rebuild_lineage_segs(idx, active, arena);
     }
 
     /// Iterate all non-empty pairs using the bitmap at word granularity:

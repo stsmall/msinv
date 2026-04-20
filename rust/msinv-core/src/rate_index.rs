@@ -125,11 +125,23 @@ impl RateCache {
         self.n = 0;
         self.class_totals.clear();
         self.lineage_pop.clear();
-        for slot in self.lineage_segs.iter_mut() { slot.clear(); }
         self.lineage_segs.clear();
         self.lineage_pos_bits.clear();
-        for entry in self.overlaps.iter_mut() { entry.clear(); }
-        for w in self.nonempty_bits.iter_mut() { *w = 0; }
+        // Walk only non-empty overlap slots via the bitmap — skips
+        // the O(n_pairs) sweep over the 300k+ typically-empty
+        // triangular array that dominated reset cost at rho=2000.
+        for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
+            let mut word = *w;
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let pidx = widx * 64 + bit;
+                if pidx < self.overlaps.len() {
+                    self.overlaps[pidx].clear();
+                }
+                word &= word - 1;
+            }
+            *w = 0;
+        }
         self.ensure_capacity(max_lineages);
     }
 

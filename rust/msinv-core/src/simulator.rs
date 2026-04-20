@@ -271,14 +271,12 @@ impl HullSimulator {
         let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
         let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
         // Per-pop lineage index buckets — refreshed inside the
-        // `engine_dirty` rebuild block. One-pass walk over active at
-        // rebuild time (same asymptotic cost as any other per-iter
-        // walk) gives O(1) pair picks in the multi-pop CoalPanmicticPop
-        // handler. Pre-this, the handler walked active once per fire,
-        // which dominated multi-pop runs (~79% of wall at rho=2000).
-        // Buckets stay valid between rebuilds because events that
-        // mutate `active` also set engine_dirty=true, forcing a rebuild
-        // on the next iteration before the next aggregate fire.
+        // `engine_dirty` rebuild block. Gives O(1) pair picks in the
+        // multi-pop CoalPanmicticPop handler and feeds aggregate
+        // migration. Buckets stay valid between rebuilds because
+        // events mutating `active` set engine_dirty=true, forcing a
+        // rebuild on the next iteration before the next aggregate
+        // fire.
         let mut pop_buckets: Vec<Vec<u32>> =
             (0..demo.n_pops).map(|_| Vec::new()).collect();
         let mut event_tree = crate::fenwick::Fenwick::new(0);
@@ -353,10 +351,10 @@ impl HullSimulator {
             if engine_dirty {
                 all_events.clear();
 
-                // Rebuild per-pop index buckets first so coalescence
-                // and migration emission can consume them. Only built
-                // when n_pops >= 2; single-pop uses the CoalPanmicticPop
-                // fast path that reads active.len() directly.
+                // Rebuild per-pop index buckets so coal and migration
+                // emission can consume them. Only built when n_pops
+                // >= 2. Pre-reserve capacities to avoid Vec::push
+                // capacity-growth branches in the hot fill loop.
                 if demo.n_pops >= 2 {
                     while pop_buckets.len() < demo.n_pops as usize {
                         pop_buckets.push(Vec::new());

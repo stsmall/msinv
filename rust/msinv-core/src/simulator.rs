@@ -353,6 +353,20 @@ impl HullSimulator {
             if engine_dirty {
                 all_events.clear();
 
+                // Rebuild per-pop index buckets first so coalescence
+                // and migration emission can consume them. Only built
+                // when n_pops >= 2; single-pop uses the CoalPanmicticPop
+                // fast path that reads active.len() directly.
+                if demo.n_pops >= 2 {
+                    while pop_buckets.len() < demo.n_pops as usize {
+                        pop_buckets.push(Vec::new());
+                    }
+                    for b in pop_buckets.iter_mut() { b.clear(); }
+                    for (i, l) in active.iter().enumerate() {
+                        pop_buckets[l.population as usize].push(i as u32);
+                    }
+                }
+
                 // Coalescence.
                 if any_barrier {
                     if cache_dirty {
@@ -366,7 +380,8 @@ impl HullSimulator {
                 } else {
                     compute_coal_events(
                         active, arena, demo, t, inversions,
-                        &barrier_active, &mut all_events);
+                        &barrier_active, &pop_buckets,
+                        &mut all_events);
                 }
 
                 // Recombination.
@@ -384,20 +399,6 @@ impl HullSimulator {
                                 inv_idx: ii,
                             }));
                         }
-                    }
-                }
-                // Rebuild per-pop index buckets. Only needed when
-                // multiple pops exist — single-pop takes the fast
-                // path in CoalPanmicticPop and has no aggregate
-                // migration to emit. One-pass walk; amortized with
-                // other engine rebuild work.
-                if demo.n_pops >= 2 {
-                    while pop_buckets.len() < demo.n_pops as usize {
-                        pop_buckets.push(Vec::new());
-                    }
-                    for b in pop_buckets.iter_mut() { b.clear(); }
-                    for (i, l) in active.iter().enumerate() {
-                        pop_buckets[l.population as usize].push(i as u32);
                     }
                 }
 
@@ -1306,27 +1307,35 @@ fn compute_coal_events(
     t: f64,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    pop_buckets: &[Vec<u32>],
     events: &mut Vec<(f64, Event)>,
 ) {
     let any_inv_active = barrier_active.iter().any(|&b| b);
 
     if !any_inv_active {
-        // Hudson per-pop buckets.
-        let mut buckets: Vec<(u32, Vec<usize>)> = Vec::new();
-        for (i, lin) in active.iter().enumerate() {
-            if let Some(e) = buckets.iter_mut().find(|(p, _)| *p == lin.population) {
-                e.1.push(i);
-            } else {
-                buckets.push((lin.population, vec![i]));
+        // Hudson per-pop coalescence rate — read counts directly from
+        // the precomputed `pop_buckets` instead of rebuilding a local
+        // association list with linear-scan finds (~6% of multi-pop
+        // run_loop self-time).
+        if demo.n_pops >= 2 {
+            for (pop, bucket) in pop_buckets.iter().enumerate() {
+                let k = bucket.len();
+                if k < 2 { continue; }
+                let ne = demo.size_at(pop as u32, t).max(1e-9);
+                let kf = k as f64;
+                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+                events.push((rate,
+                    Event::CoalPanmicticPop { pop: pop as u32 }));
             }
-        }
-        for (pop, indices) in &buckets {
-            let k = indices.len();
-            if k < 2 { continue; }
-            let ne = demo.size_at(*pop, t).max(1e-9);
-            let kf = k as f64;
-            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-            events.push((rate, Event::CoalPanmicticPop { pop: *pop }));
+        } else {
+            // Single-pop: no buckets built — use active.len() directly.
+            let k = active.len();
+            if k >= 2 {
+                let ne = demo.size_at(0, t).max(1e-9);
+                let kf = k as f64;
+                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+                events.push((rate, Event::CoalPanmicticPop { pop: 0 }));
+            }
         }
         return;
     }

@@ -359,7 +359,8 @@ impl RateCache {
         let changed_pop = active[idx].population;
         for other in 0..self.n {
             if other == idx { continue; }
-            let (i, j) = if other < idx { (other, idx) } else { (idx, other) };
+            let i = other.min(idx);
+            let j = other.max(idx);
             let pidx = pair_idx(i, j, self.capacity);
             let was_nonempty = bit_get(&self.nonempty_bits, pidx);
             let other_pop = self.lineage_pop.get(other).copied()
@@ -466,12 +467,15 @@ impl RateCache {
             if other_segs.is_empty() { continue; }
             let (other_l, other_r) = Self::hull_from_segs(other_segs);
 
-            // Old pair: (min(idx, other), max(idx, other)).
-            let (oi, oj) = if other < idx { (other, idx) } else { (idx, other) };
+            // Old pair: (min(idx, other), max(idx, other)). Branchless
+            // min/max lets the compiler emit cmov instead of jump — the
+            // `other < idx` predicate is close to 50/50 and mispredicts
+            // were ~20% of apply_recomb_split wall.
+            let oi = other.min(idx);
+            let oj = other.max(idx);
             let old_pidx = pair_idx(oi, oj, self.capacity);
-            // New-side pair slot: (min(new_idx, other), max(new_idx, other)).
-            let (ni, nj) = if other < new_idx
-                { (other, new_idx) } else { (new_idx, other) };
+            let ni = other.min(new_idx);
+            let nj = other.max(new_idx);
             let new_pidx = pair_idx(ni, nj, self.capacity);
 
             // Case A: other entirely left of split_pos.
@@ -567,7 +571,8 @@ impl RateCache {
     pub fn remove_lineage(&mut self, idx: usize) {
         for other in 0..self.n {
             if other == idx { continue; }
-            let (i, j) = if other < idx { (other, idx) } else { (idx, other) };
+            let i = other.min(idx);
+            let j = other.max(idx);
             let pidx = pair_idx(i, j, self.capacity);
             // Fast path: empty pairs don't contribute to totals and
             // have nothing to clear — skip them without touching memory.
@@ -721,7 +726,9 @@ impl<'a> NonEmptyPairIter<'a> {
 }
 
 impl<'a> Iterator for NonEmptyPairIter<'a> {
-    type Item = (usize, usize, &'a PairOverlap);
+    // Yield the overlap as a plain slice — callers avoid repeated
+    // SmallVec::spilled() branches when looping through classes.
+    type Item = (usize, usize, &'a [(BranchClass, f64)]);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -733,7 +740,7 @@ impl<'a> Iterator for NonEmptyPairIter<'a> {
                 let pidx = (self.pidx_word << 6) + bit;
                 let j = self.row + 1 + (pidx - self.base_pidx);
                 let i = self.row;
-                return Some((i, j, &self.cache.overlaps[pidx]));
+                return Some((i, j, self.cache.overlaps[pidx].as_slice()));
             }
             if self.advance_word() {
                 continue;

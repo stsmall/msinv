@@ -84,6 +84,14 @@ pub struct RateCache {
     /// sequence via a few scattered fragments that don't actually
     /// intersect.
     lineage_pos_bits: Vec<u64>,
+    /// Per-lineage hull `(left, right)` — first segment's left and last
+    /// segment's right, computed alongside `lineage_pos_bits` at every
+    /// `rebuild_lineage_segs`. Direct-indexed, same size as `lineage_pop`.
+    /// Lets the recompute_for step-2 prescreen read hulls without
+    /// chasing the SmallVec header (spilled check + pointer-to-data
+    /// dereference) — that chase was 45% of recompute_for self-time
+    /// at rho=16000 via the `ucomisd (%rcx), %xmm0` hull-overlap branch.
+    lineage_hulls: Vec<(f64, f64)>,
     /// Sequence length. Used to compute `lineage_pos_bits` bin indices.
     /// Must stay stable across rebuilds/updates so bit AND is valid.
     seq_len: f64,
@@ -197,6 +205,7 @@ impl RateCache {
             lineage_pop: Vec::with_capacity(cap),
             lineage_segs: Vec::with_capacity(cap),
             lineage_pos_bits: Vec::with_capacity(cap),
+            lineage_hulls: Vec::with_capacity(cap),
             seq_len,
             pair_buckets: SmallVec::new(),
             pair_bucket_refs: zeroed_smallvec_vec(n_pairs),
@@ -222,6 +231,7 @@ impl RateCache {
         self.lineage_pop.clear();
         self.lineage_segs.clear();
         self.lineage_pos_bits.clear();
+        self.lineage_hulls.clear();
         // Walk only non-empty overlap slots via the bitmap — skips
         // the O(n_pairs) sweep over the 300k+ typically-empty
         // triangular array that dominated reset cost at rho=2000.
@@ -365,6 +375,10 @@ impl RateCache {
         if self.lineage_pos_bits.len() <= idx {
             self.lineage_pos_bits.resize(idx + 1, 0u64);
         }
+        if self.lineage_hulls.len() <= idx {
+            self.lineage_hulls.resize(idx + 1,
+                (f64::INFINITY, f64::NEG_INFINITY));
+        }
         let slot = &mut self.lineage_segs[idx];
         slot.clear();
         let mut sa = active[idx].head;
@@ -374,17 +388,11 @@ impl RateCache {
             sa = s.next;
         }
         self.lineage_pos_bits[idx] = Self::seg_bits_for(self.seq_len, slot);
-    }
-
-    /// Hull [left, right] derived from the flat segs; returns an empty
-    /// interval sentinel when the lineage has no segments.
-    #[inline]
-    fn hull_from_segs(segs: &[FlatSeg]) -> (f64, f64) {
-        if segs.is_empty() {
+        self.lineage_hulls[idx] = if slot.is_empty() {
             (f64::INFINITY, f64::NEG_INFINITY)
         } else {
-            (segs[0].0, segs[segs.len() - 1].1)
-        }
+            (slot[0].0, slot[slot.len() - 1].1)
+        };
     }
 
     /// Locate or allocate the `pair_buckets` slot for (pop, class).
@@ -544,6 +552,12 @@ impl RateCache {
         } else {
             self.lineage_pos_bits.truncate(self.n);
         }
+        if self.lineage_hulls.len() < self.n {
+            self.lineage_hulls.resize(self.n,
+                (f64::INFINITY, f64::NEG_INFINITY));
+        } else {
+            self.lineage_hulls.truncate(self.n);
+        }
         for i in 0..self.n {
             self.rebuild_lineage_segs(i, active, arena);
         }
@@ -584,12 +598,15 @@ impl RateCache {
         if self.lineage_pos_bits.len() < self.n {
             self.lineage_pos_bits.resize(self.n, 0u64);
         }
+        if self.lineage_hulls.len() < self.n {
+            self.lineage_hulls.resize(self.n,
+                (f64::INFINITY, f64::NEG_INFINITY));
+        }
         self.lineage_pop[idx] = active[idx].population;
         // Refresh the flat segment view for `idx`. Callers invoke
         // recompute_for after any mutation to `idx`'s chain.
         self.rebuild_lineage_segs(idx, active, arena);
-        let (changed_hull_l, changed_hull_r) =
-            Self::hull_from_segs(&self.lineage_segs[idx]);
+        let (changed_hull_l, changed_hull_r) = self.lineage_hulls[idx];
 
         let changed_pop = active[idx].population;
         let changed_bits = self.lineage_pos_bits[idx];
@@ -611,21 +628,18 @@ impl RateCache {
             let (i, j) = if peer < idx { (peer, idx) } else { (idx, peer) };
             self.clear_pair(i, j);
         }
-        // Step 2: compute new (idx, other) pairs. Skip same-pop / hull /
-        // pos-bits prescreens like before but without the bit_get + pair_idx
-        // + max/min overhead of the old interleaved path.
+        // Step 2: compute new (idx, other) pairs. Prescreens read from
+        // direct-indexed side tables (lineage_pop / lineage_hulls /
+        // lineage_pos_bits) so the hot filter is three sequential
+        // Vec-index loads with no SmallVec header chase.
         for other in 0..n {
             if other == idx { continue; }
-            let other_pop = self.lineage_pop[other];
-            if other_pop != changed_pop { continue; }
-            let other_segs: &[FlatSeg] = self.lineage_segs[other].as_slice();
-            if other_segs.is_empty() { continue; }
-            let (other_l, other_r) = Self::hull_from_segs(other_segs);
+            if self.lineage_pop[other] != changed_pop { continue; }
+            let (other_l, other_r) = self.lineage_hulls[other];
             if !(other_r > changed_hull_l && changed_hull_r > other_l) {
                 continue;
             }
-            let other_bits = self.lineage_pos_bits[other];
-            if changed_bits & other_bits == 0 { continue; }
+            if changed_bits & self.lineage_pos_bits[other] == 0 { continue; }
             let i = other.min(idx);
             let j = other.max(idx);
             let ovl = compute_overlap(
@@ -672,10 +686,8 @@ impl RateCache {
         // Refresh both halves' flat segment views before any compute_overlap.
         self.rebuild_lineage_segs(idx, active, arena);
         self.rebuild_lineage_segs(new_idx, active, arena);
-        let (left_hull_l, left_hull_r) =
-            Self::hull_from_segs(&self.lineage_segs[idx]);
-        let (right_hull_l, right_hull_r) =
-            Self::hull_from_segs(&self.lineage_segs[new_idx]);
+        let (left_hull_l, left_hull_r) = self.lineage_hulls[idx];
+        let (right_hull_l, right_hull_r) = self.lineage_hulls[new_idx];
 
         // Split can only shrink idx's hull (left/right halves are
         // subsets); empty old pairs stay empty. Walk peer_bits[idx]
@@ -716,9 +728,9 @@ impl RateCache {
         let cap = self.capacity;
         let oi = other.min(idx);
         let oj = other.max(idx);
-        let other_segs: &[FlatSeg] = self.lineage_segs
-            .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
-        let (other_l, other_r) = Self::hull_from_segs(other_segs);
+        let (other_l, other_r) = self.lineage_hulls
+            .get(other).copied()
+            .unwrap_or((f64::INFINITY, f64::NEG_INFINITY));
         let ni = other.min(new_idx);
         let nj = other.max(new_idx);
         debug_assert!(!bit_get(&self.nonempty_bits, pair_idx(ni, nj, cap)));
@@ -803,6 +815,9 @@ impl RateCache {
             if !self.lineage_pos_bits.is_empty() {
                 self.lineage_pos_bits.pop();
             }
+            if !self.lineage_hulls.is_empty() {
+                self.lineage_hulls.pop();
+            }
             // Clear the just-freed peer_bits row so stale bits can't
             // surface if this slot is reused later.
             let stride = self.peer_word_stride;
@@ -860,6 +875,11 @@ impl RateCache {
             self.lineage_pos_bits[removed_idx] = moved;
             self.lineage_pos_bits.pop();
         }
+        if old_last < self.lineage_hulls.len() {
+            let moved = self.lineage_hulls[old_last];
+            self.lineage_hulls[removed_idx] = moved;
+            self.lineage_hulls.pop();
+        }
         self.n -= 1;
     }
 
@@ -911,6 +931,12 @@ impl RateCache {
             self.lineage_pos_bits.resize(n, 0u64);
         } else {
             self.lineage_pos_bits.truncate(n);
+        }
+        if self.lineage_hulls.len() < n {
+            self.lineage_hulls.resize(n,
+                (f64::INFINITY, f64::NEG_INFINITY));
+        } else {
+            self.lineage_hulls.truncate(n);
         }
         for i in 0..n {
             self.rebuild_lineage_segs(i, active, arena);

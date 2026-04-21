@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -5,8 +7,23 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use msinv_core::class_tag::Karyotype;
 use msinv_core::demography::{DemoEvent, Demography};
 use msinv_core::inversion::InversionSpec;
+use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry, SimResult};
 use msinv_core::sweep::Sweep;
+
+thread_local! {
+    /// Reusable pair-rate cache. Amortises the first-call allocation
+    /// of the triangular overlap / pair-bucket arrays (~500ms for a
+    /// 4096-lineage capacity) across every subsequent `simulate_raw`
+    /// call on the same Python thread. Cache state is reset at the
+    /// top of `HullSimulator::simulate_with_cache` so each call
+    /// starts clean; only the heap allocations persist.
+    ///
+    /// Thread-local is safe here because PyO3 holds the GIL during
+    /// `simulate_raw`, so there is exactly one active caller per
+    /// Python thread. Different threads get separate caches.
+    static CACHE: RefCell<Option<RateCache>> = const { RefCell::new(None) };
+}
 
 /// Convert a SimResult's TableBuilder into a Python dict of numpy arrays.
 fn tables_to_pydict(py: Python<'_>, result: SimResult) -> PyResult<Py<PyDict>> {
@@ -236,7 +253,13 @@ fn simulate_raw(
         sweeps: sweep_specs,
         seed,
     };
-    let mut result = sim.simulate();
+    let mut result = CACHE.with(|c| {
+        let mut slot = c.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(RateCache::new(0, sim.sequence_length));
+        }
+        sim.simulate_with_cache(slot.as_mut().unwrap())
+    });
     // Sort edges into tskit canonical order so the Python bridge can
     // skip `tc.sort()` (previously ~3.6% of single-pop wall at rho=2000).
     result.tables.sort_edges();

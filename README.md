@@ -2,7 +2,7 @@
 <img width="2932" height="800" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
 
 
-[![Tests](https://img.shields.io/badge/tests-98%2F98%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -122,7 +122,7 @@ pip install -e ".[test,plots]"      # with msprime + matplotlib + pytest
 git clone https://github.com/stsmall/msinv.git
 cd msinv
 pixi install
-pixi run test       # runs the hull test suite (98 tests)
+pixi run test       # runs the hull test suite (154 tests)
 pixi run figures    # regenerates the presentation PDFs in figures/
 ```
 
@@ -143,6 +143,33 @@ In the no-inversion limit, `msinv` reproduces msprime ground truth.
 With one or more inversions it adds the karyotype barrier (`t_inv`)
 and gene flux (`gene_conversion_rate`, `flux_window`) that msprime
 and msprime-style simulators cannot model directly.
+
+## Performance
+
+Since v0.3.0 the simulator core is implemented in Rust (PyO3 bridge).
+The Python API is unchanged — `pip install msinv` ships pre-built
+wheels, so no Rust toolchain is needed at install time.
+
+Head-to-head against msprime at n=20 haploid samples, Ne=1000,
+L=100 kb (`benchmarks/rho_scaling.py`):
+
+| rho   | msprime   | msinv (no inv) | msinv (+1 inv) |
+|------:|----------:|---------------:|---------------:|
+|   500 |    27 ms  |    30 ms       |    40 ms       |
+|  2000 |   182 ms  |   203 ms       |   303 ms       |
+|  8000 |  1984 ms  |   904 ms       |  1853 ms       |
+| 16000 | 12397 ms  |  1766 ms       | 10231 ms       |
+
+Without an inversion, `msinv` matches msprime at low rho and pulls
+ahead (~5×) at rho ≥ 8000. With one inversion, `msinv` reaches parity
+at rho=8000 and stays within msprime's wall-clock at rho=16000. ABC
+inference driving thousands of sims is now feasible on a laptop.
+
+Re-run locally:
+
+```bash
+python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
+```
 
 ## Documentation
 
@@ -166,7 +193,9 @@ and msprime-style simulators cannot model directly.
 pytest tests/
 ```
 
-All 98 hull tests should pass in a few seconds.
+All 154 hull tests (Python) plus 78 Rust tests in `rust/` should
+pass. Python suite runs in ~2 minutes (msprime comparison tests
+dominate); `cargo test --release` finishes in under a minute.
 
 ## Citation
 

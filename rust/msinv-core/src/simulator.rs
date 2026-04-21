@@ -255,8 +255,8 @@ impl HullSimulator {
 
         // Phase D: incremental pair rate cache. Pre-size generously:
         // `pair_idx` is capacity-dependent, so every `ensure_capacity`
-        // growth must reindex (O(n²)) to preserve correctness of
-        // class_totals. Oversizing up front avoids most mid-run grows
+        // growth must reindex (O(n²)) to preserve correctness of the
+        // pair buckets. Oversizing up front avoids most mid-run grows
         // for rho ≤ 8000 without wasting meaningful memory (triangular
         // array stays sparse).
         let max_lins = (active.len() * 40).max(2048);
@@ -492,10 +492,11 @@ impl HullSimulator {
                     let pop = *pop;
                     let cls = *class;
                     // Direct O(1) pick from the (pop, cls) pair bucket:
-                    // maintained in lockstep with class_totals during
-                    // every overlap mutation, indexed by packed (i, j).
-                    // Replaces the iter_pairs walk that was ~15% of wall
-                    // at rho=2000 (bitmap advance + class scan per match).
+                    // maintained by every overlap mutation, indexed by
+                    // packed (i, j). Replaces the iter_pairs walk that
+                    // was ~15% of wall at rho=2000 (bitmap advance +
+                    // class scan per match). Bucket length doubles as
+                    // the (pop, cls) pair count feeding CoalAggregate.
                     let bucket = rate_cache.pair_bucket_for(pop, cls);
                     if bucket.is_empty() { continue; }
                     let target = rng.random_range(0..bucket.len());
@@ -1231,8 +1232,8 @@ fn emit_coal_events_from_cache(
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
 ) {
-    // Read counts from the incrementally-maintained class_totals table.
-    // O(pops × classes) per emit — the main scaling win at rho ≥ 500.
+    // Read pair counts directly from the pair_buckets — each bucket's
+    // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {
         if count <= 0.0 { continue; }
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);

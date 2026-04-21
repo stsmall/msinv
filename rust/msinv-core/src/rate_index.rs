@@ -67,7 +67,7 @@ pub struct RateCache {
     /// SmallVec header.
     nonempty_bits: Vec<u64>,
     /// Per-lineage population; maintained in lockstep with the outer
-    /// `active` vector. Needed so that class_totals diffs on per-pair
+    /// `active` vector. Needed so pair-bucket inserts on per-pair
     /// updates can attribute overlap to the right (pop, class) bucket.
     lineage_pop: Vec<u32>,
     /// Per-lineage flat segment list: materialised copy of each lineage's
@@ -87,19 +87,12 @@ pub struct RateCache {
     /// Sequence length. Used to compute `lineage_pos_bits` bin indices.
     /// Must stay stable across rebuilds/updates so bit AND is valid.
     seq_len: f64,
-    /// Dense (pop, class, pair_count) table. Counts the number of
-    /// cached pairs whose overlap touches `class` in `pop`. Coalescence
-    /// hazard between any two lineages in the same (pop, class) bucket
-    /// is 1/(2*Ne*p_class), so the aggregate rate is just count × that.
-    /// Maintained by increment/decrement whenever a pair's overlap
-    /// entries change.
-    class_totals: SmallVec<[(u32, BranchClass, f64); 8]>,
-    /// Per-(pop, class) bucket of pair_idx packed (i, j) entries. Slots
-    /// are one-to-one with class_totals entries (by linear scan of
-    /// (pop, class) key — both collections append-only). CoalAggregate
-    /// dispatch picks the kth pair in O(1) via direct indexing instead
-    /// of walking iter_pairs until target (the old ~15%-of-wall cost
-    /// at rho=2000).
+    /// Per-(pop, class) bucket of pair_idx packed (i, j) entries.
+    /// `bucket.len()` doubles as the (pop, class) pair count that the
+    /// coalescence-rate aggregator needs, so no parallel class_totals
+    /// table is required. CoalAggregate dispatch picks the kth pair in
+    /// O(1) via direct indexing instead of walking iter_pairs until the
+    /// target (the old ~15%-of-wall cost at rho=2000).
     pair_buckets: SmallVec<[(u32, BranchClass, Vec<u32>); 8]>,
     /// Reverse index per pair_idx: list of (bucket_slot, pos_in_bucket)
     /// entries, one per class stored in overlaps[pidx], in the same
@@ -139,7 +132,6 @@ impl RateCache {
             lineage_segs: Vec::with_capacity(cap),
             lineage_pos_bits: Vec::with_capacity(cap),
             seq_len,
-            class_totals: SmallVec::new(),
             pair_buckets: SmallVec::new(),
             pair_bucket_refs: vec![SmallVec::new(); n_pairs],
             n: 0,
@@ -156,7 +148,6 @@ impl RateCache {
     pub fn reset(&mut self, max_lineages: usize, seq_len: f64) {
         self.seq_len = seq_len;
         self.n = 0;
-        self.class_totals.clear();
         for entry in self.pair_buckets.iter_mut() {
             entry.2.clear();
         }
@@ -286,19 +277,6 @@ impl RateCache {
         }
     }
 
-    /// Apply `delta` to the (pop, class) total; insert if new.
-    #[inline]
-    fn totals_add(&mut self, pop: u32, cls: BranchClass, delta: f64) {
-        if delta == 0.0 { return; }
-        for entry in self.class_totals.iter_mut() {
-            if entry.0 == pop && entry.1 == cls {
-                entry.2 += delta;
-                return;
-            }
-        }
-        self.class_totals.push((pop, cls, delta));
-    }
-
     /// Locate or allocate the `pair_buckets` slot for (pop, class).
     /// Slots are append-only; slot index is therefore stable across a
     /// simulation and can be recorded in `pair_bucket_refs` without
@@ -337,9 +315,11 @@ impl RateCache {
     }
 
     /// Store a fully-computed pair overlap into the cache: writes
-    /// `overlaps[pidx]`, sets the nonempty bit, increments class_totals,
-    /// and pushes packed (i, j) into each matching (pop, class) bucket
-    /// with matching reverse-index entries in `pair_bucket_refs[pidx]`.
+    /// `overlaps[pidx]`, sets the nonempty bit, and pushes packed
+    /// (i, j) into each matching (pop, class) bucket with matching
+    /// reverse-index entries in `pair_bucket_refs[pidx]`. Bucket
+    /// lengths double as the (pop, class) pair counts consumed by
+    /// `emit_coal_events_from_cache`, so no extra totals bookkeeping.
     fn store_pair(&mut self, i: usize, j: usize, ovl: PairOverlap) {
         let pidx = pair_idx(i, j, self.capacity);
         let pop = self.lineage_pop[i];
@@ -351,25 +331,18 @@ impl RateCache {
             let pos = self.pair_buckets[slot].2.len() as u32;
             self.pair_buckets[slot].2.push(packed);
             self.pair_bucket_refs[pidx].push((slot as u32, pos));
-            self.totals_add(pop, *cls, 1.0);
         }
         self.overlaps[pidx] = ovl;
         bit_set(&mut self.nonempty_bits, pidx);
     }
 
-    /// Clear pair (i, j): decrement class_totals, swap-remove each
-    /// bucket entry via the reverse index, empty overlaps, clear bit.
-    /// No-op if already empty.
+    /// Clear pair (i, j): swap-remove each bucket entry via the reverse
+    /// index, empty overlaps, clear bit. No-op if already empty. Bucket
+    /// length decrement is the only count maintenance needed.
     fn clear_pair(&mut self, i: usize, j: usize) {
         let pidx = pair_idx(i, j, self.capacity);
         if !bit_get(&self.nonempty_bits, pidx) { return; }
-        let pop = self.lineage_pop[i];
         let refs = std::mem::take(&mut self.pair_bucket_refs[pidx]);
-        let classes: SmallVec<[BranchClass; 2]> =
-            self.overlaps[pidx].iter().map(|(c, _)| *c).collect();
-        for cls in &classes {
-            self.totals_add(pop, *cls, -1.0);
-        }
         for (slot, pos) in refs.iter().copied() {
             self.bucket_swap_remove(slot as usize, pos as usize);
         }
@@ -402,11 +375,13 @@ impl RateCache {
         self.pair_bucket_refs[new_pidx] = refs;
     }
 
-    /// Iterate the maintained (pop, class, total_overlap) table.
+    /// Iterate per-(pop, class) pair counts as f64. Count equals the
+    /// size of the (pop, class) bucket — no separate totals table.
     pub fn iter_class_totals(
         &self,
     ) -> impl Iterator<Item = (u32, BranchClass, f64)> + '_ {
-        self.class_totals.iter().copied()
+        self.pair_buckets.iter()
+            .map(|e| (e.0, e.1, e.2.len() as f64))
     }
 
     /// Build the full cache from scratch. O(n^2 * segments).
@@ -436,7 +411,6 @@ impl RateCache {
             }
             *w = 0;
         }
-        self.class_totals.clear();
         for entry in self.pair_buckets.iter_mut() {
             entry.2.clear();
         }
@@ -504,8 +478,8 @@ impl RateCache {
         let cap = self.capacity;
         let n = self.n;
         // Step 1: clear every currently-nonempty (idx, *) pair via bitmap
-        // row + column walk. Old classes get decremented from class_totals
-        // and removed from buckets; overlaps[pidx] emptied.
+        // row + column walk. Old classes get removed from buckets;
+        // overlaps[pidx] emptied.
         if idx + 1 < n {
             let base_row = pair_idx(idx, idx + 1, cap);
             let row_end = base_row + (n - idx - 1);

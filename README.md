@@ -153,17 +153,18 @@ wheels, so no Rust toolchain is needed at install time.
 Head-to-head against msprime at n=20 haploid samples, Ne=1000,
 L=100 kb (`benchmarks/rho_scaling.py`):
 
-| rho   | msprime   | msinv (no inv) | msinv (+1 inv) |
-|------:|----------:|---------------:|---------------:|
-|   500 |    27 ms  |    30 ms       |    40 ms       |
-|  2000 |   182 ms  |   203 ms       |   303 ms       |
-|  8000 |  1984 ms  |   904 ms       |  1853 ms       |
-| 16000 | 12397 ms  |  1766 ms       | 10231 ms       |
+| rho   | msprime  | msinv (no inv) | msinv (+1 inv) |
+|------:|---------:|---------------:|---------------:|
+|   500 |   24 ms  |    28 ms       |    31 ms       |
+|  2000 |  145 ms  |   165 ms       |   220 ms       |
+|  8000 | 1555 ms  |   765 ms       |  1577 ms       |
+| 16000 | 5448 ms  |  1041 ms       |  4224 ms       |
 
 Without an inversion, `msinv` matches msprime at low rho and pulls
 ahead (~5×) at rho ≥ 8000. With one inversion, `msinv` reaches parity
 at rho=8000 and stays within msprime's wall-clock at rho=16000. ABC
-inference driving thousands of sims is now feasible on a laptop.
+inference driving thousands of sims is feasible on a laptop: peak
+resident memory at rho=16000 is ~1.2 GB.
 
 Re-run locally:
 

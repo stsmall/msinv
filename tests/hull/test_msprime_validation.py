@@ -106,6 +106,34 @@ def test_panmictic_tree_count_matches_msprime():
         f"(hull={np.mean(hull_t):.1f}, msp={np.mean(msp_t):.1f})")
 
 
+def test_panmictic_segregating_sites_matches_msprime():
+    """Mean segregating-site count should match msprime within 5%.
+
+    Complements the pi test: pi collapses per-site variance into a
+    single number, S counts raw polymorphism so catches discrepancies
+    (e.g. tree-span differences) that average out in pi.
+    """
+    Ne = 5_000; mu = 1e-8; L = 50_000; r = 1e-8; n = 10
+
+    hull_s = []; msp_s = []
+    for seed in range(NREPS):
+        ts = HullSimulator(n_std=n, n_inv=0, population_size=Ne,
+            sequence_length=L, recombination_rate=r, seed=seed).simulate()
+        mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed+1000,
+                                     discrete_genome=False)
+        hull_s.append(float(mts.segregating_sites(span_normalise=False)))
+
+        ts2 = _msp_ancestry(n, Ne, L, r, seed+2000)
+        mts2 = msprime.sim_mutations(ts2, rate=mu, random_seed=seed+3000,
+                                      discrete_genome=False)
+        msp_s.append(float(mts2.segregating_sites(span_normalise=False)))
+
+    ratio = np.mean(hull_s) / np.mean(msp_s)
+    assert 0.95 < ratio < 1.05, (
+        f"Hull/msprime S ratio = {ratio:.3f} "
+        f"(hull={np.mean(hull_s):.1f}, msp={np.mean(msp_s):.1f})")
+
+
 # ---------------------------------------------------------------
 # Two-pop split
 # ---------------------------------------------------------------
@@ -146,6 +174,46 @@ def test_two_pop_split_dxy_matches_msprime():
     assert 0.94 < ratio < 1.06, (
         f"Hull/msprime dxy ratio = {ratio:.3f} "
         f"(hull={np.mean(hull_dxy):.2e}, msp={np.mean(msp_dxy):.2e})")
+
+
+def test_two_pop_split_fst_matches_msprime():
+    """Two-pop split Fst should match msprime within 10%.
+
+    Fst uses tskit's branch-mode estimator on the sample tree sequences
+    (no mutation sim needed — differences in branch-length allocation
+    between pops are what we're validating). Uses the same split
+    topology as the dxy test for parity.
+    """
+    Ne = 2_000; L = 50_000; r = 1e-8; t_split = 5_000
+    n_per = 5; NREPS_2P = 300
+
+    hull_fst = []; msp_fst = []
+    for seed in range(NREPS_2P):
+        demo_h = Demography(pop_sizes=[Ne, Ne])
+        demo_h.add_event(('ej', t_split, 1, 0))
+        ts = HullSimulator(
+            sample_config={(None, 0): n_per, (None, 1): n_per},
+            demography=demo_h, sequence_length=L,
+            recombination_rate=r, seed=seed).simulate()
+        hull_fst.append(float(ts.Fst(
+            [list(range(n_per)), list(range(n_per, 2*n_per))],
+            mode="branch")))
+
+        demo_m = msprime.Demography()
+        demo_m.add_population(initial_size=Ne)
+        demo_m.add_population(initial_size=Ne)
+        demo_m.add_mass_migration(time=t_split, source=1, dest=0,
+                                   proportion=1.0)
+        ts2 = _msp_ancestry(None, Ne, L, r, seed+2000,
+                             pops={0: n_per, 1: n_per}, demo=demo_m)
+        msp_fst.append(float(ts2.Fst(
+            [list(range(n_per)), list(range(n_per, 2*n_per))],
+            mode="branch")))
+
+    ratio = np.mean(hull_fst) / np.mean(msp_fst)
+    assert 0.90 < ratio < 1.10, (
+        f"Hull/msprime Fst ratio = {ratio:.3f} "
+        f"(hull={np.mean(hull_fst):.3f}, msp={np.mean(msp_fst):.3f})")
 
 
 # ---------------------------------------------------------------

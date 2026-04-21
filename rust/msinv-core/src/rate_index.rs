@@ -891,6 +891,107 @@ impl RateCache {
         self.rebuild_lineage_segs(idx, active, arena);
     }
 
+    /// Debug-only consistency check for every invariant the incremental
+    /// protocol relies on. Panics with a descriptive message on first
+    /// violation. Call before/after suspect mutations; runs in O(n² +
+    /// pairs) so gate with `debug_assertions` or `#[cfg(test)]` at hot
+    /// call sites.
+    ///
+    /// Invariants verified:
+    ///  1. `nonempty_bits[pidx]` set ⇔ `overlaps[pidx]` non-empty.
+    ///  2. For every nonempty pair (i, j): `pair_bucket_refs[pidx]` has
+    ///     one entry per class in `overlaps[pidx]`, in matching order.
+    ///  3. Each ref `(slot, pos)` indexes the correct (pop, class)
+    ///     bucket — pop from `lineage_pop[i]`, class from `overlaps[pidx][k].0`
+    ///     — and `pair_buckets[slot].2[pos]` unpacks back to (i, j).
+    ///  4. Every bucket entry `(slot, pos)` has exactly one refs entry
+    ///     pointing back to it (bijection between nonempty pair/class
+    ///     slots and bucket positions).
+    ///  5. No two pair_buckets slots share the same (pop, class) key.
+    #[cfg(any(test, debug_assertions))]
+    pub fn debug_check_invariants(&self, label: &str) {
+        use std::collections::HashSet;
+        // Invariant 5: (pop, class) bucket keys unique.
+        let mut seen: HashSet<(u32, BranchClass)> = HashSet::new();
+        for (k, entry) in self.pair_buckets.iter().enumerate() {
+            if !seen.insert((entry.0, entry.1)) {
+                panic!("[{}] duplicate pair_buckets key ({:?}, {:?}) at slot {}",
+                    label, entry.0, entry.1, k);
+            }
+        }
+
+        // Invariants 1–3: walk every pair slot.
+        // Separately track how many bucket positions are referenced.
+        let mut ref_hits: Vec<Vec<bool>> = self.pair_buckets.iter()
+            .map(|e| vec![false; e.2.len()])
+            .collect();
+        let cap = self.capacity;
+        for i in 0..self.n {
+            for j in (i + 1)..self.n {
+                let pidx = pair_idx(i, j, cap);
+                let bit = bit_get(&self.nonempty_bits, pidx);
+                let ovl = &self.overlaps[pidx];
+                if bit != !ovl.is_empty() {
+                    panic!("[{}] nonempty_bits mismatch at ({},{}) \
+                           pidx={} bit={} len={}",
+                           label, i, j, pidx, bit, ovl.len());
+                }
+                if ovl.is_empty() {
+                    if !self.pair_bucket_refs[pidx].is_empty() {
+                        panic!("[{}] empty overlap but refs non-empty at ({},{})",
+                            label, i, j);
+                    }
+                    continue;
+                }
+                let refs = &self.pair_bucket_refs[pidx];
+                if refs.len() != ovl.len() {
+                    panic!("[{}] refs/overlap length mismatch at ({},{}): \
+                           refs={} overlap={}",
+                           label, i, j, refs.len(), ovl.len());
+                }
+                let expected_pop = self.lineage_pop[i];
+                let expected_packed = pack_ij(i, j);
+                for (k, (class, _)) in ovl.iter().enumerate() {
+                    let (slot, pos) = (refs[k].0 as usize, refs[k].1 as usize);
+                    let bucket = &self.pair_buckets[slot];
+                    if bucket.0 != expected_pop || bucket.1 != *class {
+                        panic!("[{}] ref ({},{}) class idx {}: slot key \
+                               ({:?}, {:?}) ≠ expected ({}, {:?})",
+                               label, i, j, k,
+                               bucket.0, bucket.1, expected_pop, class);
+                    }
+                    if pos >= bucket.2.len() {
+                        panic!("[{}] ref ({},{}) class idx {}: pos {} \
+                               out of bucket len {}",
+                               label, i, j, k, pos, bucket.2.len());
+                    }
+                    if bucket.2[pos] != expected_packed {
+                        panic!("[{}] ref ({},{}) class idx {}: bucket[{}]={:#x} \
+                               ≠ pack_ij({},{})={:#x}",
+                               label, i, j, k, pos,
+                               bucket.2[pos], i, j, expected_packed);
+                    }
+                    if ref_hits[slot][pos] {
+                        panic!("[{}] bucket slot {} pos {} referenced twice",
+                               label, slot, pos);
+                    }
+                    ref_hits[slot][pos] = true;
+                }
+            }
+        }
+
+        // Invariant 4: every bucket position had a back-reference.
+        for (slot, hits) in ref_hits.iter().enumerate() {
+            for (pos, hit) in hits.iter().enumerate() {
+                if !hit {
+                    panic!("[{}] bucket slot {} pos {} packed={:#x} \
+                           has no refs entry",
+                           label, slot, pos, self.pair_buckets[slot].2[pos]);
+                }
+            }
+        }
+    }
+
     /// Iterate all non-empty pairs using the bitmap at word granularity:
     /// for each row we load 64-bit chunks and use `trailing_zeros` to
     /// step directly to the next set bit. Empty words cost a single
@@ -1062,5 +1163,130 @@ mod tests {
         assert_eq!(ovl.len(), 1);
         assert_eq!(ovl[0].0, cls);
         assert!((ovl[0].1 - 100.0).abs() < 1e-9);
+    }
+
+    /// Build a lineage spanning [l, r) in a single segment.
+    fn mk_lin(arena: &mut SegmentArena, l: f64, r: f64,
+              pop: u32, cls: BranchClass,
+              uid: crate::lineage::LinUid) -> Lineage {
+        let s = arena.alloc(l, r, uid as i32, cls);
+        Lineage::new(s, s, pop, uid, arena)
+    }
+
+    /// Pre-peer-bitmap invariant fence: exercises rebuild, recompute_for,
+    /// apply_recomb_split, swap_update, remove_lineage across a random
+    /// stream and calls `debug_check_invariants` after every mutation.
+    /// If pair_buckets / overlaps / nonempty_bits / pair_bucket_refs
+    /// drift apart, this fires immediately with the mutation label.
+    #[test]
+    fn incremental_invariants_random_ops() {
+        use crate::class_tag::Karyotype;
+        use rand::{Rng, SeedableRng};
+        use rand_xoshiro::Xoshiro256PlusPlus;
+
+        let seq_len = 1000.0;
+        let classes = [
+            BranchClass::PANMICTIC,
+            BranchClass::single(0, Karyotype::S),
+            BranchClass::single(0, Karyotype::I),
+        ];
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        let mut arena = SegmentArena::new();
+        let mut cache = RateCache::new(64, seq_len);
+        let mut active: Vec<Lineage> = Vec::new();
+        let mut next_uid: crate::lineage::LinUid = 0;
+
+        // Seed: 8 lineages, random intervals, 2 pops, 3 classes.
+        for _ in 0..8 {
+            let l = rng.random_range(0..seq_len as u64 / 2) as f64;
+            let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
+            let pop = rng.random_range(0..2u32);
+            let cls = classes[rng.random_range(0..classes.len())];
+            active.push(mk_lin(&mut arena, l, r, pop, cls, next_uid));
+            next_uid += 1;
+        }
+        cache.rebuild(&active, &arena);
+        cache.debug_check_invariants("after initial rebuild");
+
+        for step in 0..200usize {
+            if active.len() < 2 {
+                // Replenish so ops stay meaningful.
+                let pop = rng.random_range(0..2u32);
+                let cls = classes[rng.random_range(0..classes.len())];
+                active.push(mk_lin(&mut arena, 0.0, seq_len, pop, cls, next_uid));
+                next_uid += 1;
+                cache.rebuild(&active, &arena);
+                cache.debug_check_invariants(&format!("step {}: rebuild", step));
+                continue;
+            }
+            let op = rng.random_range(0..4u32);
+            match op {
+                // recompute_for: replace a lineage at idx with a fresh one.
+                0 => {
+                    let idx = rng.random_range(0..active.len());
+                    let l = rng.random_range(0..seq_len as u64 / 2) as f64;
+                    let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
+                    let pop = rng.random_range(0..2u32);
+                    let cls = classes[rng.random_range(0..classes.len())];
+                    active[idx] = mk_lin(&mut arena, l, r, pop, cls, next_uid);
+                    next_uid += 1;
+                    cache.recompute_for(idx, &active, &arena);
+                    cache.debug_check_invariants(
+                        &format!("step {}: recompute_for({})", step, idx));
+                }
+                // apply_recomb_split: push a new lineage (simulating the
+                // right-half of a recomb split) then update both.
+                1 => {
+                    let idx = rng.random_range(0..active.len());
+                    let split_pos = rng.random_range(1..seq_len as u64 - 1) as f64;
+                    let pop = active[idx].population;
+                    let cls = classes[rng.random_range(0..classes.len())];
+                    // Replace idx with left half, push right half.
+                    let old_hl = active[idx].cached_hull_l;
+                    let old_hr = active[idx].cached_hull_r;
+                    if !(old_hl < split_pos && split_pos < old_hr) {
+                        continue;
+                    }
+                    active[idx] = mk_lin(
+                        &mut arena, old_hl, split_pos, pop, cls, next_uid);
+                    next_uid += 1;
+                    active.push(mk_lin(
+                        &mut arena, split_pos, old_hr, pop, cls, next_uid));
+                    next_uid += 1;
+                    let new_idx = active.len() - 1;
+                    cache.apply_recomb_split(
+                        idx, new_idx, split_pos, &active, &arena);
+                    cache.debug_check_invariants(
+                        &format!("step {}: apply_recomb_split({},{})",
+                                 step, idx, new_idx));
+                }
+                // swap_update: simulate swap_remove(idx) on the active list.
+                2 => {
+                    let idx = rng.random_range(0..active.len());
+                    let old_last = active.len() - 1;
+                    cache.remove_lineage(idx);
+                    cache.debug_check_invariants(
+                        &format!("step {}: remove_lineage({})", step, idx));
+                    active.swap_remove(idx);
+                    cache.swap_update(idx, old_last);
+                    cache.debug_check_invariants(
+                        &format!("step {}: swap_update({},{})",
+                                 step, idx, old_last));
+                }
+                // push a new lineage + recompute for it.
+                _ => {
+                    let l = rng.random_range(0..seq_len as u64 / 2) as f64;
+                    let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
+                    let pop = rng.random_range(0..2u32);
+                    let cls = classes[rng.random_range(0..classes.len())];
+                    active.push(mk_lin(&mut arena, l, r, pop, cls, next_uid));
+                    next_uid += 1;
+                    let idx = active.len() - 1;
+                    cache.recompute_for(idx, &active, &arena);
+                    cache.debug_check_invariants(
+                        &format!("step {}: push + recompute({})", step, idx));
+                }
+            }
+        }
     }
 }

@@ -2,6 +2,38 @@
 
 All notable changes to msinv are documented here.
 
+## [0.3.1] - 2026-04-21
+
+### Added
+
+- Rust simulator core (`msinv-core` + `msinv-py` PyO3 bridge). Python
+  API unchanged; `pip install msinv` ships pre-built wheels so no
+  Rust toolchain is needed at install time.
+- Thread-local `RateCache` pool in the PyO3 bridge — amortises the
+  first-call allocation across every subsequent `simulate()` on the
+  same thread.
+- `benchmarks/rho_scaling.py`: head-to-head wall-clock against
+  msprime across rho 500–16000.
+- `tests/hull/test_msprime_validation.py`: segregating-sites (±5 %)
+  and branch-mode Fst (±10 %) comparison tests.
+- `tests/hull/test_stdpopsim_validation.py`: Africa_1T12 seg-sites,
+  OOA_2T12 Fst.
+
+### Changed
+
+- `msinv` at parity or faster than msprime for rho ≥ 8000 single-pop.
+  rho=16000 with one inversion: ~4.2 s/rep vs msprime ~5.5 s/rep.
+  No-inversion rho=16000: ~1.0 s/rep vs msprime ~5.5 s/rep (~5×
+  faster). Peak resident memory at rho=16000: ~1.2 GB.
+- README Performance section added with the bench numbers.
+
+### Fixed
+
+- Release workflow wheels: `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`
+  for Python 3.14 compat with PyO3 0.24.2 on aarch64-linux and
+  windows runners; `--find-links dist msinv` picks wheels by ABI
+  tag instead of the alphabetically-first path.
+
 ## [0.3.0] - 2026-04-13
 
 ### Removed — Legacy SMC engine

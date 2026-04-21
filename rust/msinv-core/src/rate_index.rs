@@ -99,6 +99,16 @@ pub struct RateCache {
     /// order. Used to patch bucket positions during swap_remove and to
     /// rewrite packed (i, j) during swap_update.
     pair_bucket_refs: Vec<PairBucketRefs>,
+    /// Per-lineage peer bitmap. `peer_bit(i, j)` is set iff pair
+    /// `(min(i,j), max(i,j))` has a cached overlap. Stored flat with
+    /// `peer_word_stride` u64 words per lineage; `peer_bits[i *
+    /// stride + w]` holds bits `64w..64w+64` of lineage `i`'s peer
+    /// set. Replaces the `for other in 0..idx / 0..old_last`
+    /// scattered-pidx column walks in remove_lineage /
+    /// swap_update / recompute_for / apply_recomb_split with a
+    /// `trailing_zeros` walk over set bits (O(peers) vs O(n)).
+    peer_bits: Vec<u64>,
+    peer_word_stride: usize,
     /// Current number of active lineages.
     n: usize,
     /// Max capacity (determines pair_idx mapping).
@@ -120,6 +130,22 @@ fn bit_get(bits: &[u64], i: usize) -> bool {
 
 #[inline(always)]
 fn nbits_words(n_bits: usize) -> usize { (n_bits + 63) / 64 }
+
+/// Iterator over set bits in a single u64 word via `trailing_zeros`.
+/// Matches the pattern used throughout the rate_index module — each
+/// step clears the LSB (`word &= word - 1`) then returns the zero-
+/// count of the previous word.
+struct BitWordIter(u64);
+impl Iterator for BitWordIter {
+    type Item = usize;
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 { return None; }
+        let b = self.0.trailing_zeros() as usize;
+        self.0 &= self.0 - 1;
+        Some(b)
+    }
+}
 
 /// Allocate `Vec<SmallVec<[T; N]>>` of length `n` using calloc-backed
 /// zero-init instead of `vec![SmallVec::new(); n]`'s per-element clone
@@ -164,6 +190,7 @@ impl RateCache {
     pub fn new(max_lineages: usize, seq_len: f64) -> Self {
         let cap = max_lineages;
         let n_pairs = tri_size(cap);
+        let peer_stride = nbits_words(cap);
         Self {
             overlaps: zeroed_smallvec_vec(n_pairs),
             nonempty_bits: vec![0u64; nbits_words(n_pairs)],
@@ -173,6 +200,8 @@ impl RateCache {
             seq_len,
             pair_buckets: SmallVec::new(),
             pair_bucket_refs: zeroed_smallvec_vec(n_pairs),
+            peer_bits: vec![0u64; cap * peer_stride],
+            peer_word_stride: peer_stride,
             n: 0,
             capacity: cap,
         }
@@ -211,6 +240,10 @@ impl RateCache {
             }
             *w = 0;
         }
+        // peer_bits: full sweep of `cap * stride` u64 words. At
+        // cap=4096 that's ~512KB = ~128k u64 memset — fast (<1ms).
+        // Avoids tracking old_n just to target the per-lineage rows.
+        for w in self.peer_bits.iter_mut() { *w = 0; }
         self.ensure_capacity(max_lineages);
     }
 
@@ -268,14 +301,52 @@ impl RateCache {
                     }
                 }
             }
+            // Reindex peer_bits. Per-lineage layout: each active row
+            // occupies `stride` u64 words. On cap grow, stride grows
+            // too (nbits_words doubles with cap), so each row moves
+            // to a new start offset. Bits within a row stay at the
+            // same bit index (peer index j unchanged by cap).
+            let old_stride = self.peer_word_stride;
+            let new_stride = nbits_words(new_cap);
+            let mut new_peer_bits = vec![0u64; new_cap * new_stride];
+            for i in 0..walk_n {
+                let src_start = i * old_stride;
+                let dst_start = i * new_stride;
+                new_peer_bits[dst_start..dst_start + old_stride]
+                    .copy_from_slice(
+                        &self.peer_bits[src_start..src_start + old_stride]);
+            }
             self.overlaps = new_overlaps;
             self.nonempty_bits = new_bits;
             self.pair_bucket_refs = new_refs;
+            self.peer_bits = new_peer_bits;
+            self.peer_word_stride = new_stride;
             self.capacity = new_cap;
             // Bucket entries' packed (i, j) are capacity-independent,
             // so pair_buckets need no remap.
         }
     }
+
+    /// Set the (i, j) and (j, i) peer bits — call from `store_pair`.
+    #[inline(always)]
+    fn peer_set_pair(&mut self, i: usize, j: usize) {
+        let stride = self.peer_word_stride;
+        let (iw, ib) = (j >> 6, 1u64 << (j & 63));
+        self.peer_bits[i * stride + iw] |= ib;
+        let (jw, jb) = (i >> 6, 1u64 << (i & 63));
+        self.peer_bits[j * stride + jw] |= jb;
+    }
+
+    /// Clear the (i, j) and (j, i) peer bits — call from `clear_pair`.
+    #[inline(always)]
+    fn peer_clear_pair(&mut self, i: usize, j: usize) {
+        let stride = self.peer_word_stride;
+        let (iw, ib) = (j >> 6, 1u64 << (j & 63));
+        self.peer_bits[i * stride + iw] &= !ib;
+        let (jw, jb) = (i >> 6, 1u64 << (i & 63));
+        self.peer_bits[j * stride + jw] &= !jb;
+    }
+
 
     /// Materialise lineage `idx`'s segment chain into `lineage_segs[idx]`.
     /// Clear-then-extend to reuse the SmallVec's allocation. Callers must
@@ -373,6 +444,7 @@ impl RateCache {
         }
         self.overlaps[pidx] = ovl;
         bit_set(&mut self.nonempty_bits, pidx);
+        self.peer_set_pair(i, j);
     }
 
     /// Clear pair (i, j): swap-remove each bucket entry via the reverse
@@ -387,6 +459,7 @@ impl RateCache {
         }
         self.overlaps[pidx].clear();
         bit_clear(&mut self.nonempty_bits, pidx);
+        self.peer_clear_pair(i, j);
     }
 
     /// Move pair data from (old_i, old_j) to (new_i, new_j) without
@@ -412,6 +485,12 @@ impl RateCache {
             self.pair_buckets[slot as usize].2[pos as usize] = new_packed;
         }
         self.pair_bucket_refs[new_pidx] = refs;
+        // Keep peer_bits in sync: (old_i, old_j) is no longer a
+        // nonempty pair; (new_i, new_j) is. Without this the peer
+        // walks in recompute_for / apply_recomb_split / etc. would
+        // visit stale peers.
+        self.peer_clear_pair(old_i, old_j);
+        self.peer_set_pair(new_i, new_j);
     }
 
     /// Iterate per-(pop, class) pair counts as f64. Count equals the
@@ -514,41 +593,23 @@ impl RateCache {
 
         let changed_pop = active[idx].population;
         let changed_bits = self.lineage_pos_bits[idx];
-        let cap = self.capacity;
         let n = self.n;
-        // Step 1: clear every currently-nonempty (idx, *) pair via bitmap
-        // row + column walk. Old classes get removed from buckets;
-        // overlaps[pidx] emptied.
-        if idx + 1 < n {
-            let base_row = pair_idx(idx, idx + 1, cap);
-            let row_end = base_row + (n - idx - 1);
-            let mut w = base_row >> 6;
-            let words_end = (row_end + 63) >> 6;
-            while w < words_end {
-                let word_start = w << 6;
-                let raw = self.nonempty_bits[w];
-                let lo = if base_row > word_start {
-                    !((1u64 << (base_row - word_start)) - 1)
-                } else { !0u64 };
-                let end_off = row_end - word_start;
-                let hi = if end_off >= 64 { !0u64 }
-                    else { (1u64 << end_off) - 1 };
-                let mut bits = raw & lo & hi;
-                while bits != 0 {
-                    let b = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let pidx = word_start + b;
-                    let j = idx + 1 + (pidx - base_row);
-                    self.clear_pair(idx, j);
-                }
-                w += 1;
+        // Step 1: walk peer_bits[idx] directly — every set bit is a
+        // peer that currently has a nonempty pair with `idx`. Replaces
+        // the old bitmap row + column walks; single O(peers) loop.
+        let stride = self.peer_word_stride;
+        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
+        let row_start = idx * stride;
+        for w in 0..stride {
+            let word = self.peer_bits[row_start + w];
+            let base = w << 6;
+            for bit in BitWordIter(word) {
+                peers.push(base + bit);
             }
         }
-        for i in 0..idx {
-            let pidx = pair_idx(i, idx, cap);
-            if bit_get(&self.nonempty_bits, pidx) {
-                self.clear_pair(i, idx);
-            }
+        for peer in peers {
+            let (i, j) = if peer < idx { (peer, idx) } else { (idx, peer) };
+            self.clear_pair(i, j);
         }
         // Step 2: compute new (idx, other) pairs. Skip same-pop / hull /
         // pos-bits prescreens like before but without the bit_get + pair_idx
@@ -617,48 +678,26 @@ impl RateCache {
             Self::hull_from_segs(&self.lineage_segs[new_idx]);
 
         // Split can only shrink idx's hull (left/right halves are
-        // subsets); empty old pairs stay empty. Iterate only nonempty
-        // pairs (idx, other) via the bitmap: row walk for j > idx and
-        // column walk for i < idx. new_pidx slot is empty by invariant
-        // (new_idx was just pushed), so no defensive scrub needed.
-        let cap = self.capacity;
-        let n = self.n;
+        // subsets); empty old pairs stay empty. Walk peer_bits[idx]
+        // to visit only nonempty pairs — single unified loop replaces
+        // the old bitmap row walk + column walk. new_pidx slot is
+        // empty by invariant (new_idx was just pushed), so no
+        // defensive scrub needed.
         let _ = changed_pop;
-        if idx + 1 < n {
-            let base_row = pair_idx(idx, idx + 1, cap);
-            let row_end = base_row + (n - idx - 1);
-            let mut w = base_row >> 6;
-            let words_end = (row_end + 63) >> 6;
-            while w < words_end {
-                let word_start = w << 6;
-                let raw = self.nonempty_bits[w];
-                let lo = if base_row > word_start {
-                    !((1u64 << (base_row - word_start)) - 1)
-                } else { !0u64 };
-                let end_off = row_end - word_start;
-                let hi = if end_off >= 64 { !0u64 }
-                    else { (1u64 << end_off) - 1 };
-                let mut bits = raw & lo & hi;
-                while bits != 0 {
-                    let b = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let pidx = word_start + b;
-                    let other = idx + 1 + (pidx - base_row);
-                    if other == new_idx { continue; }
-                    self.apply_recomb_split_body(
-                        idx, other, new_idx, split_pos,
-                        left_hull_l, left_hull_r,
-                        right_hull_l, right_hull_r);
-                }
-                w += 1;
+        let stride = self.peer_word_stride;
+        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
+        let row_start = idx * stride;
+        for w in 0..stride {
+            let word = self.peer_bits[row_start + w];
+            let base = w << 6;
+            for bit in BitWordIter(word) {
+                peers.push(base + bit);
             }
         }
-        for i in 0..idx {
-            let pidx = pair_idx(i, idx, cap);
-            if !bit_get(&self.nonempty_bits, pidx) { continue; }
-            // i < idx < new_idx (new_idx was just pushed), so never hits new_idx.
+        for other in peers {
+            if other == new_idx { continue; }
             self.apply_recomb_split_body(
-                idx, i, new_idx, split_pos,
+                idx, other, new_idx, split_pos,
                 left_hull_l, left_hull_r,
                 right_hull_l, right_hull_r);
         }
@@ -724,44 +763,30 @@ impl RateCache {
     /// Remove all pairs involving lineage `idx`. Call before removing
     /// the lineage from active.
     pub fn remove_lineage(&mut self, idx: usize) {
-        let cap = self.capacity;
-        let n = self.n;
-        // Row walk (j > idx): pidxs are contiguous from base_row to
-        // base_row + (n - idx - 1); walk the bitmap word-wise so empty
-        // 64-entry stretches cost one load + compare. trailing_zeros
-        // jumps directly to each set bit.
-        if idx + 1 < n {
-            let base_row = pair_idx(idx, idx + 1, cap);
-            let row_end = base_row + (n - idx - 1);
-            let mut w = base_row >> 6;
-            let words_end = (row_end + 63) >> 6;
-            while w < words_end {
-                let word_start = w << 6;
-                let raw = self.nonempty_bits[w];
-                let lo = if base_row > word_start {
-                    !((1u64 << (base_row - word_start)) - 1)
-                } else { !0u64 };
-                let end_off = row_end - word_start;
-                let hi = if end_off >= 64 { !0u64 }
-                    else { (1u64 << end_off) - 1 };
-                let mut bits = raw & lo & hi;
-                while bits != 0 {
-                    let b = bits.trailing_zeros() as usize;
-                    bits &= bits - 1;
-                    let pidx = word_start + b;
-                    let j = idx + 1 + (pidx - base_row);
-                    self.clear_pair(idx, j);
-                }
-                w += 1;
+        // Drain peer_bits[idx] directly — each set bit is another
+        // lineage that currently has a nonempty pair with idx. One
+        // unified walk replaces the old bitmap row walk (j > idx,
+        // word-scan over nonempty_bits) + column walk (i < idx,
+        // scattered pidxs with per-i bit_get). The peer bitmap is
+        // already keyed by lineage-pair, so walk cost is O(peers)
+        // independent of which side of `idx` they sit on.
+        //
+        // Snapshot into a local SmallVec: `clear_pair` mutates
+        // peer_bits via peer_clear_pair, so we can't iterate the row
+        // while borrowing it mutably.
+        let stride = self.peer_word_stride;
+        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
+        let row_start = idx * stride;
+        for w in 0..stride {
+            let word = self.peer_bits[row_start + w];
+            let base = w << 6;
+            for bit in BitWordIter(word) {
+                peers.push(base + bit);
             }
         }
-        // Column walk (i < idx): pidx(i, idx, cap) is scattered — one
-        // per row. Linear scan checks bit per i; most empty so fast.
-        for i in 0..idx {
-            let pidx = pair_idx(i, idx, cap);
-            if bit_get(&self.nonempty_bits, pidx) {
-                self.clear_pair(i, idx);
-            }
+        for peer in peers {
+            let (i, j) = if peer < idx { (peer, idx) } else { (idx, peer) };
+            self.clear_pair(i, j);
         }
     }
 
@@ -778,27 +803,42 @@ impl RateCache {
             if !self.lineage_pos_bits.is_empty() {
                 self.lineage_pos_bits.pop();
             }
+            // Clear the just-freed peer_bits row so stale bits can't
+            // surface if this slot is reused later.
+            let stride = self.peer_word_stride;
+            let start = old_last * stride;
+            for w in 0..stride { self.peer_bits[start + w] = 0; }
             self.n -= 1;
             return;
         }
         // Callers must have invoked `remove_lineage(removed_idx)` first,
         // so every (removed_idx, *) slot is already empty with bit = 0.
-        // Move (old_last, *) overlap data into those slots.
-        // Iterate the last row's bitmap at word granularity so we only
-        // pay for nonempty pairs. Empty pairs need no slot move and no
-        // bit maintenance, which is the common case at high rho.
-        // other < old_last always, so (min, max) = (other, old_last).
-        // Only removed_idx's position relative to other needs ordering.
-        let cap = self.capacity;
-        for other in 0..old_last {
+        // Walk peer_bits[old_last] for the set of lineages that have
+        // a nonempty pair with old_last — much cheaper than the old
+        // `for other in 0..old_last` scan with bit_get per slot.
+        let stride = self.peer_word_stride;
+        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
+        let row_start = old_last * stride;
+        for w in 0..stride {
+            let word = self.peer_bits[row_start + w];
+            let base = w << 6;
+            for bit in BitWordIter(word) {
+                peers.push(base + bit);
+            }
+        }
+        for other in peers {
             if other == removed_idx { continue; }
-            let old_pidx = pair_idx(other, old_last, cap);
-            if !bit_get(&self.nonempty_bits, old_pidx) { continue; }
             let (ni, nj) = if other < removed_idx {
                 (other, removed_idx)
             } else {
                 (removed_idx, other)
             };
+            // move_pair now handles peer_bits too: peer_clear_pair
+            // (other, old_last) + peer_set_pair(ni, nj). No extra
+            // row-copy needed — every peer touched here flips the
+            // same pair of bits, so peer_bits[old_last] drains to
+            // zero as each peer is processed and peer_bits[removed_idx]
+            // accumulates the new (other, removed_idx) bits.
             self.move_pair(other, old_last, ni, nj);
         }
         // Mirror the active-side swap_remove on lineage_pop so later
@@ -987,6 +1027,27 @@ impl RateCache {
                     panic!("[{}] bucket slot {} pos {} packed={:#x} \
                            has no refs entry",
                            label, slot, pos, self.pair_buckets[slot].2[pos]);
+                }
+            }
+        }
+
+        // Invariant 6: peer_bits consistency — for every lineage i in
+        // 0..n, peer_bits[i] has bit j set iff j in 0..n, j != i,
+        // and pair (min(i,j), max(i,j)) is nonempty.
+        let stride = self.peer_word_stride;
+        for i in 0..self.n {
+            for j in 0..self.capacity {
+                let word = self.peer_bits[i * stride + (j >> 6)];
+                let bit = (word >> (j & 63)) & 1 != 0;
+                let expected = if j >= self.n || j == i {
+                    false
+                } else {
+                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                    bit_get(&self.nonempty_bits, pair_idx(lo, hi, self.capacity))
+                };
+                if bit != expected {
+                    panic!("[{}] peer_bits[{}] bit {} = {} but expected {}",
+                           label, i, j, bit, expected);
                 }
             }
         }

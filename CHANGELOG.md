@@ -2,14 +2,21 @@
 
 All notable changes to msinv are documented here.
 
+## [0.3.4] - 2026-04-21
+
+### Changed
+
+- Release wheels: Linux-only (x86_64 + aarch64). macOS and Windows
+  dropped from the build matrix because the PyO3 0.24.x ↔ Python
+  3.14 / maturin toolchain issues weren't worth the CI churn for a
+  research simulator whose users all run Linux. Non-Linux users can
+  install from sdist with a Rust toolchain. Revisit once PyO3 ≥ 0.25
+  lands native 3.14 / 3.14t support.
+
 ## [0.3.3] - 2026-04-21
 
-### Fixed
-
-- Windows wheel build: add `generate-import-lib` PyO3 feature so
-  cross-interpreter builds on Windows (where maturin's bundled
-  sysconfig only ships CPython 3.9 and the rest are cross-compiled)
-  succeed without the per-runner interpreter being installed.
+(Reverted — windows fix attempt superseded by dropping non-Linux
+wheels in v0.3.4.)
 
 ## [0.3.2] - 2026-04-21
 

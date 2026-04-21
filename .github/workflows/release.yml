@@ -10,7 +10,16 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Build wheels for Linux, macOS, and Windows
+  # Build wheels for Linux only.
+  #
+  # Dropped macOS + Windows because the toolchain trail — PyO3 0.24.x
+  # vs Python 3.14 on Windows runners, maturin's bundled sysconfig
+  # gymnastics, the whack-a-mole between --find-interpreter /
+  # --interpreter / ABI3 forward compat / generate-import-lib — was
+  # not worth the cost-to-serve for those platforms. msinv is a
+  # research simulator; the user and downstream consumers run Linux.
+  # Non-Linux users can `pip install msinv` from sdist with a Rust
+  # toolchain installed. Revisit after PyO3 ≥ 0.25 lands.
   # ---------------------------------------------------------------------------
   build-wheels:
     name: Build wheels (${{ matrix.os }}, ${{ matrix.target }})
@@ -19,21 +28,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
           - os: ubuntu-latest
             target: x86_64
-          # Linux aarch64
           - os: ubuntu-latest
             target: aarch64
-          # macOS x86_64 (Intel)
-          - os: macos-13
-            target: x86_64
-          # macOS aarch64 (Apple Silicon)
-          - os: macos-14
-            target: aarch64
-          # Windows x86_64
-          - os: windows-latest
-            target: x64
 
     steps:
       - uses: actions/checkout@v4

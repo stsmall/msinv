@@ -44,6 +44,12 @@ jobs:
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
+        env:
+          # PyO3 0.24.x maxes at Python 3.13. Recent docker manylinux
+          # images and Windows runners now ship 3.14, which trips
+          # `--find-interpreter`. Forward-compat builds the 3.14 wheel
+          # against the stable ABI instead of erroring out.
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter

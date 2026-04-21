@@ -60,15 +60,17 @@ impl RateEngine {
         tags.push(RateTag::Recombination);
         rates.push(recomb_rate_total);
 
-        // Coal pairs from cache.
-        for (i, j, overlaps) in cache.iter_pairs() {
+        // Coal pairs from cache. Classes derived from the bucket
+        // back-references — no per-pair class array stored anymore.
+        for (i, j, refs) in cache.iter_pairs() {
             let pop = active[i].population;
             let ne = demo.size_at(pop, t).max(1e-9);
-            for (cls, _ov_len) in overlaps {
-                let p_class = p_class_for(*cls, inversions, barrier_active, pop);
+            for (slot, _pos) in refs.iter().copied() {
+                let cls = cache.class_for_ref(slot);
+                let p_class = p_class_for(cls, inversions, barrier_active, pop);
                 if p_class <= 0.0 { continue; }
                 let rate = 1.0 / (2.0 * ne * p_class);
-                tags.push(RateTag::CoalPair { i, j, class: *cls });
+                tags.push(RateTag::CoalPair { i, j, class: cls });
                 rates.push(rate);
             }
         }

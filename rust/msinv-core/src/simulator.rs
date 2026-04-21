@@ -14,7 +14,7 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
-use crate::rate_index::RateCache;
+use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
@@ -51,15 +51,17 @@ enum Event {
     CoalAggregate { pop: u32, class: BranchClass },
     CoalPanmicticPop { pop: u32 },
     Recombination,
-    /// Per-lineage flux (kept for compute_flux_rates_static compatibility
-    /// and any legacy callers). The hot path uses FluxAggregate.
-    Flux { lineage_idx: usize, inv_idx: usize },
     /// Aggregate gene-flux rate for all lineages interacting with
     /// `inv_idx`. Firing samples a lineage proportional to its cached
     /// per-lineage flux rate — avoids the O(n * segs) full flux scan
     /// on every event-list rebuild.
     FluxAggregate { inv_idx: usize },
-    Migration { lineage_idx: usize, dst_pop: u32 },
+    /// Aggregate migration: all lineages in `src_pop` migrating to
+    /// `dst_pop` with the same per-lineage rate. Firing picks one
+    /// lineage uniformly from `pop_buckets[src_pop]` and migrates it.
+    /// Replaces the O(n · n_pops) per-lineage Migration events that
+    /// dominated multi-pop event-list builds at ~9.5% of run_loop.
+    MigrationAggregate { src_pop: u32, dst_pop: u32 },
 }
 
 // ---------------------------------------------------------------
@@ -136,6 +138,18 @@ impl HullSimulator {
     }
 
     pub fn simulate(&self) -> SimResult {
+        let mut rate_cache = RateCache::new(0, self.sequence_length);
+        self.simulate_with_cache(&mut rate_cache)
+    }
+
+    /// Simulate, reusing the caller-owned `rate_cache`. The cache is
+    /// `reset()` before this rep and its heap allocations survive for
+    /// the next call. Use when driving many reps from one thread (e.g.
+    /// bench binaries, single-process ABC loops) to amortise the
+    /// triangular overlap array allocation across reps.
+    pub fn simulate_with_cache(
+        &self, rate_cache: &mut RateCache,
+    ) -> SimResult {
         // rho=0 is forbidden globally (matches Python). Without
         // recombination, partial coalescence fragments lineages that
         // can never recombine back together. For independent loci,
@@ -170,11 +184,12 @@ impl HullSimulator {
 
         self.run_loop(&mut active, &mut arena, &mut tables,
                        &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions);
+                       &mut inversions, rate_cache);
 
-        // NOTE: sort_edges disabled — was producing wrong tree
-        // sequences. Python bridge does tc.sort() anyway.
-        // tables.sort_edges();
+        // Edge sort is left to the caller: the PyO3 bridge calls
+        // `tables.sort_edges()` before handing columns to tskit so
+        // `tc.sort()` can be skipped. Bench / test paths that just
+        // read `SimResult::tables` skip the sort cost.
         SimResult { tables }
     }
 
@@ -216,6 +231,7 @@ impl HullSimulator {
         rng: &mut Xoshiro256PlusPlus,
         demo: &mut Demography,
         inversions: &mut Vec<InversionSpec>,
+        rate_cache: &mut RateCache,
     ) {
         let mut t: f64 = 0.0;
 
@@ -239,19 +255,27 @@ impl HullSimulator {
 
         // Phase D: incremental pair rate cache. Pre-size generously:
         // `pair_idx` is capacity-dependent, so every `ensure_capacity`
-        // growth must reindex (O(n²)) to preserve correctness of
-        // class_totals. Oversizing up front avoids most mid-run grows
+        // growth must reindex (O(n²)) to preserve correctness of the
+        // pair buckets. Oversizing up front avoids most mid-run grows
         // for rho ≤ 8000 without wasting meaningful memory (triangular
         // array stays sparse).
         let max_lins = (active.len() * 40).max(2048);
-        let mut rate_cache = RateCache::new(max_lins, self.sequence_length);
+        rate_cache.reset(max_lins, self.sequence_length);
         rate_cache.rebuild(&active, arena);
 
         // Persistent event list + Fenwick tree. Rebuilt on structural
         // changes; reused when only recombination happens.
         let mut all_events: Vec<(f64, Event)> = Vec::with_capacity(1024);
         let mut rate_buf: Vec<f64> = Vec::with_capacity(1024);
-        let mut pool_buf: Vec<usize> = Vec::with_capacity(64);
+        // Per-pop lineage index buckets — refreshed inside the
+        // `engine_dirty` rebuild block. Gives O(1) pair picks in the
+        // multi-pop CoalPanmicticPop handler and feeds aggregate
+        // migration. Buckets stay valid between rebuilds because
+        // events mutating `active` set engine_dirty=true, forcing a
+        // rebuild on the next iteration before the next aggregate
+        // fire.
+        let mut pop_buckets: Vec<Vec<u32>> =
+            (0..demo.n_pops).map(|_| Vec::new()).collect();
         let mut event_tree = crate::fenwick::Fenwick::new(0);
         // Fenwick over lineage cached_lens. Enables O(log n) proportional
         // selection for recombination, replacing the O(n) linear scan
@@ -265,16 +289,12 @@ impl HullSimulator {
         let mut flux_per_lin: Vec<FluxPerLin> = Vec::new();
         let mut flux_total: Vec<f64> = vec![0.0; inversions.len()];
         let mut flux_dirty = true;
-        // Reusable scratch for CoalAggregate dispatch — filled per fire
-        // with (i, j) pairs that have overlap in the bucket's class, so
-        // sampling doesn't have to walk iter_pairs twice.
-        let mut coal_candidates: Vec<(usize, usize)> = Vec::with_capacity(256);
         let mut engine_dirty = true;  // force full rebuild of event list
         let mut cache_dirty = true;   // force full rebuild of rate_cache
         // Counter throttling gc_sole_lineages — run every GC_STRIDE
         // recombs. Sole-carrier lineages contribute no coalescence rate
         // so a few rounds of delay has no correctness impact.
-        const GC_STRIDE: u32 = 64;
+        const GC_STRIDE: u32 = 160;
         let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {
@@ -307,6 +327,7 @@ impl HullSimulator {
                 }
                 flux_rebuild_full(
                     &mut flux_per_lin, &mut flux_total,
+                    rate_cache,
                     active, inversions, arena, &barrier_active);
                 flux_dirty = false;
             }
@@ -328,6 +349,20 @@ impl HullSimulator {
             if engine_dirty {
                 all_events.clear();
 
+                // Rebuild per-pop index buckets so coal and migration
+                // emission can consume them. Only built when n_pops
+                // >= 2. Pre-reserve capacities to avoid Vec::push
+                // capacity-growth branches in the hot fill loop.
+                if demo.n_pops >= 2 {
+                    while pop_buckets.len() < demo.n_pops as usize {
+                        pop_buckets.push(Vec::new());
+                    }
+                    for b in pop_buckets.iter_mut() { b.clear(); }
+                    for (i, l) in active.iter().enumerate() {
+                        pop_buckets[l.population as usize].push(i as u32);
+                    }
+                }
+
                 // Coalescence.
                 if any_barrier {
                     if cache_dirty {
@@ -341,7 +376,8 @@ impl HullSimulator {
                 } else {
                     compute_coal_events(
                         active, arena, demo, t, inversions,
-                        &barrier_active, &mut all_events);
+                        &barrier_active, &pop_buckets,
+                        &mut all_events);
                 }
 
                 // Recombination.
@@ -361,11 +397,27 @@ impl HullSimulator {
                         }
                     }
                 }
-                // Migration.
-                for (rate, lin_idx, dst) in demo.migration_rates(active) {
-                    all_events.push((rate, Event::Migration {
-                        lineage_idx: lin_idx, dst_pop: dst,
-                    }));
+
+                // Migration — aggregate one event per (src, dst) pair.
+                // rate = |pop_buckets[src]| * m[dst][src]. Firing picks
+                // a lineage uniformly from pop_buckets[src]. Replaces
+                // O(n · n_pops) per-lineage entries with O(n_pops²).
+                if demo.n_pops >= 2 {
+                    for src in 0..demo.n_pops as usize {
+                        let count = pop_buckets[src].len() as f64;
+                        if count == 0.0 { continue; }
+                        for dst in 0..demo.n_pops as usize {
+                            if dst == src { continue; }
+                            let m = demo.migration_matrix[dst][src];
+                            if m > 0.0 {
+                                all_events.push((count * m,
+                                    Event::MigrationAggregate {
+                                        src_pop: src as u32,
+                                        dst_pop: dst as u32,
+                                    }));
+                            }
+                        }
+                    }
                 }
 
                 // Rebuild Fenwick tree. O(n) batch build via build_from.
@@ -439,24 +491,16 @@ impl HullSimulator {
                 Event::CoalAggregate { pop, class } => {
                     let pop = *pop;
                     let cls = *class;
-                    // Single-pass collect of matching (i, j) candidates
-                    // so we only walk iter_pairs once per coal dispatch.
-                    // The earlier two-pass (count then sample) version
-                    // dominated the rho=2000 flamegraph via SmallVec
-                    // deref overhead.
-                    coal_candidates.clear();
-                    for (ii, jj, overlaps) in rate_cache.iter_pairs() {
-                        if active[ii].population != pop { continue; }
-                        for (c, _) in overlaps {
-                            if *c == cls {
-                                coal_candidates.push((ii, jj));
-                                break;
-                            }
-                        }
-                    }
-                    if coal_candidates.is_empty() { continue; }
-                    let pick = rng.random_range(0..coal_candidates.len());
-                    let (i, j) = coal_candidates[pick];
+                    // Direct O(1) pick from the (pop, cls) pair bucket:
+                    // maintained by every overlap mutation, indexed by
+                    // packed (i, j). Replaces the iter_pairs walk that
+                    // was ~15% of wall at rho=2000 (bitmap advance +
+                    // class scan per match). Bucket length doubles as
+                    // the (pop, cls) pair count feeding CoalAggregate.
+                    let bucket = rate_cache.pair_bucket_for(pop, cls);
+                    if bucket.is_empty() { continue; }
+                    let target = rng.random_range(0..bucket.len());
+                    let (i, j) = crate::rate_index::unpack_ij(bucket[target]);
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
@@ -497,9 +541,14 @@ impl HullSimulator {
                         flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                         flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                         for new_idx in (pre_len - 2)..post_len {
-                            flux_push(new_idx, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            if cache_dirty {
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                            }
+                            let pop = active[new_idx].population;
+                            let segs = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs, pop,
+                                      inversions, &barrier_active);
                         }
                     }
                 }
@@ -540,27 +589,46 @@ impl HullSimulator {
                         flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                         flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                         for new_idx in (pre_len - 2)..post_len {
-                            flux_push(new_idx, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            if cache_dirty {
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                            }
+                            let pop = active[new_idx].population;
+                            let segs = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs, pop,
+                                      inversions, &barrier_active);
                         }
                     }
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
-                    pool_buf.clear();
-                    for (i, l) in active.iter().enumerate() {
-                        if l.population == pop {
-                            pool_buf.push(i);
-                        }
-                    }
-                    if pool_buf.len() >= 2 {
-                        let ii = rng.random_range(0..pool_buf.len());
-                        let mut jj = rng.random_range(0..pool_buf.len() - 1);
+                    // Single-pop fast path: every lineage matches, so
+                    // skip the filter walk over active entirely.
+                    // Multi-pop path: read the count from `pop_counts`
+                    // (refreshed during engine rebuild), pre-pick two
+                    // distinct ranks, then walk active once with early
+                    // exit at the higher rank. Avoids the pool_buf
+                    // build (Vec::push per match) — only the filter
+                    // walk remains.
+                    let (a, b) = if demo.n_pops == 1 {
+                        let n_act = active.len();
+                        if n_act < 2 { continue; }
+                        let ii = rng.random_range(0..n_act);
+                        let mut jj = rng.random_range(0..n_act - 1);
                         if jj >= ii { jj += 1; }
+                        (ii, jj)
+                    } else {
+                        let bucket = &pop_buckets[pop as usize];
+                        let count = bucket.len();
+                        if count < 2 { continue; }
+                        let ii = rng.random_range(0..count);
+                        let mut jj = rng.random_range(0..count - 1);
+                        if jj >= ii { jj += 1; }
+                        (bucket[ii] as usize, bucket[jj] as usize)
+                    };
+                    {
                         // Phase F: hull prescreen — skip if lineage
                         // extents don't overlap (cheap rejection).
-                        let (a, b) = (pool_buf[ii], pool_buf[jj]);
                         if !active[a].hulls_overlap(&active[b], arena) {
                             continue; // no-op, draw next event
                         }
@@ -588,9 +656,12 @@ impl HullSimulator {
                             flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
                             flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
                             for new_idx in (pre_len - 2)..post_len {
-                                flux_push(new_idx, &mut flux_per_lin,
-                                          &mut flux_total, active, inversions,
-                                          arena, &barrier_active);
+                                rate_cache.rebuild_segs_for(new_idx, active, arena);
+                                let pop = active[new_idx].population;
+                                let segs = rate_cache.lineage_segs(new_idx);
+                                flux_push(&mut flux_per_lin,
+                                          &mut flux_total, segs, pop,
+                                          inversions, &barrier_active);
                             }
                         }
                         engine_dirty = true;
@@ -643,13 +714,25 @@ impl HullSimulator {
                         }
                     }
                     if any_barrier && !flux_dirty {
+                        if cache_dirty {
+                            rate_cache.rebuild_segs_for(chosen_idx, active, arena);
+                            if len_after_split > len_before_split {
+                                rate_cache.rebuild_segs_for(
+                                    len_after_split - 1, active, arena);
+                            }
+                        }
+                        let pop_c = active[chosen_idx].population;
+                        let segs_c = rate_cache.lineage_segs(chosen_idx);
                         flux_update_for(chosen_idx, &mut flux_per_lin,
-                                         &mut flux_total, active, inversions,
-                                         arena, &barrier_active);
+                                         &mut flux_total, segs_c, pop_c,
+                                         inversions, &barrier_active);
                         if len_after_split > len_before_split {
-                            flux_push(len_after_split - 1, &mut flux_per_lin,
-                                      &mut flux_total, active, inversions,
-                                      arena, &barrier_active);
+                            let new_idx = len_after_split - 1;
+                            let pop_n = active[new_idx].population;
+                            let segs_n = rate_cache.lineage_segs(new_idx);
+                            flux_push(&mut flux_per_lin,
+                                      &mut flux_total, segs_n, pop_n,
+                                      inversions, &barrier_active);
                         }
                     }
                     // GC sole-carrier lineages — only after recomb
@@ -739,36 +822,46 @@ impl HullSimulator {
                             }
                         }
                         if !flux_dirty {
+                            if cache_dirty || !any_barrier {
+                                rate_cache.rebuild_segs_for(li, active, arena);
+                                for new_idx in pre_len_flux..post_len {
+                                    rate_cache.rebuild_segs_for(new_idx, active, arena);
+                                }
+                            }
+                            let pop_li = active[li].population;
+                            let segs_li = rate_cache.lineage_segs(li);
                             flux_update_for(li, &mut flux_per_lin,
-                                             &mut flux_total, active,
-                                             inversions, arena, &barrier_active);
+                                             &mut flux_total, segs_li, pop_li,
+                                             inversions, &barrier_active);
                             for new_idx in pre_len_flux..post_len {
-                                flux_push(new_idx, &mut flux_per_lin,
-                                          &mut flux_total, active,
-                                          inversions, arena, &barrier_active);
+                                let pop_n = active[new_idx].population;
+                                let segs_n = rate_cache.lineage_segs(new_idx);
+                                flux_push(&mut flux_per_lin,
+                                          &mut flux_total, segs_n, pop_n,
+                                          inversions, &barrier_active);
                             }
                         }
                     }
                 }
-                Event::Flux { lineage_idx: _, inv_idx: _ } => {
-                    // Legacy per-lineage flux event — no longer emitted
-                    // on the hot path. Keep the variant reachable as a
-                    // no-op to avoid breaking any external use.
-                    continue;
-                }
-                Event::Migration { lineage_idx, dst_pop } => {
-                    let idx = *lineage_idx;
-                    if idx < active.len() {
-                        active[idx].population = *dst_pop;
-                    }
-                    engine_dirty = true;  // pop assignment changed
+                Event::MigrationAggregate { src_pop, dst_pop } => {
+                    let src = *src_pop;
+                    let dst = *dst_pop;
+                    let bucket = &pop_buckets[src as usize];
+                    if bucket.is_empty() { continue; }
+                    let pick = rng.random_range(0..bucket.len());
+                    let idx = bucket[pick] as usize;
+                    active[idx].population = dst;
+                    engine_dirty = true;
                     if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
+                        if cache_dirty {
+                            rate_cache.rebuild_segs_for(idx, active, arena);
+                        }
+                        let pop = active[idx].population;
+                        let segs = rate_cache.lineage_segs(idx);
                         flux_update_for(idx, &mut flux_per_lin,
-                                         &mut flux_total, active, inversions,
-                                         arena, &barrier_active);
+                                         &mut flux_total, segs, pop,
+                                         inversions, &barrier_active);
                     }
-                    // Pop change affects pair eligibility for this
-                    // lineage; recompute its row.
                     if any_barrier && !cache_dirty {
                         rate_cache.recompute_for(idx, active, arena);
                     }
@@ -811,45 +904,6 @@ impl HullSimulator {
                     let rate = 1.0 / (2.0 * ne_pop * p_class);
                     events.push((rate, Event::CoalPair {
                         i, j, class: *cls,
-                    }));
-                }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------
-    // Gene flux rates
-    // ---------------------------------------------------------------
-    fn compute_flux_rates_static(
-        inversions: &[InversionSpec],
-        active: &[Lineage],
-        arena: &SegmentArena,
-        barrier_active: &[bool],
-        events: &mut Vec<(f64, Event)>,
-    ) {
-        for (inv_idx, inv) in inversions.iter().enumerate() {
-            if !barrier_active[inv_idx] { continue; }
-            if inv.gene_conversion_rate <= 0.0 { continue; }
-            for (lin_idx, lin) in active.iter().enumerate() {
-                // Per-population inversion frequency for this lineage's pop.
-                let pop = lin.population;
-                let p_inv_pop = inv.p_inv_for(pop);
-                let p_std_pop = 1.0 - p_inv_pop;
-                // Determine lineage's class for this inversion.
-                let kary = lineage_class_for_inv(lin, inv, arena);
-                let p_other = match kary {
-                    Some(Karyotype::S) => p_inv_pop,
-                    Some(Karyotype::I) => p_std_pop,
-                    None => continue,
-                };
-                if p_other <= 0.0 { continue; }
-                let weight = flux_lineage_weight(lin, inv, arena);
-                if weight <= 0.0 { continue; }
-                let rate = inv.gene_conversion_rate * p_other * weight;
-                if rate > 0.0 {
-                    events.push((rate, Event::Flux {
-                        lineage_idx: lin_idx,
-                        inv_idx,
                     }));
                 }
             }
@@ -965,75 +1019,93 @@ impl HullSimulator {
 /// for inversions where the lineage contributes non-zero hazard.
 type FluxPerLin = SmallVec<[(usize, f64); 2]>;
 
-/// Compute the flux contribution of a single lineage across all active
-/// inversions — same logic as `compute_flux_rates_static` but scoped to
-/// one lineage so it can be called on-demand from incremental updates.
-fn compute_lin_flux(
-    lin: &Lineage,
+/// Fill `out` (cleared first) with the lineage's flux entries across
+/// all active inversions. In-place to avoid the ~48-byte SmallVec
+/// return+push copy that dominated `flux_rebuild_full` pre-rewrite.
+/// Reads the lineage's segment view as a flat `&[FlatSeg]` slice
+/// (provided by `RateCache::lineage_segs`) so the per-inversion walk
+/// hits sequential memory instead of chasing arena indices.
+fn compute_lin_flux_into(
+    out: &mut FluxPerLin,
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
-) -> FluxPerLin {
-    let mut out = FluxPerLin::new();
+) {
+    out.clear();
     for (ii, inv) in inversions.iter().enumerate() {
         if !barrier_active[ii] { continue; }
         if inv.gene_conversion_rate <= 0.0 { continue; }
-        let pop = lin.population;
         let p_inv_pop = inv.p_inv_for(pop);
         let p_std_pop = 1.0 - p_inv_pop;
-        let kary = lineage_class_for_inv(lin, inv, arena);
+        let kary = lineage_class_for_inv_segs(segs, inv);
         let p_other = match kary {
             Some(Karyotype::S) => p_inv_pop,
             Some(Karyotype::I) => p_std_pop,
             None => continue,
         };
         if p_other <= 0.0 { continue; }
-        let w = flux_lineage_weight(lin, inv, arena);
+        let w = flux_lineage_weight_segs(segs, inv);
         if w <= 0.0 { continue; }
         let rate = inv.gene_conversion_rate * p_other * w;
         if rate > 0.0 {
             out.push((ii, rate));
         }
     }
-    out
 }
 
 /// Rebuild the full flux cache from scratch — call on boundaries,
-/// sweeps, GC, or any event that invalidates many lineages.
+/// sweeps, GC, or any event that invalidates many lineages. Refreshes
+/// `rate_cache.lineage_segs` first so the per-lineage inner loop reads
+/// flat slices.
 fn flux_rebuild_full(
     flux_per_lin: &mut Vec<FluxPerLin>,
     flux_total: &mut [f64],
+    rate_cache: &mut RateCache,
     active: &[Lineage],
     inversions: &[InversionSpec],
     arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    flux_per_lin.clear();
+    flux_per_lin.resize_with(active.len(), FluxPerLin::new);
+    flux_per_lin.truncate(active.len());
     for t in flux_total.iter_mut() { *t = 0.0; }
-    for lin in active {
-        let entries = compute_lin_flux(lin, inversions, arena, barrier_active);
-        for (ii, rate) in entries.iter() {
+    // Pre-barrier epochs have no flux; skip the O(n · segs) refresh and
+    // leave every entry empty. Matches prior behaviour where the inner
+    // `barrier_active` guard short-circuited each lineage's inv loop.
+    let any_barrier_active = barrier_active.iter().any(|&b| b);
+    if !any_barrier_active {
+        for entry in flux_per_lin.iter_mut() { entry.clear(); }
+        return;
+    }
+    rate_cache.refresh_lineage_segs(active, arena);
+    for (i, lin) in active.iter().enumerate() {
+        let segs = rate_cache.lineage_segs(i);
+        compute_lin_flux_into(&mut flux_per_lin[i], segs, lin.population,
+                               inversions, barrier_active);
+        for (ii, rate) in flux_per_lin[i].iter() {
             flux_total[*ii] += *rate;
         }
-        flux_per_lin.push(entries);
     }
 }
 
 /// Recompute flux for one lineage at `li` and update totals by diff.
+/// Caller must have refreshed `rate_cache.lineage_segs(li)` if it
+/// could be stale (see `RateCache::rebuild_segs_for`).
 fn flux_update_for(
     li: usize,
     flux_per_lin: &mut [FluxPerLin],
     flux_total: &mut [f64],
-    active: &[Lineage],
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] -= *rate;
     }
-    flux_per_lin[li] = compute_lin_flux(
-        &active[li], inversions, arena, barrier_active);
+    compute_lin_flux_into(&mut flux_per_lin[li], segs, pop,
+                          inversions, barrier_active);
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] += *rate;
     }
@@ -1053,22 +1125,24 @@ fn flux_swap_remove(
     flux_per_lin.swap_remove(idx);
 }
 
-/// Append a new lineage's flux entries and credit its totals.
+/// Append a new lineage's flux entries and credit its totals. Caller
+/// supplies the fresh `segs` slice (typically `rate_cache.lineage_segs`
+/// after an appropriate rebuild) and the lineage's population.
 fn flux_push(
-    li: usize,
     flux_per_lin: &mut Vec<FluxPerLin>,
     flux_total: &mut [f64],
-    active: &[Lineage],
+    segs: &[FlatSeg],
+    pop: u32,
     inversions: &[InversionSpec],
-    arena: &SegmentArena,
     barrier_active: &[bool],
 ) {
-    let entries = compute_lin_flux(
-        &active[li], inversions, arena, barrier_active);
-    for (ii, rate) in entries.iter() {
+    flux_per_lin.push(FluxPerLin::new());
+    let last = flux_per_lin.len() - 1;
+    compute_lin_flux_into(&mut flux_per_lin[last], segs, pop,
+                          inversions, barrier_active);
+    for (ii, rate) in flux_per_lin[last].iter() {
         flux_total[*ii] += *rate;
     }
-    flux_per_lin.push(entries);
 }
 
 /// Mirror `active.swap_remove(idx)` on a length Fenwick by moving the
@@ -1094,18 +1168,13 @@ fn tree_swap_remove(
 /// cover — these can't produce more edges under SMC'.
 ///
 /// Sweepline implementation: collect all segments tagged with owner,
-/// sort by left, walk left-to-right maintaining an "open" set of
-/// segments whose right > current left. A lineage has external
-/// overlap iff at some point its open segment coexists with an open
-/// segment from a different owner. Lineages never marked are
-/// sole-carriers and get swap_removed.
-fn gc_sole_lineages(active: &mut Vec<Lineage>, arena: &SegmentArena) {
-    let _ = gc_sole_lineages_with_removed(active, arena);
-}
-
-/// Sweepline GC that also returns the list of lineage indices it
-/// removed (in ascending reverse-iteration order — the same order the
-/// caller can replay on auxiliary caches via swap_remove).
+/// Sweepline GC for sole-carrier lineages. Sorts all segments by left,
+/// walks left-to-right maintaining an "open" set of segments whose
+/// right > current left. A lineage has external overlap iff at some
+/// point its open segment coexists with an open segment from a
+/// different owner. Lineages never marked are sole-carriers and get
+/// swap_removed. Returns the removed indices in descending order so
+/// the caller can replay swap_removes on auxiliary caches.
 fn gc_sole_lineages_with_removed(
     active: &mut Vec<Lineage>,
     arena: &SegmentArena,
@@ -1163,8 +1232,8 @@ fn emit_coal_events_from_cache(
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
 ) {
-    // Read counts from the incrementally-maintained class_totals table.
-    // O(pops × classes) per emit — the main scaling win at rho ≥ 500.
+    // Read pair counts directly from the pair_buckets — each bucket's
+    // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {
         if count <= 0.0 { continue; }
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
@@ -1184,27 +1253,35 @@ fn compute_coal_events(
     t: f64,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    pop_buckets: &[Vec<u32>],
     events: &mut Vec<(f64, Event)>,
 ) {
     let any_inv_active = barrier_active.iter().any(|&b| b);
 
     if !any_inv_active {
-        // Hudson per-pop buckets.
-        let mut buckets: Vec<(u32, Vec<usize>)> = Vec::new();
-        for (i, lin) in active.iter().enumerate() {
-            if let Some(e) = buckets.iter_mut().find(|(p, _)| *p == lin.population) {
-                e.1.push(i);
-            } else {
-                buckets.push((lin.population, vec![i]));
+        // Hudson per-pop coalescence rate — read counts directly from
+        // the precomputed `pop_buckets` instead of rebuilding a local
+        // association list with linear-scan finds (~6% of multi-pop
+        // run_loop self-time).
+        if demo.n_pops >= 2 {
+            for (pop, bucket) in pop_buckets.iter().enumerate() {
+                let k = bucket.len();
+                if k < 2 { continue; }
+                let ne = demo.size_at(pop as u32, t).max(1e-9);
+                let kf = k as f64;
+                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+                events.push((rate,
+                    Event::CoalPanmicticPop { pop: pop as u32 }));
             }
-        }
-        for (pop, indices) in &buckets {
-            let k = indices.len();
-            if k < 2 { continue; }
-            let ne = demo.size_at(*pop, t).max(1e-9);
-            let kf = k as f64;
-            let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-            events.push((rate, Event::CoalPanmicticPop { pop: *pop }));
+        } else {
+            // Single-pop: no buckets built — use active.len() directly.
+            let k = active.len();
+            if k >= 2 {
+                let ne = demo.size_at(0, t).max(1e-9);
+                let kf = k as f64;
+                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
+                events.push((rate, Event::CoalPanmicticPop { pop: 0 }));
+            }
         }
         return;
     }
@@ -1338,50 +1415,45 @@ fn overlap_by_class(
     result
 }
 
-/// Determine a lineage's karyotype for one inversion.
-fn lineage_class_for_inv(
-    lin: &Lineage, inv: &InversionSpec, arena: &SegmentArena,
+/// Determine a lineage's karyotype for one inversion, reading flat segs.
+fn lineage_class_for_inv_segs(
+    segs: &[FlatSeg], inv: &InversionSpec,
 ) -> Option<Karyotype> {
     let mut seen_s = false;
     let mut seen_i = false;
-    let mut cur = lin.head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
+    for &(sl, sr, cls) in segs {
+        let l = sl.max(inv.bp_left);
+        let r = sr.min(inv.bp_right);
         if r > l {
-            match seg.branch_class.get_inv(inv.inv_id) {
+            match cls.get_inv(inv.inv_id) {
                 Some(Karyotype::S) => seen_s = true,
                 Some(Karyotype::I) => seen_i = true,
                 None => {}
             }
         }
-        cur = seg.next;
     }
     if seen_s && !seen_i { Some(Karyotype::S) }
     else if seen_i && !seen_s { Some(Karyotype::I) }
     else { None }
 }
 
-/// Per-lineage flux weight: integral of phi(x) over in-inv material.
-fn flux_lineage_weight(
-    lin: &Lineage, inv: &InversionSpec, arena: &SegmentArena,
+/// Per-lineage flux weight reading flat segs: integral of phi(x) over
+/// in-inv material.
+fn flux_lineage_weight_segs(
+    segs: &[FlatSeg], inv: &InversionSpec,
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
     let w = inv.flux_window;
     let mut weight = 0.0;
-    let mut cur = lin.head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
+    for &(sl, sr, _) in segs {
+        let l = sl.max(inv.bp_left);
+        let r = sr.min(inv.bp_right);
         if r > l {
             let a = (l - inv.bp_left) / inv_len;
             let b = (r - inv.bp_left) / inv_len;
             weight += phi_integral(a, b, w) * inv_len;
         }
-        cur = seg.next;
     }
     weight
 }

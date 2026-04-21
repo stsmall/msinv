@@ -26,12 +26,12 @@ jobs:
     - name: Build wheel
       uses: PyO3/maturin-action@v1
       with:
-        args: --release --out dist --find-interpreter
+        args: --release --out dist
         manylinux: auto
 
     - name: Install dependencies
       run: |
-        pip install dist/msinv-*.whl
+        pip install --find-links dist --no-index msinv || pip install dist/msinv-*.whl
         pip install sphinx furo myst-parser
 
     - name: Build documentation

@@ -655,13 +655,44 @@ impl RateCache {
     /// Remove all pairs involving lineage `idx`. Call before removing
     /// the lineage from active.
     pub fn remove_lineage(&mut self, idx: usize) {
-        for other in 0..self.n {
-            if other == idx { continue; }
-            let i = other.min(idx);
-            let j = other.max(idx);
-            let pidx = pair_idx(i, j, self.capacity);
-            if !bit_get(&self.nonempty_bits, pidx) { continue; }
-            self.clear_pair(i, j);
+        let cap = self.capacity;
+        let n = self.n;
+        // Row walk (j > idx): pidxs are contiguous from base_row to
+        // base_row + (n - idx - 1); walk the bitmap word-wise so empty
+        // 64-entry stretches cost one load + compare. trailing_zeros
+        // jumps directly to each set bit.
+        if idx + 1 < n {
+            let base_row = pair_idx(idx, idx + 1, cap);
+            let row_end = base_row + (n - idx - 1);
+            let mut w = base_row >> 6;
+            let words_end = (row_end + 63) >> 6;
+            while w < words_end {
+                let word_start = w << 6;
+                let raw = self.nonempty_bits[w];
+                let lo = if base_row > word_start {
+                    !((1u64 << (base_row - word_start)) - 1)
+                } else { !0u64 };
+                let end_off = row_end - word_start;
+                let hi = if end_off >= 64 { !0u64 }
+                    else { (1u64 << end_off) - 1 };
+                let mut bits = raw & lo & hi;
+                while bits != 0 {
+                    let b = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let pidx = word_start + b;
+                    let j = idx + 1 + (pidx - base_row);
+                    self.clear_pair(idx, j);
+                }
+                w += 1;
+            }
+        }
+        // Column walk (i < idx): pidx(i, idx, cap) is scattered — one
+        // per row. Linear scan checks bit per i; most empty so fast.
+        for i in 0..idx {
+            let pidx = pair_idx(i, idx, cap);
+            if bit_get(&self.nonempty_bits, pidx) {
+                self.clear_pair(i, idx);
+            }
         }
     }
 
@@ -687,15 +718,19 @@ impl RateCache {
         // Iterate the last row's bitmap at word granularity so we only
         // pay for nonempty pairs. Empty pairs need no slot move and no
         // bit maintenance, which is the common case at high rho.
+        // other < old_last always, so (min, max) = (other, old_last).
+        // Only removed_idx's position relative to other needs ordering.
+        let cap = self.capacity;
         for other in 0..old_last {
             if other == removed_idx { continue; }
-            let old_pidx = pair_idx(
-                other.min(old_last), other.max(old_last), self.capacity);
+            let old_pidx = pair_idx(other, old_last, cap);
             if !bit_get(&self.nonempty_bits, old_pidx) { continue; }
-            self.move_pair(
-                other.min(old_last), other.max(old_last),
-                other.min(removed_idx), other.max(removed_idx),
-            );
+            let (ni, nj) = if other < removed_idx {
+                (other, removed_idx)
+            } else {
+                (removed_idx, other)
+            };
+            self.move_pair(other, old_last, ni, nj);
         }
         // Mirror the active-side swap_remove on lineage_pop so later
         // totals diffs see the right pop at `removed_idx`.

@@ -121,19 +121,58 @@ fn bit_get(bits: &[u64], i: usize) -> bool {
 #[inline(always)]
 fn nbits_words(n_bits: usize) -> usize { (n_bits + 63) / 64 }
 
+/// Allocate `Vec<SmallVec<[T; N]>>` of length `n` using calloc-backed
+/// zero-init instead of `vec![SmallVec::new(); n]`'s per-element clone
+/// loop. For SmallVec 1.13 the struct layout is `{ capacity: usize,
+/// data: union { inline: MaybeUninit<[T; N]>, heap: (ptr, cap) } }`.
+/// `capacity == 0` selects the inline variant with length 0, and the
+/// inline payload is `MaybeUninit::uninit()` (all bit patterns valid),
+/// so all-zero bytes represent a valid empty inline SmallVec.
+///
+/// Cuts the ~500ms first-rep ensure_capacity cost observed on the
+/// 4096-cap (~8.4M-slot) triangular arrays — the `extend_with` /
+/// `SmallVec::clone` chain that appeared twice in the post-compact
+/// flame (combined ~5% of wall at rho=2000).
+fn zeroed_smallvec_vec<T, const N: usize>(n: usize) -> Vec<SmallVec<[T; N]>>
+where
+    [T; N]: smallvec::Array<Item = T>,
+{
+    use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
+    if n == 0 {
+        return Vec::new();
+    }
+    let layout = Layout::array::<SmallVec<[T; N]>>(n)
+        .expect("SmallVec Vec allocation size overflow");
+    // SAFETY: SmallVec<[T; N]> with all-zero bytes is
+    // `SmallVec { capacity: 0, data: union-inline-uninit }`, which is
+    // a valid empty inline SmallVec. capacity == 0 flags inline
+    // storage; the inline payload is MaybeUninit so any bytes (zeroes
+    // included) are a valid representation. Length is stored in
+    // `capacity` and is 0, so no uninitialised elements will ever be
+    // read. Safe only for SmallVec 1.13 — if smallvec is upgraded,
+    // re-audit this path.
+    unsafe {
+        let ptr = alloc_zeroed(layout) as *mut SmallVec<[T; N]>;
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, n, n)
+    }
+}
+
 impl RateCache {
     pub fn new(max_lineages: usize, seq_len: f64) -> Self {
         let cap = max_lineages;
         let n_pairs = tri_size(cap);
         Self {
-            overlaps: vec![SmallVec::new(); n_pairs],
+            overlaps: zeroed_smallvec_vec(n_pairs),
             nonempty_bits: vec![0u64; nbits_words(n_pairs)],
             lineage_pop: Vec::with_capacity(cap),
             lineage_segs: Vec::with_capacity(cap),
             lineage_pos_bits: Vec::with_capacity(cap),
             seq_len,
             pair_buckets: SmallVec::new(),
-            pair_bucket_refs: vec![SmallVec::new(); n_pairs],
+            pair_bucket_refs: zeroed_smallvec_vec(n_pairs),
             n: 0,
             capacity: cap,
         }
@@ -211,10 +250,10 @@ impl RateCache {
             let new_cap = need * 2;
             let new_n_pairs = tri_size(new_cap);
             let mut new_overlaps: Vec<PairOverlap> =
-                vec![SmallVec::new(); new_n_pairs];
+                zeroed_smallvec_vec(new_n_pairs);
             let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
             let mut new_refs: Vec<PairBucketRefs> =
-                vec![SmallVec::new(); new_n_pairs];
+                zeroed_smallvec_vec(new_n_pairs);
             let walk_n = self.n.min(old_cap);
             for i in 0..walk_n {
                 for j in (i + 1)..walk_n {

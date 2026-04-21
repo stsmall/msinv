@@ -2,6 +2,17 @@
 
 All notable changes to msinv are documented here.
 
+## [0.3.2] - 2026-04-21
+
+### Fixed
+
+- Release workflow aarch64-linux wheel: pin interpreters to CPython
+  3.9–3.13 instead of `--find-interpreter`. Manylinux aarch64 docker
+  images pull CPython 3.14 free-threaded, which cannot use PyO3's
+  limited API (abi3) and therefore can't be rescued by
+  `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1`. Bumping PyO3 to ≥ 0.25 is
+  the long-term fix; interpreter pinning ships now.
+
 ## [0.3.1] - 2026-04-21
 
 ### Added

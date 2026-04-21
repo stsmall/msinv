@@ -26,12 +26,13 @@ jobs:
 
     - name: Build wheel
       uses: PyO3/maturin-action@v1
-      env:
-        # PyO3 0.24.x maxes at Python 3.13; manylinux containers ship
-        # 3.14 now. Build the 3.14 wheel against the stable ABI.
-        PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
       with:
-        args: --release --out dist --find-interpreter
+        # Restrict to CPython 3.9–3.13 (PyO3 0.24.x's supported range).
+        # Manylinux aarch64 also drops 3.14t free-threaded, which can't
+        # use the limited API; bumping PyO3 is the long-term fix.
+        args: >-
+          --release --out dist
+          --interpreter python${{ matrix.python-version }}
         manylinux: auto
 
     - name: Install package and test deps

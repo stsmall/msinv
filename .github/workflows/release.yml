@@ -44,15 +44,17 @@ jobs:
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
-        env:
-          # PyO3 0.24.x maxes at Python 3.13. Recent docker manylinux
-          # images and Windows runners now ship 3.14, which trips
-          # `--find-interpreter`. Forward-compat builds the 3.14 wheel
-          # against the stable ABI instead of erroring out.
-          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          # PyO3 0.24.x supports CPython 3.9 through 3.13. Pinning the
+          # interpreter list here is better than `--find-interpreter`
+          # because manylinux aarch64 containers pull in 3.14t
+          # (free-threaded), which cannot use the limited API —
+          # `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1` can't rescue it.
+          # Bump this list when PyO3 ≥ 0.25 is adopted.
+          args: >-
+            --release --out dist
+            --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: auto
 
       - uses: actions/upload-artifact@v4

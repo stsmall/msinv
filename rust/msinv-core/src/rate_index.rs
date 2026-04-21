@@ -584,70 +584,107 @@ impl RateCache {
         let (right_hull_l, right_hull_r) =
             Self::hull_from_segs(&self.lineage_segs[new_idx]);
 
-        for other in 0..self.n {
-            if other == idx || other == new_idx { continue; }
-            // Old pair (idx, other) nonempty iff bit is set. Split can
-            // only shrink idx's hull — left-half ⊆ old_hull, right-half
-            // ⊆ old_hull. If old had no overlap, neither half does. So
-            // for empty old pairs there is no work to do, and the pop /
-            // hull / pos-bits prescreens become redundant (they were the
-            // reason the pair is empty in the first place). new_pidx is
-            // always empty at push time (swap_update invariant), so no
-            // defensive scrub is needed.
-            let oi = other.min(idx);
-            let oj = other.max(idx);
-            let old_pidx = pair_idx(oi, oj, self.capacity);
-            if !bit_get(&self.nonempty_bits, old_pidx) {
-                continue;
-            }
-            let other_segs: &[FlatSeg] = self.lineage_segs
-                .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
-            let (other_l, other_r) = Self::hull_from_segs(other_segs);
-            let ni = other.min(new_idx);
-            let nj = other.max(new_idx);
-            let new_pidx = pair_idx(ni, nj, self.capacity);
-            debug_assert!(!bit_get(&self.nonempty_bits, new_pidx));
-            let _ = changed_pop; // old bit-set implies pops matched at store
-            let _ = new_pidx;
-
-            // Case A: other entirely left of split_pos — old pair with
-            // the left-half is unchanged; nothing to do.
-            if other_r <= split_pos {
-                continue;
-            }
-
-            // Case B: other entirely right of split_pos — old overlap
-            // used right-half only; move slot to (new_idx, other).
-            // Totals unchanged (same classes).
-            if other_l >= split_pos {
-                self.move_pair(oi, oj, ni, nj);
-                continue;
-            }
-
-            // Case C: other spans split_pos. Clear old; recompute each
-            // half's overlap with other and store if nonempty.
-            self.clear_pair(oi, oj);
-            let left_bits = self.lineage_pos_bits
-                .get(idx).copied().unwrap_or(0);
-            let other_bits = self.lineage_pos_bits
-                .get(other).copied().unwrap_or(0);
-            if other_r > left_hull_l && left_hull_r > other_l
-                && left_bits & other_bits != 0 {
-                let ovl = compute_overlap(
-                    &self.lineage_segs[oi], &self.lineage_segs[oj]);
-                if !ovl.is_empty() {
-                    self.store_pair(oi, oj, ovl);
+        // Split can only shrink idx's hull (left/right halves are
+        // subsets); empty old pairs stay empty. Iterate only nonempty
+        // pairs (idx, other) via the bitmap: row walk for j > idx and
+        // column walk for i < idx. new_pidx slot is empty by invariant
+        // (new_idx was just pushed), so no defensive scrub needed.
+        let cap = self.capacity;
+        let n = self.n;
+        let _ = changed_pop;
+        if idx + 1 < n {
+            let base_row = pair_idx(idx, idx + 1, cap);
+            let row_end = base_row + (n - idx - 1);
+            let mut w = base_row >> 6;
+            let words_end = (row_end + 63) >> 6;
+            while w < words_end {
+                let word_start = w << 6;
+                let raw = self.nonempty_bits[w];
+                let lo = if base_row > word_start {
+                    !((1u64 << (base_row - word_start)) - 1)
+                } else { !0u64 };
+                let end_off = row_end - word_start;
+                let hi = if end_off >= 64 { !0u64 }
+                    else { (1u64 << end_off) - 1 };
+                let mut bits = raw & lo & hi;
+                while bits != 0 {
+                    let b = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let pidx = word_start + b;
+                    let other = idx + 1 + (pidx - base_row);
+                    if other == new_idx { continue; }
+                    self.apply_recomb_split_body(
+                        idx, other, new_idx, split_pos,
+                        left_hull_l, left_hull_r,
+                        right_hull_l, right_hull_r);
                 }
+                w += 1;
             }
-            let right_bits = self.lineage_pos_bits
-                .get(new_idx).copied().unwrap_or(0);
-            if other_r > right_hull_l && right_hull_r > other_l
-                && right_bits & other_bits != 0 {
-                let ovl = compute_overlap(
-                    &self.lineage_segs[ni], &self.lineage_segs[nj]);
-                if !ovl.is_empty() {
-                    self.store_pair(ni, nj, ovl);
-                }
+        }
+        for i in 0..idx {
+            let pidx = pair_idx(i, idx, cap);
+            if !bit_get(&self.nonempty_bits, pidx) { continue; }
+            // i < idx < new_idx (new_idx was just pushed), so never hits new_idx.
+            self.apply_recomb_split_body(
+                idx, i, new_idx, split_pos,
+                left_hull_l, left_hull_r,
+                right_hull_l, right_hull_r);
+        }
+    }
+
+    /// Per-pair handler for apply_recomb_split: called only for
+    /// nonempty old pairs (idx, other). Dispatches Case A/B/C based on
+    /// other's hull vs split_pos.
+    #[inline]
+    fn apply_recomb_split_body(
+        &mut self,
+        idx: usize, other: usize, new_idx: usize, split_pos: f64,
+        left_hull_l: f64, left_hull_r: f64,
+        right_hull_l: f64, right_hull_r: f64,
+    ) {
+        let cap = self.capacity;
+        let oi = other.min(idx);
+        let oj = other.max(idx);
+        let other_segs: &[FlatSeg] = self.lineage_segs
+            .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
+        let (other_l, other_r) = Self::hull_from_segs(other_segs);
+        let ni = other.min(new_idx);
+        let nj = other.max(new_idx);
+        debug_assert!(!bit_get(&self.nonempty_bits, pair_idx(ni, nj, cap)));
+
+        // Case A: other entirely left of split_pos — old pair with the
+        // left-half is unchanged; nothing to do.
+        if other_r <= split_pos {
+            return;
+        }
+        // Case B: other entirely right of split_pos — old overlap used
+        // right-half only; move slot to (new_idx, other).
+        if other_l >= split_pos {
+            self.move_pair(oi, oj, ni, nj);
+            return;
+        }
+        // Case C: other spans split_pos. Clear old; recompute each half.
+        self.clear_pair(oi, oj);
+        let left_bits = self.lineage_pos_bits
+            .get(idx).copied().unwrap_or(0);
+        let other_bits = self.lineage_pos_bits
+            .get(other).copied().unwrap_or(0);
+        if other_r > left_hull_l && left_hull_r > other_l
+            && left_bits & other_bits != 0 {
+            let ovl = compute_overlap(
+                &self.lineage_segs[oi], &self.lineage_segs[oj]);
+            if !ovl.is_empty() {
+                self.store_pair(oi, oj, ovl);
+            }
+        }
+        let right_bits = self.lineage_pos_bits
+            .get(new_idx).copied().unwrap_or(0);
+        if other_r > right_hull_l && right_hull_r > other_l
+            && right_bits & other_bits != 0 {
+            let ovl = compute_overlap(
+                &self.lineage_segs[ni], &self.lineage_segs[nj]);
+            if !ovl.is_empty() {
+                self.store_pair(ni, nj, ovl);
             }
         }
     }

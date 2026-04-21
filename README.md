@@ -174,7 +174,6 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 
 ## Documentation
 
-- [Hull algorithm design](docs/hull_algorithm_design.md) — implementation notes
 - [Known issues](docs/known_issues.md) — current limitations
 - [Installation guide](docs/installation.md)
 - [Quick start tutorial](docs/quickstart.md)

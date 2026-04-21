@@ -486,6 +486,12 @@ impl RateCache {
         if self.lineage_pop.len() < self.n {
             self.lineage_pop.resize(self.n, 0);
         }
+        if self.lineage_segs.len() < self.n {
+            self.lineage_segs.resize_with(self.n, SmallVec::new);
+        }
+        if self.lineage_pos_bits.len() < self.n {
+            self.lineage_pos_bits.resize(self.n, 0u64);
+        }
         self.lineage_pop[idx] = active[idx].population;
         // Refresh the flat segment view for `idx`. Callers invoke
         // recompute_for after any mutation to `idx`'s chain.
@@ -494,47 +500,60 @@ impl RateCache {
             Self::hull_from_segs(&self.lineage_segs[idx]);
 
         let changed_pop = active[idx].population;
-        for other in 0..self.n {
-            if other == idx { continue; }
-            let i = other.min(idx);
-            let j = other.max(idx);
-            let pidx = pair_idx(i, j, self.capacity);
-            let was_nonempty = bit_get(&self.nonempty_bits, pidx);
-            let other_pop = self.lineage_pop.get(other).copied()
-                .unwrap_or(active[other].population);
-            let pops_match = changed_pop == other_pop;
-            // Hull + positional-bit prescreen from the cached flat segs —
-            // no arena reads. Bit prescreen catches the common rho ≥ 16000
-            // pattern where both hulls span the full sequence via a few
-            // scattered fragments that never actually intersect.
-            let changed_bits = self.lineage_pos_bits
-                .get(idx).copied().unwrap_or(0);
-            let (hulls_overlap, other_head_is_nil) = if !pops_match {
-                (false, false)
-            } else {
-                let other_segs: &[FlatSeg] = self.lineage_segs
-                    .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
-                if other_segs.is_empty() {
-                    (false, true)
-                } else {
-                    let (other_l, other_r) = Self::hull_from_segs(other_segs);
-                    let hulls_ok = other_r > changed_hull_l && changed_hull_r > other_l;
-                    if hulls_ok {
-                        let other_bits = self.lineage_pos_bits
-                            .get(other).copied().unwrap_or(0);
-                        (changed_bits & other_bits != 0, false)
-                    } else {
-                        (false, false)
-                    }
+        let changed_bits = self.lineage_pos_bits[idx];
+        let cap = self.capacity;
+        let n = self.n;
+        // Step 1: clear every currently-nonempty (idx, *) pair via bitmap
+        // row + column walk. Old classes get decremented from class_totals
+        // and removed from buckets; overlaps[pidx] emptied.
+        if idx + 1 < n {
+            let base_row = pair_idx(idx, idx + 1, cap);
+            let row_end = base_row + (n - idx - 1);
+            let mut w = base_row >> 6;
+            let words_end = (row_end + 63) >> 6;
+            while w < words_end {
+                let word_start = w << 6;
+                let raw = self.nonempty_bits[w];
+                let lo = if base_row > word_start {
+                    !((1u64 << (base_row - word_start)) - 1)
+                } else { !0u64 };
+                let end_off = row_end - word_start;
+                let hi = if end_off >= 64 { !0u64 }
+                    else { (1u64 << end_off) - 1 };
+                let mut bits = raw & lo & hi;
+                while bits != 0 {
+                    let b = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let pidx = word_start + b;
+                    let j = idx + 1 + (pidx - base_row);
+                    self.clear_pair(idx, j);
                 }
-            };
-            // Fast path: pair was empty and will stay empty — skip
-            // the totals/overlap/bit dance entirely.
-            if !was_nonempty && (!pops_match || !hulls_overlap || other_head_is_nil) {
+                w += 1;
+            }
+        }
+        for i in 0..idx {
+            let pidx = pair_idx(i, idx, cap);
+            if bit_get(&self.nonempty_bits, pidx) {
+                self.clear_pair(i, idx);
+            }
+        }
+        // Step 2: compute new (idx, other) pairs. Skip same-pop / hull /
+        // pos-bits prescreens like before but without the bit_get + pair_idx
+        // + max/min overhead of the old interleaved path.
+        for other in 0..n {
+            if other == idx { continue; }
+            let other_pop = self.lineage_pop[other];
+            if other_pop != changed_pop { continue; }
+            let other_segs: &[FlatSeg] = self.lineage_segs[other].as_slice();
+            if other_segs.is_empty() { continue; }
+            let (other_l, other_r) = Self::hull_from_segs(other_segs);
+            if !(other_r > changed_hull_l && changed_hull_r > other_l) {
                 continue;
             }
-            self.clear_pair(i, j);
-            if !pops_match || !hulls_overlap { continue; }
+            let other_bits = self.lineage_pos_bits[other];
+            if changed_bits & other_bits == 0 { continue; }
+            let i = other.min(idx);
+            let j = other.max(idx);
             let ovl = compute_overlap(
                 &self.lineage_segs[i], &self.lineage_segs[j]);
             if !ovl.is_empty() {

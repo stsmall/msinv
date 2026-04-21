@@ -417,18 +417,28 @@ impl RateCache {
     ) {
         self.n = active.len();
         self.ensure_capacity(self.n);
-        for entry in &mut self.overlaps {
-            entry.clear();
-        }
-        for w in &mut self.nonempty_bits {
+        // Clear only populated slots via the bitmap — the full triangular
+        // sweep was ~17% self-time at rho=2000 because max_lins is pre-
+        // sized to 2048 (→ 2M pair slots) and rebuild fires on every
+        // cache_dirty transition.
+        for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
+            let mut word = *w;
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let pidx = widx * 64 + bit;
+                if pidx < self.overlaps.len() {
+                    self.overlaps[pidx].clear();
+                    if pidx < self.pair_bucket_refs.len() {
+                        self.pair_bucket_refs[pidx].clear();
+                    }
+                }
+                word &= word - 1;
+            }
             *w = 0;
         }
         self.class_totals.clear();
         for entry in self.pair_buckets.iter_mut() {
             entry.2.clear();
-        }
-        for refs in self.pair_bucket_refs.iter_mut() {
-            refs.clear();
         }
         self.lineage_pop.clear();
         self.lineage_pop.extend(active.iter().map(|l| l.population));

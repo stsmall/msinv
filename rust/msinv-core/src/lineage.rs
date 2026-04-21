@@ -21,6 +21,14 @@ pub struct Lineage {
     /// Cached total ancestral material length. Kept in sync by
     /// `new_with_len`, `split_at`, and the event handlers.
     pub cached_len: f64,
+    /// Cached hull bounds — [cached_hull_l, cached_hull_r) covers the
+    /// leftmost-segment.left to rightmost-segment.right span. Avoids the
+    /// per-call `arena.get(head).left` + `arena.get(tail).right` bounds-
+    /// checked deref on every CoalPanmicticPop prescreen (~2.8% of run_loop
+    /// wall at rho=2000). Kept in sync by `new` / `new_with_len` (arena
+    /// lookup) and `split_at` (lookup after arena mutation).
+    pub cached_hull_l: f64,
+    pub cached_hull_r: f64,
 }
 
 impl Lineage {
@@ -28,37 +36,51 @@ impl Lineage {
     pub fn new(head: SegIdx, tail: SegIdx, population: u32, uid: LinUid,
                arena: &SegmentArena) -> Self {
         let cached_len = arena.total_length(head);
-        Self { head, tail, population, uid, cached_len }
+        let (cached_hull_l, cached_hull_r) = Self::hull_from_arena(head, tail, arena);
+        Self { head, tail, population, uid, cached_len,
+               cached_hull_l, cached_hull_r }
     }
 
     /// Create a lineage with a pre-computed length (avoids the walk
     /// when the caller already knows the length).
     pub fn new_with_len(head: SegIdx, tail: SegIdx, population: u32,
-                         uid: LinUid, cached_len: f64) -> Self {
-        Self { head, tail, population, uid, cached_len }
+                         uid: LinUid, cached_len: f64,
+                         arena: &SegmentArena) -> Self {
+        let (cached_hull_l, cached_hull_r) = Self::hull_from_arena(head, tail, arena);
+        Self { head, tail, population, uid, cached_len,
+               cached_hull_l, cached_hull_r }
+    }
+
+    #[inline]
+    fn hull_from_arena(head: SegIdx, tail: SegIdx, arena: &SegmentArena) -> (f64, f64) {
+        if head == SEG_NIL {
+            (f64::INFINITY, f64::NEG_INFINITY)
+        } else {
+            let l = arena.get(head).left;
+            let r = arena.get(tail).right;
+            (l, r)
+        }
     }
 
     /// Leftmost genomic position covered by this lineage. O(1).
     #[inline]
-    pub fn hull_left(&self, arena: &SegmentArena) -> f64 {
-        if self.head == SEG_NIL { return f64::INFINITY; }
-        arena.get(self.head).left
+    pub fn hull_left(&self, _arena: &SegmentArena) -> f64 {
+        self.cached_hull_l
     }
 
     /// Rightmost genomic position covered by this lineage. O(1).
     #[inline]
-    pub fn hull_right(&self, arena: &SegmentArena) -> f64 {
-        if self.tail == SEG_NIL { return f64::NEG_INFINITY; }
-        arena.get(self.tail).right
+    pub fn hull_right(&self, _arena: &SegmentArena) -> f64 {
+        self.cached_hull_r
     }
 
     /// O(1) hull overlap check: do the genomic extents of two lineages
     /// overlap at all? Rejects clearly non-overlapping pairs before the
     /// full segment walk.
     #[inline]
-    pub fn hulls_overlap(&self, other: &Lineage, arena: &SegmentArena) -> bool {
-        self.hull_left(arena) < other.hull_right(arena)
-            && other.hull_left(arena) < self.hull_right(arena)
+    pub fn hulls_overlap(&self, other: &Lineage, _arena: &SegmentArena) -> bool {
+        self.cached_hull_l < other.cached_hull_r
+            && other.cached_hull_l < self.cached_hull_r
     }
 
     /// Total length of ancestral material (O(1) — cached).
@@ -116,13 +138,16 @@ impl Lineage {
         }
         let right_len = arena.total_length(right_head);
         let right = Lineage::new_with_len(
-            right_head, right_tail, self.population, new_uid, right_len);
+            right_head, right_tail, self.population, new_uid, right_len, arena);
 
         // Update self to be the left portion (no find_tail needed).
         self.head = left_head;
         self.tail = left_tail;
         self.cached_len -= right_len;
         if self.cached_len < 0.0 { self.cached_len = 0.0; }
+        let (hl, hr) = Self::hull_from_arena(left_head, left_tail, arena);
+        self.cached_hull_l = hl;
+        self.cached_hull_r = hr;
         Some(right)
     }
 }

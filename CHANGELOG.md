@@ -2,6 +2,15 @@
 
 All notable changes to msinv are documented here.
 
+## [0.3.3] - 2026-04-21
+
+### Fixed
+
+- Windows wheel build: add `generate-import-lib` PyO3 feature so
+  cross-interpreter builds on Windows (where maturin's bundled
+  sysconfig only ships CPython 3.9 and the rest are cross-compiled)
+  succeed without the per-runner interpreter being installed.
+
 ## [0.3.2] - 2026-04-21
 
 ### Fixed

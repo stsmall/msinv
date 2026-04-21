@@ -159,6 +159,13 @@ pub struct RateCache {
     /// `trailing_zeros` walk over set bits (O(peers) vs O(n)).
     peer_bits: Vec<u64>,
     peer_word_stride: usize,
+    /// Reusable scratch for the "collect peer indices from peer_bits[idx]
+    /// before mutating" pattern used by `remove_lineage`, `recompute_for`,
+    /// `apply_recomb_split`, and `swap_update`. Owning the allocation on
+    /// the cache avoids a fresh malloc per event at high rho where peer
+    /// counts can exceed any sane inline SmallVec size (n~4000 lineages,
+    /// same-pop peers 10²-10³).
+    peers_scratch: Vec<usize>,
     /// Current number of active lineages.
     n: usize,
     /// Max capacity (determines pair_idx mapping).
@@ -197,31 +204,24 @@ impl Iterator for BitWordIter {
     }
 }
 
-/// Allocate `Vec<SmallVec<[T; N]>>` of length `n` using calloc-backed
-/// zero-init instead of `vec![SmallVec::new(); n]`'s per-element clone
-/// loop. For SmallVec 1.13 the struct layout is `{ capacity: usize,
-/// data: union { inline: MaybeUninit<[T; N]>, heap: (ptr, cap) } }`.
-/// `capacity == 0` selects the inline variant with length 0, and the
-/// inline payload is `MaybeUninit::uninit()` (all bit patterns valid),
-/// so all-zero bytes represent a valid empty inline SmallVec.
+/// Allocate a Vec<T> of length `n` with all-zero bytes. Bypasses the
+/// per-element clone loop that `vec![default; n]` / `Vec::resize`
+/// emit for non-trivial Copy types, which was ~5% of wall at rho=2000
+/// on the ~8.4M-slot triangular arrays for `PairOverlap` /
+/// `PairBucketRefs`.
 ///
-/// Cuts the ~500ms first-rep ensure_capacity cost observed on the
-/// 4096-cap (~8.4M-slot) triangular arrays — the `extend_with` /
-/// `SmallVec::clone` chain that appeared twice in the post-compact
-/// flame (combined ~5% of wall at rho=2000).
-/// Allocate a Vec<T> of length `n` with all-zero bytes — safe only
-/// when `T`'s Default value is the all-zeroes bit pattern. Used for
-/// the PairOverlap / PairBucketRefs triangular arrays: both are
-/// `#[repr(C)]` Copy structs whose Default is `{ len: 0, data:
-/// zeros }`, so calloc-backed init produces 8M valid defaults in a
-/// single OS zero-page map instead of 8M element copies.
+/// Safety contract: caller must guarantee that `T::default()` produces
+/// the all-zeroes bit pattern. `#[repr(C)]` Copy structs whose fields
+/// are themselves zeroable (integers, floats, arrays of the above)
+/// satisfy this; anything with a non-zero Default (`NonZero*`, enums
+/// with a non-zero discriminant, pointers with provenance, etc.)
+/// does NOT. The `debug_assertions` check below catches violations
+/// at test/dev time; release builds trust the caller.
 fn zeroed_vec_default<T: Default + Copy>(n: usize) -> Vec<T> {
     use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
     if n == 0 {
         return Vec::new();
     }
-    // Debug-only check that Default is indeed all-zero. Costs one
-    // default construction + size bytes compare in debug builds.
     #[cfg(debug_assertions)]
     {
         let d = T::default();
@@ -234,6 +234,11 @@ fn zeroed_vec_default<T: Default + Copy>(n: usize) -> Vec<T> {
     }
     let layout = Layout::array::<T>(n)
         .expect("zeroed_vec_default: layout overflow");
+    // SAFETY: `alloc_zeroed` returns `n * size_of::<T>()` bytes of
+    // zeroes (or null on OOM). The debug check above verifies that
+    // zero bytes represent a valid `T::default()` value, so each
+    // element is a valid `T`. `Vec::from_raw_parts` with len == cap
+    // takes ownership of the allocation for Drop purposes.
     unsafe {
         let ptr = alloc_zeroed(layout) as *mut T;
         if ptr.is_null() {
@@ -262,6 +267,7 @@ impl RateCache {
             refs_overflow: HashMap::new(),
             peer_bits: vec![0u64; cap * peer_stride],
             peer_word_stride: peer_stride,
+            peers_scratch: Vec::new(),
             n: 0,
             capacity: cap,
         }
@@ -410,22 +416,41 @@ impl RateCache {
     #[inline(always)]
     fn peer_set_pair(&mut self, i: usize, j: usize) {
         let stride = self.peer_word_stride;
-        let (iw, ib) = (j >> 6, 1u64 << (j & 63));
-        self.peer_bits[i * stride + iw] |= ib;
-        let (jw, jb) = (i >> 6, 1u64 << (i & 63));
-        self.peer_bits[j * stride + jw] |= jb;
+        let (i_row, j_row) = (i * stride, j * stride);
+        bit_set(&mut self.peer_bits[i_row..i_row + stride], j);
+        bit_set(&mut self.peer_bits[j_row..j_row + stride], i);
     }
 
     /// Clear the (i, j) and (j, i) peer bits — call from `clear_pair`.
     #[inline(always)]
     fn peer_clear_pair(&mut self, i: usize, j: usize) {
         let stride = self.peer_word_stride;
-        let (iw, ib) = (j >> 6, 1u64 << (j & 63));
-        self.peer_bits[i * stride + iw] &= !ib;
-        let (jw, jb) = (i >> 6, 1u64 << (i & 63));
-        self.peer_bits[j * stride + jw] &= !jb;
+        let (i_row, j_row) = (i * stride, j * stride);
+        bit_clear(&mut self.peer_bits[i_row..i_row + stride], j);
+        bit_clear(&mut self.peer_bits[j_row..j_row + stride], i);
     }
 
+    /// Snapshot the set peer indices for lineage `idx` into `peers_scratch`
+    /// before callers mutate the pair state. The snapshot is required
+    /// because `clear_pair` / `move_pair` flip bits in `peer_bits[idx]`
+    /// as they run, so iterating `peer_bits[idx]` concurrently with the
+    /// mutation would skip peers or revisit them.
+    ///
+    /// Caller must drain `peers_scratch` (e.g. by moving via
+    /// `std::mem::take`) before returning — leaving it non-empty across
+    /// calls would corrupt the next caller's snapshot.
+    fn collect_peers(&mut self, idx: usize) {
+        let stride = self.peer_word_stride;
+        let row_start = idx * stride;
+        self.peers_scratch.clear();
+        for w in 0..stride {
+            let word = self.peer_bits[row_start + w];
+            let base = w << 6;
+            for bit in BitWordIter(word) {
+                self.peers_scratch.push(base + bit);
+            }
+        }
+    }
 
     /// Materialise lineage `idx`'s segment chain into `lineage_segs[idx]`.
     /// Clear-then-extend to reuse the SmallVec's allocation. Callers must
@@ -812,20 +837,13 @@ impl RateCache {
         // Step 1: walk peer_bits[idx] directly — every set bit is a
         // peer that currently has a nonempty pair with `idx`. Replaces
         // the old bitmap row + column walks; single O(peers) loop.
-        let stride = self.peer_word_stride;
-        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
-        let row_start = idx * stride;
-        for w in 0..stride {
-            let word = self.peer_bits[row_start + w];
-            let base = w << 6;
-            for bit in BitWordIter(word) {
-                peers.push(base + bit);
-            }
-        }
-        for peer in peers {
+        self.collect_peers(idx);
+        for k in 0..self.peers_scratch.len() {
+            let peer = self.peers_scratch[k];
             let (i, j) = if peer < idx { (peer, idx) } else { (idx, peer) };
             self.clear_pair(i, j);
         }
+        self.peers_scratch.clear();
         // Step 2: compute new (idx, other) pairs. Prescreens read from
         // direct-indexed side tables (lineage_pop / lineage_hulls /
         // lineage_pos_bits) so the hot filter is three sequential
@@ -894,23 +912,16 @@ impl RateCache {
         // empty by invariant (new_idx was just pushed), so no
         // defensive scrub needed.
         let _ = changed_pop;
-        let stride = self.peer_word_stride;
-        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
-        let row_start = idx * stride;
-        for w in 0..stride {
-            let word = self.peer_bits[row_start + w];
-            let base = w << 6;
-            for bit in BitWordIter(word) {
-                peers.push(base + bit);
-            }
-        }
-        for other in peers {
+        self.collect_peers(idx);
+        for k in 0..self.peers_scratch.len() {
+            let other = self.peers_scratch[k];
             if other == new_idx { continue; }
             self.apply_recomb_split_body(
                 idx, other, new_idx, split_pos,
                 left_hull_l, left_hull_r,
                 right_hull_l, right_hull_r);
         }
+        self.peers_scratch.clear();
     }
 
     /// Per-pair handler for apply_recomb_split: called only for
@@ -981,23 +992,16 @@ impl RateCache {
         // already keyed by lineage-pair, so walk cost is O(peers)
         // independent of which side of `idx` they sit on.
         //
-        // Snapshot into a local SmallVec: `clear_pair` mutates
+        // Snapshot into the RateCache scratch vec: clear_pair mutates
         // peer_bits via peer_clear_pair, so we can't iterate the row
         // while borrowing it mutably.
-        let stride = self.peer_word_stride;
-        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
-        let row_start = idx * stride;
-        for w in 0..stride {
-            let word = self.peer_bits[row_start + w];
-            let base = w << 6;
-            for bit in BitWordIter(word) {
-                peers.push(base + bit);
-            }
-        }
-        for peer in peers {
+        self.collect_peers(idx);
+        for k in 0..self.peers_scratch.len() {
+            let peer = self.peers_scratch[k];
             let (i, j) = if peer < idx { (peer, idx) } else { (idx, peer) };
             self.clear_pair(i, j);
         }
+        self.peers_scratch.clear();
     }
 
     /// After `active.swap_remove(idx)`, the last lineage moved to `idx`.
@@ -1029,17 +1033,9 @@ impl RateCache {
         // Walk peer_bits[old_last] for the set of lineages that have
         // a nonempty pair with old_last — much cheaper than the old
         // `for other in 0..old_last` scan with bit_get per slot.
-        let stride = self.peer_word_stride;
-        let mut peers: SmallVec<[usize; 16]> = SmallVec::new();
-        let row_start = old_last * stride;
-        for w in 0..stride {
-            let word = self.peer_bits[row_start + w];
-            let base = w << 6;
-            for bit in BitWordIter(word) {
-                peers.push(base + bit);
-            }
-        }
-        for other in peers {
+        self.collect_peers(old_last);
+        for k in 0..self.peers_scratch.len() {
+            let other = self.peers_scratch[k];
             if other == removed_idx { continue; }
             let (ni, nj) = if other < removed_idx {
                 (other, removed_idx)
@@ -1054,6 +1050,7 @@ impl RateCache {
             // accumulates the new (other, removed_idx) bits.
             self.move_pair(other, old_last, ni, nj);
         }
+        self.peers_scratch.clear();
         // Mirror the active-side swap_remove on lineage_pop so later
         // totals diffs see the right pop at `removed_idx`.
         if old_last < self.lineage_pop.len() {

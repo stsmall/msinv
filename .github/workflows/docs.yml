@@ -33,7 +33,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install --find-links dist --no-index msinv
+        pip install --find-links dist msinv
         pip install sphinx furo myst-parser
 
     - name: Build documentation

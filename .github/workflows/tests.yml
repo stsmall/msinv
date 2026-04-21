@@ -37,10 +37,13 @@ jobs:
     - name: Install package and test deps
       run: |
         python -m pip install --upgrade pip
-        # --find-links + msinv (no version) lets pip pick the wheel
-        # whose ABI tag matches the active interpreter, instead of
-        # the alphabetically-first wheel matching dist/msinv-*.whl.
-        pip install --find-links dist --no-index msinv
+        # --find-links points pip at the local wheels directory so it
+        # picks the cp<pyver> wheel matching this interpreter's ABI
+        # tag (the old `dist/msinv-*.whl` glob fell over when the
+        # alphabetically-first wheel didn't match the current Python).
+        # No --no-index: numpy + other pure-Python deps still pull
+        # from PyPI.
+        pip install --find-links dist msinv
         pip install pytest pytest-timeout 'msprime>=1.2' stdpopsim
 
     - name: Run hull tests

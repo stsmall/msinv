@@ -294,7 +294,7 @@ impl HullSimulator {
         // Counter throttling gc_sole_lineages — run every GC_STRIDE
         // recombs. Sole-carrier lineages contribute no coalescence rate
         // so a few rounds of delay has no correctness impact.
-        const GC_STRIDE: u32 = 128;
+        const GC_STRIDE: u32 = 160;
         let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {

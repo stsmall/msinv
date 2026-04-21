@@ -15,17 +15,54 @@ use crate::lineage::Lineage;
 use crate::segment::SegmentArena;
 
 use smallvec::SmallVec;
+use std::collections::HashMap;
 
 /// Per-pair overlap: list of (BranchClass, overlap_length) entries.
-/// SmallVec inline size 2 fits the common 1-2 class case while keeping
-/// the per-slot footprint small (matters at n² scale at rho ≥ 500).
-type PairOverlap = SmallVec<[(BranchClass, f64); 2]>;
+///
+/// Fixed-layout replacement for `SmallVec<[(BranchClass, f64); 2]>`.
+/// The SmallVec version burned ~60% of store_pair self-time and ~43%
+/// of clear_pair self-time at rho=16000 on the `cmp $0x3` /
+/// `movups xmm` pair that implements `SmallVec::spilled()` — every
+/// read had to branch inline-vs-heap, and the Drop impl checked the
+/// same before freeing.
+///
+/// This struct is `Copy` (trivial drop, memcpy move) and always
+/// inline for len ≤ 2. Pairs with > 2 classes are rare (multi-
+/// inversion sims or the t_inv transition window); they stash the
+/// full class list in `RateCache::overlap_overflow` keyed by pidx.
+/// The sentinel `len = u8::MAX` means "check the overflow map".
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+struct PairOverlap {
+    len: u8,
+    _pad: [u8; 7],
+    data: [(BranchClass, f64); 2],
+}
 
-/// Reverse-index entry: (bucket_slot, pos_in_bucket). Parallel to
-/// overlaps[pidx] order — overlaps[pidx][k].0 (class) is the class
-/// whose (pop, class) bucket is pair_buckets[refs[pidx][k].0], and
-/// refs[pidx][k].1 is that pair's position in the bucket's Vec.
-type PairBucketRefs = SmallVec<[(u32, u32); 2]>;
+impl Default for PairOverlap {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            len: 0,
+            _pad: [0; 7],
+            data: [(BranchClass::PANMICTIC, 0.0); 2],
+        }
+    }
+}
+
+const OVERFLOW_LEN: u8 = u8::MAX;
+
+/// Reverse-index entry: (bucket_slot, pos_in_bucket). Same fixed-
+/// layout trick as `PairOverlap`. Parallel to overlaps[pidx] in
+/// order and length — refs[k] is the bucket back-reference for the
+/// k-th class in the overlap's class list.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+struct PairBucketRefs {
+    len: u8,
+    _pad: [u8; 3],
+    data: [(u32, u32); 2],
+}
 
 /// Pack (i, j) lineage indices into a single u32 for dense bucket storage.
 /// Max n = 65535 lineages per pop, far above any realistic sample size.
@@ -107,6 +144,11 @@ pub struct RateCache {
     /// order. Used to patch bucket positions during swap_remove and to
     /// rewrite packed (i, j) during swap_update.
     pair_bucket_refs: Vec<PairBucketRefs>,
+    /// Overflow maps for the rare pairs with > 2 classes (len sentinel
+    /// `OVERFLOW_LEN`). Keyed by pidx (as u32 to fit 16M pairs in one
+    /// key). Entries mirror the inline order.
+    overlap_overflow: HashMap<u32, SmallVec<[(BranchClass, f64); 4]>>,
+    refs_overflow: HashMap<u32, SmallVec<[(u32, u32); 4]>>,
     /// Per-lineage peer bitmap. `peer_bit(i, j)` is set iff pair
     /// `(min(i,j), max(i,j))` has a cached overlap. Stored flat with
     /// `peer_word_stride` u64 words per lineage; `peer_bits[i *
@@ -167,26 +209,33 @@ impl Iterator for BitWordIter {
 /// 4096-cap (~8.4M-slot) triangular arrays — the `extend_with` /
 /// `SmallVec::clone` chain that appeared twice in the post-compact
 /// flame (combined ~5% of wall at rho=2000).
-fn zeroed_smallvec_vec<T, const N: usize>(n: usize) -> Vec<SmallVec<[T; N]>>
-where
-    [T; N]: smallvec::Array<Item = T>,
-{
+/// Allocate a Vec<T> of length `n` with all-zero bytes — safe only
+/// when `T`'s Default value is the all-zeroes bit pattern. Used for
+/// the PairOverlap / PairBucketRefs triangular arrays: both are
+/// `#[repr(C)]` Copy structs whose Default is `{ len: 0, data:
+/// zeros }`, so calloc-backed init produces 8M valid defaults in a
+/// single OS zero-page map instead of 8M element copies.
+fn zeroed_vec_default<T: Default + Copy>(n: usize) -> Vec<T> {
     use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
     if n == 0 {
         return Vec::new();
     }
-    let layout = Layout::array::<SmallVec<[T; N]>>(n)
-        .expect("SmallVec Vec allocation size overflow");
-    // SAFETY: SmallVec<[T; N]> with all-zero bytes is
-    // `SmallVec { capacity: 0, data: union-inline-uninit }`, which is
-    // a valid empty inline SmallVec. capacity == 0 flags inline
-    // storage; the inline payload is MaybeUninit so any bytes (zeroes
-    // included) are a valid representation. Length is stored in
-    // `capacity` and is 0, so no uninitialised elements will ever be
-    // read. Safe only for SmallVec 1.13 — if smallvec is upgraded,
-    // re-audit this path.
+    // Debug-only check that Default is indeed all-zero. Costs one
+    // default construction + size bytes compare in debug builds.
+    #[cfg(debug_assertions)]
+    {
+        let d = T::default();
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &d as *const T as *const u8, std::mem::size_of::<T>())
+        };
+        assert!(bytes.iter().all(|&b| b == 0),
+            "zeroed_vec_default called on type whose Default is not all-zero");
+    }
+    let layout = Layout::array::<T>(n)
+        .expect("zeroed_vec_default: layout overflow");
     unsafe {
-        let ptr = alloc_zeroed(layout) as *mut SmallVec<[T; N]>;
+        let ptr = alloc_zeroed(layout) as *mut T;
         if ptr.is_null() {
             handle_alloc_error(layout);
         }
@@ -200,7 +249,7 @@ impl RateCache {
         let n_pairs = tri_size(cap);
         let peer_stride = nbits_words(cap);
         Self {
-            overlaps: zeroed_smallvec_vec(n_pairs),
+            overlaps: zeroed_vec_default(n_pairs),
             nonempty_bits: vec![0u64; nbits_words(n_pairs)],
             lineage_pop: Vec::with_capacity(cap),
             lineage_segs: Vec::with_capacity(cap),
@@ -208,7 +257,9 @@ impl RateCache {
             lineage_hulls: Vec::with_capacity(cap),
             seq_len,
             pair_buckets: SmallVec::new(),
-            pair_bucket_refs: zeroed_smallvec_vec(n_pairs),
+            pair_bucket_refs: zeroed_vec_default(n_pairs),
+            overlap_overflow: HashMap::new(),
+            refs_overflow: HashMap::new(),
             peer_bits: vec![0u64; cap * peer_stride],
             peer_word_stride: peer_stride,
             n: 0,
@@ -241,15 +292,18 @@ impl RateCache {
                 let bit = word.trailing_zeros() as usize;
                 let pidx = widx * 64 + bit;
                 if pidx < self.overlaps.len() {
-                    self.overlaps[pidx].clear();
+                    self.overlaps[pidx] = PairOverlap::default();
                     if pidx < self.pair_bucket_refs.len() {
-                        self.pair_bucket_refs[pidx].clear();
+                        self.pair_bucket_refs[pidx] =
+                            PairBucketRefs::default();
                     }
                 }
                 word &= word - 1;
             }
             *w = 0;
         }
+        self.overlap_overflow.clear();
+        self.refs_overflow.clear();
         // peer_bits: full sweep of `cap * stride` u64 words. At
         // cap=4096 that's ~512KB = ~128k u64 memset — fast (<1ms).
         // Avoids tracking old_n just to target the per-lineage rows.
@@ -293,10 +347,13 @@ impl RateCache {
             let new_cap = need * 2;
             let new_n_pairs = tri_size(new_cap);
             let mut new_overlaps: Vec<PairOverlap> =
-                zeroed_smallvec_vec(new_n_pairs);
+                zeroed_vec_default(new_n_pairs);
             let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
             let mut new_refs: Vec<PairBucketRefs> =
-                zeroed_smallvec_vec(new_n_pairs);
+                zeroed_vec_default(new_n_pairs);
+            // Move overflow entries to new pidx keys as we reindex.
+            let mut new_ovl_overflow = HashMap::new();
+            let mut new_refs_overflow = HashMap::new();
             let walk_n = self.n.min(old_cap);
             for i in 0..walk_n {
                 for j in (i + 1)..walk_n {
@@ -308,9 +365,21 @@ impl RateCache {
                         new_refs[new_pidx] =
                             std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
                         bit_set(&mut new_bits, new_pidx);
+                        if new_overlaps[new_pidx].len == OVERFLOW_LEN {
+                            if let Some(v) = self.overlap_overflow
+                                .remove(&(old_pidx as u32)) {
+                                new_ovl_overflow.insert(new_pidx as u32, v);
+                            }
+                            if let Some(v) = self.refs_overflow
+                                .remove(&(old_pidx as u32)) {
+                                new_refs_overflow.insert(new_pidx as u32, v);
+                            }
+                        }
                     }
                 }
             }
+            self.overlap_overflow = new_ovl_overflow;
+            self.refs_overflow = new_refs_overflow;
             // Reindex peer_bits. Per-lineage layout: each active row
             // occupies `stride` u64 words. On cap grow, stride grows
             // too (nbits_words doubles with cap), so each row moves
@@ -395,6 +464,117 @@ impl RateCache {
         };
     }
 
+    /// Read the class/length list for a pair, transparently handling
+    /// the overflow case. Always returns a slice — inline or from the
+    /// overflow map.
+    #[inline]
+    fn overlap_slice(&self, pidx: usize) -> &[(BranchClass, f64)] {
+        let po = &self.overlaps[pidx];
+        if po.len == OVERFLOW_LEN {
+            self.overlap_overflow
+                .get(&(pidx as u32))
+                .map_or(&[], |v| v.as_slice())
+        } else {
+            &po.data[..po.len as usize]
+        }
+    }
+
+    #[inline]
+    fn refs_slice(&self, pidx: usize) -> &[(u32, u32)] {
+        let r = &self.pair_bucket_refs[pidx];
+        if r.len == OVERFLOW_LEN {
+            self.refs_overflow
+                .get(&(pidx as u32))
+                .map_or(&[], |v| v.as_slice())
+        } else {
+            &r.data[..r.len as usize]
+        }
+    }
+
+    /// Overwrite the overlap/refs inline pair for `pidx` with the
+    /// given content. Handles overflow transparently: if either list
+    /// exceeds 2 entries, promote to the overflow map.
+    #[inline]
+    fn store_pair_data(
+        &mut self,
+        pidx: usize,
+        ovl: &[(BranchClass, f64)],
+        refs: &[(u32, u32)],
+    ) {
+        debug_assert_eq!(ovl.len(), refs.len());
+        let n = ovl.len();
+        if n <= 2 {
+            let mut po = PairOverlap::default();
+            po.len = n as u8;
+            po.data[..n].copy_from_slice(ovl);
+            self.overlaps[pidx] = po;
+            let mut r = PairBucketRefs::default();
+            r.len = n as u8;
+            r.data[..n].copy_from_slice(refs);
+            self.pair_bucket_refs[pidx] = r;
+        } else {
+            self.overlaps[pidx] = PairOverlap {
+                len: OVERFLOW_LEN, _pad: [0; 7],
+                data: [(BranchClass::PANMICTIC, 0.0); 2],
+            };
+            self.pair_bucket_refs[pidx] = PairBucketRefs {
+                len: OVERFLOW_LEN, _pad: [0; 3],
+                data: [(0, 0); 2],
+            };
+            self.overlap_overflow
+                .insert(pidx as u32, SmallVec::from_slice(ovl));
+            self.refs_overflow
+                .insert(pidx as u32, SmallVec::from_slice(refs));
+        }
+    }
+
+    /// Empty the overlap/refs slots for `pidx`. Removes overflow
+    /// entries if present.
+    #[inline]
+    fn clear_pair_data(&mut self, pidx: usize) {
+        let was_overflow = self.overlaps[pidx].len == OVERFLOW_LEN;
+        self.overlaps[pidx] = PairOverlap::default();
+        self.pair_bucket_refs[pidx] = PairBucketRefs::default();
+        if was_overflow {
+            self.overlap_overflow.remove(&(pidx as u32));
+            self.refs_overflow.remove(&(pidx as u32));
+        }
+    }
+
+    /// Move overlap/refs data from `old_pidx` to `new_pidx`, leaving
+    /// `old_pidx` empty. Preserves overflow classification.
+    #[inline]
+    fn move_pair_data(&mut self, old_pidx: usize, new_pidx: usize) {
+        debug_assert_eq!(self.overlaps[new_pidx].len, 0);
+        let po = std::mem::take(&mut self.overlaps[old_pidx]);
+        let r = std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
+        let was_overflow = po.len == OVERFLOW_LEN;
+        self.overlaps[new_pidx] = po;
+        self.pair_bucket_refs[new_pidx] = r;
+        if was_overflow {
+            if let Some(v) = self.overlap_overflow.remove(&(old_pidx as u32)) {
+                self.overlap_overflow.insert(new_pidx as u32, v);
+            }
+            if let Some(v) = self.refs_overflow.remove(&(old_pidx as u32)) {
+                self.refs_overflow.insert(new_pidx as u32, v);
+            }
+        }
+    }
+
+    /// Rewrite one entry of the bucket refs at position `k` in `pidx`.
+    /// Used by `bucket_swap_remove` to patch a moved bucket position.
+    #[inline]
+    fn refs_entry_set(&mut self, pidx: usize, k: usize, entry: (u32, u32)) {
+        let r = &mut self.pair_bucket_refs[pidx];
+        if r.len == OVERFLOW_LEN {
+            if let Some(v) = self.refs_overflow.get_mut(&(pidx as u32)) {
+                v[k] = entry;
+            }
+        } else {
+            r.data[k] = entry;
+        }
+    }
+
     /// Locate or allocate the `pair_buckets` slot for (pop, class).
     /// Slots are append-only; slot index is therefore stable across a
     /// simulation and can be recorded in `pair_bucket_refs` without
@@ -420,9 +600,14 @@ impl RateCache {
             bucket.pop();
             let (mi, mj) = unpack_ij(moved_packed);
             let moved_pidx = pair_idx(mi, mj, self.capacity);
-            for e in self.pair_bucket_refs[moved_pidx].iter_mut() {
-                if e.0 == slot as u32 && e.1 == last as u32 {
-                    e.1 = pos as u32;
+            // Scan refs_slice to find the k matching (slot, last), then
+            // rewrite in place via refs_entry_set (which handles both
+            // inline and overflow branches).
+            let refs = self.refs_slice(moved_pidx);
+            for k in 0..refs.len() {
+                if refs[k].0 == slot as u32 && refs[k].1 == last as u32 {
+                    self.refs_entry_set(moved_pidx, k,
+                        (slot as u32, pos as u32));
                     return;
                 }
             }
@@ -438,19 +623,22 @@ impl RateCache {
     /// reverse-index entries in `pair_bucket_refs[pidx]`. Bucket
     /// lengths double as the (pop, class) pair counts consumed by
     /// `emit_coal_events_from_cache`, so no extra totals bookkeeping.
-    fn store_pair(&mut self, i: usize, j: usize, ovl: PairOverlap) {
+    fn store_pair(&mut self, i: usize, j: usize, ovl: &[(BranchClass, f64)]) {
         let pidx = pair_idx(i, j, self.capacity);
         let pop = self.lineage_pop[i];
         debug_assert!(!bit_get(&self.nonempty_bits, pidx));
-        debug_assert!(self.pair_bucket_refs[pidx].is_empty());
+        debug_assert!(self.pair_bucket_refs[pidx].len == 0);
         let packed = pack_ij(i, j);
+        // Collect bucket refs into a local SmallVec; then hand to
+        // store_pair_data which picks inline or overflow.
+        let mut refs: SmallVec<[(u32, u32); 4]> = SmallVec::new();
         for (cls, _) in ovl.iter() {
             let slot = self.find_or_create_pair_bucket_slot(pop, *cls);
             let pos = self.pair_buckets[slot].2.len() as u32;
             self.pair_buckets[slot].2.push(packed);
-            self.pair_bucket_refs[pidx].push((slot as u32, pos));
+            refs.push((slot as u32, pos));
         }
-        self.overlaps[pidx] = ovl;
+        self.store_pair_data(pidx, ovl, &refs);
         bit_set(&mut self.nonempty_bits, pidx);
         self.peer_set_pair(i, j);
     }
@@ -461,11 +649,15 @@ impl RateCache {
     fn clear_pair(&mut self, i: usize, j: usize) {
         let pidx = pair_idx(i, j, self.capacity);
         if !bit_get(&self.nonempty_bits, pidx) { return; }
-        let refs = std::mem::take(&mut self.pair_bucket_refs[pidx]);
+        // Snapshot refs into a local SmallVec before mutating
+        // pair_buckets (bucket_swap_remove mutates other pidxs' refs,
+        // so we can't hold a borrow into self.pair_bucket_refs[pidx]).
+        let refs: SmallVec<[(u32, u32); 4]> =
+            SmallVec::from_slice(self.refs_slice(pidx));
         for (slot, pos) in refs.iter().copied() {
             self.bucket_swap_remove(slot as usize, pos as usize);
         }
-        self.overlaps[pidx].clear();
+        self.clear_pair_data(pidx);
         bit_clear(&mut self.nonempty_bits, pidx);
         self.peer_clear_pair(i, j);
     }
@@ -483,16 +675,19 @@ impl RateCache {
         let new_pidx = pair_idx(new_i, new_j, self.capacity);
         debug_assert!(bit_get(&self.nonempty_bits, old_pidx));
         debug_assert!(!bit_get(&self.nonempty_bits, new_pidx));
-        let data = std::mem::take(&mut self.overlaps[old_pidx]);
+        // Move slot data first (overflow keys migrated too).
+        self.move_pair_data(old_pidx, new_pidx);
         bit_clear(&mut self.nonempty_bits, old_pidx);
-        self.overlaps[new_pidx] = data;
         bit_set(&mut self.nonempty_bits, new_pidx);
-        let refs = std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
+        // Patch packed (i, j) in each bucket entry that now lives at
+        // new_pidx. Snapshot refs into a local so we don't hold a
+        // borrow while mutating pair_buckets.
+        let refs: SmallVec<[(u32, u32); 4]> =
+            SmallVec::from_slice(self.refs_slice(new_pidx));
         let new_packed = pack_ij(new_i, new_j);
         for (slot, pos) in refs.iter().copied() {
             self.pair_buckets[slot as usize].2[pos as usize] = new_packed;
         }
-        self.pair_bucket_refs[new_pidx] = refs;
         // Keep peer_bits in sync: (old_i, old_j) is no longer a
         // nonempty pair; (new_i, new_j) is. Without this the peer
         // walks in recompute_for / apply_recomb_split / etc. would
@@ -528,15 +723,18 @@ impl RateCache {
                 let bit = word.trailing_zeros() as usize;
                 let pidx = widx * 64 + bit;
                 if pidx < self.overlaps.len() {
-                    self.overlaps[pidx].clear();
+                    self.overlaps[pidx] = PairOverlap::default();
                     if pidx < self.pair_bucket_refs.len() {
-                        self.pair_bucket_refs[pidx].clear();
+                        self.pair_bucket_refs[pidx] =
+                            PairBucketRefs::default();
                     }
                 }
                 word &= word - 1;
             }
             *w = 0;
         }
+        self.overlap_overflow.clear();
+        self.refs_overflow.clear();
         for entry in self.pair_buckets.iter_mut() {
             entry.2.clear();
         }
@@ -572,7 +770,7 @@ impl RateCache {
                 let ovl = compute_overlap(
                     &self.lineage_segs[i], &self.lineage_segs[j]);
                 if !ovl.is_empty() {
-                    self.store_pair(i, j, ovl);
+                    self.store_pair(i, j, &ovl);
                 }
             }
         }
@@ -645,7 +843,7 @@ impl RateCache {
             let ovl = compute_overlap(
                 &self.lineage_segs[i], &self.lineage_segs[j]);
             if !ovl.is_empty() {
-                self.store_pair(i, j, ovl);
+                self.store_pair(i, j, &ovl);
             }
         }
     }
@@ -757,7 +955,7 @@ impl RateCache {
             let ovl = compute_overlap(
                 &self.lineage_segs[oi], &self.lineage_segs[oj]);
             if !ovl.is_empty() {
-                self.store_pair(oi, oj, ovl);
+                self.store_pair(oi, oj, &ovl);
             }
         }
         let right_bits = self.lineage_pos_bits
@@ -767,7 +965,7 @@ impl RateCache {
             let ovl = compute_overlap(
                 &self.lineage_segs[ni], &self.lineage_segs[nj]);
             if !ovl.is_empty() {
-                self.store_pair(ni, nj, ovl);
+                self.store_pair(ni, nj, &ovl);
             }
         }
     }
@@ -883,10 +1081,11 @@ impl RateCache {
         self.n -= 1;
     }
 
-    /// Get the overlap for pair (i, j).
-    pub fn get_pair(&self, i: usize, j: usize) -> &PairOverlap {
+    /// Get the overlap for pair (i, j). Returns an empty slice if the
+    /// pair has no cached overlap.
+    pub fn get_pair(&self, i: usize, j: usize) -> &[(BranchClass, f64)] {
         let (a, b) = if i < j { (i, j) } else { (j, i) };
-        &self.overlaps[pair_idx(a, b, self.capacity)]
+        self.overlap_slice(pair_idx(a, b, self.capacity))
     }
 
     /// O(1) access to the (pop, class) pair bucket — packed (i, j) list.
@@ -996,20 +1195,20 @@ impl RateCache {
             for j in (i + 1)..self.n {
                 let pidx = pair_idx(i, j, cap);
                 let bit = bit_get(&self.nonempty_bits, pidx);
-                let ovl = &self.overlaps[pidx];
+                let ovl = self.overlap_slice(pidx);
                 if bit != !ovl.is_empty() {
                     panic!("[{}] nonempty_bits mismatch at ({},{}) \
                            pidx={} bit={} len={}",
                            label, i, j, pidx, bit, ovl.len());
                 }
                 if ovl.is_empty() {
-                    if !self.pair_bucket_refs[pidx].is_empty() {
+                    if !self.refs_slice(pidx).is_empty() {
                         panic!("[{}] empty overlap but refs non-empty at ({},{})",
                             label, i, j);
                     }
                     continue;
                 }
-                let refs = &self.pair_bucket_refs[pidx];
+                let refs = self.refs_slice(pidx);
                 if refs.len() != ovl.len() {
                     panic!("[{}] refs/overlap length mismatch at ({},{}): \
                            refs={} overlap={}",
@@ -1174,7 +1373,7 @@ impl<'a> Iterator for NonEmptyPairIter<'a> {
                 let pidx = (self.pidx_word << 6) + bit;
                 let j = self.row + 1 + (pidx - self.base_pidx);
                 let i = self.row;
-                return Some((i, j, self.cache.overlaps[pidx].as_slice()));
+                return Some((i, j, self.cache.overlap_slice(pidx)));
             }
             if self.advance_word() {
                 continue;
@@ -1191,8 +1390,19 @@ impl<'a> Iterator for NonEmptyPairIter<'a> {
 /// random-access reads (the segments are recycled via free-list, so
 /// their indices are scattered even when the owning lineage's list is
 /// logically contiguous).
-fn compute_overlap(a: &[FlatSeg], b: &[FlatSeg]) -> PairOverlap {
-    let mut result = PairOverlap::new();
+/// Ephemeral per-call overlap buffer: lives only for the duration of
+/// one compute_overlap → store_pair hand-off. Inline 4 covers the
+/// vast majority of pair class counts (≤ 4 for up to 2 inversions).
+type OverlapBuf = SmallVec<[(BranchClass, f64); 4]>;
+
+/// Compute overlap-by-class between two lineages' flat segment slices.
+/// Two-pointer walk over contiguous `(left, right, class)` tuples —
+/// same algorithm as the arena-chain version, but without arena
+/// random-access reads (the segments are recycled via free-list, so
+/// their indices are scattered even when the owning lineage's list is
+/// logically contiguous).
+fn compute_overlap(a: &[FlatSeg], b: &[FlatSeg]) -> OverlapBuf {
+    let mut result: OverlapBuf = SmallVec::new();
     let (mut i, mut j) = (0usize, 0usize);
     while i < a.len() && j < b.len() {
         let (al, ar, ac) = a[i];

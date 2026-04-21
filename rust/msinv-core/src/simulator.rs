@@ -491,39 +491,15 @@ impl HullSimulator {
                 Event::CoalAggregate { pop, class } => {
                     let pop = *pop;
                     let cls = *class;
-                    // class_totals tracks count of matching pairs for
-                    // (pop, cls). Pre-pick target k, walk iter_pairs
-                    // once with early exit at kth match. Avoids the
-                    // Vec::push per candidate that dominated the
-                    // rho=2000 flamegraph (~22% of wall).
-                    let mut count: usize = 0;
-                    for (p, c, n) in rate_cache.iter_class_totals() {
-                        if p == pop && c == cls {
-                            count = n as usize;
-                            break;
-                        }
-                    }
-                    if count == 0 { continue; }
-                    let target = rng.random_range(0..count);
-                    let mut seen: usize = 0;
-                    let mut chosen: Option<(usize, usize)> = None;
-                    for (ii, jj, overlaps) in rate_cache.iter_pairs() {
-                        if active[ii].population != pop { continue; }
-                        let mut has = false;
-                        for (c, _) in overlaps {
-                            if *c == cls { has = true; break; }
-                        }
-                        if !has { continue; }
-                        if seen == target {
-                            chosen = Some((ii, jj));
-                            break;
-                        }
-                        seen += 1;
-                    }
-                    let (i, j) = match chosen {
-                        Some(p) => p,
-                        None => continue,
-                    };
+                    // Direct O(1) pick from the (pop, cls) pair bucket:
+                    // maintained in lockstep with class_totals during
+                    // every overlap mutation, indexed by packed (i, j).
+                    // Replaces the iter_pairs walk that was ~15% of wall
+                    // at rho=2000 (bitmap advance + class scan per match).
+                    let bucket = rate_cache.pair_bucket_for(pop, cls);
+                    if bucket.is_empty() { continue; }
+                    let target = rng.random_range(0..bucket.len());
+                    let (i, j) = crate::rate_index::unpack_ij(bucket[target]);
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;

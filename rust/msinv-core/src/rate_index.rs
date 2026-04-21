@@ -21,6 +21,25 @@ use smallvec::SmallVec;
 /// the per-slot footprint small (matters at n² scale at rho ≥ 500).
 type PairOverlap = SmallVec<[(BranchClass, f64); 2]>;
 
+/// Reverse-index entry: (bucket_slot, pos_in_bucket). Parallel to
+/// overlaps[pidx] order — overlaps[pidx][k].0 (class) is the class
+/// whose (pop, class) bucket is pair_buckets[refs[pidx][k].0], and
+/// refs[pidx][k].1 is that pair's position in the bucket's Vec.
+type PairBucketRefs = SmallVec<[(u32, u32); 2]>;
+
+/// Pack (i, j) lineage indices into a single u32 for dense bucket storage.
+/// Max n = 65535 lineages per pop, far above any realistic sample size.
+#[inline]
+pub fn pack_ij(i: usize, j: usize) -> u32 {
+    debug_assert!(i < 65536 && j < 65536);
+    (i as u32) | ((j as u32) << 16)
+}
+
+#[inline]
+pub fn unpack_ij(packed: u32) -> (usize, usize) {
+    ((packed & 0xFFFF) as usize, (packed >> 16) as usize)
+}
+
 /// Flat per-lineage segment view: (left, right, class). Stored contiguously
 /// per lineage so `compute_overlap`'s two-pointer walk hits sequential
 /// memory instead of chasing arena indices scattered by free-list recycling.
@@ -75,6 +94,18 @@ pub struct RateCache {
     /// Maintained by increment/decrement whenever a pair's overlap
     /// entries change.
     class_totals: SmallVec<[(u32, BranchClass, f64); 8]>,
+    /// Per-(pop, class) bucket of pair_idx packed (i, j) entries. Slots
+    /// are one-to-one with class_totals entries (by linear scan of
+    /// (pop, class) key — both collections append-only). CoalAggregate
+    /// dispatch picks the kth pair in O(1) via direct indexing instead
+    /// of walking iter_pairs until target (the old ~15%-of-wall cost
+    /// at rho=2000).
+    pair_buckets: SmallVec<[(u32, BranchClass, Vec<u32>); 8]>,
+    /// Reverse index per pair_idx: list of (bucket_slot, pos_in_bucket)
+    /// entries, one per class stored in overlaps[pidx], in the same
+    /// order. Used to patch bucket positions during swap_remove and to
+    /// rewrite packed (i, j) during swap_update.
+    pair_bucket_refs: Vec<PairBucketRefs>,
     /// Current number of active lineages.
     n: usize,
     /// Max capacity (determines pair_idx mapping).
@@ -109,6 +140,8 @@ impl RateCache {
             lineage_pos_bits: Vec::with_capacity(cap),
             seq_len,
             class_totals: SmallVec::new(),
+            pair_buckets: SmallVec::new(),
+            pair_bucket_refs: vec![SmallVec::new(); n_pairs],
             n: 0,
             capacity: cap,
         }
@@ -124,6 +157,9 @@ impl RateCache {
         self.seq_len = seq_len;
         self.n = 0;
         self.class_totals.clear();
+        for entry in self.pair_buckets.iter_mut() {
+            entry.2.clear();
+        }
         self.lineage_pop.clear();
         self.lineage_segs.clear();
         self.lineage_pos_bits.clear();
@@ -137,6 +173,9 @@ impl RateCache {
                 let pidx = widx * 64 + bit;
                 if pidx < self.overlaps.len() {
                     self.overlaps[pidx].clear();
+                    if pidx < self.pair_bucket_refs.len() {
+                        self.pair_bucket_refs[pidx].clear();
+                    }
                 }
                 word &= word - 1;
             }
@@ -183,9 +222,8 @@ impl RateCache {
             let mut new_overlaps: Vec<PairOverlap> =
                 vec![SmallVec::new(); new_n_pairs];
             let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
-            // Old pair data only exists for (i, j) with j < old_cap —
-            // reading past old_cap would step out of the prior
-            // triangular bitmap region.
+            let mut new_refs: Vec<PairBucketRefs> =
+                vec![SmallVec::new(); new_n_pairs];
             let walk_n = self.n.min(old_cap);
             for i in 0..walk_n {
                 for j in (i + 1)..walk_n {
@@ -194,13 +232,18 @@ impl RateCache {
                         let new_pidx = pair_idx(i, j, new_cap);
                         new_overlaps[new_pidx] =
                             std::mem::take(&mut self.overlaps[old_pidx]);
+                        new_refs[new_pidx] =
+                            std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
                         bit_set(&mut new_bits, new_pidx);
                     }
                 }
             }
             self.overlaps = new_overlaps;
             self.nonempty_bits = new_bits;
+            self.pair_bucket_refs = new_refs;
             self.capacity = new_cap;
+            // Bucket entries' packed (i, j) are capacity-independent,
+            // so pair_buckets need no remap.
         }
     }
 
@@ -256,19 +299,107 @@ impl RateCache {
         self.class_totals.push((pop, cls, delta));
     }
 
-    /// Subtract pair (i, j)'s current class contributions from totals.
-    /// Each stored (class, _) entry in the pair counts as one hazard
-    /// slot in its (pop, class) bucket.
-    fn totals_sub_pair(&mut self, i: usize, j: usize) {
+    /// Locate or allocate the `pair_buckets` slot for (pop, class).
+    /// Slots are append-only; slot index is therefore stable across a
+    /// simulation and can be recorded in `pair_bucket_refs` without
+    /// needing to patch on later inserts.
+    fn find_or_create_pair_bucket_slot(
+        &mut self, pop: u32, cls: BranchClass) -> usize {
+        for (k, entry) in self.pair_buckets.iter().enumerate() {
+            if entry.0 == pop && entry.1 == cls { return k; }
+        }
+        let k = self.pair_buckets.len();
+        self.pair_buckets.push((pop, cls, Vec::new()));
+        k
+    }
+
+    /// Swap-remove `pos` from bucket `slot` and patch the reverse index
+    /// of whatever pair got moved in (if any).
+    fn bucket_swap_remove(&mut self, slot: usize, pos: usize) {
+        let bucket = &mut self.pair_buckets[slot].2;
+        let last = bucket.len() - 1;
+        if pos < last {
+            let moved_packed = bucket[last];
+            bucket[pos] = moved_packed;
+            bucket.pop();
+            let (mi, mj) = unpack_ij(moved_packed);
+            let moved_pidx = pair_idx(mi, mj, self.capacity);
+            for e in self.pair_bucket_refs[moved_pidx].iter_mut() {
+                if e.0 == slot as u32 && e.1 == last as u32 {
+                    e.1 = pos as u32;
+                    return;
+                }
+            }
+            debug_assert!(false, "bucket_swap_remove: moved pidx ref missing");
+        } else {
+            bucket.pop();
+        }
+    }
+
+    /// Store a fully-computed pair overlap into the cache: writes
+    /// `overlaps[pidx]`, sets the nonempty bit, increments class_totals,
+    /// and pushes packed (i, j) into each matching (pop, class) bucket
+    /// with matching reverse-index entries in `pair_bucket_refs[pidx]`.
+    fn store_pair(&mut self, i: usize, j: usize, ovl: PairOverlap) {
+        let pidx = pair_idx(i, j, self.capacity);
+        let pop = self.lineage_pop[i];
+        debug_assert!(!bit_get(&self.nonempty_bits, pidx));
+        debug_assert!(self.pair_bucket_refs[pidx].is_empty());
+        let packed = pack_ij(i, j);
+        for (cls, _) in ovl.iter() {
+            let slot = self.find_or_create_pair_bucket_slot(pop, *cls);
+            let pos = self.pair_buckets[slot].2.len() as u32;
+            self.pair_buckets[slot].2.push(packed);
+            self.pair_bucket_refs[pidx].push((slot as u32, pos));
+            self.totals_add(pop, *cls, 1.0);
+        }
+        self.overlaps[pidx] = ovl;
+        bit_set(&mut self.nonempty_bits, pidx);
+    }
+
+    /// Clear pair (i, j): decrement class_totals, swap-remove each
+    /// bucket entry via the reverse index, empty overlaps, clear bit.
+    /// No-op if already empty.
+    fn clear_pair(&mut self, i: usize, j: usize) {
         let pidx = pair_idx(i, j, self.capacity);
         if !bit_get(&self.nonempty_bits, pidx) { return; }
         let pop = self.lineage_pop[i];
-        // Snapshot classes to avoid aliasing the borrow during totals_add.
+        let refs = std::mem::take(&mut self.pair_bucket_refs[pidx]);
         let classes: SmallVec<[BranchClass; 2]> =
             self.overlaps[pidx].iter().map(|(c, _)| *c).collect();
-        for cls in classes {
-            self.totals_add(pop, cls, -1.0);
+        for cls in &classes {
+            self.totals_add(pop, *cls, -1.0);
         }
+        for (slot, pos) in refs.iter().copied() {
+            self.bucket_swap_remove(slot as usize, pos as usize);
+        }
+        self.overlaps[pidx].clear();
+        bit_clear(&mut self.nonempty_bits, pidx);
+    }
+
+    /// Move pair data from (old_i, old_j) to (new_i, new_j) without
+    /// recomputing overlap. totals unchanged (same classes); packed
+    /// (i, j) in each referenced bucket entry is rewritten.
+    /// Precondition: old slot nonempty, new slot empty.
+    fn move_pair(
+        &mut self,
+        old_i: usize, old_j: usize,
+        new_i: usize, new_j: usize,
+    ) {
+        let old_pidx = pair_idx(old_i, old_j, self.capacity);
+        let new_pidx = pair_idx(new_i, new_j, self.capacity);
+        debug_assert!(bit_get(&self.nonempty_bits, old_pidx));
+        debug_assert!(!bit_get(&self.nonempty_bits, new_pidx));
+        let data = std::mem::take(&mut self.overlaps[old_pidx]);
+        bit_clear(&mut self.nonempty_bits, old_pidx);
+        self.overlaps[new_pidx] = data;
+        bit_set(&mut self.nonempty_bits, new_pidx);
+        let refs = std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
+        let new_packed = pack_ij(new_i, new_j);
+        for (slot, pos) in refs.iter().copied() {
+            self.pair_buckets[slot as usize].2[pos as usize] = new_packed;
+        }
+        self.pair_bucket_refs[new_pidx] = refs;
     }
 
     /// Iterate the maintained (pop, class, total_overlap) table.
@@ -286,7 +417,6 @@ impl RateCache {
     ) {
         self.n = active.len();
         self.ensure_capacity(self.n);
-        // Clear all entries.
         for entry in &mut self.overlaps {
             entry.clear();
         }
@@ -294,10 +424,14 @@ impl RateCache {
             *w = 0;
         }
         self.class_totals.clear();
+        for entry in self.pair_buckets.iter_mut() {
+            entry.2.clear();
+        }
+        for refs in self.pair_bucket_refs.iter_mut() {
+            refs.clear();
+        }
         self.lineage_pop.clear();
         self.lineage_pop.extend(active.iter().map(|l| l.population));
-        // Rebuild per-lineage flat segment views. Truncate any stragglers
-        // from a prior (longer) population.
         if self.lineage_segs.len() < self.n {
             self.lineage_segs.resize_with(self.n, SmallVec::new);
         } else {
@@ -311,7 +445,6 @@ impl RateCache {
         for i in 0..self.n {
             self.rebuild_lineage_segs(i, active, arena);
         }
-        // Compute all pairs from the flat views.
         for i in 0..self.n {
             for j in (i + 1)..self.n {
                 if active[i].population != active[j].population {
@@ -323,13 +456,7 @@ impl RateCache {
                 let ovl = compute_overlap(
                     &self.lineage_segs[i], &self.lineage_segs[j]);
                 if !ovl.is_empty() {
-                    let pop = active[i].population;
-                    for (cls, _ov) in ovl.iter() {
-                        self.totals_add(pop, *cls, 1.0);
-                    }
-                    let pidx = pair_idx(i, j, self.capacity);
-                    self.overlaps[pidx] = ovl;
-                    bit_set(&mut self.nonempty_bits, pidx);
+                    self.store_pair(i, j, ovl);
                 }
             }
         }
@@ -396,20 +523,12 @@ impl RateCache {
             if !was_nonempty && (!pops_match || !hulls_overlap || other_head_is_nil) {
                 continue;
             }
-            // Clear old.
-            self.totals_sub_pair(i, j);
-            self.overlaps[pidx].clear();
-            bit_clear(&mut self.nonempty_bits, pidx);
+            self.clear_pair(i, j);
             if !pops_match || !hulls_overlap { continue; }
-            // Compute new overlap (pops match, hulls intersect).
             let ovl = compute_overlap(
                 &self.lineage_segs[i], &self.lineage_segs[j]);
             if !ovl.is_empty() {
-                for (cls, _ov) in ovl.iter() {
-                    self.totals_add(changed_pop, *cls, 1.0);
-                }
-                self.overlaps[pidx] = ovl;
-                bit_set(&mut self.nonempty_bits, pidx);
+                self.store_pair(i, j, ovl);
             }
         }
     }
@@ -497,36 +616,19 @@ impl RateCache {
             if other_l >= split_pos {
                 // Old pair content becomes the new pair (right-half
                 // ∩ other = idx ∩ other). Move slot; totals unchanged.
+                // Defensive: if new_pidx is stale, scrub before move so
+                // move_pair's `new empty` precondition holds.
+                if bit_get(&self.nonempty_bits, new_pidx) {
+                    self.clear_pair(ni, nj);
+                }
                 if bit_get(&self.nonempty_bits, old_pidx) {
-                    let data = std::mem::take(&mut self.overlaps[old_pidx]);
-                    bit_clear(&mut self.nonempty_bits, old_pidx);
-                    // If new_pidx happened to be non-empty (unlikely
-                    // but a defensive check for re-used slot history),
-                    // clear its totals first.
-                    if bit_get(&self.nonempty_bits, new_pidx) {
-                        self.totals_sub_pair(ni, nj);
-                        self.overlaps[new_pidx].clear();
-                        bit_clear(&mut self.nonempty_bits, new_pidx);
-                    }
-                    self.overlaps[new_pidx] = data;
-                    bit_set(&mut self.nonempty_bits, new_pidx);
-                } else if bit_get(&self.nonempty_bits, new_pidx) {
-                    // Old empty, new stale — scrub.
-                    self.totals_sub_pair(ni, nj);
-                    self.overlaps[new_pidx].clear();
-                    bit_clear(&mut self.nonempty_bits, new_pidx);
+                    self.move_pair(oi, oj, ni, nj);
                 }
                 continue;
             }
 
             // Case C: other spans split_pos. Recompute both halves.
-            // Old slot (idx, other): clear, recompute with left half.
-            if bit_get(&self.nonempty_bits, old_pidx) {
-                self.totals_sub_pair(oi, oj);
-                self.overlaps[old_pidx].clear();
-                bit_clear(&mut self.nonempty_bits, old_pidx);
-            }
-            // Hull + positional-bit prescreen for left-half ∩ other.
+            self.clear_pair(oi, oj);
             let left_bits = self.lineage_pos_bits
                 .get(idx).copied().unwrap_or(0);
             let other_bits = self.lineage_pos_bits
@@ -536,19 +638,10 @@ impl RateCache {
                 let ovl = compute_overlap(
                     &self.lineage_segs[oi], &self.lineage_segs[oj]);
                 if !ovl.is_empty() {
-                    for (cls, _) in ovl.iter() {
-                        self.totals_add(changed_pop, *cls, 1.0);
-                    }
-                    self.overlaps[old_pidx] = ovl;
-                    bit_set(&mut self.nonempty_bits, old_pidx);
+                    self.store_pair(oi, oj, ovl);
                 }
             }
-            // New slot (new_idx, other): clear, recompute with right half.
-            if bit_get(&self.nonempty_bits, new_pidx) {
-                self.totals_sub_pair(ni, nj);
-                self.overlaps[new_pidx].clear();
-                bit_clear(&mut self.nonempty_bits, new_pidx);
-            }
+            self.clear_pair(ni, nj);
             let right_bits = self.lineage_pos_bits
                 .get(new_idx).copied().unwrap_or(0);
             if other_r > right_hull_l && right_hull_r > other_l
@@ -556,11 +649,7 @@ impl RateCache {
                 let ovl = compute_overlap(
                     &self.lineage_segs[ni], &self.lineage_segs[nj]);
                 if !ovl.is_empty() {
-                    for (cls, _) in ovl.iter() {
-                        self.totals_add(changed_pop, *cls, 1.0);
-                    }
-                    self.overlaps[new_pidx] = ovl;
-                    bit_set(&mut self.nonempty_bits, new_pidx);
+                    self.store_pair(ni, nj, ovl);
                 }
             }
         }
@@ -574,12 +663,8 @@ impl RateCache {
             let i = other.min(idx);
             let j = other.max(idx);
             let pidx = pair_idx(i, j, self.capacity);
-            // Fast path: empty pairs don't contribute to totals and
-            // have nothing to clear — skip them without touching memory.
             if !bit_get(&self.nonempty_bits, pidx) { continue; }
-            self.totals_sub_pair(i, j);
-            self.overlaps[pidx].clear();
-            bit_clear(&mut self.nonempty_bits, pidx);
+            self.clear_pair(i, j);
         }
     }
 
@@ -610,12 +695,10 @@ impl RateCache {
             let old_pidx = pair_idx(
                 other.min(old_last), other.max(old_last), self.capacity);
             if !bit_get(&self.nonempty_bits, old_pidx) { continue; }
-            let new_pidx = pair_idx(
-                other.min(removed_idx), other.max(removed_idx), self.capacity);
-            let data = std::mem::take(&mut self.overlaps[old_pidx]);
-            bit_clear(&mut self.nonempty_bits, old_pidx);
-            self.overlaps[new_pidx] = data;
-            bit_set(&mut self.nonempty_bits, new_pidx);
+            self.move_pair(
+                other.min(old_last), other.max(old_last),
+                other.min(removed_idx), other.max(removed_idx),
+            );
         }
         // Mirror the active-side swap_remove on lineage_pop so later
         // totals diffs see the right pop at `removed_idx`.
@@ -643,6 +726,20 @@ impl RateCache {
     pub fn get_pair(&self, i: usize, j: usize) -> &PairOverlap {
         let (a, b) = if i < j { (i, j) } else { (j, i) };
         &self.overlaps[pair_idx(a, b, self.capacity)]
+    }
+
+    /// O(1) access to the (pop, class) pair bucket — packed (i, j) list.
+    /// Returns an empty slice if no such bucket exists yet.
+    /// CoalAggregate dispatch picks the kth pair directly from here,
+    /// skipping the iter_pairs walk that dominated rho=2000 wall time.
+    pub fn pair_bucket_for(
+        &self, pop: u32, cls: BranchClass) -> &[u32] {
+        for entry in self.pair_buckets.iter() {
+            if entry.0 == pop && entry.1 == cls {
+                return &entry.2;
+            }
+        }
+        &[]
     }
 
     /// Flat segment slice for lineage `idx`. Empty slice if `idx` is out

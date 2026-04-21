@@ -586,58 +586,46 @@ impl RateCache {
 
         for other in 0..self.n {
             if other == idx || other == new_idx { continue; }
-            let other_pop = self.lineage_pop[other];
-            if other_pop != changed_pop {
-                // Nothing to do — cross-pop pairs were never stored.
+            // Old pair (idx, other) nonempty iff bit is set. Split can
+            // only shrink idx's hull — left-half ⊆ old_hull, right-half
+            // ⊆ old_hull. If old had no overlap, neither half does. So
+            // for empty old pairs there is no work to do, and the pop /
+            // hull / pos-bits prescreens become redundant (they were the
+            // reason the pair is empty in the first place). new_pidx is
+            // always empty at push time (swap_update invariant), so no
+            // defensive scrub is needed.
+            let oi = other.min(idx);
+            let oj = other.max(idx);
+            let old_pidx = pair_idx(oi, oj, self.capacity);
+            if !bit_get(&self.nonempty_bits, old_pidx) {
                 continue;
             }
             let other_segs: &[FlatSeg] = self.lineage_segs
                 .get(other).map(|s| s.as_slice()).unwrap_or(&[]);
-            if other_segs.is_empty() { continue; }
             let (other_l, other_r) = Self::hull_from_segs(other_segs);
-
-            // Old pair: (min(idx, other), max(idx, other)). Branchless
-            // min/max lets the compiler emit cmov instead of jump — the
-            // `other < idx` predicate is close to 50/50 and mispredicts
-            // were ~20% of apply_recomb_split wall.
-            let oi = other.min(idx);
-            let oj = other.max(idx);
-            let old_pidx = pair_idx(oi, oj, self.capacity);
             let ni = other.min(new_idx);
             let nj = other.max(new_idx);
             let new_pidx = pair_idx(ni, nj, self.capacity);
+            debug_assert!(!bit_get(&self.nonempty_bits, new_pidx));
+            let _ = changed_pop; // old bit-set implies pops matched at store
+            let _ = new_pidx;
 
-            // Case A: other entirely left of split_pos.
+            // Case A: other entirely left of split_pos — old pair with
+            // the left-half is unchanged; nothing to do.
             if other_r <= split_pos {
-                // Old pair with the left-half is unchanged. `new_idx`
-                // is the just-pushed slot, and the swap_update protocol
-                // guarantees that every pair slot involving `new_idx`
-                // was scrubbed before any subsequent push — so no stale
-                // data lingers. Release builds skip the check entirely;
-                // debug builds assert the invariant.
-                debug_assert!(
-                    !bit_get(&self.nonempty_bits, new_pidx),
-                    "apply_recomb_split Case A: new_pidx should be empty",
-                );
                 continue;
             }
 
-            // Case B: other entirely right of split_pos.
+            // Case B: other entirely right of split_pos — old overlap
+            // used right-half only; move slot to (new_idx, other).
+            // Totals unchanged (same classes).
             if other_l >= split_pos {
-                // Old pair content becomes the new pair (right-half
-                // ∩ other = idx ∩ other). Move slot; totals unchanged.
-                // Defensive: if new_pidx is stale, scrub before move so
-                // move_pair's `new empty` precondition holds.
-                if bit_get(&self.nonempty_bits, new_pidx) {
-                    self.clear_pair(ni, nj);
-                }
-                if bit_get(&self.nonempty_bits, old_pidx) {
-                    self.move_pair(oi, oj, ni, nj);
-                }
+                self.move_pair(oi, oj, ni, nj);
                 continue;
             }
 
-            // Case C: other spans split_pos. Recompute both halves.
+            // Case C: other spans split_pos. Clear old; recompute each
+            // half's overlap with other and store if nonempty.
             self.clear_pair(oi, oj);
             let left_bits = self.lineage_pos_bits
                 .get(idx).copied().unwrap_or(0);
@@ -651,7 +639,6 @@ impl RateCache {
                     self.store_pair(oi, oj, ovl);
                 }
             }
-            self.clear_pair(ni, nj);
             let right_bits = self.lineage_pos_bits
                 .get(new_idx).copied().unwrap_or(0);
             if other_r > right_hull_l && right_hull_r > other_l

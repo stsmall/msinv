@@ -123,6 +123,23 @@ impl Lineage {
         None
     }
 
+    /// Splice `other`'s chain onto the tail of this lineage and
+    /// fold its cached length / hull right extent. `other`'s segments
+    /// must sort strictly after this lineage's tail (caller-enforced,
+    /// typical for a same-node split around a central tract).
+    pub fn append_chain(&mut self, other: Lineage, arena: &mut SegmentArena) {
+        if other.head == SEG_NIL { return; }
+        if self.tail != SEG_NIL {
+            arena.get_mut(self.tail).next = other.head;
+        } else {
+            self.head = other.head;
+            self.cached_hull_l = other.cached_hull_l;
+        }
+        self.tail = other.tail;
+        self.cached_len += other.cached_len;
+        self.cached_hull_r = other.cached_hull_r;
+    }
+
     /// Split this lineage at genomic position `x`. Returns the right
     /// half as a new Lineage (with a new uid); this lineage is
     /// truncated to [head, x). Returns None if x is past the end.
@@ -207,6 +224,31 @@ mod tests {
         let right = lin.split_at(30.0, &mut arena, 1).unwrap();
         assert!((lin.total_length(&arena) - 30.0).abs() < 1e-12);
         assert!((right.total_length(&arena) - 70.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn split_at_first_seg_left_leaves_empty_zombie() {
+        // Reproduces the bug where apply_gene_flux (or apply_recombination
+        // with offset==0) calls split_at(x) with x equal to the first
+        // segment's left boundary. The current lineage becomes head=NIL,
+        // cached_len=0 — a zombie entry that must be removed by the caller.
+        let mut arena = SegmentArena::new();
+        let mut lin = build_lineage(&mut arena,
+            &[(100.0, 200.0)], BranchClass::PANMICTIC, 0);
+        assert!((lin.cached_len - 100.0).abs() < 1e-12);
+
+        let right = lin.split_at(100.0, &mut arena, 1);
+        assert!(right.is_some());
+        let right = right.unwrap();
+
+        assert!((right.cached_len - 100.0).abs() < 1e-12);
+        assert_eq!(lin.head, SEG_NIL,
+            "BUG: self.head != SEG_NIL after split at first-seg left?");
+        assert_eq!(lin.cached_len, 0.0,
+            "self went from 100.0 to 0.0 — zombie lineage");
+        // If callers don't detect this and swap_remove it, the zombie
+        // stays in `active` contributing nothing but still picked by
+        // index-walks, bucket iteration, etc.
     }
 
     #[test]

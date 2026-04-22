@@ -50,6 +50,30 @@ fn parse_kary(c: char) -> Option<Karyotype> {
     }
 }
 
+/// Parse a sweep `target_class` string — None or "any" → no filter,
+/// "S"/"I" → inv 0, "S<id>"/"I<id>" → that inv. "P" (panmictic-only)
+/// is rejected: Rust Sweep can't express it.
+fn parse_sweep_target(tc: Option<&str>) -> PyResult<Option<(u16, Karyotype)>> {
+    let s = match tc {
+        None | Some("any") => return Ok(None),
+        Some("P") => return Err(pyo3::exceptions::PyValueError::new_err(
+            "target_class='P' (panmictic-only sweep) is not supported by the \
+             Rust backend. Use 'any', or an 'S'/'I'/'S<id>'/'I<id>' karyotype.")),
+        Some(s) => s,
+    };
+    let mut chars = s.chars();
+    let kary = parse_kary(chars.next().unwrap())
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+            format!("unrecognised target_class {s:?}; first char must be 'S' or 'I'")))?;
+    let inv_id: u16 = if s.len() == 1 {
+        0
+    } else {
+        s[1..].parse().map_err(|_| pyo3::exceptions::PyValueError::new_err(
+            format!("invalid inv_id in target_class {s:?}")))?
+    };
+    Ok(Some((inv_id, kary)))
+}
+
 // ---------------------------------------------------------------
 // simulate_raw: the main entry point from Python
 // ---------------------------------------------------------------
@@ -191,22 +215,9 @@ fn simulate_raw(
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
             let pop: Option<u32> = d.get_item("population")?
                 .and_then(|v| v.extract().ok());
-            let target: Option<(u16, Karyotype)> = {
-                let tc: Option<String> = d.get_item("target_class")?
-                    .and_then(|v| v.extract().ok());
-                match tc.as_deref() {
-                    None | Some("any") => None,
-                    Some(s) if s.len() == 1 => {
-                        parse_kary(s.chars().next().unwrap()).map(|k| (0, k))
-                    }
-                    Some(s) if s.len() >= 2 => {
-                        let kary = parse_kary(s.chars().next().unwrap());
-                        let inv_id: u16 = s[1..].parse().unwrap_or(0);
-                        kary.map(|k| (inv_id, k))
-                    }
-                    _ => None,
-                }
-            };
+            let target: Option<(u16, Karyotype)> =
+                parse_sweep_target(d.get_item("target_class")?
+                    .and_then(|v| v.extract::<String>().ok()).as_deref())?;
             let sel_coeff: f64 = d.get_item("selection_coefficient")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
             let start_freq: f64 = d.get_item("starting_frequency")?

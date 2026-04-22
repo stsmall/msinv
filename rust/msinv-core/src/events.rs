@@ -34,14 +34,10 @@ pub fn apply_coalescence(
                                next_uid, None)
 }
 
-/// Coalesce two lineages with optional class restriction.
-///
-/// When `allowed_class` is `Some(cls)`: only merge at overlap positions
-/// where both segments' class can_coalesce with `cls`. Non-matching
-/// overlap stays on separate remainder lineages (A-remain, B-remain).
-/// Solo (non-overlapping) material goes to the merged lineage.
-///
-/// When `allowed_class` is `None`: full merge (all overlap coalesces).
+/// Coalesce two lineages. `allowed_class = Some(cls)` restricts the
+/// merge to overlap positions where both segments carry `cls`;
+/// everything else stays on per-input remainder lineages. `None` does a
+/// full merge (all material folds into one output).
 pub fn apply_coalescence_partial(
     active: &mut Vec<Lineage>,
     idx_a: usize,
@@ -54,6 +50,7 @@ pub fn apply_coalescence_partial(
 ) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
+    let partial = allowed_class.is_some();
 
     let mut sa = active[idx_a].head;
     let mut sb = active[idx_b].head;
@@ -87,27 +84,46 @@ pub fn apply_coalescence_partial(
             (b.left, b.right, b.node_id, b.branch_class, b.next);
 
         if a_right <= b_left {
-            chain_append!(merged_head, merged_tail, arena,
-                           a_left, a_right, a_node, a_bc);
+            if partial {
+                chain_append!(a_rem_head, a_rem_tail, arena,
+                               a_left, a_right, a_node, a_bc);
+            } else {
+                chain_append!(merged_head, merged_tail, arena,
+                               a_left, a_right, a_node, a_bc);
+            }
             arena.free(sa);
             sa = a_next;
         } else if b_right <= a_left {
-            chain_append!(merged_head, merged_tail, arena,
-                           b_left, b_right, b_node, b_bc);
+            if partial {
+                chain_append!(b_rem_head, b_rem_tail, arena,
+                               b_left, b_right, b_node, b_bc);
+            } else {
+                chain_append!(merged_head, merged_tail, arena,
+                               b_left, b_right, b_node, b_bc);
+            }
             arena.free(sb);
             sb = b_next;
         } else {
             let l = a_left.max(b_left);
             let r = a_right.min(b_right);
 
-            // Pre-overlap solo bits → merged.
             if a_left < l {
-                chain_append!(merged_head, merged_tail, arena,
-                               a_left, l, a_node, a_bc);
+                if partial {
+                    chain_append!(a_rem_head, a_rem_tail, arena,
+                                   a_left, l, a_node, a_bc);
+                } else {
+                    chain_append!(merged_head, merged_tail, arena,
+                                   a_left, l, a_node, a_bc);
+                }
             }
             if b_left < l {
-                chain_append!(merged_head, merged_tail, arena,
-                               b_left, l, b_node, b_bc);
+                if partial {
+                    chain_append!(b_rem_head, b_rem_tail, arena,
+                                   b_left, l, b_node, b_bc);
+                } else {
+                    chain_append!(merged_head, merged_tail, arena,
+                                   b_left, l, b_node, b_bc);
+                }
             }
 
             let class_ok = match allowed_class {
@@ -120,8 +136,6 @@ pub fn apply_coalescence_partial(
                 chain_append!(merged_head, merged_tail, arena,
                                l, r, new_node, a_bc);
             } else {
-                // Class mismatch: A's segment → A-remainder,
-                // B's segment → B-remainder.
                 chain_append!(a_rem_head, a_rem_tail, arena,
                                l, r, a_node, a_bc);
                 chain_append!(b_rem_head, b_rem_tail, arena,
@@ -146,8 +160,13 @@ pub fn apply_coalescence_partial(
         let a = arena.get(sa);
         let (a_left, a_right, a_node, a_bc, a_next) =
             (a.left, a.right, a.node_id, a.branch_class, a.next);
-        chain_append!(merged_head, merged_tail, arena,
-                       a_left, a_right, a_node, a_bc);
+        if partial {
+            chain_append!(a_rem_head, a_rem_tail, arena,
+                           a_left, a_right, a_node, a_bc);
+        } else {
+            chain_append!(merged_head, merged_tail, arena,
+                           a_left, a_right, a_node, a_bc);
+        }
         arena.free(sa);
         sa = a_next;
     }
@@ -155,8 +174,13 @@ pub fn apply_coalescence_partial(
         let b = arena.get(sb);
         let (b_left, b_right, b_node, b_bc, b_next) =
             (b.left, b.right, b.node_id, b.branch_class, b.next);
-        chain_append!(merged_head, merged_tail, arena,
-                       b_left, b_right, b_node, b_bc);
+        if partial {
+            chain_append!(b_rem_head, b_rem_tail, arena,
+                           b_left, b_right, b_node, b_bc);
+        } else {
+            chain_append!(merged_head, merged_tail, arena,
+                           b_left, b_right, b_node, b_bc);
+        }
         arena.free(sb);
         sb = b_next;
     }
@@ -196,6 +220,10 @@ pub fn apply_recombination(
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
 ) {
+    let head = active[idx].head;
+    if head == SEG_NIL { return; }
+    // x at first_seg.left would empty active[idx] — treat as no-op.
+    if x <= arena.get(head).left { return; }
     let uid = *next_uid;
     *next_uid += 1;
     let right = active[idx].split_at(x, arena, uid);
@@ -283,6 +311,23 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert!((active[0].total_length(&arena) - 100.0).abs() < 1e-12);
         let _ = new_node;
+    }
+
+    #[test]
+    fn apply_recombination_skips_zombie_at_first_seg_left() {
+        // x == first_seg.left (occurs when rng.random() returns 0.0 so
+        // offset == 0 in find_position) must not produce an empty
+        // zombie at active[idx].
+        let mut arena = SegmentArena::new();
+        let mut next_uid = 10u32;
+        let lin = build_lineage(&mut arena, &[(100.0, 200.0)], 0);
+        let mut active = vec![lin];
+
+        apply_recombination(&mut active, 0, 100.0, &mut arena, &mut next_uid);
+
+        assert_eq!(active.len(), 1, "no zombie, no spurious split");
+        assert_ne!(active[0].head, SEG_NIL);
+        assert!((active[0].total_length(&arena) - 100.0).abs() < 1e-12);
     }
 
     #[test]

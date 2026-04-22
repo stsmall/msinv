@@ -70,6 +70,16 @@ impl SegmentArena {
         self.free.push(idx);
     }
 
+    /// Free every segment in the chain rooted at `head`.
+    pub fn free_chain(&mut self, head: SegIdx) {
+        let mut cur = head;
+        while cur != SEG_NIL {
+            let next = self.get(cur).next;
+            self.free(cur);
+            cur = next;
+        }
+    }
+
     /// Access a segment by index.
     #[inline]
     pub fn get(&self, idx: SegIdx) -> &Segment {

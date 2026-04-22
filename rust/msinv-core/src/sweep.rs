@@ -61,16 +61,12 @@ impl Default for Sweep {
 }
 
 impl Sweep {
-    /// Check if a BranchClass at x_sel qualifies for this sweep.
+    /// None ≡ any class; Some((inv, kary)) requires exact karyotype
+    /// at `inv` (panmictic fails).
     pub fn class_matches(&self, cls: BranchClass) -> bool {
         match self.target {
-            None => true, // 'any'
-            Some((inv_id, kary)) => {
-                match cls.get_inv(inv_id) {
-                    Some(k) => k == kary,
-                    None => true, // panmictic at this inv → qualifies
-                }
-            }
+            None => true,
+            Some((inv_id, kary)) => cls.get_inv(inv_id) == Some(kary),
         }
     }
 

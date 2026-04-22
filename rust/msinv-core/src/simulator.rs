@@ -632,6 +632,14 @@ impl HullSimulator {
                         if !active[a].hulls_overlap(&active[b], arena) {
                             continue; // no-op, draw next event
                         }
+                        // Hull overlap is necessary but not sufficient
+                        // for fragmented chains with gaps. Skip pairs
+                        // with no real segment overlap — else we'd
+                        // create an orphan node and a fictitious merge.
+                        if !segments_overlap(
+                            active[a].head, active[b].head, arena) {
+                            continue;
+                        }
                         let (lo, hi) = if a < b { (a, b) } else { (b, a) };
                         let old_a_len = active[a].cached_len;
                         let old_b_len = active[b].cached_len;
@@ -1469,21 +1477,51 @@ fn apply_gene_flux(
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
 ) {
+    let head = active[lin_idx].head;
+    if head == SEG_NIL { return; }
+
+    // Combined scan: capture first_left for the zombie-guard path and
+    // confirm the tract touches at least one seg. No overlap ⇒ no-op.
+    let first_left = arena.get(head).left;
+    let mut tract_hits_material = false;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        if seg.left >= tract_right { break; }
+        if seg.right > tract_left { tract_hits_material = true; break; }
+        cur = seg.next;
+    }
+    if !tract_hits_material { return; }
+
+    if tract_left <= first_left {
+        // Fast path: no material precedes the tract, so split at
+        // tract_right only — active[lin_idx] becomes the tract.
+        let uid = *next_uid; *next_uid += 1;
+        let outside_right = active[lin_idx].split_at(tract_right, arena, uid);
+        let mut cur = active[lin_idx].head;
+        while cur != SEG_NIL {
+            let seg = arena.get_mut(cur);
+            seg.branch_class = seg.branch_class.flip_inv(inv.inv_id);
+            cur = seg.next;
+        }
+        if let Some(right_lin) = outside_right {
+            active.push(right_lin);
+        }
+        return;
+    }
+
     let uid = *next_uid;
     *next_uid += 1;
-    // Split at tract_left → (outside_left, rest)
     let rest = active[lin_idx].split_at(tract_left, arena, uid);
     if rest.is_none() {
-        return; // no material at or after tract_left
+        return;
     }
     let mut rest = rest.unwrap();
 
     let uid2 = *next_uid;
     *next_uid += 1;
-    // Split rest at tract_right → (tract, outside_right)
     let outside_right = rest.split_at(tract_right, arena, uid2);
 
-    // Flip class tags on the tract (rest is now the tract).
     let mut cur = rest.head;
     while cur != SEG_NIL {
         let seg = arena.get_mut(cur);
@@ -1491,12 +1529,13 @@ fn apply_gene_flux(
         cur = seg.next;
     }
 
-    // Add flipped tract back to active.
-    active.push(rest);
-    // Add outside_right if non-empty.
+    // Outside material was one chromosome — splice A + outside_right
+    // into a single lineage with a "hole" for the tract.
     if let Some(right_lin) = outside_right {
-        active.push(right_lin);
+        active[lin_idx].append_chain(right_lin, arena);
     }
+
+    active.push(rest);
 }
 
 /// Convert an offset within a lineage's ancestral material to a
@@ -1537,13 +1576,12 @@ fn apply_boundary(
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
 ) {
+    // Order matches Python (msinv/hull/simulator.py ~1250-1263):
+    // class barriers, then sweeps, then demographic events. A sweep
+    // scheduled at the same t as an Ej must still see the pre-merge
+    // populations — firing demo first would silently zero the sweep's
+    // target pool when Ej moves all pop-N lineages into pop-M.
     HullSimulator::cross_barriers_static(inversions, active, arena, barrier_active, t);
-    let inv_changes = demo.apply_events_at(t, active);
-    for (inv_id, pop, p_inv_val) in inv_changes {
-        if let Some(inv) = inversions.iter_mut().find(|i| i.inv_id == inv_id) {
-            inv.set_p_inv_for(pop, p_inv_val);
-        }
-    }
     // Drain all sweeps scheduled at this t (simultaneous sweeps).
     while !pending_sweeps.is_empty()
         && (pending_sweeps[0].t_event - t).abs() < 1e-9
@@ -1554,6 +1592,12 @@ fn apply_boundary(
         apply_sweep(active, &sweep, t, arena, tables,
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
                      sweep_cursor);
+    }
+    let inv_changes = demo.apply_events_at(t, active);
+    for (inv_id, pop, p_inv_val) in inv_changes {
+        if let Some(inv) = inversions.iter_mut().find(|i| i.inv_id == inv_id) {
+            inv.set_p_inv_for(pop, p_inv_val);
+        }
     }
 }
 
@@ -1727,8 +1771,11 @@ fn apply_sweep_hitchhiking(
             continue; // lineage entirely escapes the sweep
         }
 
-        // Remove original lineage.
+        // Original chain is about to be replaced by fresh allocations
+        // in build_lineage_from_segs — free it first so the arena free-
+        // list picks up the slots.
         let pop = active[q_idx].population;
+        arena.free_chain(active[q_idx].head);
         active.swap_remove(q_idx);
 
         // Build swept lineage.
@@ -1809,10 +1856,33 @@ fn coalesce_uid_group(
         let mi = active.iter().position(|l| l.uid == merged_uid);
         let oi = active.iter().position(|l| l.uid == other_uid);
         if let (Some(mi), Some(oi)) = (mi, oi) {
+            // Skip disjoint pairs — forcing a merge would manufacture
+            // ancestry correlation (orphan node + fictitious lineage).
+            if !segments_overlap(active[mi].head, active[oi].head, arena) {
+                continue;
+            }
             apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid);
             merged_uid = active.last().unwrap().uid;
         }
     }
+}
+
+/// True if the two segment chains share any genomic position. Both
+/// chains are assumed sorted by left boundary. O(|a| + |b|) two-pointer
+/// walk; returns on the first overlap found.
+fn segments_overlap(
+    a_head: SegIdx, b_head: SegIdx, arena: &SegmentArena,
+) -> bool {
+    let mut sa = a_head;
+    let mut sb = b_head;
+    while sa != SEG_NIL && sb != SEG_NIL {
+        let a = arena.get(sa);
+        let b = arena.get(sb);
+        if a.right <= b.left { sa = a.next; continue; }
+        if b.right <= a.left { sb = b.next; continue; }
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------
@@ -1913,6 +1983,240 @@ mod tests {
         assert!(r_yes.tables.num_nodes() >= r_no.tables.num_nodes(),
             "flux={} vs no_flux={}", r_yes.tables.num_nodes(),
             r_no.tables.num_nodes());
+    }
+
+    #[test]
+    fn sweep_fires_before_simultaneous_population_merge() {
+        // Ej(src=1) and a sweep on pop 1 scheduled at the same t:
+        // sweep must see pop-1 lineages (fires first), not an empty
+        // pool after the merge.
+        use crate::demography::DemoEvent;
+        use crate::sweep::Sweep;
+
+        let mut demo = Demography::new(vec![1000.0, 1000.0]);
+        demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
+
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry { karyotypes: vec![], population: 0, count: 4 },
+                SampleEntry { karyotypes: vec![], population: 1, count: 4 },
+            ],
+            demography: demo,
+            sequence_length: 1000.0,
+            recombination_rate: 1e-12,
+            inversions: vec![],
+            sweeps: vec![Sweep {
+                x_sel: 500.0,
+                t_event: 500.0,
+                target: None,
+                population: Some(1),
+                sweep_window: 500.0,
+                selection_coefficient: 0.0,
+                starting_frequency: 0.0,
+            }],
+            seed: 42,
+        };
+        let result = sim.simulate();
+
+        let sweep_coalescences = result.tables.node_time.iter()
+            .filter(|&&t| t > 500.0 - 1e-6 && t < 500.0 + 1e-3)
+            .count();
+        assert!(sweep_coalescences >= 1,
+            "sweep at same t as Ej produced {} coalescences near t=500, \
+             expected ≥1. node_times = {:?}",
+            sweep_coalescences, result.tables.node_time);
+    }
+
+    #[test]
+    fn coalesce_uid_group_skips_non_overlapping_pairs() {
+        use crate::class_tag::BranchClass;
+
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(1000.0, 1);
+        let node_a = tables.add_sample(0.0, 0);
+        let node_b = tables.add_sample(0.0, 0);
+
+        let bc = BranchClass::PANMICTIC;
+        let s_a = arena.alloc(0.0, 400.0, node_a, bc);
+        let lin_a = Lineage::new(s_a, s_a, 0, 0, &arena);
+        let s_b = arena.alloc(600.0, 1000.0, node_b, bc);
+        let lin_b = Lineage::new(s_b, s_b, 0, 1, &arena);
+
+        let mut active = vec![lin_a, lin_b];
+        let mut next_uid: LinUid = 10;
+        let mut cursor = (f64::NAN, 0u64);
+
+        let n_edges_before = tables.num_edges();
+        coalesce_uid_group(&mut active, &[0, 1], 100.0,
+                            &mut arena, &mut tables, &mut next_uid,
+                            &mut cursor);
+
+        assert_eq!(tables.num_edges(), n_edges_before,
+            "added edges for non-overlapping pair");
+        assert_eq!(active.len(), 2,
+            "non-overlapping pair was merged (active.len() = {})",
+            active.len());
+    }
+
+    #[test]
+    fn sweep_targeting_karyotype_should_skip_panmictic_lineages() {
+        // Sweep targets I-at-inv-0, but samples carry no inversion at
+        // all (all segments are PANMICTIC). Python's `apply_sweep`
+        // skips lineages whose class at x_sel doesn't match the
+        // target — panmictic never matches 'I'. Sweep is a no-op, and
+        // the tree's MRCA time is set by Hudson coalescence (~ 2·Ne).
+        //
+        // Rust's `Sweep::class_matches` returns true for panmictic
+        // (cls.get_inv → None → return true), so the sweep force-
+        // coalesces every lineage at t_event. Tree's MRCA is pinned
+        // near t_event instead of the Hudson expectation — large
+        // deviation from the Python reference.
+        use crate::sweep::{Sweep};
+        use crate::class_tag::Karyotype;
+
+        // Large Ne so Hudson coal times are huge compared to sweep t.
+        let mut sim = HullSimulator::panmictic(3, 1_000_000.0, 100.0, 1e-12, 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50.0,
+            t_event: 1.0,
+            target: Some((0, Karyotype::I)),
+            population: None,
+            sweep_window: 50.0,
+            ..Default::default()
+        });
+        let result = sim.simulate();
+
+        // 3 samples (ids 0..3), then 2 internal coal nodes (ids 3, 4).
+        // If the sweep is correctly skipped, coal times are drawn from
+        // Hudson with mean ≈ 2·Ne = 2e6 generations. If the sweep
+        // fires, all 3 samples force-coalesce near t_event = 1.0.
+        let coal_times: Vec<f64> = result.tables.node_time.iter()
+            .skip(3).copied().collect();
+        assert!(coal_times.iter().all(|&t| t > 1000.0),
+            "BUG: sweep on panmictic lineages forced coalescence at \
+             t_event. Coal times = {:?} (expected all >> 1.0 from Hudson)",
+            coal_times);
+    }
+
+    #[test]
+    fn apply_gene_flux_outside_material_stays_one_lineage() {
+        // Gene conversion transfers one tract from a donor to a receiver.
+        // Going backward, the receiver's ancestry OUTSIDE the tract is
+        // still one chromosome's worth — it must stay on one lineage
+        // (with a "hole" where the tract was). Python's apply_gene_flux
+        // explicitly re-merges A + C into the outside lineage. Rust was
+        // splitting into 3 (A, tract, C) — extra fragmentation creates
+        // spurious independent coalescences on either side of the tract.
+        use crate::class_tag::{BranchClass, Karyotype};
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 1000.0,
+            p_inv: vec![0.5], t_inv: 10_000.0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
+        };
+
+        let mut arena = SegmentArena::new();
+        let bc = BranchClass::single(0, Karyotype::I);
+        // Single segment [100, 900). Tract [400, 500) carves a hole.
+        let s = arena.alloc(100.0, 900.0, 0, bc);
+        let lin = Lineage::new(s, s, 0, 0, &arena);
+        let mut active = vec![lin];
+
+        let mut next_uid: LinUid = 10;
+        apply_gene_flux(&mut active, 0, 400.0, 500.0,
+                        &inv, &mut arena, &mut next_uid);
+
+        // Expected: 2 lineages — outside (= [100, 400) + [500, 900), one
+        // lineage with a hole) and the flipped tract [400, 500).
+        // Current Rust bug produces 3: A=[100, 400), tract=[400, 500),
+        // C=[500, 900) — the outside material gets spuriously fragmented.
+        let total: f64 = active.iter().map(|l| l.cached_len).sum();
+        assert!((total - 800.0).abs() < 1e-12,
+            "total = {} (expected 800)", total);
+        assert_eq!(active.len(), 2,
+            "BUG: gene flux fragmented outside material. active.len() = {} \
+             (expected 2). Segments per lineage: {:?}",
+            active.len(),
+            active.iter().map(|l| l.cached_len).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn apply_gene_flux_empty_tract_pushes_zombie() {
+        // Tract falls entirely in a gap between the lineage's segments.
+        // rest.split_at(tract_right) makes `rest` empty (all rest material
+        // was past tract_right) and `active.push(rest)` pushes a zombie.
+        use crate::class_tag::{BranchClass, Karyotype};
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 1000.0,
+            p_inv: vec![0.5], t_inv: 10_000.0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
+        };
+
+        let mut arena = SegmentArena::new();
+        let bc = BranchClass::single(0, Karyotype::I);
+        // Segments [100, 200) + [500, 600). Tract [250, 400) falls in the
+        // gap — no material overlaps it.
+        let s1 = arena.alloc(100.0, 200.0, 0, bc);
+        let s2 = arena.alloc(500.0, 600.0, 1, bc);
+        arena.get_mut(s1).next = s2;
+        let lin = Lineage::new(s1, s2, 0, 0, &arena);
+        let mut active = vec![lin];
+
+        let mut next_uid: LinUid = 10;
+        apply_gene_flux(&mut active, 0, 250.0, 400.0,
+                        &inv, &mut arena, &mut next_uid);
+
+        let total: f64 = active.iter().map(|l| l.cached_len).sum();
+        assert!((total - 200.0).abs() < 1e-12,
+            "total material = {} (expected 200.0)", total);
+
+        let zombies: Vec<usize> = active.iter().enumerate()
+            .filter(|(_, l)| l.head == SEG_NIL || l.cached_len == 0.0)
+            .map(|(i, _)| i).collect();
+        assert!(zombies.is_empty(),
+            "BUG: {} zombie(s) at {:?} — active={:?}",
+            zombies.len(), zombies,
+            active.iter().map(|l| (l.head, l.cached_len)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn apply_gene_flux_leaves_empty_zombie() {
+        // Repro: if the lineage's first segment starts at inv.bp_left
+        // and the drawn tract_left == inv.bp_left, Lineage::split_at
+        // makes the lineage's head = SEG_NIL (cached_len = 0) and
+        // apply_gene_flux never removes it — so active[li] is a zombie.
+        use crate::class_tag::{BranchClass, Karyotype};
+        let inv = InversionSpec {
+            bp_left: 100.0, bp_right: 200.0,
+            p_inv: vec![0.5], t_inv: 10_000.0,
+            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
+        };
+
+        let mut arena = SegmentArena::new();
+        let bc = BranchClass::single(0, Karyotype::I);
+        // Lineage with a single segment starting exactly at inv.bp_left.
+        let idx = arena.alloc(inv.bp_left, inv.bp_right, 0, bc);
+        let lin = Lineage::new(idx, idx, 0, 0, &arena);
+        let mut active = vec![lin];
+
+        let mut next_uid: LinUid = 10;
+        // Tract starting exactly at inv.bp_left — drawable by draw_tract
+        // (b1 = 0 when the event lands near the left edge).
+        apply_gene_flux(&mut active, 0,
+                        inv.bp_left, inv.bp_left + 5.0,
+                        &inv, &mut arena, &mut next_uid);
+
+        // Expected: no zombies. Total ancestral material unchanged (100.0).
+        let total: f64 = active.iter().map(|l| l.cached_len).sum();
+        assert!((total - 100.0).abs() < 1e-12,
+            "total material = {} (expected 100.0)", total);
+
+        let zombies: Vec<usize> = active.iter().enumerate()
+            .filter(|(_, l)| l.head == SEG_NIL || l.cached_len == 0.0)
+            .map(|(i, _)| i).collect();
+        assert!(zombies.is_empty(),
+            "BUG: {} zombie lineage(s) at indices {:?} — active={:?}",
+            zombies.len(), zombies,
+            active.iter().map(|l| (l.head, l.cached_len)).collect::<Vec<_>>());
     }
 
     #[test]

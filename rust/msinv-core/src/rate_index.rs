@@ -45,17 +45,20 @@ struct PairBucketRefs {
     data: [(u32, u32); 2],
 }
 
-/// Pack (i, j) lineage indices into a single u32 for dense bucket storage.
-/// Max n = 65535 lineages per pop, far above any realistic sample size.
+/// Pack (i, j) lineage indices into a single u64 for dense bucket storage.
+/// Supports up to 2^32 lineages per side — well above any realistic
+/// simulation. Earlier u32 packing silently overflowed once class-
+/// mismatch remnants + gene flux pushed active lineage counts past
+/// 65535 in large-Ne, long-barrier sims.
 #[inline]
-pub fn pack_ij(i: usize, j: usize) -> u32 {
-    debug_assert!(i < 65536 && j < 65536);
-    (i as u32) | ((j as u32) << 16)
+pub fn pack_ij(i: usize, j: usize) -> u64 {
+    debug_assert!(i < (1usize << 32) && j < (1usize << 32));
+    (i as u64) | ((j as u64) << 32)
 }
 
 #[inline]
-pub fn unpack_ij(packed: u32) -> (usize, usize) {
-    ((packed & 0xFFFF) as usize, (packed >> 16) as usize)
+pub fn unpack_ij(packed: u64) -> (usize, usize) {
+    ((packed & 0xFFFF_FFFF) as usize, (packed >> 32) as usize)
 }
 
 /// Flat per-lineage segment view: (left, right, class). Stored contiguously
@@ -118,7 +121,7 @@ pub struct RateCache {
     /// table is required. CoalAggregate dispatch picks the kth pair in
     /// O(1) via direct indexing instead of walking iter_pairs until the
     /// target (the old ~15%-of-wall cost at rho=2000).
-    pair_buckets: SmallVec<[(u32, BranchClass, Vec<u32>); 8]>,
+    pair_buckets: SmallVec<[(u32, BranchClass, Vec<u64>); 8]>,
     /// Reverse index per pair_idx: list of (bucket_slot, pos_in_bucket)
     /// entries, one per class stored in overlaps[pidx], in the same
     /// order. Used to patch bucket positions during swap_remove and to
@@ -646,9 +649,6 @@ impl RateCache {
         self.move_pair_data(old_pidx, new_pidx);
         bit_clear(&mut self.nonempty_bits, old_pidx);
         bit_set(&mut self.nonempty_bits, new_pidx);
-        // Patch packed (i, j) in each bucket entry that now lives at
-        // new_pidx. Snapshot refs into a local so we don't hold a
-        // borrow while mutating pair_buckets.
         let refs: SmallVec<[(u32, u32); 4]> =
             SmallVec::from_slice(self.refs_slice(new_pidx));
         let new_packed = pack_ij(new_i, new_j);
@@ -1034,7 +1034,7 @@ impl RateCache {
     /// CoalAggregate dispatch picks the kth pair directly from here,
     /// skipping the iter_pairs walk that dominated rho=2000 wall time.
     pub fn pair_bucket_for(
-        &self, pop: u32, cls: BranchClass) -> &[u32] {
+        &self, pop: u32, cls: BranchClass) -> &[u64] {
         for entry in self.pair_buckets.iter() {
             if entry.0 == pop && entry.1 == cls {
                 return &entry.2;

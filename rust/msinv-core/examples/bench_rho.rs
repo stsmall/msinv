@@ -89,5 +89,6 @@ fn build_multi_pop(
         inversions: invs,
         sweeps: Vec::new(),
         seed,
+        stop_at: f64::INFINITY,
     }
 }

@@ -103,6 +103,7 @@ fn no_migration_cross_pop_mrca_at_least_t_split() {
             inversions: vec![],
             sweeps: vec![],
             seed,
+            stop_at: f64::INFINITY,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 15,
@@ -129,6 +130,7 @@ fn migration_allows_cross_pop_mrca_below_t_split() {
         inversions: vec![],
         sweeps: vec![],
         seed: 42,
+        stop_at: f64::INFINITY,
     };
     let result = sim.simulate();
     // With M=1e-3, mean migration time ~ 1/M = 1000 gen << 50000.
@@ -166,6 +168,7 @@ fn inversion_with_two_pops() {
         inversions: vec![inv(20000.0, 80000.0, 0.3, 80000.0, 0)],
         sweeps: vec![],
         seed: 42,
+        stop_at: f64::INFINITY,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 21,
@@ -317,6 +320,7 @@ fn nested_inversions_run_without_crashing() {
         ],
         sweeps: vec![],
         seed: 42,
+        stop_at: f64::INFINITY,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 11,
@@ -353,6 +357,7 @@ fn continuous_migration_with_inversion() {
         inversions: vec![inv(2000.0, 8000.0, 0.5, 8000.0, 0)],
         sweeps: vec![],
         seed: 42,
+        stop_at: f64::INFINITY,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 17,
@@ -427,6 +432,7 @@ fn t_inv_and_demographic_event_at_same_time() {
         inversions: vec![inv(0.0, 10000.0, 0.5, 1000.0, 0)],
         sweeps: vec![],
         seed: 42,
+        stop_at: f64::INFINITY,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 15,

@@ -94,7 +94,8 @@ fn parse_sweep_target(tc: Option<&str>) -> PyResult<Option<(u16, Karyotype)>> {
     sweeps = None,
     demo_events = None,
     migration_matrix = None,
-    seed = 42
+    seed = 42,
+    stop_at = f64::INFINITY
 ))]
 #[allow(clippy::too_many_arguments)]
 fn simulate_raw(
@@ -108,6 +109,7 @@ fn simulate_raw(
     demo_events: Option<&Bound<'_, PyList>>,
     migration_matrix: Option<Vec<Vec<f64>>>,
     seed: u64,
+    stop_at: f64,
 ) -> PyResult<Py<PyDict>> {
     // --- Demography ---
     let mut demo = Demography::new(pop_sizes);
@@ -263,6 +265,7 @@ fn simulate_raw(
         inversions: inv_specs,
         sweeps: sweep_specs,
         seed,
+        stop_at,
     };
     let mut result = CACHE.with(|c| {
         let mut slot = c.borrow_mut();

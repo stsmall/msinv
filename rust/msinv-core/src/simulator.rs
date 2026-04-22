@@ -75,6 +75,12 @@ pub struct HullSimulator {
     pub inversions: Vec<InversionSpec>,
     pub sweeps: Vec<Sweep>,
     pub seed: u64,
+    /// Early-stop time (generations backward). Default f64::INFINITY
+    /// — run to MRCA. Set to a finite value to return a partial
+    /// tskit TreeSequence whose still-active lineages become the
+    /// starting state for msprime recapitation via
+    /// `sim_ancestry(initial_state=ts)`.
+    pub stop_at: f64,
 }
 
 impl HullSimulator {
@@ -111,6 +117,7 @@ impl HullSimulator {
             inversions,
             sweeps: vec![],
             seed,
+            stop_at: f64::INFINITY,
         }
     }
 
@@ -134,6 +141,7 @@ impl HullSimulator {
             inversions: vec![],
             sweeps: vec![],
             seed,
+            stop_at: f64::INFINITY,
         }
     }
 
@@ -298,6 +306,9 @@ impl HullSimulator {
         let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {
+            // Optional early stop (used by msprime-recapitation wrapper):
+            // simulate up to stop_at time, then return partial TS.
+            if t >= self.stop_at { break; }
             let n = active.len();
             if n <= 1 {
                 if n == 0 || active[0].total_length(arena)
@@ -2015,6 +2026,7 @@ mod tests {
                 starting_frequency: 0.0,
             }],
             seed: 42,
+            stop_at: f64::INFINITY,
         };
         let result = sim.simulate();
 
@@ -2240,6 +2252,7 @@ mod tests {
             inversions: vec![],
             sweeps: vec![],
             seed: 42,
+            stop_at: f64::INFINITY,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2275,6 +2288,7 @@ mod tests {
             inversions: vec![],
             sweeps: vec![],
             seed: 42,
+            stop_at: f64::INFINITY,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2312,6 +2326,7 @@ mod tests {
             inversions: vec![inv],
             sweeps: vec![],
             seed: 42,
+            stop_at: f64::INFINITY,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

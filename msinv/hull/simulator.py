@@ -351,7 +351,8 @@ class HullSimulator:
                  flux_window: float = 0.05,
                  inversions: list = None,
                  sweeps: list = None,
-                 seed: int = None):
+                 seed: int = None,
+                 stop_at: float = float('inf')):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
         ``demography`` for multi-pop work).
@@ -525,6 +526,7 @@ class HullSimulator:
                 self.sweeps.append(s)
             self.sweeps.sort(key=lambda s: s.t_event)
         self.rng = np.random.default_rng(seed)
+        self.stop_at = stop_at
 
     # -- internal helpers --------------------------------------------------
 

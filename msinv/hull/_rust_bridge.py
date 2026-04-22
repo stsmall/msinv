@@ -91,6 +91,7 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         migration_matrix=mig,
         seed=int(simulator.rng.integers(0, 2**63))
             if hasattr(simulator, 'rng') else 42,
+        stop_at=float(getattr(simulator, 'stop_at', float('inf'))),
     )
 
     # --- Convert to tskit TreeSequence ---

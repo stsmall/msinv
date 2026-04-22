@@ -81,6 +81,15 @@ pub struct HullSimulator {
     /// starting state for msprime recapitation via
     /// `sim_ancestry(initial_state=ts)`.
     pub stop_at: f64,
+    /// PROTOTYPE (feature/structured-analytic-middle): when true, the
+    /// run loop will opportunistically fast-forward through the
+    /// "structured Hudson middle phase" using Kingman-style analytic
+    /// exponential draws instead of the full event-by-event pair-rate
+    /// engine. See `analytic_middle.rs` for scope and limitations.
+    /// Default false. Recombination is disabled while the fast path is
+    /// active, so results diverge from the exact event-loop path for
+    /// non-trivial rho. Intended for benchmarking + exploratory use.
+    pub analytic_middle: bool,
 }
 
 impl HullSimulator {
@@ -118,6 +127,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         }
     }
 
@@ -142,6 +152,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         }
     }
 
@@ -317,6 +328,36 @@ impl HullSimulator {
                     return;
                 }
                 return;
+            }
+
+            // PROTOTYPE (feature/structured-analytic-middle): if enabled
+            // and the current state matches a simple uniform-demography
+            // barrier-active window, fast-forward to t_inv using
+            // Kingman-style exponential draws. Disables recombination
+            // inside the window (documented limitation).
+            if self.analytic_middle {
+                let mut horizon = f64::INFINITY;
+                if crate::analytic_middle::can_use_analytic_middle(
+                    t, active, demo, inversions,
+                    &barrier_active, &pending_sweeps, &mut horizon)
+                {
+                    let _stats = crate::analytic_middle::run_analytic_middle(
+                        &mut t, horizon, active, arena, tables,
+                        next_uid, rng, demo, inversions);
+                    // Mark every incremental cache dirty — the analytic
+                    // phase mutated `active` directly without notifying
+                    // rate_cache / flux / Fenwick tree.
+                    engine_dirty = true;
+                    cache_dirty = true;
+                    lin_tree_dirty = true;
+                    flux_dirty = true;
+                    total_material = active.iter()
+                        .map(|l| l.cached_len).sum();
+                    total_recomb_rate = total_material * self.recombination_rate;
+                    // Back to the top so the standard boundary logic
+                    // handles the barrier crossing at t == horizon.
+                    continue;
+                }
             }
 
             if lin_tree_dirty || lin_len_tree.len() < active.len() {
@@ -2027,6 +2068,7 @@ mod tests {
             }],
             seed: 42,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         };
         let result = sim.simulate();
 
@@ -2253,6 +2295,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2289,6 +2332,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2327,6 +2371,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            analytic_middle: false,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

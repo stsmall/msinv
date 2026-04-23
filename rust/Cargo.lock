@@ -72,6 +72,7 @@ version = "0.3.4"
 dependencies = [
  "rand",
  "rand_xoshiro",
+ "rustc-hash",
  "smallvec",
 ]
 

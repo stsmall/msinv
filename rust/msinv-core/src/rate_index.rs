@@ -289,6 +289,13 @@ impl RateCache {
             self.peer_bits = vec![0u64; new_cap * new_stride];
             self.peer_word_stride = new_stride;
             self.capacity = new_cap;
+            // Per-(pop, class) pair bucket Vec<u64>s retain capacity
+            // under Vec::clear(), so a rep that pushed 10M entries
+            // keeps that cap even though the next rep starts empty.
+            // Drop to free heap.
+            for entry in self.pair_buckets.iter_mut() {
+                entry.2.shrink_to_fit();
+            }
         } else {
             // Walk only non-empty overlap slots via the bitmap — skips
             // the O(n_pairs) sweep over the 300k+ typically-empty
@@ -344,7 +351,14 @@ impl RateCache {
     fn ensure_capacity(&mut self, need: usize) {
         if need > self.capacity {
             let old_cap = self.capacity;
-            let new_cap = need * 2;
+            // 1.5× geometric growth. Was 2× — at Kir/Fol peak active-n
+            // of ~10k that put pair_bucket_refs at tri_size(40k) × 24 B
+            // ≈ 19 GB, dwarfing everything else. 1.5× asymptotic peak
+            // is ~56% of 2×. Amortized reindex stays O(1) per insert —
+            // the growth factor stays constant, just smaller — so
+            // runtime cost is a ~10-20% increase in reindex events
+            // during the growth phase.
+            let new_cap = need + need / 2 + 1;
             let new_n_pairs = tri_size(new_cap);
             let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
             let mut new_refs: Vec<PairBucketRefs> =

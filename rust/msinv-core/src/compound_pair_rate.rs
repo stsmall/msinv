@@ -72,6 +72,15 @@ pub fn compute_pair_rate(
 /// Effective sub-population frequency product for a shared overlap
 /// position. Returns None if the pair is barrier-blocked at this
 /// position (S vs I at an active inv).
+///
+/// When one side is PAN (uncommitted at this inv) and the other is
+/// typed, the inv's contribution to p_eff is 1 — NOT the partner's
+/// class frequency. Rationale: an uncommitted lineage marginalises
+/// over its possible karyotype, yielding Hudson rate 1/(2·Ne) rather
+/// than the structured rate 1/(2·Ne·p_std). Multiplying by p_std
+/// here would make PAN-vs-S coalesce faster than the marginal
+/// expectation (the uncommitted side adds uncertainty, not
+/// restriction).
 fn p_eff(
     a_cls: BranchClass,
     b_cls: BranchClass,
@@ -85,11 +94,7 @@ fn p_eff(
         let a_k = a_cls.get_inv(inv.inv_id);
         let b_k = b_cls.get_inv(inv.inv_id);
         match (a_k, b_k) {
-            (None, None) => {},                                // both pan — no barrier
-            (None, Some(Karyotype::S)) | (Some(Karyotype::S), None) =>
-                p *= inv.p_std_for(pop),
-            (None, Some(Karyotype::I)) | (Some(Karyotype::I), None) =>
-                p *= inv.p_inv_for(pop),
+            (None, _) | (_, None) => {}, // either side PAN → no restriction
             (Some(Karyotype::S), Some(Karyotype::S)) =>
                 p *= inv.p_std_for(pop),
             (Some(Karyotype::I), Some(Karyotype::I)) =>
@@ -243,10 +248,11 @@ mod tests {
     }
 
     #[test]
-    fn panmictic_vs_S_uses_s_partner_freq() {
-        // A panmictic, B has S at inv 0. At overlap positions both
-        // can coalesce (B's class restricts the pair to S-carriers).
-        // Rate uses p_std.
+    fn panmictic_vs_S_is_hudson_rate() {
+        // A panmictic (uncommitted), B has S at inv 0. Marginalising
+        // over A's unknown karyotype gives Hudson rate 1/(2·Ne), NOT
+        // the S-restricted rate 1/(2·Ne·p_std): P(A=S)·1/(2Ne·p_std)
+        // + P(A=I)·0 = 1/(2Ne).
         use crate::class_tag::Karyotype;
         let mut arena = SegmentArena::new();
         let pan = BranchClass::PANMICTIC;
@@ -261,7 +267,7 @@ mod tests {
         let rate = compute_pair_rate(
             a, b, &arena, std::slice::from_ref(&inv), &[true],
             0, NE, L);
-        let expected = 1.0 / (2.0 * NE * 0.5);
+        let expected = 1.0 / (2.0 * NE);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
     }

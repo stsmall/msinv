@@ -35,19 +35,26 @@ Pair (i, j) with same population `p`. Their material overlap is a set
 of intervals, each tagged with a class pair (class_i at position x,
 class_j at position x). Cases:
 
-| a_cls | b_cls | coalesces? | rate contribution |
-|-------|-------|------------|-------------------|
-| PAN   | PAN   | yes        | `L_pan / (2·Ne·L)` |
-| S@k   | S@k   | yes        | `L_Sk / (2·Ne·p_std(k)·L)` |
-| I@k   | I@k   | yes        | `L_Ik / (2·Ne·p_inv(k)·L)` |
-| S@k   | I@k   | NO barrier | 0 |
-| PAN   | S@k   | yes*       | `L / (2·Ne·p_std(k)·L)` |
-| S@k   | I@k' (k≠k') | depends on inv | `L / (2·Ne·p_std(k)·p_*(k'))` etc. |
+| a_cls | b_cls | coalesces? | rate contribution (per overlap interval) |
+|-------|-------|------------|-------------------------------------------|
+| PAN   | PAN   | yes        | `L_int / (2·Ne·L)` |
+| S@k   | S@k   | yes        | `L_int / (2·Ne·p_std(k)·L)` |
+| I@k   | I@k   | yes        | `L_int / (2·Ne·p_inv(k)·L)` |
+| PAN   | S@k   | yes        | `L_int / (2·Ne·L)`  — Hudson, see below |
+| PAN   | I@k   | yes        | `L_int / (2·Ne·L)` |
+| S@k   | I@k   | NO — barrier | 0 |
 
-(* PAN-vs-S: panmictic at inv k means the lineage has no class
-commitment at inv k. It can coalesce with any class at that position.
-Rate uses the OTHER lineage's class frequency since the pair's
-coalescence rate is constrained by whichever side is class-restricted.)
+PAN-vs-typed gets Hudson rate, NOT the typed partner's class-frequency
+rate. An uncommitted lineage marginalises over its unknown karyotype:
+`P(A=S)·rate(S,S) + P(A=I)·rate(S,I) = p_std·1/(2·Ne·p_std) + p_inv·0 =
+1/(2·Ne)`. Multiplying by `p_std` in the denominator would make PAN-S
+coalesce faster than PAN-PAN, which is nonsense — the uncommitted
+side adds uncertainty, not restriction.
+
+Multi-inversion: `p_eff` is a product over active inversions. If
+EITHER side is PAN at inv k, that inv contributes 1 (no restriction).
+S-vs-I at any active barrier returns rate = 0 for the entire overlap
+interval.
 
 Total pair rate:
 

@@ -261,20 +261,13 @@ impl HullSimulator {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
 
-        // Hard caps on Stage 3c.1 scope.
+        // Hard caps on Stage 3c.2 scope.
         if !self.sweeps.is_empty() {
             panic!("compound_rate does not yet support sweeps (Stage 3c.4)");
         }
-        for row in &demo.migration_matrix {
-            for &m in row {
-                if m != 0.0 {
-                    panic!("compound_rate does not yet support migration (Stage 3c.3)");
-                }
-            }
-        }
         for inv in inversions.iter() {
             if inv.gene_conversion_rate > 1e-20 {
-                panic!("compound_rate does not yet support gene flux (Stage 3c.2); \
+                panic!("compound_rate does not yet support gene flux (Stage 3c.3); \
                         set gene_conversion_rate = 1e-30 or smaller");
             }
         }
@@ -293,6 +286,12 @@ impl HullSimulator {
         const GC_STRIDE: u32 = 160;
         let mut gc_counter: u32 = 0;
 
+        // Per-pop counts refreshed each iter for migration aggregation.
+        // Cheap to recompute (O(n)); migration is multi-pop-only and
+        // typically n_pops is small, so no incremental upkeep needed.
+        let n_pops = demo.n_pops as usize;
+        let mut pop_counts: Vec<u32> = vec![0; n_pops];
+
         for _ in 0..10_000_000u64 {
             let n = active.len();
             if n <= 1 { return; }
@@ -310,7 +309,24 @@ impl HullSimulator {
 
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
-            let total_rate = coal_rate + recomb_rate;
+            // Migration aggregate rate across all (src, dst).
+            let mig_rate = if n_pops >= 2 {
+                for c in pop_counts.iter_mut() { *c = 0; }
+                for lin in active.iter() {
+                    pop_counts[lin.population as usize] += 1;
+                }
+                let mut r = 0.0;
+                for src in 0..n_pops {
+                    let cnt = pop_counts[src] as f64;
+                    if cnt == 0.0 { continue; }
+                    for dst in 0..n_pops {
+                        if dst == src { continue; }
+                        r += cnt * demo.migration_matrix[dst][src];
+                    }
+                }
+                r
+            } else { 0.0 };
+            let total_rate = coal_rate + recomb_rate + mig_rate;
 
             // No coalescence possible + nothing but recomb firing →
             // sweep out sole-carrier lineages (no overlap with anyone).
@@ -362,6 +378,43 @@ impl HullSimulator {
             t = t_event;
 
             let u: f64 = rng.random::<f64>() * total_rate;
+            if u >= coal_rate + recomb_rate {
+                // Migration: sample (src, dst) then a lineage in src.
+                let mut u_mig = u - coal_rate - recomb_rate;
+                let mut picked: Option<(u32, u32)> = None;
+                'outer: for src in 0..n_pops {
+                    let cnt = pop_counts[src] as f64;
+                    if cnt == 0.0 { continue; }
+                    for dst in 0..n_pops {
+                        if dst == src { continue; }
+                        let r = cnt * demo.migration_matrix[dst][src];
+                        if u_mig < r {
+                            picked = Some((src as u32, dst as u32));
+                            break 'outer;
+                        }
+                        u_mig -= r;
+                    }
+                }
+                let (src, dst) = match picked {
+                    Some(p) => p,
+                    None => continue,
+                };
+                // Uniformly pick one lineage in src.
+                let target = rng.random_range(0..pop_counts[src as usize] as usize);
+                let mut seen = 0usize;
+                let mut chosen_idx = 0usize;
+                for (i, lin) in active.iter().enumerate() {
+                    if lin.population == src {
+                        if seen == target { chosen_idx = i; break; }
+                        seen += 1;
+                    }
+                }
+                active[chosen_idx].population = dst;
+                pair_rates.recompute_for(
+                    chosen_idx, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                continue;
+            }
             if u < coal_rate {
                 // Coalescence.
                 let (i, j) = match pair_rates.sample_pair(u) {
@@ -2198,6 +2251,32 @@ mod tests {
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 19,
             "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_migration() {
+        // Two-pop symmetric migration, no inversion. Finite m ensures
+        // all pairs eventually collapse into one pop and coalesce.
+        use crate::demography::Demography;
+        let mut demo = Demography::new(vec![500.0, 500.0]);
+        demo.migration_matrix[0][1] = 1e-3;
+        demo.migration_matrix[1][0] = 1e-3;
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry { karyotypes: vec![], population: 0, count: 4 },
+                SampleEntry { karyotypes: vec![], population: 1, count: 4 },
+            ],
+            demography: demo,
+            sequence_length: 1000.0,
+            recombination_rate: 1e-12,
+            inversions: vec![],
+            sweeps: vec![],
+            seed: 42,
+            stop_at: f64::INFINITY,
+            compound_rate: true,
+        };
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 15);
     }
 
     #[test]

@@ -269,26 +269,45 @@ impl RateCache {
         self.lineage_segs.clear();
         self.lineage_pos_bits.clear();
         self.lineage_hulls.clear();
-        // Walk only non-empty overlap slots via the bitmap — skips
-        // the O(n_pairs) sweep over the 300k+ typically-empty
-        // triangular array that dominated reset cost at rho=2000.
-        for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
-            let mut word = *w;
-            while word != 0 {
-                let bit = word.trailing_zeros() as usize;
-                let pidx = widx * 64 + bit;
-                if pidx < self.pair_bucket_refs.len() {
-                    self.pair_bucket_refs[pidx] = PairBucketRefs::default();
+        // Shrink capacity when the new cap would be far below the
+        // current one. Prior `reset` only grew, so peak active-n from
+        // any earlier rep stuck as the permanent high-water mark for
+        // this thread-local cache, ballooning RSS across reps for
+        // Kir/Fol-shaped runs where partial coal remnants push peak
+        // active-n well above the initial sample count. Threshold:
+        // shrink if hinted cap ≤ 1/4 of current; allocate fresh
+        // triangular arrays at `max_lineages * 2` like `ensure_capacity`
+        // would have picked on a first-time build.
+        let hint_cap = max_lineages.max(64);
+        if hint_cap * 4 <= self.capacity {
+            let new_cap = hint_cap * 2;
+            let new_n_pairs = tri_size(new_cap);
+            self.nonempty_bits = vec![0u64; nbits_words(new_n_pairs)];
+            self.pair_bucket_refs = zeroed_vec_default(new_n_pairs);
+            self.refs_overflow.clear();
+            let new_stride = nbits_words(new_cap);
+            self.peer_bits = vec![0u64; new_cap * new_stride];
+            self.peer_word_stride = new_stride;
+            self.capacity = new_cap;
+        } else {
+            // Walk only non-empty overlap slots via the bitmap — skips
+            // the O(n_pairs) sweep over the 300k+ typically-empty
+            // triangular array that dominated reset cost at rho=2000.
+            for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
+                let mut word = *w;
+                while word != 0 {
+                    let bit = word.trailing_zeros() as usize;
+                    let pidx = widx * 64 + bit;
+                    if pidx < self.pair_bucket_refs.len() {
+                        self.pair_bucket_refs[pidx] = PairBucketRefs::default();
+                    }
+                    word &= word - 1;
                 }
-                word &= word - 1;
+                *w = 0;
             }
-            *w = 0;
+            self.refs_overflow.clear();
+            for w in self.peer_bits.iter_mut() { *w = 0; }
         }
-        self.refs_overflow.clear();
-        // peer_bits: full sweep of `cap * stride` u64 words. At
-        // cap=4096 that's ~512KB = ~128k u64 memset — fast (<1ms).
-        // Avoids tracking old_n just to target the per-lineage rows.
-        for w in self.peer_bits.iter_mut() { *w = 0; }
         self.ensure_capacity(max_lineages);
     }
 

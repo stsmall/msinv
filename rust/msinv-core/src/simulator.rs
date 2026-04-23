@@ -199,14 +199,14 @@ impl HullSimulator {
             &mut arena, &mut tables, &mut next_uid);
 
         if self.compound_rate {
-            self.run_loop_compound(&mut active, &mut arena, &mut tables,
-                                    &mut next_uid, &mut rng, &mut demo,
-                                    &mut inversions);
-        } else {
-            self.run_loop(&mut active, &mut arena, &mut tables,
-                           &mut next_uid, &mut rng, &mut demo,
-                           &mut inversions, rate_cache);
+            panic!("compound_rate=True is experimental and disabled on main; \
+                    the compound event loop lacks incremental flux + lineage-length \
+                    caches and is slower than the bucket path at biological rho. \
+                    Work continues on the feature/compound-caches branch.");
         }
+        self.run_loop(&mut active, &mut arena, &mut tables,
+                       &mut next_uid, &mut rng, &mut demo,
+                       &mut inversions, rate_cache);
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
@@ -248,6 +248,7 @@ impl HullSimulator {
     /// recomb via standard split, barrier crossings + demographic
     /// events via apply_boundary. Still panics on migration, flux,
     /// and sweeps — those are Stage 3c.2+ work.
+    #[allow(dead_code)]
     fn run_loop_compound(
         &self,
         active: &mut Vec<crate::lineage::Lineage>,
@@ -2292,6 +2293,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_panmictic_no_recomb() {
         // Path 2 MVP smoke: same expected topology as the bucket
         // path for a plain panmictic, no-inversion, no-recomb run.
@@ -2303,6 +2305,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_two_samples() {
         let mut sim = HullSimulator::panmictic(2, 100.0, 50.0, 1e-12, 7);
         sim.compound_rate = true;
@@ -2312,6 +2315,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_low_recomb_runs() {
         // Very low rho — mostly coalescent. Just proves the recomb
         // plumbing doesn't break the compound path.
@@ -2324,6 +2328,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_old_inversion_barrier_crosses() {
         // Very old inversion: barrier crosses almost immediately,
         // compound path should drive through cross_barriers_static
@@ -2342,6 +2347,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_inversion_barrier_forces_extra_nodes() {
         // Long-standing barrier (t_inv = 5·Ne) — S/I pairs can't
         // coalesce until t_inv, so nodes >= panmictic case.
@@ -2359,6 +2365,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_sweep() {
         use crate::sweep::Sweep;
         let mut sim = HullSimulator::panmictic(
@@ -2383,6 +2390,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_gene_flux() {
         // Active barrier + nontrivial gene conversion. Flux should
         // fire and not crash.
@@ -2400,6 +2408,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_migration() {
         // Two-pop symmetric migration, no inversion. Finite m ensures
         // all pairs eventually collapse into one pop and coalesce.
@@ -2426,6 +2435,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_en_demo_event() {
         // Ancestral pop size change at t=2000 (Ne 1000 → 5000).
         // Should fire via apply_boundary + trigger pair_rates rebuild.

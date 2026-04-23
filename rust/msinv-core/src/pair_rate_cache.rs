@@ -122,6 +122,107 @@ impl PairRateCache {
         if pidx >= tri_size(self.capacity) { return None; }
         Some(unpack_pair_idx(pidx, self.capacity))
     }
+
+    /// Recompute all pairs involving lineage `idx`. O(n) rate evals.
+    /// Call after mutating `idx`'s chain (coalescence, recombination,
+    /// flux, migration).
+    pub fn recompute_for(
+        &mut self,
+        idx: usize,
+        active: &[Lineage],
+        arena: &SegmentArena,
+        inversions: &[InversionSpec],
+        barrier_active: &[bool],
+        demo: &Demography,
+        t: f64,
+        seq_len: f64,
+    ) {
+        let n = active.len();
+        self.n = n;
+        if n > self.capacity { self.grow_to(n); }
+        let pop_idx = active[idx].population;
+        let ne = demo.size_at(pop_idx, t).max(1e-9);
+        for other in 0..n {
+            if other == idx { continue; }
+            let (i, j) = if idx < other { (idx, other) } else { (other, idx) };
+            let new_rate = if active[i].population != active[j].population {
+                0.0
+            } else {
+                compute_pair_rate(
+                    active[i].head, active[j].head,
+                    arena, inversions, barrier_active,
+                    pop_idx, ne, seq_len)
+            };
+            let pidx = pair_idx(i, j, self.capacity);
+            self.pair_rates.set(pidx, new_rate);
+        }
+    }
+
+    /// Clear all pair rates involving lineage `idx`. Caller must call
+    /// this BEFORE removing `idx` from `active`. `n_active` is
+    /// active.len() at call time (idx still present).
+    pub fn remove_lineage(&mut self, idx: usize, n_active: usize) {
+        for other in 0..n_active {
+            if other == idx { continue; }
+            let (i, j) = if idx < other { (idx, other) } else { (other, idx) };
+            let pidx = pair_idx(i, j, self.capacity);
+            self.pair_rates.set(pidx, 0.0);
+        }
+    }
+
+    /// Mirror `active.swap_remove(removed_idx)` on the pair rates:
+    /// for every peer j != removed_idx, j != old_last, move the pair
+    /// rate at (j, old_last) to (j, removed_idx). The old row is
+    /// zeroed. Decrements n.
+    ///
+    /// Precondition: caller already invoked `remove_lineage(removed_idx, pre_len)`
+    /// so all (removed_idx, *) slots are zero at entry.
+    pub fn swap_update(&mut self, removed_idx: usize, old_last: usize) {
+        if removed_idx == old_last {
+            self.n = self.n.saturating_sub(1);
+            return;
+        }
+        let pre_n = self.n;
+        for other in 0..pre_n {
+            if other == removed_idx || other == old_last { continue; }
+            let (oi, oj) = if other < old_last {
+                (other, old_last)
+            } else {
+                (old_last, other)
+            };
+            let (ni, nj) = if other < removed_idx {
+                (other, removed_idx)
+            } else {
+                (removed_idx, other)
+            };
+            let old_pidx = pair_idx(oi, oj, self.capacity);
+            let new_pidx = pair_idx(ni, nj, self.capacity);
+            let r = self.pair_rates.range_sum(old_pidx, old_pidx + 1);
+            if r != 0.0 {
+                self.pair_rates.set(old_pidx, 0.0);
+                self.pair_rates.set(new_pidx, r);
+            }
+        }
+        self.n = self.n.saturating_sub(1);
+    }
+
+    fn grow_to(&mut self, need: usize) {
+        let new_cap = (need * 2).max(self.capacity * 2);
+        let mut rates: Vec<(usize, usize, f64)> = Vec::new();
+        for i in 0..self.n {
+            for j in (i + 1)..self.n {
+                let pidx = pair_idx(i, j, self.capacity);
+                let r = self.pair_rates.range_sum(pidx, pidx + 1);
+                if r > 0.0 { rates.push((i, j, r)); }
+            }
+        }
+        self.capacity = new_cap;
+        self.pair_rates = Fenwick::new(tri_size(new_cap));
+        for (i, j, r) in rates {
+            let pidx = pair_idx(i, j, self.capacity);
+            self.pair_rates.update(pidx, r);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +325,117 @@ mod tests {
         let mut cache = PairRateCache::new(4);
         cache.rebuild(&active, &arena, &[], &[], &demo, 0.0, L);
         assert_eq!(cache.total(), 0.0);
+    }
+
+    fn total_of_rebuild(
+        active: &[Lineage], arena: &SegmentArena,
+        inversions: &[InversionSpec], barrier_active: &[bool],
+        demo: &Demography, t: f64, seq_len: f64, cap: usize,
+    ) -> f64 {
+        let mut c = PairRateCache::new(cap);
+        c.rebuild(active, arena, inversions, barrier_active, demo, t, seq_len);
+        c.total()
+    }
+
+    fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() < tol * a.abs().max(b.abs()).max(1e-12)
+    }
+
+    #[test]
+    fn remove_lineage_zeros_row_and_col() {
+        const L: f64 = 1000.0;
+        const NE: f64 = 1000.0;
+        let mut arena = SegmentArena::new();
+        let pan = BranchClass::PANMICTIC;
+        let heads: Vec<_> = (0..4).map(|_|
+            mk_chain(&mut arena, &[(0.0, L, pan)])).collect();
+        let active: Vec<Lineage> = heads.iter().enumerate()
+            .map(|(i, &h)| Lineage::new(h, h, 0, i as u32, &arena))
+            .collect();
+        let demo = Demography::single_pop(NE);
+        let mut cache = PairRateCache::new(8);
+        cache.rebuild(&active, &arena, &[], &[], &demo, 0.0, L);
+        let full = cache.total();
+        cache.remove_lineage(2, active.len());
+        // Pairs involving 2: (0,2), (1,2), (2,3). Each had rate 1/(2Ne).
+        let expected = full - 3.0 * (1.0 / (2.0 * NE));
+        assert!(approx_eq(cache.total(), expected, 1e-10),
+            "got={} expected={}", cache.total(), expected);
+        assert_eq!(cache.rate_at(0, 2), 0.0);
+        assert_eq!(cache.rate_at(1, 2), 0.0);
+        assert_eq!(cache.rate_at(2, 3), 0.0);
+    }
+
+    #[test]
+    fn swap_update_matches_rebuild() {
+        // Build cache, simulate active.swap_remove(idx), compare incremental
+        // path (remove_lineage + swap_update) against a fresh rebuild.
+        const L: f64 = 1000.0;
+        const NE: f64 = 1000.0;
+        let mut arena = SegmentArena::new();
+        let pan = BranchClass::PANMICTIC;
+        // Four lineages, varying extents so every pair has distinct rate.
+        let h0 = mk_chain(&mut arena, &[(0.0, L, pan)]);
+        let h1 = mk_chain(&mut arena, &[(100.0, 900.0, pan)]);
+        let h2 = mk_chain(&mut arena, &[(0.0, 500.0, pan)]);
+        let h3 = mk_chain(&mut arena, &[(400.0, L, pan)]);
+        let active_pre = vec![
+            Lineage::new(h0, h0, 0, 0, &arena),
+            Lineage::new(h1, h1, 0, 1, &arena),
+            Lineage::new(h2, h2, 0, 2, &arena),
+            Lineage::new(h3, h3, 0, 3, &arena),
+        ];
+        let demo = Demography::single_pop(NE);
+        let mut cache = PairRateCache::new(8);
+        cache.rebuild(&active_pre, &arena, &[], &[], &demo, 0.0, L);
+
+        // Apply active.swap_remove(1) to the cache.
+        cache.remove_lineage(1, 4);
+        cache.swap_update(1, 3);
+
+        // Build the post-swap active list independently for the oracle.
+        let active_post = vec![
+            Lineage::new(h0, h0, 0, 0, &arena),
+            Lineage::new(h3, h3, 0, 3, &arena),   // moved from index 3
+            Lineage::new(h2, h2, 0, 2, &arena),
+        ];
+        drop(active_pre);
+
+        let want = total_of_rebuild(
+            &active_post, &arena, &[], &[], &demo, 0.0, L, 8);
+        assert!(approx_eq(cache.total(), want, 1e-10),
+            "incremental={} rebuild={}", cache.total(), want);
+        assert_eq!(cache.n(), 3);
+    }
+
+    #[test]
+    fn recompute_for_matches_rebuild_after_mutation() {
+        const L: f64 = 1000.0;
+        const NE: f64 = 1000.0;
+        let mut arena = SegmentArena::new();
+        let pan = BranchClass::PANMICTIC;
+        let h0 = mk_chain(&mut arena, &[(0.0, L, pan)]);
+        let h1 = mk_chain(&mut arena, &[(100.0, 900.0, pan)]);
+        let h2 = mk_chain(&mut arena, &[(200.0, 800.0, pan)]);
+        let mut active = vec![
+            Lineage::new(h0, h0, 0, 0, &arena),
+            Lineage::new(h1, h1, 0, 1, &arena),
+            Lineage::new(h2, h2, 0, 2, &arena),
+        ];
+        let demo = Demography::single_pop(NE);
+        let mut cache = PairRateCache::new(8);
+        cache.rebuild(&active, &arena, &[], &[], &demo, 0.0, L);
+
+        // Mutate lineage 1: shrink its chain.
+        let h1b = mk_chain(&mut arena, &[(300.0, 700.0, pan)]);
+        active[1] = Lineage::new(h1b, h1b, 0, 1, &arena);
+
+        cache.recompute_for(1, &active, &arena, &[], &[], &demo, 0.0, L);
+
+        let want = total_of_rebuild(
+            &active, &arena, &[], &[], &demo, 0.0, L, 8);
+        assert!(approx_eq(cache.total(), want, 1e-10),
+            "incremental={} rebuild={}", cache.total(), want);
     }
 
     #[test]

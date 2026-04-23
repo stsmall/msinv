@@ -13,22 +13,19 @@ use crate::inversion::InversionSpec;
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 
 /// Total coalescence rate for the pair (heads_a, heads_b) in pop `pop`
-/// at effective Ne `ne`, sequence length `seq_len`. Zero if the pair
-/// has no coalescence-eligible overlap (no material in common, or all
-/// shared positions blocked by class barriers with mismatched S / I).
+/// at effective Ne `ne`. Hudson per-pair-per-class rate: for each
+/// distinct merged class that has any shared overlap between the
+/// lineages, the pair contributes `1 / (2 · ne · p_eff(class))`. Classes
+/// blocked by an active S-vs-I barrier contribute 0.
 ///
-/// Rate formula, per overlap interval [l, r):
-///   contribution = (r - l) / (2 · ne · p_eff(a_cls, b_cls) · seq_len)
+/// This matches `compute_coal_rates_structured` on the bucket path:
+/// coalescence rate is per-pair-per-class with any eligible overlap,
+/// not overlap-length-weighted. Overlap-weighting would make rates
+/// vanish as recombination fragments lineages into tiny pieces — the
+/// "remnant ratchet" that hangs on realistic Kir/Fol scale.
 ///
-/// where `p_eff` is the product over active inversions of:
-///   - 1 if both sides are panmictic at that inv (no barrier)
-///   - p_std(pop) if both sides carry S at that inv
-///   - p_inv(pop) if both sides carry I at that inv
-///   - +∞ (returns rate 0) if one side S and other I at an active
-///     barrier — that overlap position does NOT coalesce.
-///
-/// `barrier_active[k]` = false means inv k has crossed t_inv
-/// (barrier lifted, treat as panmictic regardless of bit).
+/// `seq_len` is unused here (kept for API symmetry with the earlier
+/// overlap-weighted formulation); retained so callers don't break.
 pub fn compute_pair_rate(
     head_a: SegIdx,
     head_b: SegIdx,
@@ -37,13 +34,17 @@ pub fn compute_pair_rate(
     barrier_active: &[bool],
     pop: u32,
     ne: f64,
-    seq_len: f64,
+    _seq_len: f64,
 ) -> f64 {
     if head_a == SEG_NIL || head_b == SEG_NIL { return 0.0; }
-    if ne <= 0.0 || seq_len <= 0.0 { return 0.0; }
+    if ne <= 0.0 { return 0.0; }
 
-    let two_ne_l = 2.0 * ne * seq_len;
-    let mut accum_inv_p_over_length: f64 = 0.0;
+    // Dedup key: the merged class (a_bc | b_bc) for each overlap
+    // interval. Walk pairs with sufficient shared material and record
+    // each distinct merged class's p_eff. Final rate sums 1/(2 Ne p_k)
+    // over unique keys.
+    let mut seen: SmallSet = SmallSet::new();
+    let mut rate = 0.0;
 
     let mut sa = head_a;
     let mut sb = head_b;
@@ -55,18 +56,45 @@ pub fn compute_pair_rate(
         let l = a.left.max(b.left);
         let r = a.right.min(b.right);
         if r > l {
-            match p_eff(a.branch_class, b.branch_class,
-                         inversions, barrier_active, pop) {
-                Some(p) if p > 0.0 => {
-                    accum_inv_p_over_length += (r - l) / p;
+            if let Some(p) = p_eff(a.branch_class, b.branch_class,
+                                     inversions, barrier_active, pop) {
+                if p > 0.0 {
+                    let key = a.branch_class.bits() | b.branch_class.bits();
+                    if seen.insert(key) {
+                        rate += 1.0 / (2.0 * ne * p);
+                    }
                 }
-                _ => {}  // blocked by barrier OR p_eff = 0 → no rate
             }
         }
         if a.right < b.right { sa = a.next; } else { sb = b.next; }
     }
 
-    accum_inv_p_over_length / two_ne_l
+    rate
+}
+
+/// Tiny inline-friendly set of u64 keys. Coal classes per pair are
+/// usually 1–3; heap allocation would dominate `compute_pair_rate`.
+struct SmallSet {
+    data: [u64; 8],
+    len: usize,
+}
+
+impl SmallSet {
+    fn new() -> Self { Self { data: [0; 8], len: 0 } }
+    /// Returns true if the key was newly inserted.
+    fn insert(&mut self, k: u64) -> bool {
+        for i in 0..self.len {
+            if self.data[i] == k { return false; }
+        }
+        if self.len < self.data.len() {
+            self.data[self.len] = k;
+            self.len += 1;
+        }
+        // In the unlikely case of > 8 distinct classes the extras just
+        // aren't deduped — rate may over-count. Two inversions = 9
+        // possible classes (3 karyotypes^2), so this is a soft cap.
+        true
+    }
 }
 
 /// Effective sub-population frequency product for a shared overlap
@@ -197,13 +225,11 @@ mod tests {
     }
 
     #[test]
-    fn mixed_pan_and_S_sums_cleanly() {
+    fn mixed_pan_and_s_sums_cleanly() {
         // A and B each have [0, 500) panmictic + [500, 1000) at S-inv0.
-        // Inv 0 at [500, 1000), p_std = 0.5.
-        // Rate:
-        //   pan contribution: 500 / (2·Ne·1·L)         = 500/(2e6)
-        //   S   contribution: 500 / (2·Ne·0.5·L)       = 500/(1e6)
-        //   sum = 2.5e-4 + 5e-4 = 7.5e-4
+        // Hudson per-pair-per-class: 1/(2Ne) for the PAN class (overlap
+        // present) plus 1/(2Ne·p_std) for the S class. Overlap lengths
+        // don't enter — only "is there any overlap in this class".
         use crate::class_tag::Karyotype;
         let mut arena = SegmentArena::new();
         let pan = BranchClass::PANMICTIC;
@@ -218,8 +244,7 @@ mod tests {
         let rate = compute_pair_rate(
             a, b, &arena, std::slice::from_ref(&inv), &[true],
             0, NE, L);
-        let expected = 500.0 / (2.0 * NE * 1.0 * L)
-                     + 500.0 / (2.0 * NE * 0.5 * L);
+        let expected = 1.0 / (2.0 * NE) + 1.0 / (2.0 * NE * 0.5);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
     }

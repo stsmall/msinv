@@ -49,6 +49,11 @@ pub fn tri_size(n: usize) -> usize { n * (n - 1) / 2 }
 
 pub struct PairRateCache {
     pair_rates: Fenwick,
+    /// Parallel exact-value store for per-pair rates. Fenwick::set
+    /// computes its delta via two prefix sums, which loses precision
+    /// when many small rates accumulate. Reading the exact prior
+    /// value from this Vec gives stable O(log n) updates.
+    pair_values: Vec<f64>,
     capacity: usize,
     n: usize,
 }
@@ -59,6 +64,7 @@ impl PairRateCache {
         let n_pairs = tri_size(cap);
         Self {
             pair_rates: Fenwick::new(n_pairs),
+            pair_values: vec![0.0; n_pairs],
             capacity: cap,
             n: 0,
         }
@@ -72,7 +78,19 @@ impl PairRateCache {
     /// Rate at pair (i, j). Panics if i >= j or j >= self.n.
     pub fn rate_at(&self, i: usize, j: usize) -> f64 {
         let p = pair_idx(i, j, self.capacity);
-        self.pair_rates.range_sum(p, p + 1)
+        self.pair_values[p]
+    }
+
+    /// Set pair rate with exact-delta update against the parallel
+    /// `pair_values` store. Avoids the precision drift of reading
+    /// the prior value via Fenwick prefix-sum subtraction.
+    fn set_pair(&mut self, pidx: usize, new_rate: f64) {
+        let prev = self.pair_values[pidx];
+        let delta = new_rate - prev;
+        self.pair_values[pidx] = new_rate;
+        if delta != 0.0 {
+            self.pair_rates.update(pidx, delta);
+        }
     }
 
     /// Rebuild from scratch. O(n²) in active lineages — use sparingly.
@@ -91,8 +109,10 @@ impl PairRateCache {
         if self.n > self.capacity {
             self.capacity = self.n.max(self.capacity * 2);
             self.pair_rates = Fenwick::new(tri_size(self.capacity));
+            self.pair_values = vec![0.0; tri_size(self.capacity)];
         } else {
             self.pair_rates.reset(tri_size(self.capacity));
+            for v in self.pair_values.iter_mut() { *v = 0.0; }
         }
         for i in 0..self.n {
             for j in (i + 1)..self.n {
@@ -106,6 +126,7 @@ impl PairRateCache {
                     pop, ne, seq_len);
                 if rate > 0.0 {
                     let pidx = pair_idx(i, j, self.capacity);
+                    self.pair_values[pidx] = rate;
                     self.pair_rates.update(pidx, rate);
                 }
             }
@@ -154,7 +175,7 @@ impl PairRateCache {
                     pop_idx, ne, seq_len)
             };
             let pidx = pair_idx(i, j, self.capacity);
-            self.pair_rates.set(pidx, new_rate);
+            self.set_pair(pidx, new_rate);
         }
     }
 
@@ -166,7 +187,7 @@ impl PairRateCache {
             if other == idx { continue; }
             let (i, j) = if idx < other { (idx, other) } else { (other, idx) };
             let pidx = pair_idx(i, j, self.capacity);
-            self.pair_rates.set(pidx, 0.0);
+            self.set_pair(pidx, 0.0);
         }
     }
 
@@ -197,10 +218,10 @@ impl PairRateCache {
             };
             let old_pidx = pair_idx(oi, oj, self.capacity);
             let new_pidx = pair_idx(ni, nj, self.capacity);
-            let r = self.pair_rates.range_sum(old_pidx, old_pidx + 1);
+            let r = self.pair_values[old_pidx];
             if r != 0.0 {
-                self.pair_rates.set(old_pidx, 0.0);
-                self.pair_rates.set(new_pidx, r);
+                self.set_pair(old_pidx, 0.0);
+                self.set_pair(new_pidx, r);
             }
         }
         self.n = self.n.saturating_sub(1);
@@ -208,18 +229,21 @@ impl PairRateCache {
 
     fn grow_to(&mut self, need: usize) {
         let new_cap = (need * 2).max(self.capacity * 2);
+        let old_cap = self.capacity;
         let mut rates: Vec<(usize, usize, f64)> = Vec::new();
         for i in 0..self.n {
             for j in (i + 1)..self.n {
-                let pidx = pair_idx(i, j, self.capacity);
-                let r = self.pair_rates.range_sum(pidx, pidx + 1);
+                let pidx = pair_idx(i, j, old_cap);
+                let r = self.pair_values[pidx];
                 if r > 0.0 { rates.push((i, j, r)); }
             }
         }
         self.capacity = new_cap;
         self.pair_rates = Fenwick::new(tri_size(new_cap));
+        self.pair_values = vec![0.0; tri_size(new_cap)];
         for (i, j, r) in rates {
-            let pidx = pair_idx(i, j, self.capacity);
+            let pidx = pair_idx(i, j, new_cap);
+            self.pair_values[pidx] = r;
             self.pair_rates.update(pidx, r);
         }
     }
@@ -439,14 +463,16 @@ mod tests {
     }
 
     #[test]
-    fn sample_pair_is_proportional() {
-        // Three lineages, one much more valuable pair than the others.
-        // Draw many samples, check the big-rate pair wins majority.
+    fn sample_pair_returns_valid_pair() {
+        // Hudson per-pair rate is flat 1/(2·Ne) once a pair shares any
+        // overlap — overlap size doesn't weight the rate (see
+        // compound_pair_rate docs). Three panmictic lineages therefore
+        // all have identical pair rates; sample_pair just needs to
+        // return one of the three valid pairs.
         const L: f64 = 1000.0;
         const NE: f64 = 1000.0;
         let mut arena = SegmentArena::new();
         let pan = BranchClass::PANMICTIC;
-        // a, b fully overlap; c has only a small segment.
         let h_a = mk_chain(&mut arena, &[(0.0, L, pan)]);
         let h_b = mk_chain(&mut arena, &[(0.0, L, pan)]);
         let h_c = mk_chain(&mut arena, &[(0.0, 10.0, pan)]);
@@ -458,22 +484,14 @@ mod tests {
         let demo = Demography::single_pop(NE);
         let mut cache = PairRateCache::new(8);
         cache.rebuild(&active, &arena, &[], &[], &demo, 0.0, L);
-        let ab = cache.rate_at(0, 1);
-        let ac = cache.rate_at(0, 2);
-        let bc = cache.rate_at(1, 2);
-        // Hand-check: ab overlap = L, ac and bc overlap = 10.
-        let exp_ab = L / (2.0 * NE * L);
-        let exp_sm = 10.0 / (2.0 * NE * L);
-        assert!((ab - exp_ab).abs() < 1e-12, "ab={} exp={}", ab, exp_ab);
-        assert!((ac - exp_sm).abs() < 1e-12);
-        assert!((bc - exp_sm).abs() < 1e-12);
+        let expected = 1.0 / (2.0 * NE);
+        assert!((cache.rate_at(0, 1) - expected).abs() < 1e-12);
+        assert!((cache.rate_at(0, 2) - expected).abs() < 1e-12);
+        assert!((cache.rate_at(1, 2) - expected).abs() < 1e-12);
 
-        // Draws from total range: first bucket (ab) should always win.
         let total = cache.total();
-        let mid = total * 0.5;
-        let (i, j) = cache.sample_pair(mid).unwrap();
+        let (i, j) = cache.sample_pair(total * 0.5).unwrap();
         assert!((i, j) == (0, 1) || (i, j) == (0, 2) || (i, j) == (1, 2));
-        // Very small target should hit the first non-empty pair.
         let (i0, j0) = cache.sample_pair(1e-9).unwrap();
         assert_eq!((i0, j0), (0, 1));
     }

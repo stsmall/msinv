@@ -201,7 +201,7 @@ impl HullSimulator {
         if self.compound_rate {
             self.run_loop_compound(&mut active, &mut arena, &mut tables,
                                     &mut next_uid, &mut rng, &mut demo,
-                                    &inversions);
+                                    &mut inversions);
         } else {
             self.run_loop(&mut active, &mut arena, &mut tables,
                            &mut next_uid, &mut rng, &mut demo,
@@ -244,13 +244,10 @@ impl HullSimulator {
     // ---------------------------------------------------------------
     // Main event loop
     // ---------------------------------------------------------------
-    /// Path 2 MVP event loop. Coal via PairRateCache + compound
-    /// merge, recomb via standard split. PANICS on flux, migration,
-    /// sweep, or barrier crossings — those are stage 3c/3d work.
-    ///
-    /// Supports: single-pop OR multi-pop where inversion barriers
-    /// haven't lifted AND no demographic events fire AND no sweeps.
-    /// Effectively: Hudson structured coalescent on a fixed state.
+    /// Path 2 event loop. Coal via PairRateCache + compound merge,
+    /// recomb via standard split, barrier crossings + demographic
+    /// events via apply_boundary. Still panics on migration, flux,
+    /// and sweeps — those are Stage 3c.2+ work.
     fn run_loop_compound(
         &self,
         active: &mut Vec<crate::lineage::Lineage>,
@@ -258,40 +255,33 @@ impl HullSimulator {
         tables: &mut TableBuilder,
         next_uid: &mut LinUid,
         rng: &mut Xoshiro256PlusPlus,
-        demo: &crate::demography::Demography,
-        inversions: &[InversionSpec],
+        demo: &mut crate::demography::Demography,
+        inversions: &mut Vec<InversionSpec>,
     ) {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
 
-        // Hard caps on MVP scope.
+        // Hard caps on Stage 3c.1 scope.
         if !self.sweeps.is_empty() {
-            panic!("compound_rate MVP does not support sweeps");
+            panic!("compound_rate does not yet support sweeps (Stage 3c.4)");
         }
-        if !demo.events.is_empty() {
-            panic!("compound_rate MVP does not support demographic events");
-        }
-        // Migration = all-zero matrix.
         for row in &demo.migration_matrix {
             for &m in row {
                 if m != 0.0 {
-                    panic!("compound_rate MVP does not support migration");
+                    panic!("compound_rate does not yet support migration (Stage 3c.3)");
                 }
             }
         }
-        for inv in inversions {
+        for inv in inversions.iter() {
             if inv.gene_conversion_rate > 1e-20 {
-                // Any nontrivial flux is out of scope.
-                panic!("compound_rate MVP does not support gene flux; \
+                panic!("compound_rate does not yet support gene flux (Stage 3c.2); \
                         set gene_conversion_rate = 1e-30 or smaller");
             }
         }
 
-        let barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
-        // Check no barrier can cross during the run.
-        let min_t_inv = inversions.iter()
-            .map(|i| i.t_inv)
-            .fold(f64::INFINITY, f64::min);
+        let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
+        let mut pending_sweeps: Vec<Sweep> = Vec::new();  // empty; panic above
+        let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
 
         let mut t: f64 = 0.0;
         let max_lins = (active.len() * 40).max(2048);
@@ -300,24 +290,74 @@ impl HullSimulator {
                             demo, t, self.sequence_length);
 
         let mut total_material: f64 = active.iter().map(|l| l.cached_len).sum();
+        const GC_STRIDE: u32 = 160;
+        let mut gc_counter: u32 = 0;
 
         for _ in 0..10_000_000u64 {
             let n = active.len();
             if n <= 1 { return; }
             if t >= self.stop_at { return; }
 
+            // Earliest deterministic boundary.
+            let mut earliest_barrier = f64::INFINITY;
+            for (k, inv) in inversions.iter().enumerate() {
+                if barrier_active[k] {
+                    earliest_barrier = earliest_barrier.min(inv.t_inv);
+                }
+            }
+            let t_demo = demo.next_event_time(t);
+            let next_boundary = earliest_barrier.min(t_demo);
+
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
             let total_rate = coal_rate + recomb_rate;
 
-            if total_rate <= 0.0 { return; }
+            // No coalescence possible + nothing but recomb firing →
+            // sweep out sole-carrier lineages (no overlap with anyone).
+            // Without this, recomb-on-fragments loop unboundedly at
+            // boundaries where all remaining material is non-shared.
+            if coal_rate <= 0.0 && recomb_rate > 0.0 && active.len() > 1 {
+                let removed = gc_sole_lineages_with_removed(active, arena);
+                if !removed.is_empty() {
+                    pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                        demo, t, self.sequence_length);
+                    total_material = active.iter().map(|l| l.cached_len).sum();
+                    continue;
+                }
+            }
+
+            // Zero-rate case: jump straight to next boundary if any.
+            if total_rate <= 0.0 {
+                if next_boundary < f64::INFINITY {
+                    t = next_boundary;
+                    apply_boundary(
+                        inversions, active, arena, &mut barrier_active,
+                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        self.sequence_length, rng, self.recombination_rate,
+                        &mut sweep_cursor);
+                    pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                        demo, t, self.sequence_length);
+                    total_material = active.iter().map(|l| l.cached_len).sum();
+                    continue;
+                }
+                return;
+            }
 
             let dt = -rng.random::<f64>().ln() / total_rate;
             let t_event = t + dt;
-            if t_event >= min_t_inv {
-                panic!("compound_rate MVP hit a barrier crossing at \
-                        t={} (t_inv={}); not yet supported",
-                       t_event, min_t_inv);
+
+            // Deterministic boundary fires before stochastic event.
+            if next_boundary <= t_event {
+                t = next_boundary;
+                apply_boundary(
+                    inversions, active, arena, &mut barrier_active,
+                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    self.sequence_length, rng, self.recombination_rate,
+                    &mut sweep_cursor);
+                pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                    demo, t, self.sequence_length);
+                total_material = active.iter().map(|l| l.cached_len).sum();
+                continue;
             }
             t = t_event;
 
@@ -341,9 +381,6 @@ impl HullSimulator {
                 }
                 total_material += delta;
 
-                // Update pair_rates: remove (hi) + swap_update(hi, pre_len-1)
-                // mirrors active.swap_remove(hi); then same for lo;
-                // then recompute for each new lineage.
                 pair_rates.remove_lineage(hi, pre_len);
                 pair_rates.swap_update(hi, pre_len - 1);
                 pair_rates.remove_lineage(lo, pre_len - 1);
@@ -356,7 +393,6 @@ impl HullSimulator {
             } else {
                 // Recombination.
                 let u_lin: f64 = rng.random::<f64>() * total_material;
-                // Linear pick — no Fenwick over cached_len in this MVP.
                 let mut acc = 0.0;
                 let mut chosen_idx = active.len() - 1;
                 for (k, lin) in active.iter().enumerate() {
@@ -373,8 +409,6 @@ impl HullSimulator {
                 apply_recombination(
                     active, chosen_idx, x, arena, next_uid);
                 let len_after = active.len();
-                // Recomb preserves material length; just refresh rates
-                // for chosen_idx and any new lineage.
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
                     &barrier_active, demo, t, self.sequence_length);
@@ -382,6 +416,16 @@ impl HullSimulator {
                     pair_rates.recompute_for(
                         len_after - 1, active, arena, inversions,
                         &barrier_active, demo, t, self.sequence_length);
+                }
+                gc_counter += 1;
+                if gc_counter >= GC_STRIDE {
+                    gc_counter = 0;
+                    let removed = gc_sole_lineages_with_removed(active, arena);
+                    if !removed.is_empty() {
+                        pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                            demo, t, self.sequence_length);
+                        total_material = active.iter().map(|l| l.cached_len).sum();
+                    }
                 }
             }
         }
@@ -2119,6 +2163,66 @@ mod tests {
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 7,
             "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_old_inversion_barrier_crosses() {
+        // Very old inversion: barrier crosses almost immediately,
+        // compound path should drive through cross_barriers_static
+        // and finish as panmictic.
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 10000.0,
+            p_inv: vec![0.5], t_inv: 1.0,
+            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            3, 3, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_inversion_barrier_forces_extra_nodes() {
+        // Long-standing barrier (t_inv = 5·Ne) — S/I pairs can't
+        // coalesce until t_inv, so nodes >= panmictic case.
+        let inv = InversionSpec {
+            bp_left: 3000.0, bp_right: 7000.0,
+            p_inv: vec![0.5], t_inv: 5000.0,
+            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            5, 5, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 19,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_en_demo_event() {
+        // Ancestral pop size change at t=2000 (Ne 1000 → 5000).
+        // Should fire via apply_boundary + trigger pair_rates rebuild.
+        use crate::demography::{Demography, DemoEvent};
+        let mut demo = Demography::single_pop(1000.0);
+        demo.events.push(DemoEvent::EN { t: 2000.0, n: 5000.0 });
+        let sim = HullSimulator {
+            samples: vec![SampleEntry {
+                karyotypes: vec![], population: 0, count: 6,
+            }],
+            demography: demo,
+            sequence_length: 1000.0,
+            recombination_rate: 1e-12,
+            inversions: vec![],
+            sweeps: vec![],
+            seed: 42,
+            stop_at: f64::INFINITY,
+            compound_rate: true,
+        };
+        let result = sim.simulate();
+        // 6 samples, no recomb → 11 nodes.
+        assert_eq!(result.tables.num_nodes(), 11);
     }
 
     #[test]

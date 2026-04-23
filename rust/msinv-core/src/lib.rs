@@ -12,3 +12,4 @@ pub mod demography;
 pub mod sweep;
 pub mod simulator;
 pub mod compound_pair_rate;
+pub mod pair_rate_cache;

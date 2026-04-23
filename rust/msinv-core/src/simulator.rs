@@ -260,16 +260,11 @@ impl HullSimulator {
     ) {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
+        use crate::class_tag::Karyotype;
 
-        // Hard caps on Stage 3c.2 scope.
+        // Stage 3c.3 still gates sweeps.
         if !self.sweeps.is_empty() {
             panic!("compound_rate does not yet support sweeps (Stage 3c.4)");
-        }
-        for inv in inversions.iter() {
-            if inv.gene_conversion_rate > 1e-20 {
-                panic!("compound_rate does not yet support gene flux (Stage 3c.3); \
-                        set gene_conversion_rate = 1e-30 or smaller");
-            }
         }
 
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
@@ -309,6 +304,33 @@ impl HullSimulator {
 
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
+            // Per-(lineage, inv) flux rate. Flattened as (li, ii, rate).
+            // Linear re-computation each iter — acceptable at realistic
+            // rates where flux is a minor fraction of events.
+            let mut flux_entries: Vec<(usize, usize, f64)> = Vec::new();
+            let mut flux_rate: f64 = 0.0;
+            for (ii, inv) in inversions.iter().enumerate() {
+                if !barrier_active[ii] { continue; }
+                if inv.gene_conversion_rate <= 0.0 { continue; }
+                for li in 0..active.len() {
+                    let kary = lineage_class_for_inv_arena(
+                        active[li].head, inv, arena);
+                    let p_other = match kary {
+                        Some(Karyotype::S) => inv.p_inv_for(active[li].population),
+                        Some(Karyotype::I) => 1.0 - inv.p_inv_for(active[li].population),
+                        None => continue,
+                    };
+                    if p_other <= 0.0 { continue; }
+                    let w = flux_lineage_weight_arena(
+                        active[li].head, inv, arena);
+                    if w <= 0.0 { continue; }
+                    let r = inv.gene_conversion_rate * p_other * w;
+                    if r > 0.0 {
+                        flux_entries.push((li, ii, r));
+                        flux_rate += r;
+                    }
+                }
+            }
             // Migration aggregate rate across all (src, dst).
             let mig_rate = if n_pops >= 2 {
                 for c in pop_counts.iter_mut() { *c = 0; }
@@ -326,7 +348,7 @@ impl HullSimulator {
                 }
                 r
             } else { 0.0 };
-            let total_rate = coal_rate + recomb_rate + mig_rate;
+            let total_rate = coal_rate + recomb_rate + mig_rate + flux_rate;
 
             // No coalescence possible + nothing but recomb firing →
             // sweep out sole-carrier lineages (no overlap with anyone).
@@ -378,6 +400,41 @@ impl HullSimulator {
             t = t_event;
 
             let u: f64 = rng.random::<f64>() * total_rate;
+            if u >= coal_rate + recomb_rate + mig_rate {
+                // Gene flux: sample (li, ii) proportional.
+                let mut u_flux = u - coal_rate - recomb_rate - mig_rate;
+                let mut picked: Option<(usize, usize)> = None;
+                for &(li, ii, r) in &flux_entries {
+                    if u_flux < r { picked = Some((li, ii)); break; }
+                    u_flux -= r;
+                }
+                let (li, ii) = match picked {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let inv = &inversions[ii];
+                let pre_len = active.len();
+                if let Some(x_event) = self.sample_flux_position(
+                    active, li, inv, arena, rng)
+                {
+                    let (tl, tr) = self.draw_tract(x_event, inv, rng);
+                    if tr > tl {
+                        apply_gene_flux(active, li, tl, tr, inv,
+                                         arena, next_uid);
+                    }
+                }
+                let post_len = active.len();
+                total_material = active.iter().map(|l| l.cached_len).sum();
+                pair_rates.recompute_for(
+                    li, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                for new_idx in pre_len..post_len {
+                    pair_rates.recompute_for(
+                        new_idx, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+                continue;
+            }
             if u >= coal_rate + recomb_rate {
                 // Migration: sample (src, dst) then a lineage in src.
                 let mut u_mig = u - coal_rate - recomb_rate;
@@ -1688,6 +1745,56 @@ fn overlap_by_class(
     result
 }
 
+/// Arena-walking counterpart to `lineage_class_for_inv_segs`. Used by
+/// the compound event loop, which doesn't maintain the RateCache's
+/// flat seg mirror.
+fn lineage_class_for_inv_arena(
+    head: SegIdx, inv: &InversionSpec, arena: &SegmentArena,
+) -> Option<Karyotype> {
+    let mut seen_s = false;
+    let mut seen_i = false;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            match seg.branch_class.get_inv(inv.inv_id) {
+                Some(Karyotype::S) => seen_s = true,
+                Some(Karyotype::I) => seen_i = true,
+                None => {}
+            }
+        }
+        cur = seg.next;
+    }
+    if seen_s && !seen_i { Some(Karyotype::S) }
+    else if seen_i && !seen_s { Some(Karyotype::I) }
+    else { None }
+}
+
+/// Arena-walking counterpart to `flux_lineage_weight_segs`.
+fn flux_lineage_weight_arena(
+    head: SegIdx, inv: &InversionSpec, arena: &SegmentArena,
+) -> f64 {
+    let inv_len = inv.length();
+    if inv_len <= 0.0 { return 0.0; }
+    let w = inv.flux_window;
+    let mut weight = 0.0;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            let a = (l - inv.bp_left) / inv_len;
+            let b = (r - inv.bp_left) / inv_len;
+            weight += phi_integral(a, b, w) * inv_len;
+        }
+        cur = seg.next;
+    }
+    weight
+}
+
 /// Determine a lineage's karyotype for one inversion, reading flat segs.
 fn lineage_class_for_inv_segs(
     segs: &[FlatSeg], inv: &InversionSpec,
@@ -2250,6 +2357,23 @@ mod tests {
         sim.compound_rate = true;
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 19,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_gene_flux() {
+        // Active barrier + nontrivial gene conversion. Flux should
+        // fire and not crash.
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 10000.0,
+            p_inv: vec![0.5], t_inv: 20_000.0,
+            gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            4, 4, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 15,
             "Got {} nodes", result.tables.num_nodes());
     }
 

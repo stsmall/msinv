@@ -138,8 +138,8 @@ impl PairRateCache {
         seq_len: f64,
     ) {
         let n = active.len();
-        self.n = n;
         if n > self.capacity { self.grow_to(n); }
+        self.n = n;
         let pop_idx = active[idx].population;
         let ne = demo.size_at(pop_idx, t).max(1e-9);
         for other in 0..n {

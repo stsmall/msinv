@@ -90,5 +90,6 @@ fn build_multi_pop(
         sweeps: Vec::new(),
         seed,
         stop_at: f64::INFINITY,
+        compound_rate: false,
     }
 }

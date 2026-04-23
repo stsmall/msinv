@@ -81,6 +81,12 @@ pub struct HullSimulator {
     /// starting state for msprime recapitation via
     /// `sim_ancestry(initial_state=ts)`.
     pub stop_at: f64,
+    /// Path 2 compound per-pair rate path. When true, dispatch
+    /// coalescence via PairRateCache + apply_coalescence_compound,
+    /// eliminating the remnant ratchet. MVP supports single-pop
+    /// coal + recomb only; panics on flux, migration, sweep, or
+    /// barrier crossings. Default false → production bucket path.
+    pub compound_rate: bool,
 }
 
 impl HullSimulator {
@@ -118,6 +124,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         }
     }
 
@@ -142,6 +149,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         }
     }
 
@@ -190,9 +198,15 @@ impl HullSimulator {
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
-        self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions, rate_cache);
+        if self.compound_rate {
+            self.run_loop_compound(&mut active, &mut arena, &mut tables,
+                                    &mut next_uid, &mut rng, &mut demo,
+                                    &inversions);
+        } else {
+            self.run_loop(&mut active, &mut arena, &mut tables,
+                           &mut next_uid, &mut rng, &mut demo,
+                           &mut inversions, rate_cache);
+        }
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
@@ -230,6 +244,149 @@ impl HullSimulator {
     // ---------------------------------------------------------------
     // Main event loop
     // ---------------------------------------------------------------
+    /// Path 2 MVP event loop. Coal via PairRateCache + compound
+    /// merge, recomb via standard split. PANICS on flux, migration,
+    /// sweep, or barrier crossings — those are stage 3c/3d work.
+    ///
+    /// Supports: single-pop OR multi-pop where inversion barriers
+    /// haven't lifted AND no demographic events fire AND no sweeps.
+    /// Effectively: Hudson structured coalescent on a fixed state.
+    fn run_loop_compound(
+        &self,
+        active: &mut Vec<crate::lineage::Lineage>,
+        arena: &mut SegmentArena,
+        tables: &mut TableBuilder,
+        next_uid: &mut LinUid,
+        rng: &mut Xoshiro256PlusPlus,
+        demo: &crate::demography::Demography,
+        inversions: &[InversionSpec],
+    ) {
+        use crate::events::{apply_coalescence_compound, apply_recombination};
+        use crate::pair_rate_cache::PairRateCache;
+
+        // Hard caps on MVP scope.
+        if !self.sweeps.is_empty() {
+            panic!("compound_rate MVP does not support sweeps");
+        }
+        if !demo.events.is_empty() {
+            panic!("compound_rate MVP does not support demographic events");
+        }
+        // Migration = all-zero matrix.
+        for row in &demo.migration_matrix {
+            for &m in row {
+                if m != 0.0 {
+                    panic!("compound_rate MVP does not support migration");
+                }
+            }
+        }
+        for inv in inversions {
+            if inv.gene_conversion_rate > 1e-20 {
+                // Any nontrivial flux is out of scope.
+                panic!("compound_rate MVP does not support gene flux; \
+                        set gene_conversion_rate = 1e-30 or smaller");
+            }
+        }
+
+        let barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
+        // Check no barrier can cross during the run.
+        let min_t_inv = inversions.iter()
+            .map(|i| i.t_inv)
+            .fold(f64::INFINITY, f64::min);
+
+        let mut t: f64 = 0.0;
+        let max_lins = (active.len() * 40).max(2048);
+        let mut pair_rates = PairRateCache::new(max_lins);
+        pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                            demo, t, self.sequence_length);
+
+        let mut total_material: f64 = active.iter().map(|l| l.cached_len).sum();
+
+        for _ in 0..10_000_000u64 {
+            let n = active.len();
+            if n <= 1 { return; }
+            if t >= self.stop_at { return; }
+
+            let coal_rate = pair_rates.total();
+            let recomb_rate = total_material * self.recombination_rate;
+            let total_rate = coal_rate + recomb_rate;
+
+            if total_rate <= 0.0 { return; }
+
+            let dt = -rng.random::<f64>().ln() / total_rate;
+            let t_event = t + dt;
+            if t_event >= min_t_inv {
+                panic!("compound_rate MVP hit a barrier crossing at \
+                        t={} (t_inv={}); not yet supported",
+                       t_event, min_t_inv);
+            }
+            t = t_event;
+
+            let u: f64 = rng.random::<f64>() * total_rate;
+            if u < coal_rate {
+                // Coalescence.
+                let (i, j) = match pair_rates.sample_pair(u) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let pre_len = active.len();
+                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                let old_i_len = active[i].cached_len;
+                let old_j_len = active[j].cached_len;
+                apply_coalescence_compound(
+                    active, i, j, t, arena, tables, next_uid);
+                let post_len = active.len();
+                let mut delta = -old_i_len - old_j_len;
+                for new_idx in (pre_len - 2)..post_len {
+                    delta += active[new_idx].cached_len;
+                }
+                total_material += delta;
+
+                // Update pair_rates: remove (hi) + swap_update(hi, pre_len-1)
+                // mirrors active.swap_remove(hi); then same for lo;
+                // then recompute for each new lineage.
+                pair_rates.remove_lineage(hi, pre_len);
+                pair_rates.swap_update(hi, pre_len - 1);
+                pair_rates.remove_lineage(lo, pre_len - 1);
+                pair_rates.swap_update(lo, pre_len - 2);
+                for new_idx in (pre_len - 2)..post_len {
+                    pair_rates.recompute_for(
+                        new_idx, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+            } else {
+                // Recombination.
+                let u_lin: f64 = rng.random::<f64>() * total_material;
+                // Linear pick — no Fenwick over cached_len in this MVP.
+                let mut acc = 0.0;
+                let mut chosen_idx = active.len() - 1;
+                for (k, lin) in active.iter().enumerate() {
+                    acc += lin.cached_len;
+                    if acc > u_lin { chosen_idx = k; break; }
+                }
+                let lin_len = active[chosen_idx].cached_len;
+                if lin_len <= 0.0 { continue; }
+                let x_offset: f64 = rng.random::<f64>() * lin_len;
+                let x = find_position(
+                    active, chosen_idx, x_offset, arena,
+                    self.sequence_length);
+                let len_before = active.len();
+                apply_recombination(
+                    active, chosen_idx, x, arena, next_uid);
+                let len_after = active.len();
+                // Recomb preserves material length; just refresh rates
+                // for chosen_idx and any new lineage.
+                pair_rates.recompute_for(
+                    chosen_idx, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                if len_after > len_before {
+                    pair_rates.recompute_for(
+                        len_after - 1, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+            }
+        }
+    }
+
     fn run_loop(
         &self,
         active: &mut Vec<Lineage>,
@@ -1933,6 +2090,38 @@ mod tests {
     }
 
     #[test]
+    fn compound_rate_panmictic_no_recomb() {
+        // Path 2 MVP smoke: same expected topology as the bucket
+        // path for a plain panmictic, no-inversion, no-recomb run.
+        let mut sim = HullSimulator::panmictic(10, 1000.0, 100.0, 1e-12, 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 19);
+        assert_eq!(result.tables.num_edges(), 18);
+    }
+
+    #[test]
+    fn compound_rate_two_samples() {
+        let mut sim = HullSimulator::panmictic(2, 100.0, 50.0, 1e-12, 7);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 3);
+        assert_eq!(result.tables.num_edges(), 2);
+    }
+
+    #[test]
+    fn compound_rate_with_low_recomb_runs() {
+        // Very low rho — mostly coalescent. Just proves the recomb
+        // plumbing doesn't break the compound path.
+        // rho = 4·500·1e-6·50 = 0.1.
+        let mut sim = HullSimulator::panmictic(4, 500.0, 50.0, 1e-6, 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 7,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
     fn coal_times_positive() {
         let sim = HullSimulator::panmictic(5, 1000.0, 100.0, 1e-12, 123);
         let result = sim.simulate();
@@ -2027,6 +2216,7 @@ mod tests {
             }],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
 
@@ -2253,6 +2443,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2289,6 +2480,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2327,6 +2519,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

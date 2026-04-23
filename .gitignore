@@ -31,3 +31,6 @@ pixi.lock
 .claude/
 perf.data*
 flamegraph*.svg
+
+# local scratch
+.tmp/

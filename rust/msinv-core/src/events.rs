@@ -209,6 +209,150 @@ pub fn apply_coalescence_partial(
     new_node
 }
 
+/// Compound coalescence — Path 2 merge semantics.
+///
+/// At each overlap position, the pair coalesces iff
+/// `a_bc.can_coalesce(b_bc)` (panmictic on either side satisfies this;
+/// S-vs-I at any active barrier fails). Remnants ONLY for genuine
+/// class mismatch — NOT for panmictic-in-mixed-class positions, which
+/// eliminates the ratchet that makes the bucket-dispatch path blow up
+/// at realistic Anopheles Ne.
+///
+/// Solo (non-overlap) segments fold into the merged lineage — the two
+/// input lineages are fully consumed by the event, so their non-
+/// overlap material continues as merged's ancestry (standard Hudson
+/// treatment, same as apply_coalescence_partial's None-case).
+pub fn apply_coalescence_compound(
+    active: &mut Vec<Lineage>,
+    idx_a: usize,
+    idx_b: usize,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+) -> i32 {
+    let pop = active[idx_a].population;
+    let new_node = tables.add_internal(t, pop as i32);
+
+    let mut sa = active[idx_a].head;
+    let mut sb = active[idx_b].head;
+
+    let mut merged_head: SegIdx = SEG_NIL;
+    let mut merged_tail: SegIdx = SEG_NIL;
+    let mut a_rem_head: SegIdx = SEG_NIL;
+    let mut a_rem_tail: SegIdx = SEG_NIL;
+    let mut b_rem_head: SegIdx = SEG_NIL;
+    let mut b_rem_tail: SegIdx = SEG_NIL;
+
+    macro_rules! chain_append {
+        ($head:expr, $tail:expr, $arena:expr, $l:expr, $r:expr, $nid:expr, $bc:expr) => {{
+            let idx = $arena.alloc($l, $r, $nid, $bc);
+            if $head == SEG_NIL { $head = idx; }
+            else { $arena.get_mut($tail).next = idx; }
+            $tail = idx;
+        }};
+    }
+
+    while sa != SEG_NIL && sb != SEG_NIL {
+        let a = arena.get(sa);
+        let (a_left, a_right, a_node, a_bc, a_next) =
+            (a.left, a.right, a.node_id, a.branch_class, a.next);
+        let b = arena.get(sb);
+        let (b_left, b_right, b_node, b_bc, b_next) =
+            (b.left, b.right, b.node_id, b.branch_class, b.next);
+
+        if a_right <= b_left {
+            // Solo a — fold into merged (both inputs consumed).
+            chain_append!(merged_head, merged_tail, arena,
+                           a_left, a_right, a_node, a_bc);
+            arena.free(sa);
+            sa = a_next;
+        } else if b_right <= a_left {
+            chain_append!(merged_head, merged_tail, arena,
+                           b_left, b_right, b_node, b_bc);
+            arena.free(sb);
+            sb = b_next;
+        } else {
+            let l = a_left.max(b_left);
+            let r = a_right.min(b_right);
+
+            // Pre-overlap solo bits fold into merged.
+            if a_left < l {
+                chain_append!(merged_head, merged_tail, arena,
+                               a_left, l, a_node, a_bc);
+            }
+            if b_left < l {
+                chain_append!(merged_head, merged_tail, arena,
+                               b_left, l, b_node, b_bc);
+            }
+
+            if a_bc.can_coalesce(b_bc) {
+                tables.add_edge(l, r, new_node, a_node);
+                tables.add_edge(l, r, new_node, b_node);
+                // Merged class: union of commitments. Panmictic OR S
+                // = S; S OR S = S. Never forms an inconsistent tag
+                // because can_coalesce ensured no S-vs-I at any inv.
+                let merged_bc = BranchClass::from_bits_unchecked(
+                    a_bc.bits() | b_bc.bits());
+                chain_append!(merged_head, merged_tail, arena,
+                               l, r, new_node, merged_bc);
+            } else {
+                // Genuine barrier (S-vs-I at active inv): each side's
+                // segment stays on its own remainder lineage.
+                chain_append!(a_rem_head, a_rem_tail, arena,
+                               l, r, a_node, a_bc);
+                chain_append!(b_rem_head, b_rem_tail, arena,
+                               l, r, b_node, b_bc);
+            }
+
+            if a_right == r { arena.free(sa); sa = a_next; }
+            else { arena.get_mut(sa).left = r; }
+            if b_right == r { arena.free(sb); sb = b_next; }
+            else { arena.get_mut(sb).left = r; }
+        }
+    }
+    // Tail solo material folds into merged.
+    while sa != SEG_NIL {
+        let a = arena.get(sa);
+        let (a_left, a_right, a_node, a_bc, a_next) =
+            (a.left, a.right, a.node_id, a.branch_class, a.next);
+        chain_append!(merged_head, merged_tail, arena,
+                       a_left, a_right, a_node, a_bc);
+        arena.free(sa);
+        sa = a_next;
+    }
+    while sb != SEG_NIL {
+        let b = arena.get(sb);
+        let (b_left, b_right, b_node, b_bc, b_next) =
+            (b.left, b.right, b.node_id, b.branch_class, b.next);
+        chain_append!(merged_head, merged_tail, arena,
+                       b_left, b_right, b_node, b_bc);
+        arena.free(sb);
+        sb = b_next;
+    }
+
+    let (lo, hi) = if idx_a < idx_b { (idx_a, idx_b) } else { (idx_b, idx_a) };
+    active.swap_remove(hi);
+    if lo < active.len() {
+        active.swap_remove(lo);
+    }
+
+    if merged_head != SEG_NIL {
+        let uid = *next_uid; *next_uid += 1;
+        active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
+    }
+    if a_rem_head != SEG_NIL {
+        let uid = *next_uid; *next_uid += 1;
+        active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
+    }
+    if b_rem_head != SEG_NIL {
+        let uid = *next_uid; *next_uid += 1;
+        active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
+    }
+
+    new_node
+}
+
 /// Split a lineage at position `x` (recombination event).
 ///
 /// The lineage at `active[idx]` is split into two: [head, x) stays,
@@ -252,6 +396,114 @@ mod tests {
             tail = idx;
         }
         Lineage::new(head, tail, 0, uid, arena)
+    }
+
+    fn build_lineage_cls(arena: &mut SegmentArena,
+                          segs: &[(f64, f64, BranchClass)],
+                          uid: LinUid) -> Lineage {
+        let mut head = SEG_NIL;
+        let mut tail = SEG_NIL;
+        for (i, &(l, r, bc)) in segs.iter().enumerate() {
+            let idx = arena.alloc(l, r, i as i32, bc);
+            if head == SEG_NIL { head = idx; }
+            else { arena.get_mut(tail).next = idx; }
+            tail = idx;
+        }
+        Lineage::new(head, tail, 0, uid, arena)
+    }
+
+    #[test]
+    fn compound_pan_pan_no_remnants() {
+        // Two panmictic lineages with full overlap: single merged output.
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let mut next_uid = 10u32;
+        let s0 = tables.add_sample(0.0, 0);
+        let s1 = tables.add_sample(0.0, 0);
+        let lin_a = {
+            let idx = arena.alloc(0.0, 100.0, s0, BranchClass::PANMICTIC);
+            Lineage::new(idx, idx, 0, 0, &arena)
+        };
+        let lin_b = {
+            let idx = arena.alloc(0.0, 100.0, s1, BranchClass::PANMICTIC);
+            Lineage::new(idx, idx, 0, 1, &arena)
+        };
+        let mut active = vec![lin_a, lin_b];
+        apply_coalescence_compound(
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+        assert_eq!(active.len(), 1, "expected 1 merged output");
+        assert_eq!(tables.num_edges(), 2);
+    }
+
+    #[test]
+    fn compound_pan_plus_S_merges_without_remnants() {
+        // Critical ratchet test. Two lineages, each with [0, 50) PAN +
+        // [50, 100) S@inv0. Compound-merge must collapse into ONE
+        // output (no remnants), unlike apply_coalescence_partial which
+        // would produce 3 outputs via the S-bucket event path.
+        use crate::class_tag::Karyotype;
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let mut next_uid = 10u32;
+        let pan = BranchClass::PANMICTIC;
+        let s = BranchClass::single(0, Karyotype::S);
+        let lin_a = build_lineage_cls(&mut arena,
+            &[(0.0, 50.0, pan), (50.0, 100.0, s)], 0);
+        let lin_b = build_lineage_cls(&mut arena,
+            &[(0.0, 50.0, pan), (50.0, 100.0, s)], 1);
+        let mut active = vec![lin_a, lin_b];
+        apply_coalescence_compound(
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+        assert_eq!(active.len(), 1,
+            "ratchet: expected 1 output (no remnants)");
+        // Edges: one pair per overlap interval ([0,50) + [50,100)) ×
+        // two edges per pair = 4. All go to new_node.
+        assert_eq!(tables.num_edges(), 4);
+    }
+
+    #[test]
+    fn compound_S_vs_I_produces_remnants() {
+        // Genuine barrier: S vs I at active inv. Pair doesn't merge,
+        // both stay as remainders.
+        use crate::class_tag::Karyotype;
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let mut next_uid = 10u32;
+        let s = BranchClass::single(0, Karyotype::S);
+        let i = BranchClass::single(0, Karyotype::I);
+        let lin_a = build_lineage_cls(&mut arena, &[(0.0, 100.0, s)], 0);
+        let lin_b = build_lineage_cls(&mut arena, &[(0.0, 100.0, i)], 1);
+        let mut active = vec![lin_a, lin_b];
+        apply_coalescence_compound(
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+        assert_eq!(active.len(), 2,
+            "barrier: both remain separate");
+        assert_eq!(tables.num_edges(), 0);
+    }
+
+    #[test]
+    fn compound_mixed_overlap_partial_barrier() {
+        // Lineage A: [0, 50) PAN + [50, 100) S@inv0.
+        // Lineage B: [0, 50) PAN + [50, 100) I@inv0.
+        // Pan positions coalesce; S-vs-I positions go to remnants.
+        use crate::class_tag::Karyotype;
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let mut next_uid = 10u32;
+        let pan = BranchClass::PANMICTIC;
+        let s = BranchClass::single(0, Karyotype::S);
+        let i = BranchClass::single(0, Karyotype::I);
+        let lin_a = build_lineage_cls(&mut arena,
+            &[(0.0, 50.0, pan), (50.0, 100.0, s)], 0);
+        let lin_b = build_lineage_cls(&mut arena,
+            &[(0.0, 50.0, pan), (50.0, 100.0, i)], 1);
+        let mut active = vec![lin_a, lin_b];
+        apply_coalescence_compound(
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+        // Expected: merged (pan part) + a_rem (S at [50,100)) + b_rem (I).
+        assert_eq!(active.len(), 3);
+        // Edges: only pan overlap [0, 50) × 2 edges = 2.
+        assert_eq!(tables.num_edges(), 2);
     }
 
     #[test]

@@ -81,6 +81,12 @@ pub struct HullSimulator {
     /// starting state for msprime recapitation via
     /// `sim_ancestry(initial_state=ts)`.
     pub stop_at: f64,
+    /// Path 2 compound per-pair rate path. When true, dispatch
+    /// coalescence via PairRateCache + apply_coalescence_compound,
+    /// eliminating the remnant ratchet. MVP supports single-pop
+    /// coal + recomb only; panics on flux, migration, sweep, or
+    /// barrier crossings. Default false → production bucket path.
+    pub compound_rate: bool,
 }
 
 impl HullSimulator {
@@ -118,6 +124,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         }
     }
 
@@ -142,6 +149,7 @@ impl HullSimulator {
             sweeps: vec![],
             seed,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         }
     }
 
@@ -190,9 +198,15 @@ impl HullSimulator {
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
-        self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions, rate_cache);
+        if self.compound_rate {
+            self.run_loop_compound(&mut active, &mut arena, &mut tables,
+                                    &mut next_uid, &mut rng, &mut demo,
+                                    &mut inversions);
+        } else {
+            self.run_loop(&mut active, &mut arena, &mut tables,
+                           &mut next_uid, &mut rng, &mut demo,
+                           &mut inversions, rate_cache);
+        }
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
@@ -230,6 +244,301 @@ impl HullSimulator {
     // ---------------------------------------------------------------
     // Main event loop
     // ---------------------------------------------------------------
+    /// Path 2 event loop. Coal via PairRateCache + compound merge,
+    /// recomb via standard split, barrier crossings + demographic
+    /// events via apply_boundary. Still panics on migration, flux,
+    /// and sweeps — those are Stage 3c.2+ work.
+    fn run_loop_compound(
+        &self,
+        active: &mut Vec<crate::lineage::Lineage>,
+        arena: &mut SegmentArena,
+        tables: &mut TableBuilder,
+        next_uid: &mut LinUid,
+        rng: &mut Xoshiro256PlusPlus,
+        demo: &mut crate::demography::Demography,
+        inversions: &mut Vec<InversionSpec>,
+    ) {
+        use crate::events::{apply_coalescence_compound, apply_recombination};
+        use crate::pair_rate_cache::PairRateCache;
+        use crate::class_tag::Karyotype;
+
+        let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
+        let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
+        pending_sweeps.sort_by(|a, b| a.t_event.partial_cmp(&b.t_event).unwrap());
+        let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+
+        let mut t: f64 = 0.0;
+        let max_lins = (active.len() * 40).max(2048);
+        let mut pair_rates = PairRateCache::new(max_lins);
+        pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                            demo, t, self.sequence_length);
+
+        let mut total_material: f64 = active.iter().map(|l| l.cached_len).sum();
+        const GC_STRIDE: u32 = 160;
+        let mut gc_counter: u32 = 0;
+
+        // Per-pop counts refreshed each iter for migration aggregation.
+        // Cheap to recompute (O(n)); migration is multi-pop-only and
+        // typically n_pops is small, so no incremental upkeep needed.
+        let n_pops = demo.n_pops as usize;
+        let mut pop_counts: Vec<u32> = vec![0; n_pops];
+
+        for _ in 0..10_000_000u64 {
+            let n = active.len();
+            if n <= 1 { return; }
+            if t >= self.stop_at { return; }
+
+            // Earliest deterministic boundary.
+            let mut earliest_barrier = f64::INFINITY;
+            for (k, inv) in inversions.iter().enumerate() {
+                if barrier_active[k] {
+                    earliest_barrier = earliest_barrier.min(inv.t_inv);
+                }
+            }
+            let t_demo = demo.next_event_time(t);
+            let t_sweep = pending_sweeps.first()
+                .map(|s| s.t_event).unwrap_or(f64::INFINITY);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
+
+            let coal_rate = pair_rates.total();
+            let recomb_rate = total_material * self.recombination_rate;
+            // Per-(lineage, inv) flux rate. Flattened as (li, ii, rate).
+            // Linear re-computation each iter — acceptable at realistic
+            // rates where flux is a minor fraction of events.
+            let mut flux_entries: Vec<(usize, usize, f64)> = Vec::new();
+            let mut flux_rate: f64 = 0.0;
+            for (ii, inv) in inversions.iter().enumerate() {
+                if !barrier_active[ii] { continue; }
+                if inv.gene_conversion_rate <= 0.0 { continue; }
+                for li in 0..active.len() {
+                    let kary = lineage_class_for_inv_arena(
+                        active[li].head, inv, arena);
+                    let p_other = match kary {
+                        Some(Karyotype::S) => inv.p_inv_for(active[li].population),
+                        Some(Karyotype::I) => 1.0 - inv.p_inv_for(active[li].population),
+                        None => continue,
+                    };
+                    if p_other <= 0.0 { continue; }
+                    let w = flux_lineage_weight_arena(
+                        active[li].head, inv, arena);
+                    if w <= 0.0 { continue; }
+                    let r = inv.gene_conversion_rate * p_other * w;
+                    if r > 0.0 {
+                        flux_entries.push((li, ii, r));
+                        flux_rate += r;
+                    }
+                }
+            }
+            // Migration aggregate rate across all (src, dst).
+            let mig_rate = if n_pops >= 2 {
+                for c in pop_counts.iter_mut() { *c = 0; }
+                for lin in active.iter() {
+                    pop_counts[lin.population as usize] += 1;
+                }
+                let mut r = 0.0;
+                for src in 0..n_pops {
+                    let cnt = pop_counts[src] as f64;
+                    if cnt == 0.0 { continue; }
+                    for dst in 0..n_pops {
+                        if dst == src { continue; }
+                        r += cnt * demo.migration_matrix[dst][src];
+                    }
+                }
+                r
+            } else { 0.0 };
+            let total_rate = coal_rate + recomb_rate + mig_rate + flux_rate;
+
+            // No coalescence possible + nothing but recomb firing →
+            // sweep out sole-carrier lineages (no overlap with anyone).
+            // Without this, recomb-on-fragments loop unboundedly at
+            // boundaries where all remaining material is non-shared.
+            if coal_rate <= 0.0 && recomb_rate > 0.0 && active.len() > 1 {
+                let removed = gc_sole_lineages_with_removed(active, arena);
+                if !removed.is_empty() {
+                    pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                        demo, t, self.sequence_length);
+                    total_material = active.iter().map(|l| l.cached_len).sum();
+                    continue;
+                }
+            }
+
+            // Zero-rate case: jump straight to next boundary if any.
+            if total_rate <= 0.0 {
+                if next_boundary < f64::INFINITY {
+                    t = next_boundary;
+                    apply_boundary(
+                        inversions, active, arena, &mut barrier_active,
+                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        self.sequence_length, rng, self.recombination_rate,
+                        &mut sweep_cursor);
+                    pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                        demo, t, self.sequence_length);
+                    total_material = active.iter().map(|l| l.cached_len).sum();
+                    continue;
+                }
+                return;
+            }
+
+            let dt = -rng.random::<f64>().ln() / total_rate;
+            let t_event = t + dt;
+
+            // Deterministic boundary fires before stochastic event.
+            if next_boundary <= t_event {
+                t = next_boundary;
+                apply_boundary(
+                    inversions, active, arena, &mut barrier_active,
+                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    self.sequence_length, rng, self.recombination_rate,
+                    &mut sweep_cursor);
+                pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                    demo, t, self.sequence_length);
+                total_material = active.iter().map(|l| l.cached_len).sum();
+                continue;
+            }
+            t = t_event;
+
+            let u: f64 = rng.random::<f64>() * total_rate;
+            if u >= coal_rate + recomb_rate + mig_rate {
+                // Gene flux: sample (li, ii) proportional.
+                let mut u_flux = u - coal_rate - recomb_rate - mig_rate;
+                let mut picked: Option<(usize, usize)> = None;
+                for &(li, ii, r) in &flux_entries {
+                    if u_flux < r { picked = Some((li, ii)); break; }
+                    u_flux -= r;
+                }
+                let (li, ii) = match picked {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let inv = &inversions[ii];
+                let pre_len = active.len();
+                if let Some(x_event) = self.sample_flux_position(
+                    active, li, inv, arena, rng)
+                {
+                    let (tl, tr) = self.draw_tract(x_event, inv, rng);
+                    if tr > tl {
+                        apply_gene_flux(active, li, tl, tr, inv,
+                                         arena, next_uid);
+                    }
+                }
+                let post_len = active.len();
+                total_material = active.iter().map(|l| l.cached_len).sum();
+                pair_rates.recompute_for(
+                    li, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                for new_idx in pre_len..post_len {
+                    pair_rates.recompute_for(
+                        new_idx, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+                continue;
+            }
+            if u >= coal_rate + recomb_rate {
+                // Migration: sample (src, dst) then a lineage in src.
+                let mut u_mig = u - coal_rate - recomb_rate;
+                let mut picked: Option<(u32, u32)> = None;
+                'outer: for src in 0..n_pops {
+                    let cnt = pop_counts[src] as f64;
+                    if cnt == 0.0 { continue; }
+                    for dst in 0..n_pops {
+                        if dst == src { continue; }
+                        let r = cnt * demo.migration_matrix[dst][src];
+                        if u_mig < r {
+                            picked = Some((src as u32, dst as u32));
+                            break 'outer;
+                        }
+                        u_mig -= r;
+                    }
+                }
+                let (src, dst) = match picked {
+                    Some(p) => p,
+                    None => continue,
+                };
+                // Uniformly pick one lineage in src.
+                let target = rng.random_range(0..pop_counts[src as usize] as usize);
+                let mut seen = 0usize;
+                let mut chosen_idx = 0usize;
+                for (i, lin) in active.iter().enumerate() {
+                    if lin.population == src {
+                        if seen == target { chosen_idx = i; break; }
+                        seen += 1;
+                    }
+                }
+                active[chosen_idx].population = dst;
+                pair_rates.recompute_for(
+                    chosen_idx, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                continue;
+            }
+            if u < coal_rate {
+                // Coalescence.
+                let (i, j) = match pair_rates.sample_pair(u) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let pre_len = active.len();
+                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                let old_i_len = active[i].cached_len;
+                let old_j_len = active[j].cached_len;
+                apply_coalescence_compound(
+                    active, i, j, t, arena, tables, next_uid);
+                let post_len = active.len();
+                let mut delta = -old_i_len - old_j_len;
+                for new_idx in (pre_len - 2)..post_len {
+                    delta += active[new_idx].cached_len;
+                }
+                total_material += delta;
+
+                pair_rates.remove_lineage(hi, pre_len);
+                pair_rates.swap_update(hi, pre_len - 1);
+                pair_rates.remove_lineage(lo, pre_len - 1);
+                pair_rates.swap_update(lo, pre_len - 2);
+                for new_idx in (pre_len - 2)..post_len {
+                    pair_rates.recompute_for(
+                        new_idx, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+            } else {
+                // Recombination.
+                let u_lin: f64 = rng.random::<f64>() * total_material;
+                let mut acc = 0.0;
+                let mut chosen_idx = active.len() - 1;
+                for (k, lin) in active.iter().enumerate() {
+                    acc += lin.cached_len;
+                    if acc > u_lin { chosen_idx = k; break; }
+                }
+                let lin_len = active[chosen_idx].cached_len;
+                if lin_len <= 0.0 { continue; }
+                let x_offset: f64 = rng.random::<f64>() * lin_len;
+                let x = find_position(
+                    active, chosen_idx, x_offset, arena,
+                    self.sequence_length);
+                let len_before = active.len();
+                apply_recombination(
+                    active, chosen_idx, x, arena, next_uid);
+                let len_after = active.len();
+                pair_rates.recompute_for(
+                    chosen_idx, active, arena, inversions,
+                    &barrier_active, demo, t, self.sequence_length);
+                if len_after > len_before {
+                    pair_rates.recompute_for(
+                        len_after - 1, active, arena, inversions,
+                        &barrier_active, demo, t, self.sequence_length);
+                }
+                gc_counter += 1;
+                if gc_counter >= GC_STRIDE {
+                    gc_counter = 0;
+                    let removed = gc_sole_lineages_with_removed(active, arena);
+                    if !removed.is_empty() {
+                        pair_rates.rebuild(active, arena, inversions, &barrier_active,
+                                            demo, t, self.sequence_length);
+                        total_material = active.iter().map(|l| l.cached_len).sum();
+                    }
+                }
+            }
+        }
+    }
+
     fn run_loop(
         &self,
         active: &mut Vec<Lineage>,
@@ -1434,6 +1743,56 @@ fn overlap_by_class(
     result
 }
 
+/// Arena-walking counterpart to `lineage_class_for_inv_segs`. Used by
+/// the compound event loop, which doesn't maintain the RateCache's
+/// flat seg mirror.
+fn lineage_class_for_inv_arena(
+    head: SegIdx, inv: &InversionSpec, arena: &SegmentArena,
+) -> Option<Karyotype> {
+    let mut seen_s = false;
+    let mut seen_i = false;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            match seg.branch_class.get_inv(inv.inv_id) {
+                Some(Karyotype::S) => seen_s = true,
+                Some(Karyotype::I) => seen_i = true,
+                None => {}
+            }
+        }
+        cur = seg.next;
+    }
+    if seen_s && !seen_i { Some(Karyotype::S) }
+    else if seen_i && !seen_s { Some(Karyotype::I) }
+    else { None }
+}
+
+/// Arena-walking counterpart to `flux_lineage_weight_segs`.
+fn flux_lineage_weight_arena(
+    head: SegIdx, inv: &InversionSpec, arena: &SegmentArena,
+) -> f64 {
+    let inv_len = inv.length();
+    if inv_len <= 0.0 { return 0.0; }
+    let w = inv.flux_window;
+    let mut weight = 0.0;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            let a = (l - inv.bp_left) / inv_len;
+            let b = (r - inv.bp_left) / inv_len;
+            weight += phi_integral(a, b, w) * inv_len;
+        }
+        cur = seg.next;
+    }
+    weight
+}
+
 /// Determine a lineage's karyotype for one inversion, reading flat segs.
 fn lineage_class_for_inv_segs(
     segs: &[FlatSeg], inv: &InversionSpec,
@@ -1933,6 +2292,165 @@ mod tests {
     }
 
     #[test]
+    fn compound_rate_panmictic_no_recomb() {
+        // Path 2 MVP smoke: same expected topology as the bucket
+        // path for a plain panmictic, no-inversion, no-recomb run.
+        let mut sim = HullSimulator::panmictic(10, 1000.0, 100.0, 1e-12, 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 19);
+        assert_eq!(result.tables.num_edges(), 18);
+    }
+
+    #[test]
+    fn compound_rate_two_samples() {
+        let mut sim = HullSimulator::panmictic(2, 100.0, 50.0, 1e-12, 7);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 3);
+        assert_eq!(result.tables.num_edges(), 2);
+    }
+
+    #[test]
+    fn compound_rate_with_low_recomb_runs() {
+        // Very low rho — mostly coalescent. Just proves the recomb
+        // plumbing doesn't break the compound path.
+        // rho = 4·500·1e-6·50 = 0.1.
+        let mut sim = HullSimulator::panmictic(4, 500.0, 50.0, 1e-6, 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 7,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_old_inversion_barrier_crosses() {
+        // Very old inversion: barrier crosses almost immediately,
+        // compound path should drive through cross_barriers_static
+        // and finish as panmictic.
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 10000.0,
+            p_inv: vec![0.5], t_inv: 1.0,
+            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            3, 3, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_inversion_barrier_forces_extra_nodes() {
+        // Long-standing barrier (t_inv = 5·Ne) — S/I pairs can't
+        // coalesce until t_inv, so nodes >= panmictic case.
+        let inv = InversionSpec {
+            bp_left: 3000.0, bp_right: 7000.0,
+            p_inv: vec![0.5], t_inv: 5000.0,
+            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            5, 5, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 19,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_sweep() {
+        use crate::sweep::Sweep;
+        let mut sim = HullSimulator::panmictic(
+            6, 10_000.0, 100.0, 1e-12, 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50.0,
+            t_event: 100.0,
+            target: None,
+            population: None,
+            sweep_window: 10.0,
+            ..Default::default()
+        });
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+        let near_100 = result.tables.node_time.iter()
+            .filter(|&&t| (t - 100.0).abs() < 1.0)
+            .count();
+        assert!(near_100 >= 1,
+            "Expected sweep node at t~100, got {}", near_100);
+    }
+
+    #[test]
+    fn compound_rate_with_gene_flux() {
+        // Active barrier + nontrivial gene conversion. Flux should
+        // fire and not crash.
+        let inv = InversionSpec {
+            bp_left: 0.0, bp_right: 10000.0,
+            p_inv: vec![0.5], t_inv: 20_000.0,
+            gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
+        };
+        let mut sim = HullSimulator::simple(
+            4, 4, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 15,
+            "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_migration() {
+        // Two-pop symmetric migration, no inversion. Finite m ensures
+        // all pairs eventually collapse into one pop and coalesce.
+        use crate::demography::Demography;
+        let mut demo = Demography::new(vec![500.0, 500.0]);
+        demo.migration_matrix[0][1] = 1e-3;
+        demo.migration_matrix[1][0] = 1e-3;
+        let sim = HullSimulator {
+            samples: vec![
+                SampleEntry { karyotypes: vec![], population: 0, count: 4 },
+                SampleEntry { karyotypes: vec![], population: 1, count: 4 },
+            ],
+            demography: demo,
+            sequence_length: 1000.0,
+            recombination_rate: 1e-12,
+            inversions: vec![],
+            sweeps: vec![],
+            seed: 42,
+            stop_at: f64::INFINITY,
+            compound_rate: true,
+        };
+        let result = sim.simulate();
+        assert_eq!(result.tables.num_nodes(), 15);
+    }
+
+    #[test]
+    fn compound_rate_with_en_demo_event() {
+        // Ancestral pop size change at t=2000 (Ne 1000 → 5000).
+        // Should fire via apply_boundary + trigger pair_rates rebuild.
+        use crate::demography::{Demography, DemoEvent};
+        let mut demo = Demography::single_pop(1000.0);
+        demo.events.push(DemoEvent::EN { t: 2000.0, n: 5000.0 });
+        let sim = HullSimulator {
+            samples: vec![SampleEntry {
+                karyotypes: vec![], population: 0, count: 6,
+            }],
+            demography: demo,
+            sequence_length: 1000.0,
+            recombination_rate: 1e-12,
+            inversions: vec![],
+            sweeps: vec![],
+            seed: 42,
+            stop_at: f64::INFINITY,
+            compound_rate: true,
+        };
+        let result = sim.simulate();
+        // 6 samples, no recomb → 11 nodes.
+        assert_eq!(result.tables.num_nodes(), 11);
+    }
+
+    #[test]
     fn coal_times_positive() {
         let sim = HullSimulator::panmictic(5, 1000.0, 100.0, 1e-12, 123);
         let result = sim.simulate();
@@ -2027,6 +2545,7 @@ mod tests {
             }],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
 
@@ -2253,6 +2772,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2289,6 +2809,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2327,6 +2848,7 @@ mod tests {
             sweeps: vec![],
             seed: 42,
             stop_at: f64::INFINITY,
+            compound_rate: false,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

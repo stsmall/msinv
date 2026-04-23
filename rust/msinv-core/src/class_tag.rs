@@ -122,6 +122,15 @@ impl BranchClass {
     pub fn bits(self) -> u64 {
         self.0
     }
+
+    /// Construct from raw bits. Caller must ensure the bitmask
+    /// encodes a valid class (no reserved 0b11 per-inv bit pair).
+    /// Used by `apply_coalescence_compound` to union two can-coalesce-
+    /// compatible classes.
+    #[inline]
+    pub fn from_bits_unchecked(bits: u64) -> Self {
+        Self(bits)
+    }
 }
 
 #[cfg(test)]

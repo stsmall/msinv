@@ -262,13 +262,9 @@ impl HullSimulator {
         use crate::pair_rate_cache::PairRateCache;
         use crate::class_tag::Karyotype;
 
-        // Stage 3c.3 still gates sweeps.
-        if !self.sweeps.is_empty() {
-            panic!("compound_rate does not yet support sweeps (Stage 3c.4)");
-        }
-
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
-        let mut pending_sweeps: Vec<Sweep> = Vec::new();  // empty; panic above
+        let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
+        pending_sweeps.sort_by(|a, b| a.t_event.partial_cmp(&b.t_event).unwrap());
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
 
         let mut t: f64 = 0.0;
@@ -300,7 +296,9 @@ impl HullSimulator {
                 }
             }
             let t_demo = demo.next_event_time(t);
-            let next_boundary = earliest_barrier.min(t_demo);
+            let t_sweep = pending_sweeps.first()
+                .map(|s| s.t_event).unwrap_or(f64::INFINITY);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
 
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
@@ -2358,6 +2356,30 @@ mod tests {
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 19,
             "Got {} nodes", result.tables.num_nodes());
+    }
+
+    #[test]
+    fn compound_rate_with_sweep() {
+        use crate::sweep::Sweep;
+        let mut sim = HullSimulator::panmictic(
+            6, 10_000.0, 100.0, 1e-12, 42);
+        sim.sweeps.push(Sweep {
+            x_sel: 50.0,
+            t_event: 100.0,
+            target: None,
+            population: None,
+            sweep_window: 10.0,
+            ..Default::default()
+        });
+        sim.compound_rate = true;
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 11,
+            "Got {} nodes", result.tables.num_nodes());
+        let near_100 = result.tables.node_time.iter()
+            .filter(|&&t| (t - 100.0).abs() < 1.0)
+            .count();
+        assert!(near_100 >= 1,
+            "Expected sweep node at t~100, got {}", near_100);
     }
 
     #[test]

@@ -56,7 +56,20 @@ fn main() {
                              n_samples, 3000 + rep)
         };
         sim.compound_rate = compound;
-        let _result = sim.simulate_with_cache(&mut rate_cache);
+        let result = sim.simulate_with_cache(&mut rate_cache);
+        let nodes = result.tables.num_nodes();
+        let edges = result.tables.num_edges();
+        let stats = rate_cache.mem_stats();
+        let total_bytes: usize = stats.iter().map(|(_, b)| *b).sum();
+        eprintln!("rep {rep}: n={} cap={} nodes={nodes} edges={edges} \
+                   cache_total={} MB",
+                  rate_cache.n_active(), rate_cache.cap(),
+                  total_bytes / (1024 * 1024));
+        for (k, v) in &stats {
+            if *v >= 1024 * 1024 {
+                eprintln!("    {:20}  {:6} MB", k, v / (1024 * 1024));
+            }
+        }
     }
     let total = t0.elapsed().as_secs_f64();
     println!("total {:.3} s  mean {:.3} s/rep  {:.1} reps/s",

@@ -16,6 +16,7 @@ use crate::segment::SegmentArena;
 
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 const OVERFLOW_LEN: u8 = u8::MAX;
 
@@ -122,11 +123,17 @@ pub struct RateCache {
     /// O(1) via direct indexing instead of walking iter_pairs until the
     /// target (the old ~15%-of-wall cost at rho=2000).
     pair_buckets: SmallVec<[(u32, BranchClass, Vec<u64>); 8]>,
-    /// Reverse index per pair_idx: list of (bucket_slot, pos_in_bucket)
-    /// entries, one per class stored in overlaps[pidx], in the same
-    /// order. Used to patch bucket positions during swap_remove and to
-    /// rewrite packed (i, j) during swap_update.
-    pair_bucket_refs: Vec<PairBucketRefs>,
+    /// Sparse reverse index per pair_idx: list of (bucket_slot,
+    /// pos_in_bucket) entries, one per class stored in overlaps[pidx],
+    /// in the same order. Used to patch bucket positions during
+    /// swap_remove and to rewrite packed (i, j) during swap_update.
+    ///
+    /// Sparse (FxHashMap) rather than dense `Vec<PairBucketRefs>` of
+    /// length `tri_size(cap)`. At Kir/Fol-shaped peaks (cap ~60k) the
+    /// dense layout allocated ~28 GB virtual and touched ~10 GB RSS —
+    /// the single dominant heap user. Keyed by pidx (u32); present iff
+    /// the pair is non-empty, matching `nonempty_bits`.
+    pair_bucket_refs: FxHashMap<u32, PairBucketRefs>,
     /// Overflow map for the rare pairs with > 2 classes (len sentinel
     /// `OVERFLOW_LEN`). Keyed by pidx (as u32 to fit 16M pairs in one
     /// key). Entries mirror the inline `data` order.
@@ -186,50 +193,6 @@ impl Iterator for BitWordIter {
     }
 }
 
-/// Allocate a Vec<T> of length `n` with all-zero bytes. Bypasses the
-/// per-element clone loop that `vec![default; n]` / `Vec::resize`
-/// emit for non-trivial Copy types, which was ~5% of wall at rho=2000
-/// on the ~8.4M-slot triangular arrays for `PairOverlap` /
-/// `PairBucketRefs`.
-///
-/// Safety contract: caller must guarantee that `T::default()` produces
-/// the all-zeroes bit pattern. `#[repr(C)]` Copy structs whose fields
-/// are themselves zeroable (integers, floats, arrays of the above)
-/// satisfy this; anything with a non-zero Default (`NonZero*`, enums
-/// with a non-zero discriminant, pointers with provenance, etc.)
-/// does NOT. The `debug_assertions` check below catches violations
-/// at test/dev time; release builds trust the caller.
-fn zeroed_vec_default<T: Default + Copy>(n: usize) -> Vec<T> {
-    use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
-    if n == 0 {
-        return Vec::new();
-    }
-    #[cfg(debug_assertions)]
-    {
-        let d = T::default();
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                &d as *const T as *const u8, std::mem::size_of::<T>())
-        };
-        assert!(bytes.iter().all(|&b| b == 0),
-            "zeroed_vec_default called on type whose Default is not all-zero");
-    }
-    let layout = Layout::array::<T>(n)
-        .expect("zeroed_vec_default: layout overflow");
-    // SAFETY: `alloc_zeroed` returns `n * size_of::<T>()` bytes of
-    // zeroes (or null on OOM). The debug check above verifies that
-    // zero bytes represent a valid `T::default()` value, so each
-    // element is a valid `T`. `Vec::from_raw_parts` with len == cap
-    // takes ownership of the allocation for Drop purposes.
-    unsafe {
-        let ptr = alloc_zeroed(layout) as *mut T;
-        if ptr.is_null() {
-            handle_alloc_error(layout);
-        }
-        Vec::from_raw_parts(ptr, n, n)
-    }
-}
-
 impl RateCache {
     pub fn new(max_lineages: usize, seq_len: f64) -> Self {
         let cap = max_lineages;
@@ -243,7 +206,7 @@ impl RateCache {
             lineage_hulls: Vec::with_capacity(cap),
             seq_len,
             pair_buckets: SmallVec::new(),
-            pair_bucket_refs: zeroed_vec_default(n_pairs),
+            pair_bucket_refs: FxHashMap::default(),
             refs_overflow: HashMap::new(),
             peer_bits: vec![0u64; cap * peer_stride],
             peer_word_stride: peer_stride,
@@ -278,34 +241,27 @@ impl RateCache {
         // shrink if hinted cap ≤ 1/4 of current; allocate fresh
         // triangular arrays at `max_lineages * 2` like `ensure_capacity`
         // would have picked on a first-time build.
+        // Sparse pair_bucket_refs: always clear (O(live_pairs)).
+        self.pair_bucket_refs.clear();
+        self.refs_overflow.clear();
         let hint_cap = max_lineages.max(64);
         if hint_cap * 4 <= self.capacity {
             let new_cap = hint_cap * 2;
             let new_n_pairs = tri_size(new_cap);
             self.nonempty_bits = vec![0u64; nbits_words(new_n_pairs)];
-            self.pair_bucket_refs = zeroed_vec_default(new_n_pairs);
-            self.refs_overflow.clear();
             let new_stride = nbits_words(new_cap);
             self.peer_bits = vec![0u64; new_cap * new_stride];
             self.peer_word_stride = new_stride;
             self.capacity = new_cap;
-        } else {
-            // Walk only non-empty overlap slots via the bitmap — skips
-            // the O(n_pairs) sweep over the 300k+ typically-empty
-            // triangular array that dominated reset cost at rho=2000.
-            for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
-                let mut word = *w;
-                while word != 0 {
-                    let bit = word.trailing_zeros() as usize;
-                    let pidx = widx * 64 + bit;
-                    if pidx < self.pair_bucket_refs.len() {
-                        self.pair_bucket_refs[pidx] = PairBucketRefs::default();
-                    }
-                    word &= word - 1;
-                }
-                *w = 0;
+            // Per-(pop, class) pair bucket Vec<u64>s retain capacity
+            // under Vec::clear(), so a rep that pushed 10M entries
+            // keeps that cap even though the next rep starts empty.
+            // Drop to free heap.
+            for entry in self.pair_buckets.iter_mut() {
+                entry.2.shrink_to_fit();
             }
-            self.refs_overflow.clear();
+        } else {
+            for w in self.nonempty_bits.iter_mut() { *w = 0; }
             for w in self.peer_bits.iter_mut() { *w = 0; }
         }
         self.ensure_capacity(max_lineages);
@@ -344,11 +300,20 @@ impl RateCache {
     fn ensure_capacity(&mut self, need: usize) {
         if need > self.capacity {
             let old_cap = self.capacity;
-            let new_cap = need * 2;
+            // 1.5× geometric growth. Was 2× — at Kir/Fol peak active-n
+            // of ~10k that put pair_bucket_refs at tri_size(40k) × 24 B
+            // ≈ 19 GB, dwarfing everything else. 1.5× asymptotic peak
+            // is ~56% of 2×. Amortized reindex stays O(1) per insert —
+            // the growth factor stays constant, just smaller — so
+            // runtime cost is a ~10-20% increase in reindex events
+            // during the growth phase.
+            let new_cap = need + need / 2 + 1;
             let new_n_pairs = tri_size(new_cap);
             let mut new_bits = vec![0u64; nbits_words(new_n_pairs)];
-            let mut new_refs: Vec<PairBucketRefs> =
-                zeroed_vec_default(new_n_pairs);
+            // Sparse reindex: walk live entries only.
+            let mut new_refs: FxHashMap<u32, PairBucketRefs> =
+                FxHashMap::with_capacity_and_hasher(
+                    self.pair_bucket_refs.len(), Default::default());
             let mut new_refs_overflow = HashMap::new();
             let walk_n = self.n.min(old_cap);
             for i in 0..walk_n {
@@ -356,15 +321,17 @@ impl RateCache {
                     let old_pidx = pair_idx(i, j, old_cap);
                     if bit_get(&self.nonempty_bits, old_pidx) {
                         let new_pidx = pair_idx(i, j, new_cap);
-                        new_refs[new_pidx] =
-                            std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
+                        let refs = self.pair_bucket_refs
+                            .remove(&(old_pidx as u32))
+                            .unwrap_or_default();
                         bit_set(&mut new_bits, new_pidx);
-                        if new_refs[new_pidx].len == OVERFLOW_LEN {
+                        if refs.len == OVERFLOW_LEN {
                             if let Some(v) = self.refs_overflow
                                 .remove(&(old_pidx as u32)) {
                                 new_refs_overflow.insert(new_pidx as u32, v);
                             }
                         }
+                        new_refs.insert(new_pidx as u32, refs);
                     }
                 }
             }
@@ -476,7 +443,9 @@ impl RateCache {
     /// out-of-line via `#[cold]` to keep the cmov sequence tight.
     #[inline(always)]
     fn refs_slice(&self, pidx: usize) -> &[(u32, u32)] {
-        let r = &self.pair_bucket_refs[pidx];
+        let Some(r) = self.pair_bucket_refs.get(&(pidx as u32)) else {
+            return &[];
+        };
         if r.len != OVERFLOW_LEN {
             &r.data[..r.len as usize]
         } else {
@@ -507,7 +476,8 @@ impl RateCache {
     fn store_pair_data(&mut self, pidx: usize, refs: &[(u32, u32)]) {
         let n = refs.len();
         if n <= 2 {
-            let r = &mut self.pair_bucket_refs[pidx];
+            let r = self.pair_bucket_refs
+                .entry(pidx as u32).or_default();
             r.len = n as u8;
             r.data[..n].copy_from_slice(refs);
         } else {
@@ -518,19 +488,19 @@ impl RateCache {
     #[cold]
     #[inline(never)]
     fn store_pair_overflow(&mut self, pidx: usize, refs: &[(u32, u32)]) {
-        self.pair_bucket_refs[pidx].len = OVERFLOW_LEN;
+        self.pair_bucket_refs
+            .entry(pidx as u32).or_default().len = OVERFLOW_LEN;
         self.refs_overflow
             .insert(pidx as u32, SmallVec::from_slice(refs));
     }
 
-    /// Empty the refs slot for `pidx`. Stale data bytes stay in place
-    /// (unreachable via `refs_slice` once `len = 0`).
+    /// Empty the refs slot for `pidx`. Removes the sparse entry.
     #[inline]
     fn clear_pair_data(&mut self, pidx: usize) {
-        let was_overflow = self.pair_bucket_refs[pidx].len == OVERFLOW_LEN;
-        self.pair_bucket_refs[pidx].len = 0;
-        if was_overflow {
-            self.refs_overflow.remove(&(pidx as u32));
+        if let Some(r) = self.pair_bucket_refs.remove(&(pidx as u32)) {
+            if r.len == OVERFLOW_LEN {
+                self.refs_overflow.remove(&(pidx as u32));
+            }
         }
     }
 
@@ -538,13 +508,14 @@ impl RateCache {
     /// classification (key migration in the overflow map).
     #[inline]
     fn move_pair_data(&mut self, old_pidx: usize, new_pidx: usize) {
-        debug_assert_eq!(self.pair_bucket_refs[new_pidx].len, 0);
-        let r = std::mem::take(&mut self.pair_bucket_refs[old_pidx]);
-        let was_overflow = r.len == OVERFLOW_LEN;
-        self.pair_bucket_refs[new_pidx] = r;
-        if was_overflow {
-            if let Some(v) = self.refs_overflow.remove(&(old_pidx as u32)) {
-                self.refs_overflow.insert(new_pidx as u32, v);
+        debug_assert!(!self.pair_bucket_refs.contains_key(&(new_pidx as u32)));
+        if let Some(r) = self.pair_bucket_refs.remove(&(old_pidx as u32)) {
+            let was_overflow = r.len == OVERFLOW_LEN;
+            self.pair_bucket_refs.insert(new_pidx as u32, r);
+            if was_overflow {
+                if let Some(v) = self.refs_overflow.remove(&(old_pidx as u32)) {
+                    self.refs_overflow.insert(new_pidx as u32, v);
+                }
             }
         }
     }
@@ -553,7 +524,9 @@ impl RateCache {
     /// Used by `bucket_swap_remove` to patch a moved bucket position.
     #[inline]
     fn refs_entry_set(&mut self, pidx: usize, k: usize, entry: (u32, u32)) {
-        let r = &mut self.pair_bucket_refs[pidx];
+        let Some(r) = self.pair_bucket_refs.get_mut(&(pidx as u32)) else {
+            return;
+        };
         if r.len == OVERFLOW_LEN {
             if let Some(v) = self.refs_overflow.get_mut(&(pidx as u32)) {
                 v[k] = entry;
@@ -618,7 +591,7 @@ impl RateCache {
         let pidx = pair_idx(i, j, self.capacity);
         let pop = self.lineage_pop[i];
         debug_assert!(!bit_get(&self.nonempty_bits, pidx));
-        debug_assert!(self.pair_bucket_refs[pidx].len == 0);
+        debug_assert!(!self.pair_bucket_refs.contains_key(&(pidx as u32)));
         let packed = pack_ij(i, j);
         let mut refs: SmallVec<[(u32, u32); 4]> = SmallVec::new();
         for &cls in classes {
@@ -699,23 +672,10 @@ impl RateCache {
     ) {
         self.n = active.len();
         self.ensure_capacity(self.n);
-        // Clear only populated slots via the bitmap — the full triangular
-        // sweep was ~17% self-time at rho=2000 because max_lins is pre-
-        // sized to 2048 (→ 2M pair slots) and rebuild fires on every
-        // cache_dirty transition.
-        for (widx, w) in self.nonempty_bits.iter_mut().enumerate() {
-            let mut word = *w;
-            while word != 0 {
-                let bit = word.trailing_zeros() as usize;
-                let pidx = widx * 64 + bit;
-                if pidx < self.pair_bucket_refs.len() {
-                    self.pair_bucket_refs[pidx] = PairBucketRefs::default();
-                }
-                word &= word - 1;
-            }
-            *w = 0;
-        }
+        // Sparse refs: O(live_pairs) clear. bitmap zeroed separately.
+        self.pair_bucket_refs.clear();
         self.refs_overflow.clear();
+        for w in self.nonempty_bits.iter_mut() { *w = 0; }
         for entry in self.pair_buckets.iter_mut() {
             entry.2.clear();
         }
@@ -1242,6 +1202,52 @@ impl RateCache {
         it.prime_row(0);
         it
     }
+
+    /// Report allocation size per structure in bytes. Used by bench_rho
+    /// to pinpoint which array dominates peak RSS.
+    pub fn mem_stats(&self) -> Vec<(&'static str, usize)> {
+        let pair_refs = self.pair_bucket_refs.capacity()
+            * (std::mem::size_of::<PairBucketRefs>()
+               + std::mem::size_of::<u32>() + 1);
+        let nonempty = self.nonempty_bits.capacity() * 8;
+        let peer = self.peer_bits.capacity() * 8;
+        let pop = self.lineage_pop.capacity() * std::mem::size_of::<u32>();
+        let segs_header = self.lineage_segs.capacity()
+            * std::mem::size_of::<LineageSegs>();
+        let segs_heap: usize = self.lineage_segs.iter()
+            .map(|s| if s.spilled() {
+                s.capacity() * std::mem::size_of::<FlatSeg>()
+            } else { 0 })
+            .sum();
+        let pos_bits = self.lineage_pos_bits.capacity() * 8;
+        let hulls = self.lineage_hulls.capacity()
+            * std::mem::size_of::<(f64, f64)>();
+        let mut buckets = 0;
+        for e in &self.pair_buckets {
+            buckets += e.2.capacity() * 8;
+        }
+        let overflow = self.refs_overflow.len()
+            * (std::mem::size_of::<u32>()
+               + std::mem::size_of::<SmallVec<[(u32, u32); 4]>>());
+        let peers_scratch = self.peers_scratch.capacity()
+            * std::mem::size_of::<usize>();
+        vec![
+            ("pair_bucket_refs", pair_refs),
+            ("nonempty_bits", nonempty),
+            ("peer_bits", peer),
+            ("lineage_pop", pop),
+            ("lineage_segs_hdr", segs_header),
+            ("lineage_segs_heap", segs_heap),
+            ("lineage_pos_bits", pos_bits),
+            ("lineage_hulls", hulls),
+            ("pair_buckets", buckets),
+            ("refs_overflow", overflow),
+            ("peers_scratch", peers_scratch),
+        ]
+    }
+
+    pub fn n_active(&self) -> usize { self.n }
+    pub fn cap(&self) -> usize { self.capacity }
 }
 
 pub struct NonEmptyPairIter<'a> {

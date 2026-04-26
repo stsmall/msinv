@@ -2028,12 +2028,62 @@ fn apply_boundary(
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
                      sweep_cursor);
     }
-    let inv_changes = demo.apply_events_at(t, active);
+    let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
         if let Some(inv) = inversions.iter_mut().find(|i| i.inv_id == inv_id) {
             inv.set_p_inv_for(pop, p_inv_val);
         }
     }
+    // Class-conditional migration: needs arena (read class) + rng
+    // (proportion < 1 sampling).  Applied after inv_changes so the
+    // class queries reflect the post-event inversion frequencies.
+    for spec in class_mig {
+        apply_class_mig(active, arena, &spec, rng, inversions);
+    }
+}
+
+/// Apply a class-conditional migration spec (DemoEvent::ClassMig).
+/// For each lineage in `src` whose karyotype at `inv_id` matches
+/// `kary`, move it to `dst` with probability `proportion`.
+fn apply_class_mig(
+    active: &mut [Lineage],
+    arena: &SegmentArena,
+    spec: &crate::demography::ClassMigSpec,
+    rng: &mut Xoshiro256PlusPlus,
+    inversions: &[InversionSpec],
+) {
+    use rand::Rng;
+    // Locate the InversionSpec for the requested inv_id (just for any
+    // future class-aware logic — currently only inv_id is used to
+    // look up segment class via inversion bp range).
+    let _ = inversions;
+    for lin in active.iter_mut() {
+        if lin.population != spec.src { continue; }
+        let kary = lineage_class_for_inv_id_arena(lin.head, spec.inv_id, arena);
+        if kary != Some(spec.kary) { continue; }
+        if spec.proportion >= 1.0 - 1e-12 || rng.random::<f64>() < spec.proportion {
+            lin.population = spec.dst;
+        }
+    }
+}
+
+/// Find a lineage's karyotype at a given inv_id by scanning its
+/// segment chain.  Returns the karyotype of the first segment with a
+/// non-PAN class for that inv, or None if all PAN.
+fn lineage_class_for_inv_id_arena(
+    head: SegIdx,
+    inv_id: u16,
+    arena: &SegmentArena,
+) -> Option<Karyotype> {
+    let mut s = head;
+    while s != crate::segment::SEG_NIL {
+        let seg = arena.get(s);
+        if let Some(k) = seg.branch_class.get_inv(inv_id) {
+            return Some(k);
+        }
+        s = seg.next;
+    }
+    None
 }
 
 /// Monotonically increasing merge time, shared across all sweep merges

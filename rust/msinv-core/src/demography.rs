@@ -5,6 +5,19 @@
 
 use crate::lineage::Lineage;
 
+/// Class-conditional migration event "spec" returned alongside
+/// inv-changes from `apply_events_at`.  The simulator applies these
+/// after the event tick because the handler needs arena access (to
+/// read each lineage's class) and an RNG (for fractional proportion).
+#[derive(Clone, Debug)]
+pub struct ClassMigSpec {
+    pub src: u32,
+    pub dst: u32,
+    pub kary: crate::class_tag::Karyotype,
+    pub inv_id: u16,
+    pub proportion: f64,
+}
+
 /// Demographic event types.
 #[derive(Clone, Debug)]
 pub enum DemoEvent {
@@ -24,6 +37,19 @@ pub enum DemoEvent {
     Ej { t: f64, src: u32, dst: u32 },
     /// Change inversion frequency for a specific population.
     Eig { t: f64, pop: u32, inv_id: u16, p_inv: f64 },
+    /// Class-conditional migration pulse / mass migration / admixture.
+    /// Going backward at time `t`, for each lineage currently in `src`
+    /// whose karyotype at `inv_id` matches `kary`, move it to `dst` with
+    /// probability `proportion`.
+    /// - proportion = 1.0  → unconditional class-mass-merge (like Ej
+    ///   but only the matching karyotype moves).  Use to model "K
+    ///   founders were S-only at the K-F split" etc.
+    /// - proportion < 1.0 → stochastic admixture pulse.  Bernoulli per
+    ///   matching lineage.
+    /// Requires arena access to read each lineage's class (handled in
+    /// the simulator, not in apply_due_events).
+    ClassMig { t: f64, src: u32, dst: u32, kary: crate::class_tag::Karyotype,
+               inv_id: u16, proportion: f64 },
 }
 
 impl DemoEvent {
@@ -37,6 +63,7 @@ impl DemoEvent {
             DemoEvent::Em { t, .. } => *t,
             DemoEvent::Ej { t, .. } => *t,
             DemoEvent::Eig { t, .. } => *t,
+            DemoEvent::ClassMig { t, .. } => *t,
         }
     }
 }
@@ -102,13 +129,16 @@ impl Demography {
 
     /// Apply all events scheduled at time `t`, mutating pop sizes /
     /// growth / migration and moving lineages for merge events.
-    /// Returns a list of (inv_id, pop, p_inv) for any Eig events that
-    /// fired — the caller must apply these to its InversionSpec vec.
+    /// Returns:
+    ///   - inv_changes: (inv_id, pop, p_inv) for any Eig events
+    ///   - class_mig: ClassMigSpec list for class-conditional events
+    /// The simulator must apply ClassMig specs (needs arena + rng).
     pub fn apply_events_at(&mut self, t: f64, active: &mut [Lineage])
-        -> Vec<(u16, u32, f64)>
+        -> (Vec<(u16, u32, f64)>, Vec<ClassMigSpec>)
     {
         let mut remaining = Vec::new();
         let mut inv_changes: Vec<(u16, u32, f64)> = Vec::new();
+        let mut class_mig: Vec<ClassMigSpec> = Vec::new();
         let events = std::mem::take(&mut self.events);
         for ev in events {
             if (ev.time() - t).abs() > 1e-9 {
@@ -183,10 +213,15 @@ impl Demography {
                 DemoEvent::Eig { pop, inv_id, p_inv, .. } => {
                     inv_changes.push((inv_id, pop, p_inv));
                 }
+                DemoEvent::ClassMig { src, dst, kary, inv_id, proportion, .. } => {
+                    class_mig.push(ClassMigSpec {
+                        src, dst, kary, inv_id, proportion
+                    });
+                }
             }
         }
         self.events = remaining;
-        inv_changes
+        (inv_changes, class_mig)
     }
 
     /// Compute per-lineage migration rates. Returns (rate, lineage_idx, dst_pop).

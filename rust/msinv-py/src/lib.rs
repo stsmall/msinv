@@ -8,8 +8,9 @@ use msinv_core::class_tag::Karyotype;
 use msinv_core::demography::{DemoEvent, Demography};
 use msinv_core::inversion::InversionSpec;
 use msinv_core::trajectory::{
-    ConstantTrajectory, CoupledTrajectory, DeterministicTrajectory,
-    StochasticTrajectory, Trajectory,
+    BridgeStochasticTrajectory, ConstantTrajectory, CoupledTrajectory,
+    DeterministicTrajectory, PrecomputedTrajectory, StochasticTrajectory,
+    Trajectory,
 };
 use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry, SimResult};
@@ -178,6 +179,26 @@ fn simulate_raw(
                     let p_inv: f64 = tup.get_item(4)?.extract()?;
                     demo.add_event(DemoEvent::Eig { t, pop, inv_id, p_inv });
                 }
+                // Class-conditional migration / admixture / class-ej.
+                // ('cmig', t, src, dst, kary_str, inv_id, proportion)
+                // proportion = 1.0 → unconditional class merge (= class ej)
+                // proportion < 1.0 → stochastic Bernoulli admixture
+                "cmig" | "ejk" => {
+                    let t: f64 = tup.get_item(1)?.extract()?;
+                    let src: u32 = tup.get_item(2)?.extract()?;
+                    let dst: u32 = tup.get_item(3)?.extract()?;
+                    let kary_str: String = tup.get_item(4)?.extract()?;
+                    let inv_id: u16 = tup.get_item(5)?.extract()?;
+                    let proportion: f64 = if tup.len() > 6 {
+                        tup.get_item(6)?.extract()?
+                    } else { 1.0 };
+                    let kary = parse_kary(kary_str.chars().next().unwrap())
+                        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                            format!("ClassMig kary must be 'S' or 'I', got {:?}", kary_str)))?;
+                    demo.add_event(DemoEvent::ClassMig {
+                        t, src, dst, kary, inv_id, proportion,
+                    });
+                }
                 _ => {
                     return Err(pyo3::exceptions::PyValueError::new_err(
                         format!("Unknown demographic event type: {etype}")));
@@ -235,6 +256,39 @@ fn simulate_raw(
                             let seed: u64   = td.get_item("seed")?
                                 .and_then(|v| v.extract().ok()).unwrap_or(42);
                             Box::new(StochasticTrajectory::new(p_final, n_e, s, seed))
+                        }
+                        // Bridge stochastic: conditioned on BOTH t_inv
+                        // and p_final.  partialdiscoal-style incomplete
+                        // sweep.  s>0 is recommended for tractable
+                        // acceptance rates.
+                        "bridge" => {
+                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                            let t_inv: f64  = td.get_item("t_inv")?.unwrap().extract()?;
+                            let seed: u64   = td.get_item("seed")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(42);
+                            let tolerance: f64 = td.get_item("tolerance")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(0.02);
+                            let max_attempts: u64 = td.get_item("max_attempts")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(10_000);
+                            Box::new(BridgeStochasticTrajectory::new(
+                                p_final, n_e, s, t_inv, seed, tolerance, max_attempts
+                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
+                        }
+                        // Precomputed: user supplies (times, freqs, n_e).
+                        // freqs is a list of per-pop arrays.
+                        // Optional 't_inv': per-pop barrier dissolution
+                        // times.  If omitted, inferred from when freq
+                        // reaches 1/(2N).
+                        "precomputed" => {
+                            let times: Vec<f64> = td.get_item("times")?.unwrap().extract()?;
+                            let freqs: Vec<Vec<f64>> = td.get_item("freqs")?.unwrap().extract()?;
+                            let n_e: Vec<f64> = td.get_item("n_e")?.unwrap().extract()?;
+                            let t_inv_explicit: Option<Vec<f64>> =
+                                td.get_item("t_inv")?.and_then(|v| v.extract().ok());
+                            Box::new(PrecomputedTrajectory::with_t_inv(
+                                times, freqs, n_e, t_inv_explicit))
                         }
                         "coupled" => {
                             let p_final: Vec<f64> = td.get_item("p_final")?.unwrap().extract()?;

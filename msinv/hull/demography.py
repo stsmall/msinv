@@ -145,15 +145,65 @@ class Demography:
         """Going backward, move *proportion* of lineages from *source*
         to *dest*.
 
-        With proportion=1.0 this is identical to ``ej``.  Fractional
-        proportions (``es`` in ms) are not yet implemented; use
-        proportion=1.0 for now.
+        With proportion=1.0 this is identical to ``ej``.  For fractional
+        proportions, use ``add_class_migration`` (or call
+        ``add_admixture``) which can also condition on karyotype.
         """
         if proportion != 1.0:
             raise NotImplementedError(
-                "Fractional mass migration (es) not yet implemented. "
-                "Use proportion=1.0 for a full population merge.")
+                "Unconditional fractional mass migration (es) not yet "
+                "implemented; only the class-conditional version is. "
+                "Use add_class_migration(time, src, dst, kary, inv_id, "
+                "proportion) or add_admixture(time, src, dst, proportion, "
+                "kary=...) — both support proportion < 1.")
         self.add_event(('ej', time, source, dest))
+
+    def add_class_migration(self, time: float, source: int, dest: int,
+                            karyotype: str, inv_id: int = 0,
+                            proportion: float = 1.0):
+        """Class-conditional migration / admixture / class-mass-merge.
+
+        Going backward at ``time``, for each lineage currently in
+        ``source`` whose karyotype at inversion ``inv_id`` matches
+        ``karyotype`` ('S' or 'I'), move it to ``dest`` with probability
+        ``proportion``.
+
+        Uses
+        ----
+        - ``proportion=1.0`` → unconditional class merge.  Models e.g.
+          "K's founders at the K-F split were all S karyotype" (forward
+          view) by setting ``add_class_migration(t_split, src=K, dst=F,
+          karyotype='S')`` — going backward all of K's S lineages join
+          F at the split.
+        - ``proportion<1.0`` → stochastic admixture / class-conditional
+          migration pulse.  Each matching lineage migrates independently
+          with the given probability.
+        """
+        if karyotype not in ('S', 'I'):
+            raise ValueError(f"karyotype must be 'S' or 'I', got {karyotype!r}")
+        if not (0.0 < proportion <= 1.0):
+            raise ValueError(f"proportion must be in (0, 1], got {proportion}")
+        self.add_event(('cmig', time, source, dest, karyotype, inv_id, proportion))
+
+    def add_admixture(self, time: float, source: int, dest: int,
+                      proportion: float, karyotype: Optional[str] = None,
+                      inv_id: int = 0):
+        """Admixture pulse: at ``time``, fraction ``proportion`` of
+        ``source`` migrates into ``dest`` (going backward).
+
+        If ``karyotype`` is given, only lineages of that class at
+        ``inv_id`` are eligible.  Otherwise this is currently a synonym
+        for ``add_class_migration`` with karyotype='S' (placeholder
+        until unconditional fractional migration lands).
+        """
+        if karyotype is None:
+            raise NotImplementedError(
+                "Class-unconditional admixture (proportion < 1, no "
+                "karyotype filter) not yet implemented; supply "
+                "karyotype='S' or 'I' to use the class-conditional "
+                "operator instead.")
+        self.add_class_migration(time, source, dest, karyotype, inv_id,
+                                  proportion)
 
     def add_population_size_change(self, time: float,
                                    population: Optional[int] = None,

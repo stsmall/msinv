@@ -87,6 +87,22 @@ pub struct HullSimulator {
     /// coal + recomb only; panics on flux, migration, sweep, or
     /// barrier crossings. Default false → production bucket path.
     pub compound_rate: bool,
+    /// Event-loop iteration cap. On hit the loop returns a partial
+    /// TreeSequence — recapitate with msprime. Default 10_000_000;
+    /// raise (up to ~1e9) for runs expected to need more events
+    /// before barrier era completes. If the cap hits while
+    /// `t < max(inv.t_inv)` a warning is printed to stderr because
+    /// the barrier era is incomplete and recap won't rescue it.
+    pub iters_max: u64,
+    /// Number of recomb events between `gc_sole_lineages` passes
+    /// (msinv's analog of msprime mid-sim simplify). Default 160.
+    /// Lower values shrink peak active-n during the barrier-era
+    /// ratchet — each pass drops lineages whose material no longer
+    /// overlaps any other lineage. Stride 16 roughly 10x more
+    /// aggressive; stride 1 runs gc_sole on every recomb (highest
+    /// overhead, most pruning). Downstream: fewer active lineages at
+    /// `stop_at` means tractable Hudson recap in msprime.
+    pub gc_stride: u32,
 }
 
 impl HullSimulator {
@@ -125,6 +141,8 @@ impl HullSimulator {
             seed,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         }
     }
 
@@ -150,6 +168,8 @@ impl HullSimulator {
             seed,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         }
     }
 
@@ -275,7 +295,7 @@ impl HullSimulator {
                             demo, t, self.sequence_length);
 
         let mut total_material: f64 = active.iter().map(|l| l.cached_len).sum();
-        const GC_STRIDE: u32 = 160;
+        let gc_stride = self.gc_stride.max(1);
         let mut gc_counter: u32 = 0;
 
         // Per-pop counts refreshed each iter for migration aggregation.
@@ -284,7 +304,7 @@ impl HullSimulator {
         let n_pops = demo.n_pops as usize;
         let mut pop_counts: Vec<u32> = vec![0; n_pops];
 
-        for _ in 0..10_000_000u64 {
+        for _ in 0..self.iters_max {
             let n = active.len();
             if n <= 1 { return; }
             if t >= self.stop_at { return; }
@@ -527,7 +547,7 @@ impl HullSimulator {
                         &barrier_active, demo, t, self.sequence_length);
                 }
                 gc_counter += 1;
-                if gc_counter >= GC_STRIDE {
+                if gc_counter >= gc_stride {
                     gc_counter = 0;
                     let removed = gc_sole_lineages_with_removed(active, arena);
                     if !removed.is_empty() {
@@ -537,6 +557,31 @@ impl HullSimulator {
                     }
                 }
             }
+        }
+        self.warn_cap_hit(t, inversions, "compound");
+    }
+
+    /// Emit a warning when the event-loop iter cap fires. Most
+    /// dangerous case: `t` is still below `max(inv.t_inv)`, meaning
+    /// msinv never finished the barrier era — downstream recapitation
+    /// can't rescue a truncated barrier phase (msprime has no
+    /// inversion concept). Print to stderr so pilots / tests notice.
+    fn warn_cap_hit(&self, t: f64, inversions: &[InversionSpec], path: &'static str) {
+        let max_t_inv = inversions.iter()
+            .map(|inv| inv.t_inv)
+            .fold(0.0_f64, f64::max);
+        if t < max_t_inv {
+            eprintln!(
+                "[msinv WARN] {path} loop hit iters_max={} at t={t:.0} \
+                 but max(t_inv)={max_t_inv:.0} — barrier era INCOMPLETE. \
+                 Raise HullSimulator.iters_max; do not trust recap.",
+                self.iters_max);
+        } else if t < self.stop_at && t < f64::INFINITY {
+            eprintln!(
+                "[msinv WARN] {path} loop hit iters_max={} at t={t:.0} \
+                 (barrier era complete). Returned partial ARG — recap \
+                 with msprime to finish.",
+                self.iters_max);
         }
     }
 
@@ -612,10 +657,10 @@ impl HullSimulator {
         // Counter throttling gc_sole_lineages — run every GC_STRIDE
         // recombs. Sole-carrier lineages contribute no coalescence rate
         // so a few rounds of delay has no correctness impact.
-        const GC_STRIDE: u32 = 160;
+        let gc_stride = self.gc_stride.max(1);
         let mut gc_counter: u32 = 0;
 
-        for _ in 0..10_000_000u64 {
+        for _ in 0..self.iters_max {
             // Optional early stop (used by msprime-recapitation wrapper):
             // simulate up to stop_at time, then return partial TS.
             if t >= self.stop_at { break; }
@@ -684,22 +729,18 @@ impl HullSimulator {
                     }
                 }
 
-                // Coalescence.
-                if any_barrier {
-                    if cache_dirty {
-                        rate_cache.rebuild(active, arena);
-                        cache_dirty = false;
-                    }
-                    emit_coal_events_from_cache(
-                        &rate_cache, active, &*demo, t,
-                        inversions, &barrier_active,
-                        &mut all_events);
-                } else {
-                    compute_coal_events(
-                        active, arena, demo, t, inversions,
-                        &barrier_active, &pop_buckets,
-                        &mut all_events);
+                // Coalescence. Always drive through the rate_cache so
+                // post-barrier Hudson rate uses actual overlap counts
+                // (not k(k-1)/2 with rejection sampling which burns
+                // ~1e9 no-op iters at Hudson equilibrium n~120k).
+                if cache_dirty {
+                    rate_cache.rebuild(active, arena);
+                    cache_dirty = false;
                 }
+                emit_coal_events_from_cache(
+                    &rate_cache, active, &*demo, t,
+                    inversions, &barrier_active,
+                    &mut all_events);
 
                 // Recombination.
                 if total_recomb_rate > 0.0 {
@@ -826,9 +867,20 @@ impl HullSimulator {
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
+                    // Post-barrier (all inversions inactive) everything
+                    // is PAN, so fall into Hudson's full merge: non-
+                    // overlap segments fold into merged, lineage count
+                    // drops by 1 per event. Barrier-era Some(cls) keeps
+                    // class-mismatched regions on remainder lineages so
+                    // S/I can't coalesce via a PAN-class event.
+                    let allowed = if any_barrier {
+                        Some(cls)
+                    } else {
+                        None
+                    };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        Some(cls));
+                        allowed);
                     let post_len = active.len();
                     // Incremental total_material: remove the two merged
                     // lineages' contributions, add the new lineages'.
@@ -849,7 +901,7 @@ impl HullSimulator {
                     }
                     engine_dirty = true;
 
-                    if any_barrier && !cache_dirty {
+                    if !cache_dirty {
                         rate_cache.remove_lineage(hi);
                         rate_cache.swap_update(hi, pre_len - 1);
                         rate_cache.remove_lineage(lo);
@@ -880,9 +932,16 @@ impl HullSimulator {
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
+                    // See CoalAggregate above — post-barrier wants
+                    // Hudson full merge.
+                    let allowed = if any_barrier {
+                        Some(cls)
+                    } else {
+                        None
+                    };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        Some(cls));
+                        allowed);
                     let post_len = active.len();
                     let mut delta = -old_i_len - old_j_len;
                     for new_idx in (pre_len - 2)..post_len {
@@ -897,7 +956,7 @@ impl HullSimulator {
                     }
                     engine_dirty = true;
 
-                    if any_barrier && !cache_dirty {
+                    if !cache_dirty {
                         rate_cache.remove_lineage(hi);
                         rate_cache.swap_update(hi, pre_len - 1);
                         rate_cache.remove_lineage(lo);
@@ -1027,7 +1086,7 @@ impl HullSimulator {
                         lin_len_tree.set(new_idx, active[new_idx].cached_len);
                     }
                     // Incremental cache update.
-                    if any_barrier && !cache_dirty {
+                    if !cache_dirty {
                         if len_after_split > len_before_split {
                             // Specialised split path: skip recompute for
                             // pairs whose "other" lineage lies entirely
@@ -1074,7 +1133,7 @@ impl HullSimulator {
                     // carriers have zero coalescence rate, so delaying
                     // removal a few events is correctness-preserving.
                     gc_counter += 1;
-                    if gc_counter >= GC_STRIDE {
+                    if gc_counter >= gc_stride {
                         gc_counter = 0;
                         let n_before_gc = active.len();
                         let removed = gc_sole_lineages_with_removed(active, arena);
@@ -1087,7 +1146,7 @@ impl HullSimulator {
                             let mut len_snapshot = n_before_gc;
                             for &idx in &removed {
                                 let last_idx = len_snapshot - 1;
-                                if any_barrier && !cache_dirty {
+                                if !cache_dirty {
                                     rate_cache.remove_lineage(idx);
                                     rate_cache.swap_update(idx, last_idx);
                                 }
@@ -1144,14 +1203,14 @@ impl HullSimulator {
                         // O(n² × segs) rebuild is a large win at rho ≥
                         // 1000 where flux events fire thousands of times.
                         let post_len = active.len();
-                        if any_barrier && !cache_dirty {
+                        if !cache_dirty {
                             rate_cache.recompute_for(li, active, arena);
                             for new_idx in pre_len_flux..post_len {
                                 rate_cache.recompute_for(new_idx, active, arena);
                             }
                         }
                         if !flux_dirty {
-                            if cache_dirty || !any_barrier {
+                            if cache_dirty {
                                 rate_cache.rebuild_segs_for(li, active, arena);
                                 for new_idx in pre_len_flux..post_len {
                                     rate_cache.rebuild_segs_for(new_idx, active, arena);
@@ -1191,7 +1250,7 @@ impl HullSimulator {
                                          &mut flux_total, segs, pop,
                                          inversions, &barrier_active);
                     }
-                    if any_barrier && !cache_dirty {
+                    if !cache_dirty {
                         rate_cache.recompute_for(idx, active, arena);
                     }
                 }
@@ -1200,6 +1259,7 @@ impl HullSimulator {
             // Keep recomb rate in sync.
             total_recomb_rate = total_material * self.recombination_rate;
         }
+        self.warn_cap_hit(t, inversions, "bucket");
     }
 
     // ---------------------------------------------------------------
@@ -2429,6 +2489,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: true,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 15);
@@ -2454,6 +2516,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: true,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         // 6 samples, no recomb → 11 nodes.
@@ -2556,6 +2620,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
 
@@ -2783,6 +2849,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2820,6 +2888,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2859,6 +2929,8 @@ mod tests {
             seed: 42,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

@@ -115,5 +115,7 @@ fn build_multi_pop(
         seed,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     }
 }

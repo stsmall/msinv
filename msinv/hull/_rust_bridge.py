@@ -93,6 +93,8 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
             if hasattr(simulator, 'rng') else 42,
         stop_at=float(getattr(simulator, 'stop_at', float('inf'))),
         compound_rate=bool(getattr(simulator, 'compound_rate', False)),
+        iters_max=int(getattr(simulator, 'iters_max', 10_000_000)),
+        gc_stride=int(getattr(simulator, 'gc_stride', 160)),
     )
 
     # --- Convert to tskit TreeSequence ---

@@ -72,6 +72,62 @@ class Demography:
         self.events.append(event)
         self.events.sort(key=lambda e: e[1])
 
+    def check_connectivity(self, warn: bool = True) -> bool:
+        """Verify cross-population coalescence is possible. Returns True
+        if connected; False if disjoint components remain after all
+        events. When disjoint and ``warn`` is True, emits a warning.
+
+        Lineages in disjoint components never reach a common ancestor
+        — downstream Hudson recap via msprime will hang with "infinite
+        waiting time until next simulation event".
+
+        Edges considered:
+          - migration_matrix nonzero (either direction)
+          - 'ej' events (src → dst merge)
+          - 'em' events changing migration_matrix at some time
+        """
+        if self.n_pops <= 1:
+            return True
+        parent = list(range(self.n_pops))
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+        for i in range(self.n_pops):
+            for j in range(self.n_pops):
+                if i == j: continue
+                if self.migration_matrix[i][j] != 0.0:
+                    union(i, j)
+        for ev in self.events:
+            if ev[0] == 'ej' and len(ev) >= 4:
+                union(int(ev[2]), int(ev[3]))
+            elif ev[0] == 'em' and len(ev) >= 5 and ev[4] != 0.0:
+                union(int(ev[2]), int(ev[3]))
+            elif ev[0] == 'ema' and len(ev) >= 3:
+                mat = ev[2]
+                for i in range(self.n_pops):
+                    for j in range(self.n_pops):
+                        if i != j and mat[i][j] != 0.0:
+                            union(i, j)
+        roots = {find(i) for i in range(self.n_pops)}
+        if len(roots) == 1:
+            return True
+        if warn:
+            import warnings as _warnings
+            _warnings.warn(
+                f"Demography has {len(roots)} disjoint population "
+                f"components: {roots}. Lineages across components will "
+                f"never reach a common ancestor — msprime recap will "
+                f"hang with 'infinite waiting time'. Add migration or "
+                f"an 'ej' event.",
+                RuntimeWarning, stacklevel=2)
+        return False
+
     # -- msprime-compatible convenience methods ----------------------------
 
     def add_population_split(self, time: float, derived: List[int],

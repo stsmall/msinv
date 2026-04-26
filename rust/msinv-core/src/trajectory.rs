@@ -401,20 +401,57 @@ impl Trajectory for StochasticTrajectory {
 /// selection `s`), accept iff the path reaches `p_final ± tolerance`
 /// at `t = t_inv`.
 ///
-/// **KNOWN LIMITATION (2026-04): the continuous-diffusion forward
-/// sampler breaks down for large N.**  When `p_start = 1/(2N)` is
-/// very small, the per-generation drift SD `sqrt(p(1-p)/(2N)) ≈
-/// sqrt(p / 2N)` is comparable to `p` itself, so most attempts go
-/// extinct in the first few generations.  At Anopheles-scale
-/// `N≈450k`, acceptance rate is effectively 0 even with positive `s`.
+/// ⚠️ **KNOWN LIMITATION (2026-04-26): the continuous-diffusion
+/// forward sampler breaks down for large N.**  When `p_start =
+/// 1/(2N)` is very small, the per-generation drift SD
+/// `sqrt(p(1-p)/(2N)) ≈ sqrt(p / 2N)` is comparable to `p` itself,
+/// so most attempts go extinct in the first few generations.  At
+/// Anopheles-scale `N≈450k`, acceptance rate is effectively 0 even
+/// with positive `s`.  The current rejection sampler is fine for
+/// small N (≲10k) and reasonable selection coefficients but should
+/// not be used at species-scale Ne for now.
 ///
-/// **Recommended workarounds**:
-/// - For the Kir/Fol incomplete-sweep case (t_inv anchored),
-///   `DeterministicTrajectory` gives a unique logistic path with
-///   `s` implied by `(p_final, t_inv)` — tractable and conditioned.
-/// - **TODO**: switch this sampler to integer-copy WF (binomial per
-///   gen) or Doob's h-transform with the conditional-on-survival
-///   drift correction, both of which behave correctly at small p.
+/// **Recommended workarounds (until the sampler is rewritten)**:
+///
+/// 1. **`DeterministicTrajectory` for empirically-anchored cases.**
+///    Given `(p_final, t_inv)`, the implied selection coefficient
+///    `s ≈ ln((p_final/(1-p_final)) / (p0/(1-p0))) / t_inv` parameterises
+///    a unique logistic path that lands exactly on both endpoints.
+///    Tractable and conditioned by construction.  Use this for
+///    Kir/Fol-style incomplete sweep where t_inv (e.g. 330,000 g for
+///    3Ra) and p_final (e.g. 0.734) are both empirical anchors.
+///
+/// 2. **Hybrid stochastic-then-deterministic** ("Kim-Stephan" approach).
+///    Forward-simulate with WF + selection `s` until `p` escapes the
+///    drift-dominated regime (typically `p ≳ 10/(2N)` or
+///    `1/(2Ns)`), then switch to the deterministic logistic for the
+///    remaining trajectory to `p_final`.  Avoids the rare-event
+///    problem in the early stochastic phase.  ~50 LOC to add as
+///    `BridgeHybridTrajectory`.
+///
+/// **Proper future fixes** (each ~150-300 LOC, real engineering):
+///
+/// 3. **Integer-copy WF** instead of continuous diffusion.  Track
+///    integer allele counts `k = round(2 * N * p)` and resample
+///    `k_next ~ Binomial(2N, p_after_selection)` each generation.
+///    This is the actual Wright-Fisher process, has the right
+///    near-boundary behaviour (extinction is a discrete event, not
+///    a diffusion artefact), and acceptance rates stay reasonable.
+///    More expensive per gen than continuous (binomial sampling vs
+///    one normal RV) but each forward attempt has a non-trivial
+///    chance of surviving.  Recommended primary fix.
+///
+/// 4. **Doob's h-transform** with conditional-on-survival drift
+///    correction.  Adds an analytic drift term `g(p, t_remaining)`
+///    that pulls the path toward the target endpoint, so every
+///    sampled path is guaranteed to hit `p_final` at `t_inv` (no
+///    rejection).  Mathematically clean but requires deriving
+///    `g(p, t)` for the specific WF + selection diffusion (Schraiber
+///    et al. 2013 has the formulas).  Faster than rejection
+///    sampling once implemented.
+///
+/// See project memory `feedback_no_silent_reverts.md` and the
+/// Kir/Fol roadmap for the trajectory model's intended use.
 #[derive(Clone, Debug)]
 pub struct BridgeStochasticTrajectory {
     pub p_final: f64,

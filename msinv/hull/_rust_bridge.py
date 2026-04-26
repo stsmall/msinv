@@ -43,14 +43,20 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
     n_pops = simulator.demography.n_pops
     inv_dicts = []
     for inv in simulator.inversions:
-        inv_dicts.append({
+        d = {
             'bp_left': float(inv.bp_left),
             'bp_right': float(inv.bp_right),
-            'p_inv': inv._p_inv_as_list(n_pops),
-            't_inv': float(inv.t_inv),
             'gene_conversion_rate': float(inv.gene_conversion_rate),
             'flux_window': float(inv.flux_window),
-        })
+        }
+        if getattr(inv, 'trajectory', None) is not None:
+            # New trajectory path — pass dict straight to Rust.
+            d['trajectory'] = dict(inv.trajectory)
+        else:
+            # Back-compat: constant p_inv/t_inv
+            d['p_inv'] = inv._p_inv_as_list(n_pops)
+            d['t_inv'] = float(inv.t_inv)
+        inv_dicts.append(d)
 
     # --- Sweeps ---
     sweep_dicts = []

@@ -91,7 +91,7 @@ pub struct HullSimulator {
     /// TreeSequence — recapitate with msprime. Default 10_000_000;
     /// raise (up to ~1e9) for runs expected to need more events
     /// before barrier era completes. If the cap hits while
-    /// `t < max(inv.t_inv)` a warning is printed to stderr because
+    /// `t < max(inv.t_inv_max())` a warning is printed to stderr because
     /// the barrier era is incomplete and recap won't rescue it.
     pub iters_max: u64,
     /// Number of recomb events between `gc_sole_lineages` passes
@@ -313,7 +313,7 @@ impl HullSimulator {
             let mut earliest_barrier = f64::INFINITY;
             for (k, inv) in inversions.iter().enumerate() {
                 if barrier_active[k] {
-                    earliest_barrier = earliest_barrier.min(inv.t_inv);
+                    earliest_barrier = earliest_barrier.min(inv.t_inv_max());
                 }
             }
             let t_demo = demo.next_event_time(t);
@@ -335,8 +335,8 @@ impl HullSimulator {
                     let kary = lineage_class_for_inv_arena(
                         active[li].head, inv, arena);
                     let p_other = match kary {
-                        Some(Karyotype::S) => inv.p_inv_for(active[li].population),
-                        Some(Karyotype::I) => 1.0 - inv.p_inv_for(active[li].population),
+                        Some(Karyotype::S) => inv.p_inv_at(t, active[li].population),
+                        Some(Karyotype::I) => 1.0 - inv.p_inv_at(t, active[li].population),
                         None => continue,
                     };
                     if p_other <= 0.0 { continue; }
@@ -562,13 +562,13 @@ impl HullSimulator {
     }
 
     /// Emit a warning when the event-loop iter cap fires. Most
-    /// dangerous case: `t` is still below `max(inv.t_inv)`, meaning
+    /// dangerous case: `t` is still below `max(inv.t_inv_max())`, meaning
     /// msinv never finished the barrier era — downstream recapitation
     /// can't rescue a truncated barrier phase (msprime has no
     /// inversion concept). Print to stderr so pilots / tests notice.
     fn warn_cap_hit(&self, t: f64, inversions: &[InversionSpec], path: &'static str) {
         let max_t_inv = inversions.iter()
-            .map(|inv| inv.t_inv)
+            .map(|inv| inv.t_inv_max())
             .fold(0.0_f64, f64::max);
         if t < max_t_inv {
             eprintln!(
@@ -694,7 +694,7 @@ impl HullSimulator {
                 flux_rebuild_full(
                     &mut flux_per_lin, &mut flux_total,
                     rate_cache,
-                    active, inversions, arena, &barrier_active);
+                    active, inversions, arena, &barrier_active, t);
                 flux_dirty = false;
             }
 
@@ -704,7 +704,7 @@ impl HullSimulator {
             for (k, inv) in inversions.iter().enumerate() {
                 if barrier_active[k] {
                     any_barrier = true;
-                    earliest_barrier = earliest_barrier.min(inv.t_inv);
+                    earliest_barrier = earliest_barrier.min(inv.t_inv_max());
                 }
             }
 
@@ -921,7 +921,7 @@ impl HullSimulator {
                             let segs = rate_cache.lineage_segs(new_idx);
                             flux_push(&mut flux_per_lin,
                                       &mut flux_total, segs, pop,
-                                      inversions, &barrier_active);
+                                      inversions, &barrier_active, t);
                         }
                     }
                 }
@@ -976,7 +976,7 @@ impl HullSimulator {
                             let segs = rate_cache.lineage_segs(new_idx);
                             flux_push(&mut flux_per_lin,
                                       &mut flux_total, segs, pop,
-                                      inversions, &barrier_active);
+                                      inversions, &barrier_active, t);
                         }
                     }
                 }
@@ -1049,7 +1049,7 @@ impl HullSimulator {
                                 let segs = rate_cache.lineage_segs(new_idx);
                                 flux_push(&mut flux_per_lin,
                                           &mut flux_total, segs, pop,
-                                          inversions, &barrier_active);
+                                          inversions, &barrier_active, t);
                             }
                         }
                         engine_dirty = true;
@@ -1113,14 +1113,14 @@ impl HullSimulator {
                         let segs_c = rate_cache.lineage_segs(chosen_idx);
                         flux_update_for(chosen_idx, &mut flux_per_lin,
                                          &mut flux_total, segs_c, pop_c,
-                                         inversions, &barrier_active);
+                                         inversions, &barrier_active, t);
                         if len_after_split > len_before_split {
                             let new_idx = len_after_split - 1;
                             let pop_n = active[new_idx].population;
                             let segs_n = rate_cache.lineage_segs(new_idx);
                             flux_push(&mut flux_per_lin,
                                       &mut flux_total, segs_n, pop_n,
-                                      inversions, &barrier_active);
+                                      inversions, &barrier_active, t);
                         }
                     }
                     // GC sole-carrier lineages — only after recomb
@@ -1220,13 +1220,13 @@ impl HullSimulator {
                             let segs_li = rate_cache.lineage_segs(li);
                             flux_update_for(li, &mut flux_per_lin,
                                              &mut flux_total, segs_li, pop_li,
-                                             inversions, &barrier_active);
+                                             inversions, &barrier_active, t);
                             for new_idx in pre_len_flux..post_len {
                                 let pop_n = active[new_idx].population;
                                 let segs_n = rate_cache.lineage_segs(new_idx);
                                 flux_push(&mut flux_per_lin,
                                           &mut flux_total, segs_n, pop_n,
-                                          inversions, &barrier_active);
+                                          inversions, &barrier_active, t);
                             }
                         }
                     }
@@ -1248,7 +1248,7 @@ impl HullSimulator {
                         let segs = rate_cache.lineage_segs(idx);
                         flux_update_for(idx, &mut flux_per_lin,
                                          &mut flux_total, segs, pop,
-                                         inversions, &barrier_active);
+                                         inversions, &barrier_active, t);
                     }
                     if !cache_dirty {
                         rate_cache.recompute_for(idx, active, arena);
@@ -1384,7 +1384,7 @@ impl HullSimulator {
         t: f64,
     ) {
         for (k, inv) in inversions.iter().enumerate() {
-            if barrier_active[k] && t >= inv.t_inv {
+            if barrier_active[k] && t >= inv.t_inv_max() {
                 barrier_active[k] = false;
                 // Flip all segments' class tags for this inversion to panmictic.
                 for lin in active.iter() {
@@ -1417,6 +1417,7 @@ type FluxPerLin = SmallVec<[(usize, f64); 2]>;
 fn compute_lin_flux_into(
     out: &mut FluxPerLin,
     segs: &[FlatSeg],
+    t: f64,
     pop: u32,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
@@ -1425,7 +1426,7 @@ fn compute_lin_flux_into(
     for (ii, inv) in inversions.iter().enumerate() {
         if !barrier_active[ii] { continue; }
         if inv.gene_conversion_rate <= 0.0 { continue; }
-        let p_inv_pop = inv.p_inv_for(pop);
+        let p_inv_pop = inv.p_inv_at(t, pop);
         let p_std_pop = 1.0 - p_inv_pop;
         let kary = lineage_class_for_inv_segs(segs, inv);
         let p_other = match kary {
@@ -1455,10 +1456,11 @@ fn flux_rebuild_full(
     inversions: &[InversionSpec],
     arena: &SegmentArena,
     barrier_active: &[bool],
+    t: f64,
 ) {
     flux_per_lin.resize_with(active.len(), FluxPerLin::new);
     flux_per_lin.truncate(active.len());
-    for t in flux_total.iter_mut() { *t = 0.0; }
+    for entry in flux_total.iter_mut() { *entry = 0.0; }
     // Pre-barrier epochs have no flux; skip the O(n · segs) refresh and
     // leave every entry empty. Matches prior behaviour where the inner
     // `barrier_active` guard short-circuited each lineage's inv loop.
@@ -1470,7 +1472,7 @@ fn flux_rebuild_full(
     rate_cache.refresh_lineage_segs(active, arena);
     for (i, lin) in active.iter().enumerate() {
         let segs = rate_cache.lineage_segs(i);
-        compute_lin_flux_into(&mut flux_per_lin[i], segs, lin.population,
+        compute_lin_flux_into(&mut flux_per_lin[i], segs, t, lin.population,
                                inversions, barrier_active);
         for (ii, rate) in flux_per_lin[i].iter() {
             flux_total[*ii] += *rate;
@@ -1489,11 +1491,12 @@ fn flux_update_for(
     pop: u32,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    t: f64,
 ) {
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] -= *rate;
     }
-    compute_lin_flux_into(&mut flux_per_lin[li], segs, pop,
+    compute_lin_flux_into(&mut flux_per_lin[li], segs, t, pop,
                           inversions, barrier_active);
     for (ii, rate) in flux_per_lin[li].iter() {
         flux_total[*ii] += *rate;
@@ -1524,10 +1527,11 @@ fn flux_push(
     pop: u32,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    t: f64,
 ) {
     flux_per_lin.push(FluxPerLin::new());
     let last = flux_per_lin.len() - 1;
-    compute_lin_flux_into(&mut flux_per_lin[last], segs, pop,
+    compute_lin_flux_into(&mut flux_per_lin[last], segs, t, pop,
                           inversions, barrier_active);
     for (ii, rate) in flux_per_lin[last].iter() {
         flux_total[*ii] += *rate;
@@ -1702,10 +1706,10 @@ fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
     }
     let mut p = 1.0;
     for (k, inv) in inversions.iter().enumerate() {
-        if !barrier_active[k] || t >= inv.t_inv { continue; }
+        if !barrier_active[k] || t >= inv.t_inv_max() { continue; }
         match cls.get_inv(inv.inv_id) {
-            Some(Karyotype::S) => p *= inv.p_std_for(pop),
-            Some(Karyotype::I) => p *= inv.p_inv_for(pop),
+            Some(Karyotype::S) => p *= inv.p_std_at(t, pop),
+            Some(Karyotype::I) => p *= inv.p_inv_at(t, pop),
             None => {}
         }
     }
@@ -2393,11 +2397,11 @@ mod tests {
         // Very old inversion: barrier crosses almost immediately,
         // compound path should drive through cross_barriers_static
         // and finish as panmictic.
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 10000.0,
-            p_inv: vec![0.5], t_inv: 1.0,
-            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 1.0);
+  s.gene_conversion_rate = 1e-30;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let mut sim = HullSimulator::simple(
             3, 3, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         sim.compound_rate = true;
@@ -2411,11 +2415,11 @@ mod tests {
     fn compound_rate_inversion_barrier_forces_extra_nodes() {
         // Long-standing barrier (t_inv = 5·Ne) — S/I pairs can't
         // coalesce until t_inv, so nodes >= panmictic case.
-        let inv = InversionSpec {
-            bp_left: 3000.0, bp_right: 7000.0,
-            p_inv: vec![0.5], t_inv: 5000.0,
-            gene_conversion_rate: 1e-30, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
+  s.gene_conversion_rate = 1e-30;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let mut sim = HullSimulator::simple(
             5, 5, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         sim.compound_rate = true;
@@ -2454,11 +2458,11 @@ mod tests {
     fn compound_rate_with_gene_flux() {
         // Active barrier + nontrivial gene conversion. Flux should
         // fire and not crash.
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 10000.0,
-            p_inv: vec![0.5], t_inv: 20_000.0,
-            gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 20_000.0);
+  s.gene_conversion_rate = 5e-6;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let mut sim = HullSimulator::simple(
             4, 4, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         sim.compound_rate = true;
@@ -2538,11 +2542,11 @@ mod tests {
         // With an inversion barrier, S/I pairs can't coalesce until
         // t_inv, producing more nodes (longer genealogy).
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
-        let inv = InversionSpec {
-            bp_left: 3000.0, bp_right: 7000.0,
-            p_inv: vec![0.5], t_inv: 5000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let sim = HullSimulator::simple(
             5, 5, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         let result = sim.simulate();
@@ -2555,11 +2559,10 @@ mod tests {
         // Very old inversion → barrier crossed early, should
         // behave like panmictic after t_inv.
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 10000.0,
-            p_inv: vec![0.5], t_inv: 1.0, // crossed almost immediately
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 1.0);
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let sim = HullSimulator::simple(
             3, 3, 1000.0, 10000.0, 1e-8, vec![inv], 42);
         let result = sim.simulate();
@@ -2570,11 +2573,11 @@ mod tests {
     fn gene_flux_produces_extra_nodes() {
         // With gene flux, flux events split lineages → more nodes.
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 10000.0,
-            p_inv: vec![0.5], t_inv: 20_000.0,
-            gene_conversion_rate: 5e-6, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 20_000.0);
+  s.gene_conversion_rate = 5e-6;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let no_flux = HullSimulator::simple(
             4, 4, 1000.0, 10000.0, 1e-8,
             vec![InversionSpec { gene_conversion_rate: 1e-9, ..inv.clone() }],
@@ -2715,11 +2718,11 @@ mod tests {
         // splitting into 3 (A, tract, C) — extra fragmentation creates
         // spurious independent coalescences on either side of the tract.
         use crate::class_tag::{BranchClass, Karyotype};
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 1000.0,
-            p_inv: vec![0.5], t_inv: 10_000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 1000.0, vec![0.5], 10_000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
 
         let mut arena = SegmentArena::new();
         let bc = BranchClass::single(0, Karyotype::I);
@@ -2752,11 +2755,11 @@ mod tests {
         // rest.split_at(tract_right) makes `rest` empty (all rest material
         // was past tract_right) and `active.push(rest)` pushes a zombie.
         use crate::class_tag::{BranchClass, Karyotype};
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: 1000.0,
-            p_inv: vec![0.5], t_inv: 10_000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, 1000.0, vec![0.5], 10_000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
 
         let mut arena = SegmentArena::new();
         let bc = BranchClass::single(0, Karyotype::I);
@@ -2792,11 +2795,11 @@ mod tests {
         // makes the lineage's head = SEG_NIL (cached_len = 0) and
         // apply_gene_flux never removes it — so active[li] is a zombie.
         use crate::class_tag::{BranchClass, Karyotype};
-        let inv = InversionSpec {
-            bp_left: 100.0, bp_right: 200.0,
-            p_inv: vec![0.5], t_inv: 10_000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(100.0, 200.0, vec![0.5], 10_000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
 
         let mut arena = SegmentArena::new();
         let bc = BranchClass::single(0, Karyotype::I);
@@ -2905,11 +2908,11 @@ mod tests {
         demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
 
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
-        let inv = InversionSpec {
-            bp_left: 3000.0, bp_right: 7000.0,
-            p_inv: vec![0.5], t_inv: 5000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let sim = HullSimulator {
             samples: vec![
                 SampleEntry {
@@ -2968,11 +2971,11 @@ mod tests {
     fn sweep_on_s_class_only() {
         use crate::sweep::Sweep;
         // Ne=5000, L=100000, r=1e-8 → rho=20
-        let inv = InversionSpec {
-            bp_left: 20000.0, bp_right: 80000.0,
-            p_inv: vec![0.5], t_inv: 50_000.0,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(20000.0, 80000.0, vec![0.5], 50_000.0);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let mut sim = HullSimulator::simple(
             4, 4, 5_000.0, 100000.0, 1e-8, vec![inv], 42);
         sim.sweeps.push(Sweep {

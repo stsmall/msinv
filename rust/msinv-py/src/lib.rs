@@ -7,6 +7,10 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 use msinv_core::class_tag::Karyotype;
 use msinv_core::demography::{DemoEvent, Demography};
 use msinv_core::inversion::InversionSpec;
+use msinv_core::trajectory::{
+    ConstantTrajectory, CoupledTrajectory, DeterministicTrajectory,
+    StochasticTrajectory, Trajectory,
+};
 use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry, SimResult};
 use msinv_core::sweep::Sweep;
@@ -183,32 +187,89 @@ fn simulate_raw(
     }
 
     // --- Inversions ---
+    // Each inversion dict can carry EITHER:
+    //   (a) Legacy: 'p_inv' (float or list[float]) + 't_inv' (float).
+    //       Wraps in a ConstantTrajectory (back-compat, identical to
+    //       pre-trajectory-port behaviour).
+    //   (b) New:    'trajectory' = {'type': 'constant'|'deterministic'|
+    //               'stochastic'|'coupled', ...args}.  Builds the
+    //       corresponding Rust Trajectory.
     let mut inv_specs: Vec<InversionSpec> = Vec::new();
     if let Some(inv_list) = inversions {
         for (i, item) in inv_list.iter().enumerate() {
             let d: &Bound<'_, PyDict> = item.downcast()?;
             let bp_left: f64 = d.get_item("bp_left")?.unwrap().extract()?;
             let bp_right: f64 = d.get_item("bp_right")?.unwrap().extract()?;
-            // p_inv: accept float (scalar → all pops same) or list (per-pop).
-            let p_inv_obj = d.get_item("p_inv")?.unwrap();
-            let p_inv: Vec<f64> = if let Ok(v) = p_inv_obj.extract::<f64>() {
-                vec![v]
-            } else if let Ok(v) = p_inv_obj.extract::<Vec<f64>>() {
-                v
-            } else {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "p_inv must be a float or list of floats"));
-            };
-            let t_inv: f64 = d.get_item("t_inv")?.unwrap().extract()?;
             let gcr: f64 = d.get_item("gene_conversion_rate")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
             let fw: f64 = d.get_item("flux_window")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.05);
-            inv_specs.push(InversionSpec {
-                bp_left, bp_right, p_inv, t_inv,
-                gene_conversion_rate: gcr, flux_window: fw,
-                inv_id: i as u16,
-            });
+
+            // Build trajectory
+            let trajectory: Box<dyn Trajectory + Send + Sync> =
+                if let Some(traj_obj) = d.get_item("trajectory")? {
+                    let td: &Bound<'_, PyDict> = traj_obj.downcast()?;
+                    let ttype: String = td.get_item("type")?
+                        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                            "trajectory dict requires 'type' key"))?
+                        .extract()?;
+                    match ttype.as_str() {
+                        "constant" => {
+                            let p = td.get_item("p_inv")?.unwrap();
+                            let p_vec: Vec<f64> = if let Ok(v) = p.extract::<f64>() {
+                                vec![v]
+                            } else { p.extract()? };
+                            let t_inv: f64 = td.get_item("t_inv")?.unwrap().extract()?;
+                            Box::new(ConstantTrajectory::new(p_vec, t_inv))
+                        }
+                        "deterministic" => {
+                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                            Box::new(DeterministicTrajectory::new(p_final, n_e, s))
+                        }
+                        "stochastic" => {
+                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                            let seed: u64   = td.get_item("seed")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(42);
+                            Box::new(StochasticTrajectory::new(p_final, n_e, s, seed))
+                        }
+                        "coupled" => {
+                            let p_final: Vec<f64> = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: Vec<f64>    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: Vec<f64>      = td.get_item("s")?.unwrap().extract()?;
+                            let m: f64           = td.get_item("m")?.unwrap().extract()?;
+                            let seed: u64        = td.get_item("seed")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(42);
+                            Box::new(CoupledTrajectory::new(p_final, n_e, s, m, seed))
+                        }
+                        other => return Err(pyo3::exceptions::PyValueError::new_err(
+                            format!("unknown trajectory type: {:?}", other))),
+                    }
+                } else {
+                    // Legacy back-compat: p_inv + t_inv
+                    let p_inv_obj = d.get_item("p_inv")?.ok_or_else(||
+                        pyo3::exceptions::PyValueError::new_err(
+                            "inversion dict requires 'p_inv' or 'trajectory'"))?;
+                    let p_inv: Vec<f64> = if let Ok(v) = p_inv_obj.extract::<f64>() {
+                        vec![v]
+                    } else if let Ok(v) = p_inv_obj.extract::<Vec<f64>>() {
+                        v
+                    } else {
+                        return Err(pyo3::exceptions::PyValueError::new_err(
+                            "p_inv must be a float or list of floats"));
+                    };
+                    let t_inv: f64 = d.get_item("t_inv")?.unwrap().extract()?;
+                    Box::new(ConstantTrajectory::new(p_inv, t_inv))
+                };
+
+            let mut spec = InversionSpec::new(bp_left, bp_right, trajectory);
+            spec.gene_conversion_rate = gcr;
+            spec.flux_window = fw;
+            spec.inv_id = i as u16;
+            inv_specs.push(spec);
         }
     }
 

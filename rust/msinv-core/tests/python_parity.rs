@@ -12,17 +12,16 @@ use msinv_core::sweep::Sweep;
 
 // Helpers
 fn inv(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, id: u16) -> InversionSpec {
-    InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
-        gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: id,
-    }
+    let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
+    s.inv_id = id;
+    s
 }
 
 fn inv_gamma(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, gamma: f64, id: u16) -> InversionSpec {
-    InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
-        gene_conversion_rate: gamma, flux_window: 0.05, inv_id: id,
-    }
+    let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
+    s.gene_conversion_rate = gamma;
+    s.inv_id = id;
+    s
 }
 
 // ---------------------------------------------------------------

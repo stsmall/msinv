@@ -36,11 +36,11 @@ fn main() {
     let l: f64 = 100_000.0;
     let r = rho / (4.0 * ne * l);
     let t_inv = t_inv_mult * ne;
-    let inv = InversionSpec {
-        bp_left: 30_000.0, bp_right: 70_000.0,
-        p_inv: vec![0.5], t_inv,
-        gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-    };
+    let inv = { let mut s = InversionSpec::with_p_inv(30_000.0, 70_000.0, vec![0.5], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
 
     let per_class = n_samples / 2;
     println!("rho={rho} reps={reps} n_pops={n_pops} Ne={ne} L={l} \

@@ -1,5 +1,17 @@
 /// Sweep: forced-coalescence event modelling a selective sweep.
 ///
+/// ⚠️ APPROXIMATION-ONLY MODEL — NOT a frequency trajectory simulator.
+/// All three modes below are *outcome-conditioning* coalescent operators
+/// (Hudson-Kaplan family): they apply an instantaneous forced-coalescence
+/// at `t_event` rather than simulating the beneficial allele's frequency
+/// trajectory through time. For the discoal-style stochastic-then-
+/// deterministic trajectory model, see (TODO: port from legacy SMC engine
+/// at git `eb47504~1`, classes `StochasticTrajectory` /
+/// `DeterministicTrajectory`). Validation tests pending: at what (sweep
+/// age, selection coefficient, time-of-fixation) regimes does this
+/// approximation match a true-trajectory simulation? See project memory
+/// `feedback_no_silent_reverts.md`.
+///
 /// Three modes:
 ///
 /// 1. **Window mode** (`selection_coefficient == 0`): all lineages

@@ -6,14 +6,27 @@ inversion's class barrier independently — class labels are tagged
 with the inversion's id (e.g. 'S0' = S-arrangement inside inversion 0,
 'S1' = inside inversion 1).
 
-``p_inv`` may be a single float (same frequency in all populations)
-or a dict mapping population index → frequency, enabling
-per-population inversion frequencies (e.g. {0: 0.0, 1: 0.73} for
-K/F ecotype models).
+Frequency model
+---------------
+Two modes for specifying the inversion frequency:
+
+1. Constant (legacy back-compat): pass ``p_inv`` (float or dict
+   pop->float) and ``t_inv`` (float).  Frequency is fixed in time
+   per population, with the karyotype barrier dissolving at t_inv.
+
+2. Trajectory (new): pass a ``trajectory=`` dict with one of the
+   four supported types matching the Rust trajectory module:
+     {'type': 'constant',      'p_inv': ..., 't_inv': ...}
+     {'type': 'deterministic', 'p_final': ..., 'n_e': ..., 's': ...}
+     {'type': 'stochastic',    'p_final': ..., 'n_e': ..., 's': ..., 'seed': ...}
+     {'type': 'coupled',       'p_final': [..], 'n_e': [..], 's': [..],
+                               'm': ..., 'seed': ...}
+   The Rust simulator builds the matching trajectory and queries it
+   at each event time.
 """
 
 from dataclasses import dataclass, field
-from typing import Union, Dict
+from typing import Union, Dict, Optional
 
 
 @dataclass
@@ -44,11 +57,14 @@ class InversionSpec:
 
     bp_left: float
     bp_right: float
-    p_inv: Union[float, Dict[int, float]]
-    t_inv: float
+    p_inv: Union[float, Dict[int, float], None] = None
+    t_inv: Optional[float] = None
     gene_conversion_rate: float = 1e-9
     flux_window: float = 0.05
     inv_id: int = -1   # set by simulator
+    # Trajectory dict overrides p_inv/t_inv when provided.  See module
+    # docstring for the supported shapes.
+    trajectory: Optional[Dict] = None
 
     @property
     def length(self) -> float:
@@ -100,6 +116,23 @@ class InversionSpec:
             raise ValueError(
                 f"bp_right must be > bp_left, got "
                 f"({self.bp_left}, {self.bp_right}).")
+        # If a trajectory dict is provided, p_inv/t_inv are ignored.
+        # The trajectory must specify a 'type' field.
+        if self.trajectory is not None:
+            if 'type' not in self.trajectory:
+                raise ValueError("trajectory dict requires 'type' key")
+            if self.gene_conversion_rate <= 0.0:
+                raise ValueError(
+                    f"gene_conversion_rate (gamma) must be > 0, got "
+                    f"{self.gene_conversion_rate}.")
+            if not (0.0 < self.flux_window < 1.0):
+                raise ValueError(
+                    f"flux_window must be in (0, 1), got {self.flux_window}.")
+            return
+        # Legacy path: p_inv + t_inv required
+        if self.p_inv is None or self.t_inv is None:
+            raise ValueError(
+                "InversionSpec requires either (p_inv, t_inv) or trajectory.")
         # Validate p_inv
         if isinstance(self.p_inv, dict):
             if not self.p_inv:

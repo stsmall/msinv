@@ -12,17 +12,16 @@ use msinv_core::sweep::Sweep;
 
 // Helpers
 fn inv(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, id: u16) -> InversionSpec {
-    InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
-        gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: id,
-    }
+    let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
+    s.inv_id = id;
+    s
 }
 
 fn inv_gamma(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, gamma: f64, id: u16) -> InversionSpec {
-    InversionSpec {
-        bp_left: bp_l, bp_right: bp_r, p_inv: vec![p_inv], t_inv,
-        gene_conversion_rate: gamma, flux_window: 0.05, inv_id: id,
-    }
+    let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
+    s.gene_conversion_rate = gamma;
+    s.inv_id = id;
+    s
 }
 
 // ---------------------------------------------------------------
@@ -105,6 +104,8 @@ fn no_migration_cross_pop_mrca_at_least_t_split() {
             seed,
             stop_at: f64::INFINITY,
             compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 15,
@@ -133,6 +134,8 @@ fn migration_allows_cross_pop_mrca_below_t_split() {
         seed: 42,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     };
     let result = sim.simulate();
     // With M=1e-3, mean migration time ~ 1/M = 1000 gen << 50000.
@@ -172,6 +175,8 @@ fn inversion_with_two_pops() {
         seed: 42,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 21,
@@ -325,6 +330,8 @@ fn nested_inversions_run_without_crashing() {
         seed: 42,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 11,
@@ -363,6 +370,8 @@ fn continuous_migration_with_inversion() {
         seed: 42,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 17,
@@ -439,6 +448,8 @@ fn t_inv_and_demographic_event_at_same_time() {
         seed: 42,
         stop_at: f64::INFINITY,
         compound_rate: false,
+        iters_max: 10_000_000,
+        gc_stride: 160,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 15,

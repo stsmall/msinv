@@ -123,7 +123,7 @@ impl PairRateCache {
                 let rate = compute_pair_rate(
                     active[i].head, active[j].head,
                     arena, inversions, barrier_active,
-                    pop, ne, seq_len);
+                    t, pop, ne, seq_len);
                 if rate > 0.0 {
                     let pidx = pair_idx(i, j, self.capacity);
                     self.pair_values[pidx] = rate;
@@ -172,7 +172,7 @@ impl PairRateCache {
                 compute_pair_rate(
                     active[i].head, active[j].head,
                     arena, inversions, barrier_active,
-                    pop_idx, ne, seq_len)
+                    t, pop_idx, ne, seq_len)
             };
             let pidx = pair_idx(i, j, self.capacity);
             self.set_pair(pidx, new_rate);

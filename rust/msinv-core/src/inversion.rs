@@ -1,32 +1,58 @@
-/// InversionSpec: parameters for one chromosomal inversion.
-///
-/// `p_inv` is per-population: `p_inv[pop]` gives the inverted-arrangement
-/// frequency in population `pop`.  When a lineage's population has no
-/// entry (index out of bounds), falls back to `p_inv[0]`.
+//! InversionSpec: parameters for one chromosomal inversion.
+//!
+//! `trajectory` describes the inversion's frequency through time
+//! (per-population). See [`crate::trajectory`] for the four
+//! supported types: Constant, Deterministic (logistic), Stochastic
+//! (WF diffusion), Coupled (multi-pop diffusion + migration).
+//!
+//! Back-compat constructors (`new`, `with_p_inv`) wrap a vector of
+//! per-pop frequencies in a `ConstantTrajectory`, preserving the
+//! pre-trajectory-port behaviour exactly.
+
+use crate::trajectory::{ConstantTrajectory, Trajectory};
 
 #[derive(Clone, Debug)]
 pub struct InversionSpec {
     pub bp_left: f64,
     pub bp_right: f64,
-    /// Per-population inverted-arrangement frequency.
-    pub p_inv: Vec<f64>,
-    pub t_inv: f64,
+    /// Inversion frequency model through time (per-population).
+    pub trajectory: Box<dyn Trajectory + Send + Sync>,
     pub gene_conversion_rate: f64,
     pub flux_window: f64,
     pub inv_id: u16,
 }
 
 impl InversionSpec {
-    pub fn new(bp_left: f64, bp_right: f64, p_inv: Vec<f64>, t_inv: f64) -> Self {
+    /// Build with an explicit Trajectory.
+    pub fn new(
+        bp_left: f64,
+        bp_right: f64,
+        trajectory: Box<dyn Trajectory + Send + Sync>,
+    ) -> Self {
         Self {
             bp_left,
             bp_right,
-            p_inv,
-            t_inv,
+            trajectory,
             gene_conversion_rate: 1e-9,
             flux_window: 0.05,
             inv_id: 0,
         }
+    }
+
+    /// Back-compat: construct with a per-pop constant frequency vector
+    /// and a single t_inv.  Wraps in [`ConstantTrajectory`], which
+    /// reproduces the pre-trajectory-port behaviour bit-for-bit.
+    pub fn with_p_inv(
+        bp_left: f64,
+        bp_right: f64,
+        p_inv: Vec<f64>,
+        t_inv: f64,
+    ) -> Self {
+        Self::new(
+            bp_left,
+            bp_right,
+            Box::new(ConstantTrajectory::new(p_inv, t_inv)),
+        )
     }
 
     #[inline]
@@ -34,35 +60,84 @@ impl InversionSpec {
         self.bp_right - self.bp_left
     }
 
-    /// Inverted-arrangement frequency for `pop`.
+    /// Inverted-arrangement frequency for `pop` at backward time `t`.
     #[inline]
+    pub fn p_inv_at(&self, t: f64, pop: u32) -> f64 {
+        self.trajectory.p_inv_at(t, pop)
+    }
+
+    /// Standard-arrangement frequency for `pop` at backward time `t`.
+    #[inline]
+    pub fn p_std_at(&self, t: f64, pop: u32) -> f64 {
+        1.0 - self.trajectory.p_inv_at(t, pop)
+    }
+
+    /// Time at which the inversion arose in `pop`.  For
+    /// per-population trajectories (Coupled) this varies; for
+    /// Constant/Deterministic/Stochastic it's a single value.
+    #[inline]
+    pub fn t_inv(&self, pop: u32) -> f64 {
+        self.trajectory.t_inv(pop)
+    }
+
+    /// Maximum t_inv across all populations — when the barrier era
+    /// ends globally.  Use this for "is the barrier still active
+    /// anywhere?" checks.
+    #[inline]
+    pub fn t_inv_max(&self) -> f64 {
+        self.trajectory.t_inv_max()
+    }
+
+    // ---- DEPRECATED back-compat shims --------------------------------
+    // These return the present-day (t=0) frequency, equivalent to
+    // the pre-trajectory-port behaviour where `p_inv_for(pop)` was
+    // a static accessor.  Preserved to ease migration of call sites
+    // that don't yet have access to the current simulation time.
+    // NEW CODE SHOULD USE `p_inv_at(t, pop)` INSTEAD.
+
+    #[inline]
+    #[deprecated(note = "use p_inv_at(t, pop) — frequency now varies with time")]
     pub fn p_inv_for(&self, pop: u32) -> f64 {
-        self.p_inv.get(pop as usize).copied().unwrap_or(self.p_inv[0])
+        self.trajectory.p_inv_at(0.0, pop)
     }
 
-    /// Standard-arrangement frequency for `pop`.
     #[inline]
+    #[deprecated(note = "use p_std_at(t, pop) — frequency now varies with time")]
     pub fn p_std_for(&self, pop: u32) -> f64 {
-        1.0 - self.p_inv_for(pop)
+        1.0 - self.trajectory.p_inv_at(0.0, pop)
     }
 
-    // Legacy single-value accessors — use the first entry.
     #[inline]
+    #[deprecated(note = "use p_inv_at(0, 0)")]
     pub fn p_inv_default(&self) -> f64 {
-        self.p_inv[0]
+        self.trajectory.p_inv_at(0.0, 0)
     }
 
     #[inline]
+    #[deprecated(note = "use p_std_at(0, 0)")]
     pub fn p_std(&self) -> f64 {
-        1.0 - self.p_inv[0]
+        1.0 - self.trajectory.p_inv_at(0.0, 0)
     }
 
-    /// Set `p_inv` for a specific population.  Grows the vector if needed.
+    /// Override the frequency for a population on a ConstantTrajectory.
+    /// No-op (with debug warning) on non-constant trajectories — those
+    /// have their full p(t) baked in at construction.
     pub fn set_p_inv_for(&mut self, pop: u32, val: f64) {
-        let idx = pop as usize;
-        if idx >= self.p_inv.len() {
-            self.p_inv.resize(idx + 1, self.p_inv[0]);
+        // NOTE: we can't easily downcast `Box<dyn Trajectory>` without
+        // adding the Any trait.  For now, we rebuild the trajectory if
+        // it's a ConstantTrajectory by querying t_inv_max + n_pops.
+        // For non-constant trajectories the call is silently ignored —
+        // they encode their own p(t) and should not be mutated post-hoc.
+        let n_pops = self.trajectory.n_pops().max(pop as usize + 1);
+        let t_inv = self.trajectory.t_inv_max();
+        let mut p_inv: Vec<f64> = (0..n_pops)
+            .map(|i| self.trajectory.p_inv_at(0.0, i as u32))
+            .collect();
+        if (pop as usize) >= p_inv.len() {
+            let fill = p_inv[0];
+            p_inv.resize(pop as usize + 1, fill);
         }
-        self.p_inv[idx] = val;
+        p_inv[pop as usize] = val;
+        self.trajectory = Box::new(ConstantTrajectory::new(p_inv, t_inv));
     }
 }

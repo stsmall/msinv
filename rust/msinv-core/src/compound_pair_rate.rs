@@ -32,6 +32,7 @@ pub fn compute_pair_rate(
     arena: &SegmentArena,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    t: f64,
     pop: u32,
     ne: f64,
     _seq_len: f64,
@@ -57,7 +58,7 @@ pub fn compute_pair_rate(
         let r = a.right.min(b.right);
         if r > l {
             if let Some(p) = p_eff(a.branch_class, b.branch_class,
-                                     inversions, barrier_active, pop) {
+                                     inversions, barrier_active, t, pop) {
                 if p > 0.0 {
                     let key = a.branch_class.bits() | b.branch_class.bits();
                     if seen.insert(key) {
@@ -114,6 +115,7 @@ fn p_eff(
     b_cls: BranchClass,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
+    t: f64,
     pop: u32,
 ) -> Option<f64> {
     let mut p = 1.0;
@@ -124,9 +126,9 @@ fn p_eff(
         match (a_k, b_k) {
             (None, _) | (_, None) => {}, // either side PAN → no restriction
             (Some(Karyotype::S), Some(Karyotype::S)) =>
-                p *= inv.p_std_for(pop),
+                p *= inv.p_std_at(t, pop),
             (Some(Karyotype::I), Some(Karyotype::I)) =>
-                p *= inv.p_inv_for(pop),
+                p *= inv.p_inv_at(t, pop),
             (Some(Karyotype::S), Some(Karyotype::I)) |
             (Some(Karyotype::I), Some(Karyotype::S)) => return None,
         }
@@ -163,7 +165,15 @@ mod tests {
         let pan = BranchClass::PANMICTIC;
         let a = mk_chain(&mut arena, &[(0.0, 100.0, pan)]);
         let b = mk_chain(&mut arena, &[(200.0, 300.0, pan)]);
-        let rate = compute_pair_rate(a, b, &arena, &[], &[], 0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            &[],
+            &[],
+            0.0,
+            0,
+            NE,
+            L);
         assert_eq!(rate, 0.0);
     }
 
@@ -175,7 +185,15 @@ mod tests {
         let pan = BranchClass::PANMICTIC;
         let a = mk_chain(&mut arena, &[(0.0, L, pan)]);
         let b = mk_chain(&mut arena, &[(0.0, L, pan)]);
-        let rate = compute_pair_rate(a, b, &arena, &[], &[], 0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            &[],
+            &[],
+            0.0,
+            0,
+            NE,
+            L);
         let expected = 1.0 / (2.0 * NE);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
@@ -188,16 +206,22 @@ mod tests {
         use crate::class_tag::Karyotype;
         let mut arena = SegmentArena::new();
         let s = BranchClass::single(0, Karyotype::S);
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: L,
-            p_inv: vec![0.5], t_inv: 1e9,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.5], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
         let b = mk_chain(&mut arena, &[(0.0, L, s)]);
-        let rate = compute_pair_rate(
-            a, b, &arena, std::slice::from_ref(&inv), &[true],
-            0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            std::slice::from_ref(&inv),
+            &[true],
+            0.0,
+            0,
+            NE,
+            L);
         let expected = 1.0 / NE;
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
@@ -211,16 +235,22 @@ mod tests {
         let mut arena = SegmentArena::new();
         let s = BranchClass::single(0, Karyotype::S);
         let i = BranchClass::single(0, Karyotype::I);
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: L,
-            p_inv: vec![0.3], t_inv: 1e9,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.3], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
         let b = mk_chain(&mut arena, &[(0.0, L, i)]);
-        let rate = compute_pair_rate(
-            a, b, &arena, std::slice::from_ref(&inv), &[true],
-            0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            std::slice::from_ref(&inv),
+            &[true],
+            0.0,
+            0,
+            NE,
+            L);
         assert_eq!(rate, 0.0);
     }
 
@@ -234,16 +264,22 @@ mod tests {
         let mut arena = SegmentArena::new();
         let pan = BranchClass::PANMICTIC;
         let s = BranchClass::single(0, Karyotype::S);
-        let inv = InversionSpec {
-            bp_left: 500.0, bp_right: L,
-            p_inv: vec![0.5], t_inv: 1e9,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(500.0, L, vec![0.5], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let a = mk_chain(&mut arena, &[(0.0, 500.0, pan), (500.0, L, s)]);
         let b = mk_chain(&mut arena, &[(0.0, 500.0, pan), (500.0, L, s)]);
-        let rate = compute_pair_rate(
-            a, b, &arena, std::slice::from_ref(&inv), &[true],
-            0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            std::slice::from_ref(&inv),
+            &[true],
+            0.0,
+            0,
+            NE,
+            L);
         let expected = 1.0 / (2.0 * NE) + 1.0 / (2.0 * NE * 0.5);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
@@ -257,16 +293,22 @@ mod tests {
         let mut arena = SegmentArena::new();
         let s = BranchClass::single(0, Karyotype::S);
         let i = BranchClass::single(0, Karyotype::I);
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: L,
-            p_inv: vec![0.3], t_inv: 1e9,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.3], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
         let b = mk_chain(&mut arena, &[(0.0, L, i)]);
-        let rate = compute_pair_rate(
-            a, b, &arena, std::slice::from_ref(&inv), &[false],
-            0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            std::slice::from_ref(&inv),
+            &[false],
+            0.0,
+            0,
+            NE,
+            L);
         let expected = 1.0 / (2.0 * NE);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);
@@ -282,16 +324,22 @@ mod tests {
         let mut arena = SegmentArena::new();
         let pan = BranchClass::PANMICTIC;
         let s = BranchClass::single(0, Karyotype::S);
-        let inv = InversionSpec {
-            bp_left: 0.0, bp_right: L,
-            p_inv: vec![0.5], t_inv: 1e9,
-            gene_conversion_rate: 1e-9, flux_window: 0.05, inv_id: 0,
-        };
+        let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.5], 1e9);
+  s.gene_conversion_rate = 1e-9;
+  s.flux_window = 0.05;
+  s.inv_id = 0;
+  s };
         let a = mk_chain(&mut arena, &[(0.0, L, pan)]);
         let b = mk_chain(&mut arena, &[(0.0, L, s)]);
-        let rate = compute_pair_rate(
-            a, b, &arena, std::slice::from_ref(&inv), &[true],
-            0, NE, L);
+        let rate = compute_pair_rate(a,
+            b,
+            &arena,
+            std::slice::from_ref(&inv),
+            &[true],
+            0.0,
+            0,
+            NE,
+            L);
         let expected = 1.0 / (2.0 * NE);
         assert!((rate - expected).abs() < 1e-12,
             "rate={} expected={}", rate, expected);

@@ -81,6 +81,10 @@ class InversionSpec:
     t_inv: Optional[float] = None
     gene_conversion_rate: float = 1e-9
     flux_window: float = 0.05
+    # Peischl b2 flux model — see docs/superpowers/specs/2026-04-27-peischl-b2-flux-design.md.
+    # When migration completes, flux_window is removed.
+    mean_tract_length: float = 100.0   # bp, replaces flux_window's tract role
+    tract_distribution: str = 'geometric'  # 'geometric' or 'fixed'
     inv_id: int = -1   # set by simulator
     # Trajectory dict overrides p_inv/t_inv when provided.  See module
     # docstring for the supported shapes.
@@ -148,36 +152,54 @@ class InversionSpec:
             if not (0.0 < self.flux_window < 1.0):
                 raise ValueError(
                     f"flux_window must be in (0, 1), got {self.flux_window}.")
-            return
-        # Legacy path: p_inv + t_inv required
-        if self.p_inv is None or self.t_inv is None:
-            raise ValueError(
-                "InversionSpec requires either (p_inv, t_inv) or trajectory.")
-        # Validate p_inv
-        if isinstance(self.p_inv, dict):
-            if not self.p_inv:
-                raise ValueError("p_inv dict must not be empty.")
-            for pop, val in self.p_inv.items():
-                if not (0.0 <= val <= 1.0):
-                    raise ValueError(
-                        f"p_inv[{pop}] must be in [0, 1], got {val}.")
-            # At least one pop must have 0 < p_inv < 1 for the inversion
-            # to matter (otherwise it's monomorphic everywhere).
-            if not any(0.0 < v < 1.0 for v in self.p_inv.values()):
-                raise ValueError(
-                    "At least one population must have 0 < p_inv < 1.")
         else:
-            if not (0.0 < self.p_inv < 1.0):
+            # Legacy path: p_inv + t_inv required
+            if self.p_inv is None or self.t_inv is None:
                 raise ValueError(
-                    f"p_inv must be in (0, 1), got {self.p_inv}.")
-        if self.t_inv <= 0.0:
-            raise ValueError(f"t_inv > 0 required, got {self.t_inv}.")
-        if not (0.0 < self.flux_window < 1.0):
+                    "InversionSpec requires either (p_inv, t_inv) or trajectory.")
+            # Validate p_inv
+            if isinstance(self.p_inv, dict):
+                if not self.p_inv:
+                    raise ValueError("p_inv dict must not be empty.")
+                for pop, val in self.p_inv.items():
+                    if not (0.0 <= val <= 1.0):
+                        raise ValueError(
+                            f"p_inv[{pop}] must be in [0, 1], got {val}.")
+                # At least one pop must have 0 < p_inv < 1 for the inversion
+                # to matter (otherwise it's monomorphic everywhere).
+                if not any(0.0 < v < 1.0 for v in self.p_inv.values()):
+                    raise ValueError(
+                        "At least one population must have 0 < p_inv < 1.")
+            else:
+                if not (0.0 < self.p_inv < 1.0):
+                    raise ValueError(
+                        f"p_inv must be in (0, 1), got {self.p_inv}.")
+            if self.t_inv <= 0.0:
+                raise ValueError(f"t_inv > 0 required, got {self.t_inv}.")
+            if not (0.0 < self.flux_window < 1.0):
+                raise ValueError(
+                    f"flux_window must be in (0, 1), got {self.flux_window}.")
+            if self.gene_conversion_rate <= 0.0:
+                raise ValueError(
+                    f"gene_conversion_rate (gamma) must be > 0, got "
+                    f"{self.gene_conversion_rate}. Inversions decouple from "
+                    f"flanks unless gene flux is allowed; gamma=0 makes the "
+                    f"inversion an absolute barrier (often unrealistic).")
+        # ---- b2 flux: validate mean_tract_length, tract_distribution ----
+        if self.mean_tract_length < 0.0:
             raise ValueError(
-                f"flux_window must be in (0, 1), got {self.flux_window}.")
-        if self.gene_conversion_rate <= 0.0:
+                f"mean_tract_length must be >= 0, got {self.mean_tract_length}. "
+                f"Use mean_tract_length=0 (or gene_conversion_rate=0) to "
+                f"disable flux entirely.")
+        if self.tract_distribution not in ('geometric', 'fixed'):
             raise ValueError(
-                f"gene_conversion_rate (gamma) must be > 0, got "
-                f"{self.gene_conversion_rate}. Inversions decouple from "
-                f"flanks unless gene flux is allowed; gamma=0 makes the "
-                f"inversion an absolute barrier (often unrealistic).")
+                f"tract_distribution must be 'geometric' or 'fixed', "
+                f"got {self.tract_distribution!r}.")
+        inv_len_local = self.bp_right - self.bp_left
+        if self.mean_tract_length > inv_len_local / 2.0:
+            import warnings as _warnings
+            _warnings.warn(
+                f"mean_tract_length ({self.mean_tract_length:.1f}) exceeds "
+                f"inv_length/2 ({inv_len_local/2:.1f}); tracts will frequently "
+                f"span much of the inversion. Verify this is intentional.",
+                UserWarning, stacklevel=2)

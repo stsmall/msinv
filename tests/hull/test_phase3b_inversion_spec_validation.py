@@ -69,6 +69,8 @@ def test_default_tract_distribution_is_geometric():
     assert inv.tract_distribution == 'geometric'
 
 
+@pytest.mark.xfail(reason="flux_window dropped in Task 7 of b2-flux migration",
+                   strict=True)
 def test_flux_window_field_removed():
     """After migration, passing flux_window must raise TypeError
     (Python's default for unexpected kwargs)."""

@@ -48,6 +48,8 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
             'bp_right': float(inv.bp_right),
             'gene_conversion_rate': float(inv.gene_conversion_rate),
             'flux_window': float(inv.flux_window),
+            'mean_tract_length': float(inv.mean_tract_length),
+            'tract_distribution': str(inv.tract_distribution),
         }
         if getattr(inv, 'trajectory', None) is not None:
             # New trajectory path — pass dict straight to Rust.

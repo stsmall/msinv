@@ -6,7 +6,7 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 use msinv_core::class_tag::Karyotype;
 use msinv_core::demography::{DemoEvent, Demography};
-use msinv_core::inversion::InversionSpec;
+use msinv_core::inversion::{InversionSpec, TractDistribution};
 use msinv_core::trajectory::{
     BridgeStochasticTrajectory, ConstantTrajectory, CoupledTrajectory,
     DeterministicTrajectory, IntegerWFTrajectory, PrecomputedTrajectory,
@@ -225,6 +225,16 @@ fn simulate_raw(
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
             let fw: f64 = d.get_item("flux_window")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.05);
+            let mtl: f64 = d.get_item("mean_tract_length")?
+                .map_or_else(|| Ok(100.0_f64), |v| v.extract())?;
+            let td_str: String = d.get_item("tract_distribution")?
+                .map_or_else(|| Ok("geometric".to_string()), |v| v.extract())?;
+            let td = match td_str.as_str() {
+                "fixed" => TractDistribution::Fixed,
+                "geometric" => TractDistribution::Geometric,
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("tract_distribution must be 'fixed' or 'geometric', got {td_str:?}"))),
+            };
 
             // Build trajectory
             let trajectory: Box<dyn Trajectory + Send + Sync> =
@@ -378,6 +388,8 @@ fn simulate_raw(
             let mut spec = InversionSpec::new(bp_left, bp_right, trajectory);
             spec.gene_conversion_rate = gcr;
             spec.flux_window = fw;
+            spec.mean_tract_length = mtl;
+            spec.tract_distribution = td;
             spec.inv_id = i as u16;
             inv_specs.push(spec);
         }

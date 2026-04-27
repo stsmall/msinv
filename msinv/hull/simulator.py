@@ -808,7 +808,12 @@ class HullSimulator:
         inv_len = inv.bp_right - inv.bp_left
         if inv_len <= 0:
             return 0.0
-        w = inv.flux_window
+        # b2-flux: w is mean_tract_length / inv_length.
+        # Migration shim: derive from flux_window if mean_tract_length is at default.
+        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
+            w = inv.flux_window
+        else:
+            w = inv.mean_tract_length / inv_len
         weight = 0.0
         seg = lineage.head
         while seg is not None:
@@ -1128,7 +1133,12 @@ class HullSimulator:
         Returns the genomic position where the conversion centres.
         """
         inv_len = inv.bp_right - inv.bp_left
-        w = inv.flux_window
+        # b2-flux: w is mean_tract_length / inv_length.
+        # Migration shim: derive from flux_window if mean_tract_length is at default.
+        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
+            w = inv.flux_window
+        else:
+            w = inv.mean_tract_length / inv_len
         intervals = []
         cum = 0.0
         seg = lineage.head
@@ -1162,21 +1172,50 @@ class HullSimulator:
 
     def _draw_tract(self, x_event, inv):
         """Draw a gene-conversion tract centred at ``x_event`` for
-        inversion ``inv``, using the Peischl b1-uniform construction.
+        inversion ``inv``, using the b2 flux model.
+
+        Tract length L is drawn per-event from the distribution
+        configured via ``inv.tract_distribution``:
+            * 'fixed':     L = inv.mean_tract_length
+            * 'geometric': L ~ Exponential(1 / inv.mean_tract_length)
+              (continuous-coordinate analog of geometric).
+
+        Migration shim: if ``mean_tract_length`` is at its default
+        (100.0) AND ``flux_window`` is non-default, derive tract length
+        from flux_window so untouched legacy call sites keep their
+        original semantics. Removed in Task 7.
         """
         inv_len = inv.bp_right - inv.bp_left
-        w_g = inv.flux_window * inv_len
+
+        # Migration shim — see docstring.
+        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
+            mean_L = inv.flux_window * inv_len
+            distribution = 'fixed'
+        else:
+            mean_L = inv.mean_tract_length
+            distribution = inv.tract_distribution
+
+        # Defensive: rate-zero short-circuit upstream should prevent
+        # reaching here with mean_L == 0, but guard so we never
+        # divide by zero in the Exponential sampler.
+        if mean_L <= 0.0:
+            return float(x_event), float(x_event)
+
+        if distribution == 'fixed':
+            L = mean_L
+        else:  # 'geometric'
+            L = self.rng.exponential(mean_L)
+        L = min(L, inv_len * 0.99)
+
         x_rel = x_event - inv.bp_left
-        b1_lo = max(0.0, x_rel - w_g)
-        b1_hi = min(inv_len - w_g, x_rel)
+        b1_lo = max(0.0, x_rel - L)
+        b1_hi = min(inv_len - L, x_rel)
         if b1_hi <= b1_lo:
-            b1 = max(0.0, min(inv_len - w_g, x_rel - w_g / 2.0))
+            b1 = max(0.0, min(inv_len - L, x_rel - L / 2.0))
         else:
             b1 = self.rng.uniform(b1_lo, b1_hi)
         tract_left = inv.bp_left + b1
-        tract_right = tract_left + w_g
-        tract_left = max(inv.bp_left, tract_left)
-        tract_right = min(inv.bp_right, tract_right)
+        tract_right = min(tract_left + L, inv.bp_right)
         return tract_left, tract_right
 
     # -- main loop ---------------------------------------------------------

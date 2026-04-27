@@ -1308,7 +1308,12 @@ impl HullSimulator {
         rng: &mut Xoshiro256PlusPlus,
     ) -> Option<f64> {
         let inv_len = inv.length();
-        let w = inv.flux_window;
+        // b2-flux migration shim — mirrors Python _sample_flux_position.
+        let w = if inv.mean_tract_length == 100.0 && inv.flux_window != 0.05 {
+            inv.flux_window
+        } else {
+            inv.mean_tract_length / inv.length()
+        };
         let mut intervals: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
         let mut cum = 0.0;
         let mut cur = active[lin_idx].head;
@@ -1358,18 +1363,45 @@ impl HullSimulator {
         inv: &InversionSpec,
         rng: &mut Xoshiro256PlusPlus,
     ) -> (f64, f64) {
+        use rand_distr::{Distribution, Exp};
         let inv_len = inv.length();
-        let w_g = inv.flux_window * inv_len;
+
+        // Migration shim — mirrors Python _draw_tract.
+        // If mean_tract_length is at default and flux_window is non-default,
+        // use flux_window's pre-b2 fixed-tract semantics. Removed in Task 7.
+        let (mean_l, distribution) =
+            if inv.mean_tract_length == 100.0 && inv.flux_window != 0.05 {
+                (inv.flux_window * inv_len, crate::inversion::TractDistribution::Fixed)
+            } else {
+                (inv.mean_tract_length, inv.tract_distribution)
+            };
+
+        // Defensive: rate-zero short-circuit upstream should prevent
+        // reaching here with mean_l == 0, but guard so we never divide
+        // by zero in the Exponential sampler.
+        if mean_l <= 0.0 {
+            return (x_event, x_event);
+        }
+
+        let l = match distribution {
+            crate::inversion::TractDistribution::Fixed => mean_l,
+            crate::inversion::TractDistribution::Geometric => {
+                let exp = Exp::new(1.0 / mean_l).expect("mean_l > 0 by guard above");
+                exp.sample(rng)
+            }
+        };
+        let l = l.min(inv_len * 0.99);
+
         let x_rel = x_event - inv.bp_left;
-        let b1_lo = (x_rel - w_g).max(0.0);
-        let b1_hi = (x_rel).min(inv_len - w_g);
+        let b1_lo = (x_rel - l).max(0.0);
+        let b1_hi = (x_rel).min(inv_len - l);
         let b1 = if b1_hi <= b1_lo {
-            (x_rel - w_g / 2.0).clamp(0.0, inv_len - w_g)
+            (x_rel - l / 2.0).clamp(0.0, inv_len - l)
         } else {
             rng.random::<f64>() * (b1_hi - b1_lo) + b1_lo
         };
         let tl = (inv.bp_left + b1).max(inv.bp_left);
-        let tr = (tl + w_g).min(inv.bp_right);
+        let tr = (tl + l).min(inv.bp_right);
         (tl, tr)
     }
 

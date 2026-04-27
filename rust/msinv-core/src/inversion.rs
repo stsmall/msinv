@@ -11,6 +11,18 @@
 
 use crate::trajectory::{ConstantTrajectory, Trajectory};
 
+/// Per-event tract length distribution for the b2-flux model.
+/// See docs/superpowers/specs/2026-04-27-peischl-b2-flux-design.md.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TractDistribution {
+    Fixed,
+    Geometric,
+}
+
+impl Default for TractDistribution {
+    fn default() -> Self { TractDistribution::Geometric }
+}
+
 #[derive(Clone, Debug)]
 pub struct InversionSpec {
     pub bp_left: f64,
@@ -19,6 +31,15 @@ pub struct InversionSpec {
     pub trajectory: Box<dyn Trajectory + Send + Sync>,
     pub gene_conversion_rate: f64,
     pub flux_window: f64,
+    /// Mean per-event gene-conversion tract length (bp).
+    /// Replaces `flux_window`'s tract role; phi(x) is computed with
+    /// `w = mean_tract_length / inv_length`. Removed at Task 7 of
+    /// the b2-flux migration.
+    pub mean_tract_length: f64,
+    /// Per-event tract length distribution (`Fixed` reproduces the
+    /// pre-b2 deterministic-tract semantics; `Geometric` samples
+    /// Exponential(1/mean_tract_length).
+    pub tract_distribution: TractDistribution,
     pub inv_id: u16,
 }
 
@@ -35,6 +56,8 @@ impl InversionSpec {
             trajectory,
             gene_conversion_rate: 1e-9,
             flux_window: 0.05,
+            mean_tract_length: 100.0,
+            tract_distribution: TractDistribution::Geometric,
             inv_id: 0,
         }
     }

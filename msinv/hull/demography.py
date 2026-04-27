@@ -108,6 +108,10 @@ class Demography:
                 union(int(ev[2]), int(ev[3]))
             elif ev[0] == 'em' and len(ev) >= 5 and ev[4] != 0.0:
                 union(int(ev[2]), int(ev[3]))
+            elif ev[0] == 'cmig' and len(ev) >= 7 and ev[6] > 0.0:
+                # ('cmig', t, src, dst, kary, inv_id, proportion)
+                # Class-conditional migration is also a connectivity edge.
+                union(int(ev[2]), int(ev[3]))
             elif ev[0] == 'ema' and len(ev) >= 3:
                 mat = ev[2]
                 for i in range(self.n_pops):
@@ -195,6 +199,13 @@ class Demography:
         ``inv_id`` are eligible.  Otherwise this is currently a synonym
         for ``add_class_migration`` with karyotype='S' (placeholder
         until unconditional fractional migration lands).
+
+        Caveat: with extensive gene flux, some lineages may have all
+        of their inv-region segments converted to PAN class.  These
+        lineages are NOT caught by cmig (kary check returns None).
+        For proportion=1.0 / class-merge use cases, prefer
+        ``add_class_split`` which adds a residual ej to catch the
+        PAN stragglers.
         """
         if karyotype is None:
             raise NotImplementedError(
@@ -204,6 +215,30 @@ class Demography:
                 "operator instead.")
         self.add_class_migration(time, source, dest, karyotype, inv_id,
                                   proportion)
+
+    def add_class_split(self, time: float, source: int, dest: int,
+                        inv_id: int = 0):
+        """Class-routed full split: at ``time`` going backward, every
+        lineage in ``source`` moves to ``dest``, but the simulator
+        routes S- and I-lineages through their class buckets first
+        (cmig kary='S', then cmig kary='I'), then mops up any PAN-only
+        lineages with a final ej.
+
+        Functionally equivalent to ``add_population_split`` for
+        connectivity purposes, but exercises the class-routing code
+        path.  Use this if you want to know whether class-routed
+        coalescence at the split changes anything compared with
+        plain ej (in our K=S-only, F=S+I sampling, it does not).
+
+        Caveats:
+        - Final ej is required because gene flux can convert a
+          lineage's full inv span to PAN; cmig misses those.
+        - With proportion=1.0, the cmig events are unconditional —
+          they don't consume RNG (no Bernoulli draw needed).
+        """
+        self.add_class_migration(time, source, dest, 'S', inv_id, 1.0)
+        self.add_class_migration(time, source, dest, 'I', inv_id, 1.0)
+        self.add_event(('ej', float(time), int(source), int(dest)))
 
     def add_population_size_change(self, time: float,
                                    population: Optional[int] = None,

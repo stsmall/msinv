@@ -223,6 +223,102 @@ def bifurcate(
     }
 
 
+def deterministic_logistic_curve(
+    p_start: float,
+    p_final: float,
+    s: float,
+    t_inv: float,
+    n_samples: int = 200,
+) -> Tuple[List[float], List[float]]:
+    """Deterministic logistic going backward from ``p_final`` (at t=0)
+    to ``p_start`` (at t=t_inv).  The selection coefficient ``s`` should
+    satisfy s · t_inv ≈ logit(p_final) - logit(p_start) (so the
+    trajectory cleanly hits both endpoints).
+
+    Returns ``(times, freqs)`` covering [0, t_inv].
+    """
+    times = np.linspace(0.0, float(t_inv), n_samples).tolist()
+    freqs = []
+    for t in times:
+        t_fwd = float(t_inv) - t
+        if s <= 0.0 or t_fwd <= 0.0:
+            freqs.append(p_start if t_fwd <= 0.0 else p_final)
+            continue
+        e = math.exp(s * t_fwd)
+        p = p_start * e / (1.0 - p_start + p_start * e)
+        freqs.append(min(p_final, max(p_start, p)))
+    return times, freqs
+
+
+def kir_fol_softsweep_trajectory(
+    n_e_anc: float = 450_000.0,
+    n_e_K: float   = 126_772.0,
+    n_e_F: float   = 2_496_632.0,
+    p_F_today: float = 0.734,
+    p_start: float = 0.05,
+    t_split: float = 9_194.0,
+    t_inv: float   = 330_000.0,
+) -> dict:
+    """Per-pop bifurcated soft-sweep trajectory.
+
+    K's curve has two regimes:
+    - [0, t_split]: p_inv[K] = 0 (no class structure in K — K-S coal
+      is panmictic, F-I lineages still in F can coalesce among
+      themselves with F's own p_inv).
+    - [t_split, t_inv]: p_inv[K] = F's curve.  After ej(F→K) at
+      t_split, the merged pop (which the simulator calls pop 0 = K)
+      needs to see the deep-ancestor inversion frequency, otherwise
+      F-I lineages migrating into K get stranded with p_class=0.
+
+    F's curve: deterministic logistic from ``p_F_today`` (today) back
+    to ``p_start`` at t_inv.
+
+    The selection coefficient is implied by the endpoints:
+        s = (logit(p_F_today) - logit(p_start)) / t_inv
+
+    With p_start=0.05 and standard Anopheles params, s ≈ 1.2e-5 — mild
+    positive selection rolling the inversion from a 5% standing-variation
+    soft-sweep founder to ~73% present-day frequency.
+
+    Output: PrecomputedTrajectory dict with per-pop curves on a shared
+    times axis.
+    """
+    s = (math.log(p_F_today / (1 - p_F_today))
+         - math.log(p_start / (1 - p_start))) / float(t_inv)
+    f_curve = deterministic_logistic_curve(
+        p_start=p_start, p_final=p_F_today, s=s, t_inv=t_inv,
+        n_samples=200)
+    times = list(f_curve[0])
+    f_freqs = list(f_curve[1])
+    # K curve: 0 below t_split, then follows F above t_split.
+    k_freqs = [
+        0.0 if t < float(t_split) else f_freqs[i]
+        for i, t in enumerate(times)
+    ]
+    # Make sure the t_split boundary point is sampled (anchors the
+    # discontinuity from 0 to f(t_split) cleanly).
+    if all(abs(t - float(t_split)) > 1.0 for t in times):
+        # Insert a discrete jump at t_split.
+        idx = next(i for i, t in enumerate(times) if t > float(t_split))
+        times.insert(idx, float(t_split))
+        # K jumps from 0 to F's value at t_split.
+        f_at_split = float(np.interp(float(t_split), times, f_freqs + [f_freqs[-1]])
+                           if False else
+                           f_freqs[idx - 1] + (f_freqs[idx] - f_freqs[idx - 1])
+                           * (float(t_split) - times[idx - 1])
+                           / (times[idx + 1] - times[idx - 1]))
+        f_freqs.insert(idx, f_at_split)
+        k_freqs.insert(idx, f_at_split)  # K joins F's curve at t_split
+    return {
+        'type': 'precomputed',
+        'times': list(map(float, times)),
+        'freqs': [list(map(float, k_freqs)),
+                  list(map(float, f_freqs))],
+        'n_e':   [float(n_e_K), float(n_e_F)],
+        't_inv': [float(t_inv), float(t_inv)],
+    }
+
+
 def kir_fol_drift_filter_trajectory(
     n_e_anc: float = 450_000.0,
     n_e_K: float   = 126_772.0,
@@ -237,14 +333,24 @@ def kir_fol_drift_filter_trajectory(
     """Build a Kir/Fol bifurcated trajectory for the **drift / filter**
     scenario:
 
-    - K's tail: smooth logistic decline from ``p_split`` at the split
-      down to ``p_K_today ≈ 0`` today (clamped to 1/(2N_K)).  No
-      selection invoked; this just represents K's freq dropping by the
-      time we sample.
+    - K's tail: flat at ``p_inv = 0`` over [0, t_split].  Drift-filter
+      assumption: K is sampled S-only today, and the I lineages that
+      may have existed in K's gene pool during the drift period have
+      gone extinct in the genealogy of the sampled lineages.  Setting
+      ``p_inv[K] = 0`` keeps K panmictic during the K-tail (rate =
+      1/(2·Ne_K) for K-S pairs).  A nonzero K-tail would impose a
+      structured-coalescent rate boost (rate ∝ 1/(p_std · Ne_K)) that
+      double-counts the absent I lineages and inflates K's intra-S
+      coalescence — observed in v0 of this helper as Fst K-FI ≈ 0.47.
     - F's tail: stochastic neutral walk from ``p_F_today`` (today) back
       to ``p_split`` (at t_split).
     - Deep ancestor: stochastic neutral walk from ``p_split`` back to
       ``1/(2 n_e_anc)`` at t_inv.
+
+    At t = t_split the K-tail value (0) is replaced by the deep curve
+    value (p_split).  This is biologically the moment K and F coalesce
+    into the shared ancestor — K's "no-I" state lifts because we're
+    now in F's polymorphic gene pool.
 
     Defaults match v11 frozen Kir/Fol parameters: K-F split 9194 g,
     3Ra age 330k g, F freq 0.734.
@@ -254,9 +360,8 @@ def kir_fol_drift_filter_trajectory(
         p_split=p_split, n_e=n_e_anc,
         t_inv=t_inv, t_split=t_split,
         seed=int(rng.integers(0, 2**32)))
-    k_tail = post_split_logistic(
-        p_today=p_K_today, p_split=p_split,
-        t_split=t_split, n_e=n_e_K)
+    # K-tail flat at 0 — drift-filter, no class structure in K.
+    k_tail = ([0.0, t_split], [0.0, 0.0])
     f_tail = post_split_neutral_walk(
         p_today=p_F_today, p_split=p_split,
         t_split=t_split, n_e=n_e_F,

@@ -9,8 +9,8 @@ use msinv_core::demography::{DemoEvent, Demography};
 use msinv_core::inversion::InversionSpec;
 use msinv_core::trajectory::{
     BridgeStochasticTrajectory, ConstantTrajectory, CoupledTrajectory,
-    DeterministicTrajectory, PrecomputedTrajectory, StochasticTrajectory,
-    Trajectory,
+    DeterministicTrajectory, IntegerWFTrajectory, PrecomputedTrajectory,
+    StochasticDeterministicTrajectory, StochasticTrajectory, Trajectory,
 };
 use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry, SimResult};
@@ -247,7 +247,19 @@ fn simulate_raw(
                             let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
                             let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
                             let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            Box::new(DeterministicTrajectory::new(p_final, n_e, s))
+                            // Optional p_start (founding frequency).
+                            // Defaults to 1/(2N) (hard sweep) when omitted.
+                            // Set to e.g. 0.05 for partial-SHIC-style soft sweep
+                            // on standing variation.
+                            let p_start: Option<f64> = td.get_item("p_start")?
+                                .and_then(|v| v.extract().ok());
+                            match p_start {
+                                Some(p0) => Box::new(
+                                    DeterministicTrajectory::new_with_p_start(
+                                        p_final, p0, n_e, s)),
+                                None => Box::new(
+                                    DeterministicTrajectory::new(p_final, n_e, s)),
+                            }
                         }
                         "stochastic" => {
                             let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
@@ -256,6 +268,50 @@ fn simulate_raw(
                             let seed: u64   = td.get_item("seed")?
                                 .and_then(|v| v.extract().ok()).unwrap_or(42);
                             Box::new(StochasticTrajectory::new(p_final, n_e, s, seed))
+                        }
+                        // Discoal-style stochastic-then-deterministic.
+                        // Phase 1 (small p, drift-dominated): integer-WF
+                        //   from p_start to det_threshold (default
+                        //   5/(2N), configurable).
+                        // Phase 2 (large p, selection-dominated): closed-
+                        //   form logistic from det_threshold to p_final.
+                        "stoch_det" | "stochastic_deterministic" => {
+                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                            let p_start: f64 = td.get_item("p_start")?
+                                .and_then(|v| v.extract().ok())
+                                .unwrap_or(1.0 / (2.0 * n_e));
+                            let det_threshold: Option<f64> = td.get_item("det_threshold")?
+                                .and_then(|v| v.extract().ok());
+                            let seed: u64 = td.get_item("seed")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(42);
+                            let max_attempts: u32 = td.get_item("max_attempts")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(100);
+                            Box::new(StochasticDeterministicTrajectory::new(
+                                p_final, n_e, s, p_start, det_threshold,
+                                seed, max_attempts
+                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
+                        }
+                        // Integer-copy WF trajectory: forward-simulate
+                        // discrete WF with selection from p_start to
+                        // p_final, rejection-resampling lost paths.
+                        // The robust large-N replacement for 'stochastic'
+                        // (which uses continuous-diffusion approx).
+                        "integer_wf" => {
+                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                            let p_start: f64 = td.get_item("p_start")?
+                                .and_then(|v| v.extract().ok())
+                                .unwrap_or(1.0 / (2.0 * n_e));
+                            let seed: u64   = td.get_item("seed")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(42);
+                            let max_attempts: u32 = td.get_item("max_attempts")?
+                                .and_then(|v| v.extract().ok()).unwrap_or(100);
+                            Box::new(IntegerWFTrajectory::new(
+                                p_final, n_e, s, p_start, seed, max_attempts
+                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
                         }
                         // Bridge stochastic: conditioned on BOTH t_inv
                         // and p_final.  partialdiscoal-style incomplete

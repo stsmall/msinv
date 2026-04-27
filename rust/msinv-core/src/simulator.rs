@@ -1386,12 +1386,20 @@ impl HullSimulator {
         for (k, inv) in inversions.iter().enumerate() {
             if barrier_active[k] && t >= inv.t_inv_max() {
                 barrier_active[k] = false;
-                // Flip all segments' class tags for this inversion to panmictic.
+                // At t_inv: every I-class segment morphs into S (the inversion
+                // mutation arose from an S precursor; going past t_inv we're
+                // pre-inversion era, lineage lives in the S subpopulation).
+                // S-class stays S.  Class label is preserved (not cleared to
+                // PAN) so it stays meaningful for any class-conditional
+                // events that fire later.
                 for lin in active.iter() {
                     let mut cur = lin.head;
                     while cur != SEG_NIL {
                         let seg = arena.get_mut(cur);
-                        seg.branch_class = seg.branch_class.clear_inv(inv.inv_id);
+                        if let Some(Karyotype::I) = seg.branch_class.get_inv(inv.inv_id) {
+                            seg.branch_class = seg.branch_class
+                                .with_inv(inv.inv_id, Karyotype::S);
+                        }
                         cur = seg.next;
                     }
                 }
@@ -3039,6 +3047,127 @@ mod tests {
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 15,
             "Got {} nodes", result.tables.num_nodes());
+    }
+
+    // -----------------------------------------------------------------
+    // Class-conditional migration (cmig / ClassMig) unit tests
+    // -----------------------------------------------------------------
+
+    use crate::demography::ClassMigSpec;
+    use crate::lineage::Lineage;
+    use crate::class_tag::{BranchClass, Karyotype};
+
+    fn _mk_lineage(arena: &mut SegmentArena, pop: u32, cls: BranchClass,
+                   bp_left: f64, bp_right: f64, uid: u32) -> Lineage {
+        let seg_idx = arena.alloc(bp_left, bp_right, 0, cls);
+        Lineage::new(seg_idx, seg_idx, pop, uid, arena)
+    }
+
+    #[test]
+    fn class_mig_full_S_moves_only_S_lineages() {
+        let mut arena = SegmentArena::new();
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        // Two S lineages and two I lineages, all in pop 1.
+        let mut active = vec![
+            _mk_lineage(&mut arena, 1, s_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, s_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, i_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, i_cls, 0.0, 1000.0, 0),
+        ];
+        // K-only-S sample reproduction: cmig S, F=1 → K=0.
+        let spec = ClassMigSpec {
+            src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
+        };
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+
+        // Both S-class lineages should now be in pop 0.
+        // Both I-class lineages should still be in pop 1.
+        assert_eq!(active[0].population, 0, "S lineage 0 not moved");
+        assert_eq!(active[1].population, 0, "S lineage 1 not moved");
+        assert_eq!(active[2].population, 1, "I lineage 2 wrongly moved");
+        assert_eq!(active[3].population, 1, "I lineage 3 wrongly moved");
+    }
+
+    #[test]
+    fn class_mig_full_I_moves_only_I_lineages() {
+        let mut arena = SegmentArena::new();
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let mut active = vec![
+            _mk_lineage(&mut arena, 1, s_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, i_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, i_cls, 0.0, 1000.0, 0),
+        ];
+        let spec = ClassMigSpec {
+            src: 1, dst: 0, kary: Karyotype::I, inv_id: 0, proportion: 1.0,
+        };
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+
+        assert_eq!(active[0].population, 1, "S lineage wrongly moved");
+        assert_eq!(active[1].population, 0, "I lineage 1 not moved");
+        assert_eq!(active[2].population, 0, "I lineage 2 not moved");
+    }
+
+    #[test]
+    fn class_mig_does_not_touch_lineages_not_in_src() {
+        let mut arena = SegmentArena::new();
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        // Lineage in pop 0 (= dst), should stay put even though kary matches.
+        let mut active = vec![
+            _mk_lineage(&mut arena, 0, s_cls, 0.0, 1000.0, 0),
+            _mk_lineage(&mut arena, 1, s_cls, 0.0, 1000.0, 0),
+        ];
+        let spec = ClassMigSpec {
+            src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
+        };
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+
+        assert_eq!(active[0].population, 0, "pop-0 S lineage moved (shouldn't)");
+        assert_eq!(active[1].population, 0, "pop-1 S lineage not moved");
+    }
+
+    #[test]
+    fn class_mig_skips_pan_only_lineages() {
+        // Lineage with no class tag for inv_id=0 (PAN) should not be
+        // caught by cmig with kary='S' or 'I'.
+        let mut arena = SegmentArena::new();
+        let pan_cls = BranchClass::PANMICTIC;
+        let mut active = vec![
+            _mk_lineage(&mut arena, 1, pan_cls, 0.0, 1000.0, 0),
+        ];
+        let spec = ClassMigSpec {
+            src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
+        };
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        // PAN lineage has no class tag for inv 0 → skipped, stays in pop 1.
+        assert_eq!(active[0].population, 1,
+            "PAN lineage incorrectly migrated by cmig");
+    }
+
+    #[test]
+    fn class_mig_partial_proportion_stochastic() {
+        // proportion=0.5: with 200 lineages and seed 42, expect roughly
+        // half (within ~3 SD = ±20).
+        let mut arena = SegmentArena::new();
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let n_lin = 200;
+        let mut active: Vec<Lineage> = (0..n_lin)
+            .map(|_| _mk_lineage(&mut arena, 1, s_cls, 0.0, 1000.0, 0))
+            .collect();
+        let spec = ClassMigSpec {
+            src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 0.5,
+        };
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        let moved = active.iter().filter(|l| l.population == 0).count();
+        // 200 * 0.5 = 100, ±3*sqrt(200*0.5*0.5) ≈ ±21
+        assert!((moved as i64 - 100).abs() < 25,
+            "stochastic proportion=0.5 moved {} of 200; expected ~100", moved);
     }
 
     #[test]

@@ -341,30 +341,26 @@ impl StochasticTrajectory {
         }
     }
 
-    /// Linear interpolation of (times, freqs) at backward time `t`.
     fn interp(&self, t: f64) -> f64 {
-        // times is monotone increasing from 0 to t_inv_cached.
-        if t <= self.times[0] {
-            return self.freqs[0];
-        }
-        if t >= *self.times.last().unwrap() {
-            return *self.freqs.last().unwrap();
-        }
-        // Binary search for the bracketing interval.
-        let i = match self
-            .times
-            .binary_search_by(|x| x.partial_cmp(&t).unwrap())
-        {
-            Ok(i) => return self.freqs[i],
-            Err(i) => i,
-        };
-        let t0 = self.times[i - 1];
-        let t1 = self.times[i];
-        let f0 = self.freqs[i - 1];
-        let f1 = self.freqs[i];
-        let frac = (t - t0) / (t1 - t0);
-        f0 + frac * (f1 - f0)
+        linear_interp(&self.times, &self.freqs, t)
     }
+}
+
+/// Shared linear interpolation over a (times, freqs) curve sampled
+/// monotonically in backward time.  Used by every trajectory type
+/// that pre-computes its curve at construction.
+fn linear_interp(times: &[f64], freqs: &[f64], t: f64) -> f64 {
+    if t <= times[0] { return freqs[0]; }
+    if t >= *times.last().unwrap() { return *freqs.last().unwrap(); }
+    let i = match times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
+        Ok(i) => return freqs[i],
+        Err(i) => i,
+    };
+    let t0 = times[i - 1];
+    let t1 = times[i];
+    let f0 = freqs[i - 1];
+    let f1 = freqs[i];
+    f0 + (t - t0) / (t1 - t0) * (f1 - f0)
 }
 
 impl Trajectory for StochasticTrajectory {
@@ -521,22 +517,7 @@ impl IntegerWFTrajectory {
     }
 
     fn interp(&self, t: f64) -> f64 {
-        if t <= self.times[0] {
-            return self.freqs[0];
-        }
-        if t >= *self.times.last().unwrap() {
-            return *self.freqs.last().unwrap();
-        }
-        let i = match self.times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
-            Ok(i) => return self.freqs[i],
-            Err(i) => i,
-        };
-        let t0 = self.times[i - 1];
-        let t1 = self.times[i];
-        let f0 = self.freqs[i - 1];
-        let f1 = self.freqs[i];
-        let frac = (t - t0) / (t1 - t0);
-        f0 + frac * (f1 - f0)
+        linear_interp(&self.times, &self.freqs, t)
     }
 }
 
@@ -696,18 +677,7 @@ impl StochasticDeterministicTrajectory {
     }
 
     fn interp(&self, t: f64) -> f64 {
-        if t <= self.times[0] { return self.freqs[0]; }
-        if t >= *self.times.last().unwrap() { return *self.freqs.last().unwrap(); }
-        let i = match self.times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
-            Ok(i) => return self.freqs[i],
-            Err(i) => i,
-        };
-        let t0 = self.times[i - 1];
-        let t1 = self.times[i];
-        let f0 = self.freqs[i - 1];
-        let f1 = self.freqs[i];
-        let frac = (t - t0) / (t1 - t0);
-        f0 + frac * (f1 - f0)
+        linear_interp(&self.times, &self.freqs, t)
     }
 }
 

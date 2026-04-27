@@ -301,12 +301,14 @@ def kir_fol_softsweep_trajectory(
         # Insert a discrete jump at t_split.
         idx = next(i for i, t in enumerate(times) if t > float(t_split))
         times.insert(idx, float(t_split))
-        # K jumps from 0 to F's value at t_split.
-        f_at_split = float(np.interp(float(t_split), times, f_freqs + [f_freqs[-1]])
-                           if False else
-                           f_freqs[idx - 1] + (f_freqs[idx] - f_freqs[idx - 1])
-                           * (float(t_split) - times[idx - 1])
-                           / (times[idx + 1] - times[idx - 1]))
+        # K jumps from 0 to F's value at t_split.  Linear interp
+        # between the bracketing F samples (using np.interp here would
+        # have to skip the just-inserted t_split row to avoid a
+        # zero-width interval).
+        f_at_split = (f_freqs[idx - 1]
+                      + (f_freqs[idx] - f_freqs[idx - 1])
+                      * (float(t_split) - times[idx - 1])
+                      / (times[idx + 1] - times[idx - 1]))
         f_freqs.insert(idx, f_at_split)
         k_freqs.insert(idx, f_at_split)  # K joins F's curve at t_split
     return {

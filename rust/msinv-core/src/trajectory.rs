@@ -24,7 +24,7 @@
 //! All trajectories implement [`Trajectory`].  Coupled and
 //! Stochastic trajectories cache their pre-computed frequency paths.
 
-use rand::SeedableRng;
+use rand::{RngCore, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -201,25 +201,35 @@ pub struct DeterministicTrajectory {
 }
 
 impl DeterministicTrajectory {
+    /// Hard-sweep version: starts from p0 = 1/(2N) (single founder).
     pub fn new(p_final: f64, n_e: f64, s: f64) -> Self {
-        // s is the forward per-generation selection coefficient.
-        // Logistic forward: dp/dt = s*p*(1-p), solution
-        //   p(t) = p0 / (p0 + (1-p0)*exp(-s*t))
-        // Solve for t when p reaches p_final (gives t_inv in
-        // GENERATIONS to match the simulator).
-        let p0 = 1.0 / (2.0 * n_e);
+        Self::new_with_p_start(p_final, 1.0 / (2.0 * n_e), n_e, s)
+    }
+
+    /// Soft-sweep / partial-SHIC-style: explicit founding frequency.
+    ///
+    /// `p_start` is the inversion's frequency at t = t_inv (forward
+    /// time 0).  For a hard sweep, set `p_start = 1/(2N)`.  For a soft
+    /// sweep on `k` backgrounds, set `p_start = k/(2N)` or whatever
+    /// reflects the founding pool of standing variation.
+    ///
+    /// The barrier era ends at `t_inv` solved from the logistic
+    /// equation:  s · t_inv = ln(p_final/(1-p_final)) - ln(p_start/(1-p_start)).
+    /// At `s = 0` (or invalid endpoints) we fall back to a flat curve
+    /// with t_inv = 4·N — useful for "constant + p_start floor" tests
+    /// where we just want to keep p_inv from collapsing.
+    pub fn new_with_p_start(p_final: f64, p_start: f64, n_e: f64, s: f64) -> Self {
+        let p0 = p_start.clamp(1.0 / (2.0 * n_e), 1.0 - 1.0 / (2.0 * n_e));
         let t_inv = if s > 0.0 && p_final > p0 {
             ((p_final / (1.0 - p_final)).ln() - (p0 / (1.0 - p0)).ln()) / s
         } else {
-            // Neutral or implausible — pick a generic 4*N gens as a
-            // conservative cap (matches drift expectation).
             4.0 * n_e
         };
         Self {
             p_final,
             n_e,
             s,
-            s_scaled: s,  // kept for back-compat; see p_inv_at
+            s_scaled: s,
             p0,
             t_inv_cached: t_inv,
         }
@@ -377,6 +387,338 @@ impl Trajectory for StochasticTrajectory {
         0
     }
 
+    fn clone_boxed(&self) -> Box<dyn Trajectory + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+// =====================================================================
+// Integer-copy Wright-Fisher trajectory (the proper stochastic model)
+// =====================================================================
+
+/// Forward-simulated Wright-Fisher trajectory with integer copy counts.
+///
+/// **The robust stochastic alternative to `StochasticTrajectory`** which
+/// uses continuous-diffusion approximation that breaks at large N.  This
+/// type does the discrete WF sampling directly:
+///
+///   k_{t+1} ~ Binomial(2N, p_after_selection)
+///   where p_after_selection = k_t (1+s) / [k_t (1+s) + (2N - k_t)]
+///
+/// At large N with 2Nk > ~25, the binomial is approximated as Gaussian
+/// for speed; otherwise an exact binomial sampler is used.  The
+/// trajectory rejects (and re-seeds) any path that absorbs at 0 or 2N
+/// before reaching `p_final`.
+///
+/// **Boundary conditions:**
+/// - At forward t = 0: p = p_start.  For a hard sweep set p_start =
+///   1/(2N) (single founder); for a soft sweep on `k0` standing
+///   variants set p_start = k0/(2N).
+/// - At forward t = t_inv: p = p_final (the empirical present-day
+///   frequency).  Going backward, `p_inv_at(t=0, pop)` returns p_final
+///   and `p_inv_at(t=t_inv, pop)` returns p_start.
+///
+/// **Selection:** `s` is the per-generation forward selection
+/// coefficient on the inverted arrangement.  s > 0: positive selection
+/// pulls p toward 1 (favored arrangement).  s < 0: deleterious.
+/// s = 0: pure neutral drift (rejection-sample whichever paths reach
+/// p_final).
+///
+/// **Acceptance rate:** for s > 0 with 2Ns >> 1, paths reach p_final
+/// with high probability.  For s = 0, neutral fixation probability is
+/// p_start, so expected attempts = 1/p_start.  At p_start = 0.05,
+/// ~20 attempts; at 1/(2N), ~2N attempts (intractable for large N —
+/// use s > 0 for large-N stochastic trajectories).
+#[derive(Clone, Debug)]
+pub struct IntegerWFTrajectory {
+    pub p_final: f64,
+    pub n_e: f64,
+    pub s: f64,
+    pub seed: u64,
+    pub p_start: f64,
+    times: Vec<f64>,
+    freqs: Vec<f64>,
+    t_inv_cached: f64,
+}
+
+impl IntegerWFTrajectory {
+    /// Construct a forward-simulated WF trajectory from `p_start` to
+    /// `p_final` under selection `s`.  Rejection-samples paths until
+    /// one reaches the target (or `max_attempts` attempts fail).
+    pub fn new(
+        p_final: f64, n_e: f64, s: f64,
+        p_start: f64, seed: u64,
+        max_attempts: u32,
+    ) -> Result<Self, String> {
+        let two_n = (2.0 * n_e).round();
+        let k_start = (p_start * two_n).round().max(1.0) as i64;
+        let k_target = (p_final * two_n).round().max(1.0) as i64;
+        if k_target <= k_start {
+            return Err(format!(
+                "p_final ({}) must be > p_start ({}) — backward trajectory \
+                 needs an upward forward path",
+                 p_final, p_start));
+        }
+        let k_max = (two_n as i64) - 1;  // never let it fix
+        let cap_gens: u64 = (40.0 * n_e) as u64;
+
+        let mut master_rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+        for _attempt in 0..max_attempts {
+            let attempt_seed: u64 = master_rng.next_u64();
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(attempt_seed);
+            let mut k = k_start;
+            let mut path_k: Vec<i64> = Vec::with_capacity(1024);
+            path_k.push(k);
+            let mut absorbed = false;
+            let mut hit_target = false;
+            for _ in 0..cap_gens {
+                if k <= 0 || k >= k_max {
+                    absorbed = true;
+                    break;
+                }
+                if k >= k_target {
+                    hit_target = true;
+                    break;
+                }
+                let p_sel = if s.abs() < 1e-30 {
+                    (k as f64) / two_n
+                } else {
+                    let kw = (k as f64) * (1.0 + s);
+                    kw / (kw + (two_n - k as f64))
+                };
+                k = sample_binomial_2n(two_n as i64, p_sel, &mut rng);
+                path_k.push(k);
+            }
+            if hit_target {
+                // Reverse to backward time: forward t = path_k.len() - 1
+                // is "today" (k = k_target), forward t = 0 is t_inv ago.
+                // Backward time τ = (path_k.len() - 1) - forward_t.
+                let n_steps = path_k.len();
+                let t_inv = (n_steps - 1) as f64;
+                let mut times = Vec::with_capacity(n_steps);
+                let mut freqs = Vec::with_capacity(n_steps);
+                for (i, &kv) in path_k.iter().enumerate() {
+                    times.push((n_steps - 1 - i) as f64);
+                    freqs.push((kv as f64) / two_n);
+                }
+                // Reverse so times is monotone increasing.
+                times.reverse();
+                freqs.reverse();
+                return Ok(Self {
+                    p_final, n_e, s, seed,
+                    p_start, times, freqs,
+                    t_inv_cached: t_inv,
+                });
+            }
+            // absorbed or cap-hit: try again
+            let _ = absorbed;
+        }
+        Err(format!(
+            "IntegerWFTrajectory: no successful path in {} attempts \
+             (p_start={}, p_final={}, n_e={}, s={}). Try larger s, \
+             larger p_start, or more attempts.",
+            max_attempts, p_start, p_final, n_e, s))
+    }
+
+    fn interp(&self, t: f64) -> f64 {
+        if t <= self.times[0] {
+            return self.freqs[0];
+        }
+        if t >= *self.times.last().unwrap() {
+            return *self.freqs.last().unwrap();
+        }
+        let i = match self.times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
+            Ok(i) => return self.freqs[i],
+            Err(i) => i,
+        };
+        let t0 = self.times[i - 1];
+        let t1 = self.times[i];
+        let f0 = self.freqs[i - 1];
+        let f1 = self.freqs[i];
+        let frac = (t - t0) / (t1 - t0);
+        f0 + frac * (f1 - f0)
+    }
+}
+
+impl Trajectory for IntegerWFTrajectory {
+    fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
+        if t >= self.t_inv_cached {
+            return 0.0;
+        }
+        self.interp(t)
+    }
+    fn t_inv(&self, _pop: u32) -> f64 { self.t_inv_cached }
+    fn t_inv_max(&self) -> f64 { self.t_inv_cached }
+    fn n_pops(&self) -> usize { 0 }
+    fn clone_boxed(&self) -> Box<dyn Trajectory + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+/// Binomial(2N, p) sampler with normal approximation when feasible.
+/// Falls back to direct binomial-walk for small expected counts.
+fn sample_binomial_2n(two_n: i64, p: f64, rng: &mut Xoshiro256PlusPlus) -> i64 {
+    use rand::Rng;
+    let n_p = (two_n as f64) * p;
+    let n_q = (two_n as f64) * (1.0 - p);
+    // CLT regime: use Gaussian approximation when both tails are large.
+    if n_p >= 25.0 && n_q >= 25.0 {
+        let mu = n_p;
+        let sd = (n_p * (1.0 - p)).sqrt();
+        let g = Normal::new(mu, sd).unwrap().sample(rng);
+        return g.round().clamp(0.0, two_n as f64) as i64;
+    }
+    // Tail regime: use Poisson approximation if appropriate, otherwise
+    // exact (sum-of-Bernoullis).  For our use case n_p and n_q are
+    // always large after the first few generations from a 5%-founding-
+    // freq start, so this branch is rarely hit.
+    if n_p < 5.0 && two_n > 1000 {
+        // Poisson(λ = n_p) approximates Binomial when p is small.
+        let lambda = n_p;
+        // Knuth's algorithm.
+        let l = (-lambda).exp();
+        let mut k = 0i64;
+        let mut p_acc = 1.0;
+        loop {
+            k += 1;
+            let u: f64 = rng.random();
+            p_acc *= u;
+            if p_acc <= l {
+                return (k - 1).min(two_n);
+            }
+            if k > 10_000 { return (k - 1).min(two_n); }
+        }
+    }
+    // Exact small-n binomial.
+    let mut k = 0i64;
+    for _ in 0..two_n {
+        let u: f64 = rng.random();
+        if u < p { k += 1; }
+    }
+    k
+}
+
+// =====================================================================
+// Stochastic-then-Deterministic hybrid (discoal-style)
+// =====================================================================
+
+/// **Discoal-style stochastic-then-deterministic trajectory.**
+///
+/// Forward dynamics:
+/// 1. **Stochastic regime** (small p): Wright-Fisher drift dominates.
+///    Use integer-copy WF sampling from `p_start` until p crosses the
+///    `det_threshold` frequency (or selection becomes deterministic-
+///    strong: 2N·s·p > some criterion).
+/// 2. **Deterministic regime** (p above threshold): selection
+///    dominates over drift.  Switch to closed-form logistic up to
+///    `p_final`.
+///
+/// This matches partialdiscoal's protocol: noisy origin near 1/(2N),
+/// smooth deterministic rise once the allele is established.  The
+/// stochastic phase determines acceptance (most paths fail);
+/// the deterministic phase contributes negligible variance.
+///
+/// **Default switching rule:** crossover at `p > det_threshold`
+/// (default 5/(2N) or whichever is larger, configurable).  At this
+/// frequency, 2N·s·p ≥ 2.5 for s such that 2N·s = 50, comfortably
+/// in the selection-dominated regime.
+#[derive(Clone, Debug)]
+pub struct StochasticDeterministicTrajectory {
+    pub p_final: f64,
+    pub n_e: f64,
+    pub s: f64,
+    pub p_start: f64,
+    pub det_threshold: f64,
+    times: Vec<f64>,
+    freqs: Vec<f64>,
+    t_inv_cached: f64,
+}
+
+impl StochasticDeterministicTrajectory {
+    pub fn new(
+        p_final: f64, n_e: f64, s: f64,
+        p_start: f64, det_threshold: Option<f64>,
+        seed: u64, max_attempts: u32,
+    ) -> Result<Self, String> {
+        if s <= 0.0 {
+            return Err(format!(
+                "StochasticDeterministicTrajectory requires s > 0 (the \
+                 deterministic rise) — got s={}", s));
+        }
+        let det_thr = det_threshold
+            .unwrap_or_else(|| (5.0 / (2.0 * n_e)).max(p_start));
+        if det_thr >= p_final {
+            return Err(format!(
+                "det_threshold ({}) must be < p_final ({})",
+                det_thr, p_final));
+        }
+        // Phase 1: integer-WF stochastic from p_start to det_threshold.
+        let stoch_seg = IntegerWFTrajectory::new(
+            det_thr, n_e, s, p_start, seed, max_attempts)?;
+        // Phase 2: deterministic logistic from det_threshold to p_final.
+        let det_seg = DeterministicTrajectory::new_with_p_start(
+            p_final, det_thr, n_e, s);
+        // Stitch: stoch is "first" in forward time (low p), det is "later"
+        // in forward time (rises to p_final).  In backward-time storage,
+        // the det phase is closer to t=0 (today) and the stoch phase
+        // is closer to t=t_inv.  Concatenate.
+        let det_t_inv = det_seg.t_inv_max();
+        let stoch_t_inv = stoch_seg.t_inv_max();
+        let total_t_inv = det_t_inv + stoch_t_inv;
+        // Build combined backward arrays.  At backward t in [0, det_t_inv]:
+        // sample det_seg.  At t in [det_t_inv, total]: sample stoch_seg
+        // shifted by det_t_inv.
+        let n_det_samples = 200usize;
+        let mut times: Vec<f64> = Vec::new();
+        let mut freqs: Vec<f64> = Vec::new();
+        // Det phase samples on [0, det_t_inv].
+        for i in 0..n_det_samples {
+            let t = (i as f64 / (n_det_samples as f64 - 1.0)) * det_t_inv;
+            times.push(t);
+            freqs.push(det_seg.p_inv_at(t, 0));
+        }
+        // Stoch phase: take stoch_seg's stored (times, freqs) and shift.
+        for i in 0..stoch_seg.times.len() {
+            let t_b = stoch_seg.times[i] + det_t_inv;
+            let f_b = stoch_seg.freqs[i];
+            // Avoid duplicate at the join point.
+            if let Some(&last_t) = times.last() {
+                if (t_b - last_t).abs() < 1e-9 { continue; }
+            }
+            times.push(t_b);
+            freqs.push(f_b);
+        }
+        Ok(Self {
+            p_final, n_e, s, p_start, det_threshold: det_thr,
+            times, freqs,
+            t_inv_cached: total_t_inv,
+        })
+    }
+
+    fn interp(&self, t: f64) -> f64 {
+        if t <= self.times[0] { return self.freqs[0]; }
+        if t >= *self.times.last().unwrap() { return *self.freqs.last().unwrap(); }
+        let i = match self.times.binary_search_by(|x| x.partial_cmp(&t).unwrap()) {
+            Ok(i) => return self.freqs[i],
+            Err(i) => i,
+        };
+        let t0 = self.times[i - 1];
+        let t1 = self.times[i];
+        let f0 = self.freqs[i - 1];
+        let f1 = self.freqs[i];
+        let frac = (t - t0) / (t1 - t0);
+        f0 + frac * (f1 - f0)
+    }
+}
+
+impl Trajectory for StochasticDeterministicTrajectory {
+    fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
+        if t >= self.t_inv_cached { return 0.0; }
+        self.interp(t)
+    }
+    fn t_inv(&self, _pop: u32) -> f64 { self.t_inv_cached }
+    fn t_inv_max(&self) -> f64 { self.t_inv_cached }
+    fn n_pops(&self) -> usize { 0 }
     fn clone_boxed(&self) -> Box<dyn Trajectory + Send + Sync> {
         Box::new(self.clone())
     }
@@ -1012,6 +1354,78 @@ mod tests {
         // Beyond t_inv: p = 0
         assert_eq!(traj.p_inv_at(traj.t_inv(0) + 1.0, 0), 0.0);
         eprintln!("bridge accepted in {} attempts", traj.n_attempts);
+    }
+
+    #[test]
+    fn integer_wf_endpoints_correct() {
+        // Soft-sweep with positive selection should always reach
+        // p_final.  Test that t=0 -> p_final and t=t_inv -> p_start.
+        let traj = IntegerWFTrajectory::new(
+            0.5, 1000.0, 0.01, 0.05, 42, 50).unwrap();
+        let p_today = traj.p_inv_at(0.0, 0);
+        let p_origin = traj.p_inv_at(traj.t_inv_max() - 0.5, 0);
+        // Endpoints are integer-rounded → tolerance ±1/(2N).
+        let tol = 1.0 / (2.0 * 1000.0) + 1e-9;
+        assert!((p_today - 0.5).abs() < 0.05,
+            "p_today={p_today}, expected ~0.5");
+        assert!((p_origin - 0.05).abs() < 0.05 + tol,
+            "p_origin={p_origin}, expected ~0.05");
+    }
+
+    #[test]
+    fn integer_wf_monotone_with_positive_selection() {
+        // With s > 0 driving p up over time, backward p should be
+        // monotone non-increasing on average.  Allow drift wobble but
+        // overall trend.
+        let traj = IntegerWFTrajectory::new(
+            0.7, 5000.0, 0.05, 0.05, 7, 50).unwrap();
+        // t=0 (today) > t=t_inv/2 > t=t_inv (origin).
+        let p0 = traj.p_inv_at(0.0, 0);
+        let p_mid = traj.p_inv_at(traj.t_inv_max() / 2.0, 0);
+        let p_end = traj.p_inv_at(traj.t_inv_max() - 0.5, 0);
+        assert!(p0 >= p_mid - 0.1 && p_mid >= p_end - 0.1,
+            "expected backward monotone non-increasing, got {p0:.3} {p_mid:.3} {p_end:.3}");
+    }
+
+    #[test]
+    fn integer_wf_rejects_invalid_endpoints() {
+        // p_final < p_start should be rejected (would need decreasing
+        // forward trajectory).
+        let result = IntegerWFTrajectory::new(
+            0.05, 1000.0, 0.01, 0.5, 42, 10);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn stoch_det_endpoints_correct() {
+        // Hybrid trajectory: stochastic from 1/(2N) to det_threshold,
+        // then deterministic logistic to p_final.
+        let traj = StochasticDeterministicTrajectory::new(
+            0.5, 1000.0, 0.01, 1.0/2000.0, None, 42, 50).unwrap();
+        let p_today = traj.p_inv_at(0.0, 0);
+        let p_origin = traj.p_inv_at(traj.t_inv_max() - 0.5, 0);
+        assert!((p_today - 0.5).abs() < 0.05);
+        assert!(p_origin <= 0.05,
+            "stoch phase origin freq = {p_origin}, expected near floor");
+    }
+
+    #[test]
+    fn stoch_det_rejects_negative_s() {
+        let result = StochasticDeterministicTrajectory::new(
+            0.5, 1000.0, 0.0, 1.0/2000.0, None, 42, 50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn integer_wf_works_at_large_n() {
+        // Anopheles-scale N=450k.  Should not blow up like
+        // continuous-diffusion StochasticTrajectory does at this scale.
+        let traj = IntegerWFTrajectory::new(
+            0.7, 450_000.0, 1.2e-5, 0.05, 42, 100).unwrap();
+        assert!(traj.t_inv_max() > 0.0);
+        let p0 = traj.p_inv_at(0.0, 0);
+        assert!((p0 - 0.7).abs() < 0.05,
+            "large-N today freq = {p0}, expected ~0.7");
     }
 
     #[test]

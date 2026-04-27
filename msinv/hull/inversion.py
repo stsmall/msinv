@@ -15,14 +15,34 @@ Two modes for specifying the inversion frequency:
    per population, with the karyotype barrier dissolving at t_inv.
 
 2. Trajectory (new): pass a ``trajectory=`` dict with one of the
-   four supported types matching the Rust trajectory module:
+   supported types matching the Rust trajectory module:
      {'type': 'constant',      'p_inv': ..., 't_inv': ...}
-     {'type': 'deterministic', 'p_final': ..., 'n_e': ..., 's': ...}
+     {'type': 'deterministic', 'p_final': ..., 'n_e': ..., 's': ...,
+                               ['p_start': ...]}
      {'type': 'stochastic',    'p_final': ..., 'n_e': ..., 's': ..., 'seed': ...}
+     {'type': 'integer_wf',    'p_final': ..., 'n_e': ..., 's': ...,
+                               ['p_start': ...], ['seed': ...],
+                               ['max_attempts': ...]}
+     {'type': 'stoch_det',     'p_final': ..., 'n_e': ..., 's': ...,
+                               ['p_start': ...], ['det_threshold': ...],
+                               ['seed': ...], ['max_attempts': ...]}
      {'type': 'coupled',       'p_final': [..], 'n_e': [..], 's': [..],
                                'm': ..., 'seed': ...}
+     {'type': 'precomputed',   'times': [...], 'freqs': [[..], ...],
+                               'n_e': [...], ['t_inv': [...]]}
    The Rust simulator builds the matching trajectory and queries it
    at each event time.
+
+   - 'deterministic': closed-form logistic.  Optional ``p_start``
+     enables partial-SHIC-style soft-sweep from standing variation
+     (default 1/(2N) = hard sweep).
+   - 'integer_wf': discrete Wright-Fisher forward simulation with
+     selection, rejection-sampling lost paths.  Robust at large N
+     (replaces 'stochastic' which uses continuous-diffusion approx
+     and breaks at large N).
+   - 'stoch_det': discoal-style hybrid — integer-WF in the drift-
+     dominated regime, then closed-form logistic once selection is
+     deterministic-strong.
 """
 
 from dataclasses import dataclass, field

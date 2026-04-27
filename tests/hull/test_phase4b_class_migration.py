@@ -10,6 +10,16 @@ Validates:
     ARE caught by the safety-ej tail in ``add_class_split``.
   - Connectivity check recognises cmig as an edge (no false-positive
     "disjoint populations" warning).
+  - Statistical/SFS-pattern tests (T1, T2): a backward cmig pulse from
+    K→F at t_pulse (= forward F→K admixture into K) drives K-F dxy
+    and Fst to decrease monotonically with proportion p, matching the
+    analytic prediction
+        E[T_KF | p] = p·(t_pulse + 2·Ne_F) + (1-p)·(t_split + 2·Ne_anc)
+    in the colinear (panmictic) region.
+
+TODO (T3, deferred): quantitative check that the *count* of lineages
+moved by a cmig event matches Binomial(n_eligible, proportion). Needs
+exposed simulator state or an event hook.
 """
 
 import warnings
@@ -205,3 +215,135 @@ def test_admixture_class_conditional_works():
     # ('cmig', t, src, dst, kary, inv_id, proportion)
     assert cmig_ev[4] == 'I'
     assert cmig_ev[6] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# T1, T2: Statistical/SFS-pattern validation of cmig admixture
+# ---------------------------------------------------------------------------
+
+# Shared scenario for T1/T2:
+#   2 pops K (id 0), F (id 1), each Ne=5000.
+#   The inversion spans the entire sequence (bp_left=1, bp_right=L-1)
+#   so every lineage carries inv-region kary='S' material — required
+#   for cmig kary='S' to act cleanly on every lineage. (With a small
+#   inversion + recombination, sub-lineages whose inv-region content
+#   has recombined away present kary=PAN and are NOT moved by cmig;
+#   that's the documented PAN-stragglers caveat in add_admixture.)
+#   p_inv = 0.5 constant in both pops, gamma negligible, t_inv far
+#   past t_split so the barrier remains throughout the test horizon.
+#   Samples: 10 S-only per pop. Coalescent rate for S-S pairs is
+#   structured: 1 / (2 · Ne · p_std) = 1 / (Ne).
+#   Backward at t_pulse=1000: cmig K→F kary='S' with proportion p
+#     (= forward admixture pulse F→K with fraction p of K's ancestry
+#     traced to F at t_pulse).
+#   Backward at t_split=50000: ej F→K (full merge into pop 0).
+#
+# Analytic E[T_KF] in branch units (S-class, p_std = 1 - p_inv = 0.5):
+#   T_KF(p) = p·(t_pulse + 2·Ne_F·p_std) + (1-p)·(t_split + 2·Ne_anc·p_std)
+# With Ne_K = Ne_F = Ne_anc = 5000, p_std = 0.5, t_pulse=1000, t_split=50000:
+#   T_KF(0.0) = 55000  → branch dxy ≈ 110000
+#   T_KF(0.5) = 30500  → branch dxy ≈ 61000
+#   T_KF(1.0) =  6000  → branch dxy ≈ 12000
+
+_T12_NE = 5000
+_T12_T_PULSE = 1000.0
+_T12_T_SPLIT = 50000.0
+_T12_T_INV = 200_000.0
+_T12_P_INV = 0.5
+_T12_P_STD = 1.0 - _T12_P_INV
+_T12_L = 100_000
+_T12_R = 1e-8
+_T12_NREPS = 30
+_T12_N_PER_POP = 10
+
+
+def _t12_inv():
+    # Inversion spans (effectively) the full sequence so cmig kary='S'
+    # acts on every lineage. Use 1..L-1 to avoid any zero-width edge
+    # behaviour at the simulator boundaries.
+    return InversionSpec(
+        bp_left=1.0, bp_right=float(_T12_L) - 1.0,
+        p_inv=_T12_P_INV, t_inv=_T12_T_INV,
+        gene_conversion_rate=NEGLIGIBLE_GAMMA, flux_window=0.05, inv_id=0,
+    )
+
+
+def _t12_run_one(proportion: float, seed: int):
+    """One sim with the shared T1/T2 scenario at the given cmig
+    proportion. Returns whole-sequence branch-mode K-F divergence and
+    Fst (the inversion covers the whole sequence, so structured rates
+    apply uniformly)."""
+    d = Demography([_T12_NE, _T12_NE])
+    if proportion > 0.0:
+        # Backward: K → F at t_pulse, kary='S'. Default inv_id=0.
+        d.add_class_migration(time=_T12_T_PULSE, source=0, dest=1,
+                              karyotype='S', inv_id=0,
+                              proportion=proportion)
+    d.add_event(('ej', _T12_T_SPLIT, 1, 0))
+    sim = HullSimulator(
+        sample_config={('S', 0): _T12_N_PER_POP, ('S', 1): _T12_N_PER_POP},
+        demography=d, sequence_length=_T12_L,
+        recombination_rate=_T12_R, inversions=[_t12_inv()], seed=seed,
+    )
+    ts = sim.simulate()
+    K = list(range(_T12_N_PER_POP))
+    F = list(range(_T12_N_PER_POP, 2 * _T12_N_PER_POP))
+    div = float(ts.divergence([K, F], mode="branch"))
+    fst = float(ts.Fst([K, F], mode="branch"))
+    return div, fst
+
+
+def _t12_predicted_dxy(proportion: float) -> float:
+    """Branch-mode dxy prediction (= 2 · E[T_KF]) for a K-F sample
+    pair under the T1/T2 scenario. S-class lineages → structured
+    coalescent rate 1/(2·Ne·p_std)."""
+    pre_split_wait = 2.0 * _T12_NE * _T12_P_STD     # mean coal wait in F's S sub-pool
+    anc_wait      = 2.0 * _T12_NE * _T12_P_STD     # mean coal wait in ancestral S sub-pool
+    t_kf = (proportion * (_T12_T_PULSE + pre_split_wait)
+            + (1.0 - proportion) * (_T12_T_SPLIT + anc_wait))
+    return 2.0 * t_kf
+
+
+def test_class_mig_admixture_dxy_decay():
+    """T1: backward cmig K→F (kary='S') at t_pulse drives the colinear
+    K-F branch dxy from a deep-split value down toward an immediately-
+    post-pulse F-F value, monotonically with proportion. The mean
+    across reps should match the analytic prediction within 25%."""
+    rng = np.random.default_rng(20260427)
+    proportions = [0.0, 0.5, 1.0]
+    means = []
+    for p in proportions:
+        seeds = [int(s) for s in rng.integers(1, 2**31, size=_T12_NREPS)]
+        dxy_vals = [_t12_run_one(p, seed)[0] for seed in seeds]
+        means.append(float(np.mean(dxy_vals)))
+
+    # Monotone decrease.
+    assert means[0] > means[1] > means[2], (
+        f"expected monotone-decreasing dxy with proportion, got {means}")
+
+    # Within-25% match to analytic prediction.
+    for p, observed in zip(proportions, means):
+        predicted = _t12_predicted_dxy(p)
+        ratio = observed / predicted
+        assert 0.75 <= ratio <= 1.25, (
+            f"p={p}: observed dxy {observed:.0f} vs predicted "
+            f"{predicted:.0f} (ratio {ratio:.3f}) outside ±25%")
+
+
+def test_class_mig_admixture_fst_monotonic():
+    """T2: same cmig pulse setup as T1. Fst K-F in the colinear region
+    should decrease monotonically as cmig proportion rises (more K
+    ancestry traces to F → less between-pop divergence)."""
+    rng = np.random.default_rng(20260427 ^ 0xFF)
+    proportions = [0.0, 0.5, 1.0]
+    means = []
+    for p in proportions:
+        seeds = [int(s) for s in rng.integers(1, 2**31, size=_T12_NREPS)]
+        fst_vals = [_t12_run_one(p, seed)[1] for seed in seeds]
+        means.append(float(np.mean(fst_vals)))
+
+    assert means[0] > means[1] > means[2], (
+        f"expected monotone-decreasing Fst with proportion, got {means}")
+    # Sanity: large p should drag Fst near zero.
+    assert means[2] < 0.5 * means[0], (
+        f"p=1.0 Fst {means[2]:.4f} should be << p=0.0 Fst {means[0]:.4f}")

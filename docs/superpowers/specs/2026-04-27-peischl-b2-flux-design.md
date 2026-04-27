@@ -89,10 +89,28 @@ backwards-compatibility alias).
 
 ### Validation (`__post_init__`)
 
-- `mean_tract_length > 0`
-- `mean_tract_length ≤ inv_length / 2`: warn (not error) — long tracts
+- `mean_tract_length >= 0` (error on negative)
+- `mean_tract_length == 0` is **legal** — disables flux entirely (per-lineage
+  flux rate evaluates to 0, no events fire, the tract sampler is never
+  reached). Default value is `100.0`; disabling is opt-in.
+- `mean_tract_length > inv_length / 2`: warn (not error) — long tracts
   are physically possible but rare.
 - `tract_distribution in {'geometric', 'fixed'}`
+
+### Disabling flux
+
+Two equivalent ways to express "no gene flux":
+
+| Setting | Effect |
+|---|---|
+| `gene_conversion_rate = 0` | Per-bp rate factor is zero → per-lineage event rate is zero. |
+| `mean_tract_length = 0` | Tract size is zero → `phi(x) = 0` everywhere → per-lineage event rate is zero. |
+
+Both produce identical simulator behaviour (no flux events). The
+existing test convention of `gene_conversion_rate = NEGLIGIBLE_GAMMA = 1e-15`
+remains valid; new code may also use `mean_tract_length = 0` if the
+"tract length is zero" framing is more natural for the scientific
+context.
 
 ### Naming
 
@@ -109,6 +127,12 @@ parameterization. This convention is documented in the field docstring.
 
 ```pseudocode
 fn draw_tract(x_event, inv, rng) -> (f64, f64):
+    # Defensive: rate-zero short-circuit elsewhere should prevent us
+    # reaching here with mean_tract_length == 0, but guard anyway so
+    # we never divide by zero in the Exponential sampler.
+    if inv.mean_tract_length == 0.0:
+        return (x_event, x_event)              # zero-width tract, no-op
+
     L = match inv.tract_distribution {
         'fixed':     inv.mean_tract_length
         'geometric': sample_exponential(rng, rate = 1.0 / inv.mean_tract_length)
@@ -212,18 +236,57 @@ follow-up commit.
   inversion, long t_inv, count empirical flips. Assert
   `rate ≈ γ × p_other × λ / inv_length` within MC variance.
 
-### Tier 3 — theoretical anchor (deferred follow-up commit)
+### Tier 3 — theoretical anchor (deferred — see Deferred Validation Roadmap)
 
-- **LD-decay shape comparison.** Measure haplotype LD vs distance
-  inside the inversion. `'geometric'` should show exponential decay
-  with characteristic distance ~λ; `'fixed'` shows a sharper shoulder
-  at λ. This is the higher-moment discriminator that validates the b2
-  upgrade has biological content.
-- **Andolfatto 2001 fraction-converted anchor.** For known
-  `(γ, λ, t_inv, Ne)`, the fraction of an inversion's interior
-  converted at least once has a closed-form prediction. Set up a
-  parameter regime where this is computable, run sims, assert
-  agreement within MC variance.
+This launch lands Tier 1+2 only. Tier 3 tests are explicitly deferred to
+a follow-up validation pass; see the **Deferred Validation Roadmap**
+section below for the full backlog.
+
+## Deferred Validation Roadmap
+
+These items don't block the b2 flux launch but should be picked up as a
+batched validation pass once the selection-feature work (`#3` in
+`project_msinv_todo.md`) is settled. Tier 3 b2 tests sit alongside
+deferred work from other features so the next validation push can
+take them all together rather than dribbling them in.
+
+### B2 flux follow-ups (Tier 3, this design)
+
+- **(Q) Tier 3-cheap.** LD-decay shape comparison (full strength) +
+  cheap Andolfatto check (monotonicity in t_inv, fixed/geometric
+  equivalence in mean fraction at matched λ).
+- **(R) Tier 3-full.** Full closed-form Andolfatto fraction-converted
+  anchor: assert empirical fraction matches
+  `1 − exp(−γ × p_other × λ × t / inv_length)` within MC tolerance.
+  Requires simulator instrumentation (per-bp flip-history hook).
+
+### Cross-feature deferred validation
+
+- **T3 (cmig binomial count check).** Carried over from the cmig SFS
+  validation work (commit `b90fee2`). Quantitative check that the
+  *count* of lineages moved by a `cmig` event matches
+  `Binomial(n_eligible, proportion)`. Needs the same per-event hook as
+  R's per-bp flip count, so naturally batched with that work.
+- **Selection-feature validation suite.** When the proper sweep /
+  partial-sweep trajectory model lands (replacing the current
+  Hudson-Kaplan endpoint-only operator in `sweep.rs`), it will need
+  its own validation tests (sweep age vs s vs p_target regimes;
+  comparison to discoal). This is a separate roadmap item (`#3` in
+  `project_msinv_todo.md`); design pending.
+
+### When to cash this in
+
+Trigger conditions to do a batched validation pass:
+1. Selection feature lands → its tests AND the deferred Tier 3 / T3
+   items go in together.
+2. ABC pilot starts uncovering posterior anomalies that point at
+   under-validated parts of the model — pull the relevant tier-3
+   tests forward at that point.
+3. New scientific hypothesis requires anchoring against published
+   theory (Andolfatto, Guerrero) — pull (R) forward.
+
+Until then, Tier 1+2 + parity is the agreed validation surface for
+the b2 flux upgrade.
 
 ### Rust ↔ Python parity
 

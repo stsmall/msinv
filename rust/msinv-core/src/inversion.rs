@@ -30,11 +30,8 @@ pub struct InversionSpec {
     /// Inversion frequency model through time (per-population).
     pub trajectory: Box<dyn Trajectory + Send + Sync>,
     pub gene_conversion_rate: f64,
-    pub flux_window: f64,
     /// Mean per-event gene-conversion tract length (bp).
-    /// Replaces `flux_window`'s tract role; phi(x) is computed with
-    /// `w = mean_tract_length / inv_length`. Removed at Task 7 of
-    /// the b2-flux migration.
+    /// phi(x) is computed with `w = mean_tract_length / inv_length`.
     pub mean_tract_length: f64,
     /// Per-event tract length distribution (`Fixed` reproduces the
     /// pre-b2 deterministic-tract semantics; `Geometric` samples
@@ -55,7 +52,6 @@ impl InversionSpec {
             bp_right,
             trajectory,
             gene_conversion_rate: 1e-9,
-            flux_window: 0.05,
             mean_tract_length: 100.0,
             tract_distribution: TractDistribution::Geometric,
             inv_id: 0,

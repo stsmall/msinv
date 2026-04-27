@@ -208,7 +208,6 @@ mod tests {
         let s = BranchClass::single(0, Karyotype::S);
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.5], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
@@ -237,7 +236,6 @@ mod tests {
         let i = BranchClass::single(0, Karyotype::I);
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.3], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
@@ -266,7 +264,6 @@ mod tests {
         let s = BranchClass::single(0, Karyotype::S);
         let inv = { let mut s = InversionSpec::with_p_inv(500.0, L, vec![0.5], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let a = mk_chain(&mut arena, &[(0.0, 500.0, pan), (500.0, L, s)]);
@@ -295,7 +292,6 @@ mod tests {
         let i = BranchClass::single(0, Karyotype::I);
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.3], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let a = mk_chain(&mut arena, &[(0.0, L, s)]);
@@ -326,7 +322,6 @@ mod tests {
         let s = BranchClass::single(0, Karyotype::S);
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, L, vec![0.5], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let a = mk_chain(&mut arena, &[(0.0, L, pan)]);

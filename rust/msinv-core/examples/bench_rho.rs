@@ -38,7 +38,6 @@ fn main() {
     let t_inv = t_inv_mult * ne;
     let inv = { let mut s = InversionSpec::with_p_inv(30_000.0, 70_000.0, vec![0.5], 1e9);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
 

@@ -57,7 +57,7 @@ P_INV_ANC = 0.30
 
 R = 1.0e-8                   # 10× mu (from paper's rates, clean ratio)
 GAMMA = 1.0e-7               # gene conversion rate (bumped 100× from 1e-9)
-FLUX_WINDOW = 0.05
+MEAN_TRACT_FRAC = 0.05       # tract length as fraction of inversion length
 
 # Migration: ZERO between 0-13k (strict isolation). F merges into K at split.
 # User decision 2026-04-24: rely on F expansion for Tajima's D signal,
@@ -120,7 +120,8 @@ def build_sim(scale_cfg, seed):
     inv_3ra = InversionSpec(
         bp_left=int(0.18 * L), bp_right=int(0.18 * L) + w,
         p_inv={0: 0.0, 1: P_INV_3RA_F},
-        t_inv=T_INV, gene_conversion_rate=GAMMA, flux_window=FLUX_WINDOW,
+        t_inv=T_INV, gene_conversion_rate=GAMMA,
+        mean_tract_length=MEAN_TRACT_FRAC * w, tract_distribution='fixed',
     )
 
     return HullSimulator(

@@ -43,7 +43,8 @@ def _build_inv(t_inv, gamma=NEGLIGIBLE_GAMMA, p_inv=None):
     return InversionSpec(
         bp_left=2000, bp_right=8000,
         p_inv=p_inv, t_inv=t_inv,
-        gene_conversion_rate=gamma, flux_window=0.05, inv_id=0,
+        gene_conversion_rate=gamma,
+        mean_tract_length=300.0, tract_distribution='fixed', inv_id=0,
     )
 
 
@@ -264,7 +265,8 @@ def _t12_inv():
     return InversionSpec(
         bp_left=1.0, bp_right=float(_T12_L) - 1.0,
         p_inv=_T12_P_INV, t_inv=_T12_T_INV,
-        gene_conversion_rate=NEGLIGIBLE_GAMMA, flux_window=0.05, inv_id=0,
+        gene_conversion_rate=NEGLIGIBLE_GAMMA,
+        mean_tract_length=4999.9, tract_distribution='fixed', inv_id=0,
     )
 
 

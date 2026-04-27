@@ -327,12 +327,13 @@ class HullSimulator:
         ``n_inv > 0``.
     gene_conversion_rate : float, optional
         Per-bp per-generation gene-conversion rate (γ_per_bp). Defaults
-        to 0 (no gene flux). Combined with ``flux_window`` and
+        to 0 (no gene flux). Combined with ``mean_tract_length`` and
         per-position ``phi(x)`` to give the per-lineage flux rate.
-    flux_window : float, optional
-        Gene-conversion tract length as a fraction of the inversion's
-        genomic length (Peischl model). Default 0.05 (i.e. ~5% of the
-        inversion length per tract; for a 100 kb inversion, ~5 kb).
+    mean_tract_length : float, optional
+        Mean gene-conversion tract length in bp (Peischl b2 flux model).
+        Default 100.0.
+    tract_distribution : str, optional
+        Tract-length distribution: 'geometric' (default) or 'fixed'.
     seed : int, optional
     """
 
@@ -348,7 +349,8 @@ class HullSimulator:
                  bp_left: float = None,
                  bp_right: float = None,
                  gene_conversion_rate: float = 1e-9,
-                 flux_window: float = 0.05,
+                 mean_tract_length: float = 100.0,
+                 tract_distribution: str = 'geometric',
                  inversions: list = None,
                  sweeps: list = None,
                  seed: int = None,
@@ -428,7 +430,7 @@ class HullSimulator:
         # Two acceptable APIs:
         # 1) inversions=[InversionSpec(...), ...]  — multi-inv (Phase 5b)
         # 2) bp_left/bp_right/p_inv/t_inv/gene_conversion_rate +
-        #    flux_window — back-compat single-inv (Phases 2-5a)
+        #    mean_tract_length/tract_distribution — back-compat single-inv (Phases 2-5a)
         if inversions:
             if any(x is not None for x in (p_inv, t_inv, bp_left, bp_right)):
                 raise ValueError(
@@ -464,7 +466,8 @@ class HullSimulator:
             # Gene flux: use first inversion's γ for back-compat. Per-inv
             # γ is read directly from each spec where it matters.
             self.g_per_bp = float(inv0.gene_conversion_rate)
-            self.flux_window = inv0.flux_window
+            self.mean_tract_length = inv0.mean_tract_length
+            self.tract_distribution = inv0.tract_distribution
         elif self.n_inv > 0:
             if p_inv is None or not (0.0 < p_inv < 1.0):
                 raise ValueError(
@@ -484,10 +487,8 @@ class HullSimulator:
             self.bp_left = bp_left
             self.bp_right = bp_right
             self.g_per_bp = float(gene_conversion_rate)
-            if not (0.0 < flux_window < 1.0):
-                raise ValueError(
-                    f"flux_window must be in (0, 1), got {flux_window}.")
-            self.flux_window = flux_window
+            self.mean_tract_length = mean_tract_length
+            self.tract_distribution = tract_distribution
             # Single-inv mode: build a single InversionSpec with inv_id=-1
             # (sentinel) so initial-segment classes use plain 'S'/'I'
             # without inv_id suffix — preserves Phase 1-5a semantics.
@@ -495,7 +496,9 @@ class HullSimulator:
                 bp_left=bp_left, bp_right=bp_right,
                 p_inv=p_inv, t_inv=t_inv,
                 gene_conversion_rate=self.g_per_bp,
-                flux_window=flux_window, inv_id=-1)
+                mean_tract_length=mean_tract_length,
+                tract_distribution=tract_distribution,
+                inv_id=-1)
             self.inversions = [single]
         else:
             self.p_inv = None
@@ -503,7 +506,8 @@ class HullSimulator:
             self.bp_left = None
             self.bp_right = None
             self.g_per_bp = float(gene_conversion_rate)
-            self.flux_window = flux_window
+            self.mean_tract_length = mean_tract_length
+            self.tract_distribution = tract_distribution
             self.inversions = []
 
         self.L = sequence_length
@@ -809,11 +813,7 @@ class HullSimulator:
         if inv_len <= 0:
             return 0.0
         # b2-flux: w is mean_tract_length / inv_length.
-        # Migration shim: derive from flux_window if mean_tract_length is at default.
-        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
-            w = inv.flux_window
-        else:
-            w = inv.mean_tract_length / inv_len
+        w = inv.mean_tract_length / inv_len
         weight = 0.0
         seg = lineage.head
         while seg is not None:
@@ -1134,11 +1134,7 @@ class HullSimulator:
         """
         inv_len = inv.bp_right - inv.bp_left
         # b2-flux: w is mean_tract_length / inv_length.
-        # Migration shim: derive from flux_window if mean_tract_length is at default.
-        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
-            w = inv.flux_window
-        else:
-            w = inv.mean_tract_length / inv_len
+        w = inv.mean_tract_length / inv_len
         intervals = []
         cum = 0.0
         seg = lineage.head
@@ -1179,21 +1175,9 @@ class HullSimulator:
             * 'fixed':     L = inv.mean_tract_length
             * 'geometric': L ~ Exponential(1 / inv.mean_tract_length)
               (continuous-coordinate analog of geometric).
-
-        Migration shim: if ``mean_tract_length`` is at its default
-        (100.0) AND ``flux_window`` is non-default, derive tract length
-        from flux_window so untouched legacy call sites keep their
-        original semantics. Removed in Task 7.
         """
         inv_len = inv.bp_right - inv.bp_left
-
-        # Migration shim — see docstring.
-        if inv.mean_tract_length == 100.0 and inv.flux_window != 0.05:
-            mean_L = inv.flux_window * inv_len
-            distribution = 'fixed'
-        else:
-            mean_L = inv.mean_tract_length
-            distribution = inv.tract_distribution
+        mean_L = inv.mean_tract_length
 
         # Defensive: rate-zero short-circuit upstream should prevent
         # reaching here with mean_L == 0, but guard so we never
@@ -1201,7 +1185,7 @@ class HullSimulator:
         if mean_L <= 0.0:
             return float(x_event), float(x_event)
 
-        if distribution == 'fixed':
+        if inv.tract_distribution == 'fixed':
             L = mean_L
         else:  # 'geometric'
             L = self.rng.exponential(mean_L)

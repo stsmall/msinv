@@ -55,7 +55,8 @@ REAL_2LA = dict(
     p_inv={0: 0.85, 1: 0.10},
     t_inv=500_000,
     gene_conversion_rate=1e-9,
-    flux_window=0.05,
+    mean_tract_length=1_085_000.0,
+    tract_distribution='fixed',
 )
 
 # RDL (Rdl gene) is near the distal end of 2La. Selected allele arose
@@ -110,7 +111,8 @@ TINY_2LA = dict(
     p_inv={0: 0.85, 1: 0.10},
     t_inv=1_000,                       # compressed barrier
     gene_conversion_rate=1e-9,
-    flux_window=0.05,
+    mean_tract_length=11_000.0,
+    tract_distribution='fixed',
 )
 TINY_RDL_POS = 400_000
 TINY_SWEEP = dict(

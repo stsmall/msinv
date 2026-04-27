@@ -81,7 +81,8 @@ def run_gamma(args):
                 bp_left=bp_l, bp_right=bp_r,
                 p_inv=p_inv, t_inv=t_inv,
                 gene_conversion_rate=gamma,
-                flux_window=0.05)],
+                mean_tract_length=2000.0,
+                tract_distribution='fixed')],
             recombination_rate=1e-8,
             seed=SEED_BASE + gamma_idx * 1000 + rep,
         )

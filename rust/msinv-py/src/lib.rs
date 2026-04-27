@@ -223,8 +223,6 @@ fn simulate_raw(
             let bp_right: f64 = d.get_item("bp_right")?.unwrap().extract()?;
             let gcr: f64 = d.get_item("gene_conversion_rate")?
                 .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            let fw: f64 = d.get_item("flux_window")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.05);
             let mtl: f64 = d.get_item("mean_tract_length")?
                 .map_or_else(|| Ok(100.0_f64), |v| v.extract())?;
             let td_str: String = d.get_item("tract_distribution")?
@@ -387,7 +385,6 @@ fn simulate_raw(
 
             let mut spec = InversionSpec::new(bp_left, bp_right, trajectory);
             spec.gene_conversion_rate = gcr;
-            spec.flux_window = fw;
             spec.mean_tract_length = mtl;
             spec.tract_distribution = td;
             spec.inv_id = i as u16;

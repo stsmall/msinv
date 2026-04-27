@@ -68,8 +68,10 @@ class InversionSpec:
     gene_conversion_rate : float
         Per-bp per-generation gene-conversion rate γ. Must be > 0.
         Combined with phi(x) for the per-position flux rate.
-    flux_window : float
-        Tract length as a fraction of the inversion's genomic length.
+    mean_tract_length : float
+        Mean gene-conversion tract length in bp (Peischl b2 flux model).
+    tract_distribution : str
+        Tract-length distribution: 'geometric' (default) or 'fixed'.
     inv_id : int
         Identifier; auto-assigned by HullSimulator from the inversions
         list index.
@@ -80,10 +82,8 @@ class InversionSpec:
     p_inv: Union[float, Dict[int, float], None] = None
     t_inv: Optional[float] = None
     gene_conversion_rate: float = 1e-9
-    flux_window: float = 0.05
     # Peischl b2 flux model — see docs/superpowers/specs/2026-04-27-peischl-b2-flux-design.md.
-    # When migration completes, flux_window is removed.
-    mean_tract_length: float = 100.0   # bp, replaces flux_window's tract role
+    mean_tract_length: float = 100.0   # bp
     tract_distribution: str = 'geometric'  # 'geometric' or 'fixed'
     inv_id: int = -1   # set by simulator
     # Trajectory dict overrides p_inv/t_inv when provided.  See module
@@ -149,9 +149,6 @@ class InversionSpec:
                 raise ValueError(
                     f"gene_conversion_rate (gamma) must be > 0, got "
                     f"{self.gene_conversion_rate}.")
-            if not (0.0 < self.flux_window < 1.0):
-                raise ValueError(
-                    f"flux_window must be in (0, 1), got {self.flux_window}.")
         else:
             # Legacy path: p_inv + t_inv required
             if self.p_inv is None or self.t_inv is None:
@@ -176,9 +173,6 @@ class InversionSpec:
                         f"p_inv must be in (0, 1), got {self.p_inv}.")
             if self.t_inv <= 0.0:
                 raise ValueError(f"t_inv > 0 required, got {self.t_inv}.")
-            if not (0.0 < self.flux_window < 1.0):
-                raise ValueError(
-                    f"flux_window must be in (0, 1), got {self.flux_window}.")
             if self.gene_conversion_rate <= 0.0:
                 raise ValueError(
                     f"gene_conversion_rate (gamma) must be > 0, got "

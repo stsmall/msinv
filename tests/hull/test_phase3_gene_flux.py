@@ -125,7 +125,7 @@ def test_gamma_positive_gives_multiple_trees():
             p_inv=0.5, t_inv=4_000.0,
             bp_left=0.0, bp_right=10_000.0,
             gene_conversion_rate=1e-6,
-            flux_window=0.05,
+            mean_tract_length=500.0, tract_distribution='fixed',
             recombination_rate=1e-8,
             seed=seed,
         )
@@ -294,7 +294,7 @@ def test_phi_gradient_more_breakpoints_in_middle():
     L = 100_000.0  # inversion = whole sequence
     bp_l = 0.0; bp_r = L
     centre = (bp_l + bp_r) / 2.0
-    flux_window = 0.05
+    mean_tract_length = 5000.0
     centre_breaks = []
     edge_breaks = []
     for seed in range(10):
@@ -304,7 +304,7 @@ def test_phi_gradient_more_breakpoints_in_middle():
             p_inv=0.5, t_inv=t_inv,
             bp_left=bp_l, bp_right=bp_r,
             gene_conversion_rate=5e-6,
-            flux_window=flux_window,
+            mean_tract_length=mean_tract_length, tract_distribution='fixed',
             recombination_rate=1e-8,
             seed=seed,
         )
@@ -351,7 +351,8 @@ def test_single_inv_via_inversions_api_fires_flux():
             inversions=[InversionSpec(bp_left=0.0, bp_right=10_000.0,
                                        p_inv=0.5, t_inv=4_000.0,
                                        gene_conversion_rate=1e-6,
-                                       flux_window=0.05)],
+                                       mean_tract_length=500.0,
+                                       tract_distribution='fixed')],
             recombination_rate=1e-8,
             seed=seed)),
         ('legacy_api', lambda seed: HullSimulator(
@@ -359,7 +360,8 @@ def test_single_inv_via_inversions_api_fires_flux():
             sequence_length=10_000.0,
             bp_left=0.0, bp_right=10_000.0,
             p_inv=0.5, t_inv=4_000.0,
-            gene_conversion_rate=1e-6, flux_window=0.05,
+            gene_conversion_rate=1e-6,
+            mean_tract_length=500.0, tract_distribution='fixed',
             recombination_rate=1e-8,
             seed=seed)),
     ]:
@@ -411,11 +413,13 @@ def test_multi_inv_per_inversion_gamma():
                     InversionSpec(bp_left=0.0, bp_right=4_000.0,
                                    p_inv=0.5, t_inv=4_000.0,
                                    gene_conversion_rate=1e-6,
-                                   flux_window=0.05),
+                                   mean_tract_length=200.0,
+                                   tract_distribution='fixed'),
                     InversionSpec(bp_left=6_000.0, bp_right=10_000.0,
                                    p_inv=0.5, t_inv=4_000.0,
                                    gene_conversion_rate=NEGLIGIBLE_GAMMA,
-                                   flux_window=0.05),
+                                   mean_tract_length=200.0,
+                                   tract_distribution='fixed'),
                 ],
                 recombination_rate=1e-8,
                 seed=seed,

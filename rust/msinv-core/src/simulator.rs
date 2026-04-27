@@ -1308,12 +1308,7 @@ impl HullSimulator {
         rng: &mut Xoshiro256PlusPlus,
     ) -> Option<f64> {
         let inv_len = inv.length();
-        // b2-flux migration shim — mirrors Python _sample_flux_position.
-        let w = if inv.mean_tract_length == 100.0 && inv.flux_window != 0.05 {
-            inv.flux_window
-        } else {
-            inv.mean_tract_length / inv.length()
-        };
+        let w = inv.mean_tract_length / inv.length();
         let mut intervals: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
         let mut cum = 0.0;
         let mut cur = active[lin_idx].head;
@@ -1366,27 +1361,14 @@ impl HullSimulator {
         use rand_distr::{Distribution, Exp};
         let inv_len = inv.length();
 
-        // Migration shim — mirrors Python _draw_tract.
-        // If mean_tract_length is at default and flux_window is non-default,
-        // use flux_window's pre-b2 fixed-tract semantics. Removed in Task 7.
-        let (mean_l, distribution) =
-            if inv.mean_tract_length == 100.0 && inv.flux_window != 0.05 {
-                (inv.flux_window * inv_len, crate::inversion::TractDistribution::Fixed)
-            } else {
-                (inv.mean_tract_length, inv.tract_distribution)
-            };
-
-        // Defensive: rate-zero short-circuit upstream should prevent
-        // reaching here with mean_l == 0, but guard so we never divide
-        // by zero in the Exponential sampler.
-        if mean_l <= 0.0 {
+        if inv.mean_tract_length <= 0.0 {
             return (x_event, x_event);
         }
 
-        let l = match distribution {
-            crate::inversion::TractDistribution::Fixed => mean_l,
+        let l = match inv.tract_distribution {
+            crate::inversion::TractDistribution::Fixed => inv.mean_tract_length,
             crate::inversion::TractDistribution::Geometric => {
-                let exp = Exp::new(1.0 / mean_l).expect("mean_l > 0 by guard above");
+                let exp = Exp::new(1.0 / inv.mean_tract_length).expect("mean > 0 by guard above");
                 exp.sample(rng)
             }
         };
@@ -1881,7 +1863,7 @@ fn flux_lineage_weight_arena(
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
-    let w = inv.flux_window;
+    let w = inv.mean_tract_length / inv_len;
     let mut weight = 0.0;
     let mut cur = head;
     while cur != SEG_NIL {
@@ -1927,7 +1909,7 @@ fn flux_lineage_weight_segs(
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
-    let w = inv.flux_window;
+    let w = inv.mean_tract_length / inv_len;
     let mut weight = 0.0;
     for &(sl, sr, _) in segs {
         let l = sl.max(inv.bp_left);
@@ -2489,7 +2471,6 @@ mod tests {
         // and finish as panmictic.
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 1.0);
   s.gene_conversion_rate = 1e-30;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let mut sim = HullSimulator::simple(
@@ -2507,7 +2488,6 @@ mod tests {
         // coalesce until t_inv, so nodes >= panmictic case.
         let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
   s.gene_conversion_rate = 1e-30;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let mut sim = HullSimulator::simple(
@@ -2550,7 +2530,6 @@ mod tests {
         // fire and not crash.
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 20_000.0);
   s.gene_conversion_rate = 5e-6;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let mut sim = HullSimulator::simple(
@@ -2634,7 +2613,6 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let sim = HullSimulator::simple(
@@ -2650,7 +2628,6 @@ mod tests {
         // behave like panmictic after t_inv.
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 1.0);
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let sim = HullSimulator::simple(
@@ -2665,7 +2642,6 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 20_000.0);
   s.gene_conversion_rate = 5e-6;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let no_flux = HullSimulator::simple(
@@ -2810,7 +2786,6 @@ mod tests {
         use crate::class_tag::{BranchClass, Karyotype};
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 1000.0, vec![0.5], 10_000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
 
@@ -2847,7 +2822,6 @@ mod tests {
         use crate::class_tag::{BranchClass, Karyotype};
         let inv = { let mut s = InversionSpec::with_p_inv(0.0, 1000.0, vec![0.5], 10_000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
 
@@ -2887,7 +2861,6 @@ mod tests {
         use crate::class_tag::{BranchClass, Karyotype};
         let inv = { let mut s = InversionSpec::with_p_inv(100.0, 200.0, vec![0.5], 10_000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
 
@@ -3000,7 +2973,6 @@ mod tests {
         // Ne=1000, L=10000, r=1e-8 → rho=0.4
         let inv = { let mut s = InversionSpec::with_p_inv(3000.0, 7000.0, vec![0.5], 5000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let sim = HullSimulator {
@@ -3063,7 +3035,6 @@ mod tests {
         // Ne=5000, L=100000, r=1e-8 → rho=20
         let inv = { let mut s = InversionSpec::with_p_inv(20000.0, 80000.0, vec![0.5], 50_000.0);
   s.gene_conversion_rate = 1e-9;
-  s.flux_window = 0.05;
   s.inv_id = 0;
   s };
         let mut sim = HullSimulator::simple(

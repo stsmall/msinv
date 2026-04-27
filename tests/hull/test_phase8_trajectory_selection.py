@@ -17,7 +17,8 @@ def _build_inv(traj_dict, gamma=1e-15):
     return InversionSpec(
         bp_left=2000, bp_right=8000,
         trajectory=traj_dict,
-        gene_conversion_rate=gamma, flux_window=0.05, inv_id=0,
+        gene_conversion_rate=gamma,
+        mean_tract_length=300.0, tract_distribution='fixed', inv_id=0,
     )
 
 
@@ -136,7 +137,8 @@ def test_integer_wf_invalid_endpoints_raises():
                 'n_e': 1000, 's': 0.01,
                 'seed': 42, 'max_attempts': 10,
             },
-            gene_conversion_rate=1e-15, flux_window=0.05, inv_id=0,
+            gene_conversion_rate=1e-15,
+            mean_tract_length=50.0, tract_distribution='fixed', inv_id=0,
         )._p_inv_as_list = None  # force trajectory construction (simulator-build path)
         # Actually trajectory dict validation is in PyO3 — only fires
         # when the simulator hands the dict to Rust.  Build minimal sim.
@@ -154,7 +156,8 @@ def test_integer_wf_invalid_endpoints_raises():
                     'n_e': 1000, 's': 0.01,
                     'seed': 42, 'max_attempts': 10,
                 },
-                gene_conversion_rate=1e-15, flux_window=0.05, inv_id=0,
+                gene_conversion_rate=1e-15,
+                mean_tract_length=65.0, tract_distribution='fixed', inv_id=0,
             )],
             seed=1,
         )
@@ -202,7 +205,8 @@ def test_stoch_det_rejects_neutral_s():
                     'n_e': 1000, 's': 0.0,
                     'seed': 42, 'max_attempts': 10,
                 },
-                gene_conversion_rate=1e-15, flux_window=0.05, inv_id=0,
+                gene_conversion_rate=1e-15,
+                mean_tract_length=65.0, tract_distribution='fixed', inv_id=0,
             )],
             seed=1,
         )

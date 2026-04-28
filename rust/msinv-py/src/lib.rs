@@ -499,7 +499,7 @@ fn event_log_to_pylist(
                 dict.set_item("t", c.t)?;
                 dict.set_item("src", c.src)?;
                 dict.set_item("dst", c.dst)?;
-                dict.set_item("kary", format!("{:?}", c.kary))?;
+                dict.set_item("kary", c.kary.to_string())?;
                 dict.set_item("inv_id", c.inv_id)?;
                 dict.set_item("n_eligible", c.n_eligible)?;
                 dict.set_item("n_moved", c.n_moved)?;

@@ -21,6 +21,16 @@ pub enum Karyotype {
     I,
 }
 
+impl std::fmt::Display for Karyotype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Karyotype::S => "S",
+            Karyotype::I => "I",
+        };
+        f.write_str(s)
+    }
+}
+
 impl BranchClass {
     /// Panmictic — no active inversion barriers.
     pub const PANMICTIC: Self = Self(0);

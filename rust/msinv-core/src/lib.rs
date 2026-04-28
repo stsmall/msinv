@@ -12,6 +12,7 @@ pub mod rate_engine;
 pub mod demography;
 pub mod sweep;
 pub mod sweep_trajectory;
+pub mod sweep_kim_stephan;
 pub mod trajectory;
 pub mod simulator;
 pub mod compound_pair_rate;

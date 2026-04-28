@@ -512,6 +512,7 @@ fn event_log_to_pylist(
                 dict.set_item("tract_left", f.tract_left)?;
                 dict.set_item("tract_right", f.tract_right)?;
                 dict.set_item("inv_id", f.inv_id)?;
+                dict.set_item("node_id_at_position", f.node_id_at_position)?;
             }
         }
         py_list.append(dict)?;

@@ -38,6 +38,17 @@ Confirm pre-existing via `git stash`+rerun before chasing.  Deselect with
 - Python reference (legacy): `msinv/hull/simulator.py` — canonical semantics for Rust to mirror.
 - Python wrapper / tskit conversion: `msinv/hull/_rust_bridge.py`.
 
+## Event log hook (opt-in)
+Off by default; enable to capture cmig + flux events for analysis.
+```python
+sim = HullSimulator(..., record_events=True)
+sim.simulate()
+sim.event_log  # list[dict] with "kind"="cmig"|"flux", or None when off
+```
+Helpers: `msinv.hull._event_log` (`filter_cmig`, `filter_flux`,
+`tract_lengths`, `survival_curve`, `coverage_count`).
+Off-path is zero-overhead; production sims should leave the flag off.
+
 ## Persistent context (not in repo)
 Project memory: `/home/ssmall/.claude/projects/-home-ssmall-inversion-sims-files/memory/`
 Read `MEMORY.md` there first — index of what's known about the code + biology.

@@ -448,7 +448,7 @@ impl HullSimulator {
                     let (tl, tr) = self.draw_tract(x_event, inv, rng);
                     if tr > tl {
                         apply_gene_flux(active, li, tl, tr, inv,
-                                         arena, next_uid);
+                                         arena, next_uid, None, t, x_event);
                     }
                 }
                 let post_len = active.len();
@@ -1203,7 +1203,8 @@ impl HullSimulator {
                         let (tl, tr) = self.draw_tract(x_event, inv, rng);
                         if tr > tl {
                             apply_gene_flux(active, li, tl, tr, inv,
-                                             arena, next_uid);
+                                             arena, next_uid,
+                                             event_log.as_deref_mut(), t, x_event);
                         }
                         engine_dirty = true;
                         total_material = active.iter()
@@ -1945,6 +1946,9 @@ fn apply_gene_flux(
     inv: &InversionSpec,
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
+    log: Option<&mut event_log::EventLog>,
+    t: f64,
+    x_event: f64,
 ) {
     let head = active[lin_idx].head;
     if head == SEG_NIL { return; }
@@ -1962,6 +1966,9 @@ fn apply_gene_flux(
     }
     if !tract_hits_material { return; }
 
+    // Capture uid BEFORE any active.push() that might reallocate.
+    let lineage_uid = active[lin_idx].uid;
+
     if tract_left <= first_left {
         // Fast path: no material precedes the tract, so split at
         // tract_right only — active[lin_idx] becomes the tract.
@@ -1976,6 +1983,17 @@ fn apply_gene_flux(
         if let Some(right_lin) = outside_right {
             active.push(right_lin);
         }
+        // Successful flip — log and return.
+        if let Some(log) = log {
+            log.push_flux(event_log::FluxRecord {
+                t,
+                lineage_uid,
+                position: x_event,
+                tract_left,
+                tract_right,
+                inv_id: inv.inv_id,
+            });
+        }
         return;
     }
 
@@ -1983,7 +2001,7 @@ fn apply_gene_flux(
     *next_uid += 1;
     let rest = active[lin_idx].split_at(tract_left, arena, uid);
     if rest.is_none() {
-        return;
+        return;  // no-op: split produced nothing
     }
     let mut rest = rest.unwrap();
 
@@ -2005,6 +2023,18 @@ fn apply_gene_flux(
     }
 
     active.push(rest);
+
+    // Successful flip — log.
+    if let Some(log) = log {
+        log.push_flux(event_log::FluxRecord {
+            t,
+            lineage_uid,
+            position: x_event,
+            tract_left,
+            tract_right,
+            inv_id: inv.inv_id,
+        });
+    }
 }
 
 /// Convert an offset within a lineage's ancestral material to a
@@ -2833,7 +2863,7 @@ mod tests {
 
         let mut next_uid: LinUid = 10;
         apply_gene_flux(&mut active, 0, 400.0, 500.0,
-                        &inv, &mut arena, &mut next_uid);
+                        &inv, &mut arena, &mut next_uid, None, 0.0, 450.0);
 
         // Expected: 2 lineages — outside (= [100, 400) + [500, 900), one
         // lineage with a hole) and the flipped tract [400, 500).
@@ -2872,7 +2902,7 @@ mod tests {
 
         let mut next_uid: LinUid = 10;
         apply_gene_flux(&mut active, 0, 250.0, 400.0,
-                        &inv, &mut arena, &mut next_uid);
+                        &inv, &mut arena, &mut next_uid, None, 0.0, 325.0);
 
         let total: f64 = active.iter().map(|l| l.cached_len).sum();
         assert!((total - 200.0).abs() < 1e-12,
@@ -2911,7 +2941,7 @@ mod tests {
         // (b1 = 0 when the event lands near the left edge).
         apply_gene_flux(&mut active, 0,
                         inv.bp_left, inv.bp_left + 5.0,
-                        &inv, &mut arena, &mut next_uid);
+                        &inv, &mut arena, &mut next_uid, None, 0.0, inv.bp_left);
 
         // Expected: no zombies. Total ancestral material unchanged (100.0).
         let total: f64 = active.iter().map(|l| l.cached_len).sum();
@@ -3299,5 +3329,39 @@ mod tests {
         assert_eq!(cmig_recs[0].inv_id, 0);
         assert!(cmig_recs[0].n_eligible > 0,
             "test setup defective: no eligible lineages — kary check or inv_id wrong");
+    }
+
+    #[test]
+    fn record_events_logs_flux_events_when_gamma_positive() {
+        use crate::event_log::EventRecord;
+
+        // Inversion spanning the whole sequence, high gene_conversion_rate so
+        // flux fires frequently enough to guarantee ≥1 event.
+        let inv = {
+            let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 20_000.0);
+            s.gene_conversion_rate = 5e-6;
+            s.inv_id = 0;
+            s
+        };
+
+        let mut sim = HullSimulator::simple(
+            4, 4, 1000.0, 10000.0, 1e-8, vec![inv], 42);
+        sim.record_events = true;
+
+        let result = sim.simulate();
+        let log = result.event_log.expect("event_log should be Some");
+        let flux_recs: Vec<_> = log.records().iter()
+            .filter_map(|r| if let EventRecord::Flux(f) = r { Some(*f) } else { None })
+            .collect();
+        assert!(!flux_recs.is_empty(),
+            "expected at least one FluxRecord; tune gene_conversion_rate/t_inv if zero");
+        for r in &flux_recs {
+            assert!(r.tract_right > r.tract_left,
+                "tract bounds inverted: left={}, right={}", r.tract_left, r.tract_right);
+            assert_eq!(r.inv_id, 0);
+            assert!(r.tract_left >= 0.0 && r.tract_right <= 10000.0,
+                "tract [{}, {}) out of sequence bounds [0, 10000)",
+                r.tract_left, r.tract_right);
+        }
     }
 }

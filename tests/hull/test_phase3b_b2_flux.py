@@ -212,3 +212,85 @@ def test_flux_rate_scales_linearly_with_mean_tract_length():
     assert flux_contribution[2] > 1.5 * flux_contribution[0], (
         f"largest-λ flux contribution should be >1.5× smallest-λ, "
         f"got {flux_contribution[2]:.1f} vs {flux_contribution[0]:.1f}")
+
+
+# ---------------------------------------------------------------------------
+# Tier 3-cheap (Q5a): flux tract-break survival shape — geometric vs fixed
+# ---------------------------------------------------------------------------
+
+def test_flux_tract_break_survival_geometric_vs_fixed():
+    """Q5a: empirical S(d) = P(tract_length >= d) discriminates modes.
+
+    'geometric' mode: tract lengths ~ Exp(1/λ); S(λ) ≈ exp(-1) ≈ 0.37,
+                      S(2λ) ≈ exp(-2) ≈ 0.135.
+    'fixed' mode:     tract length = λ exactly; S(λ) = 1.0, S(2λ) = 0.0.
+
+    This is the higher-moment discriminator (beyond mean tract length)
+    that proves b2-flux has biological content beyond what 'fixed' provides.
+
+    Hook is required: turn record_events on to read FluxRecords.
+    """
+    from msinv.hull._event_log import filter_flux, tract_lengths
+
+    lam = 300.0
+    # Tune γ × t_inv to produce ≥200 flux events for ±0.05 MC precision.
+    # gamma=5e-3 + t_inv=4000 with n_samples=20 achieves this.
+    gamma = 5e-3
+    t_inv = 4000.0
+
+    # Store raw lengths for each mode so assertions can use eps-adjusted thresholds.
+    raw_lengths = {}
+    results = {}
+    for mode in ['geometric', 'fixed']:
+        inv = InversionSpec(
+            bp_left=2000.0, bp_right=8000.0,
+            p_inv=0.5, t_inv=t_inv,
+            gene_conversion_rate=gamma,
+            mean_tract_length=lam,
+            tract_distribution=mode,
+        )
+        demo = Demography(pop_sizes=[1000])
+        sim = HullSimulator(
+            sample_config={('S', 0): 10, ('I', 0): 10},
+            demography=demo,
+            sequence_length=10_000,
+            recombination_rate=1e-8,
+            inversions=[inv],
+            seed=42,
+            record_events=True,
+        )
+        sim.simulate()
+        flux = filter_flux(sim.event_log, inv_id=0)
+        assert len(flux) >= 200, (
+            f"mode={mode}: only {len(flux)} flux events; "
+            f"bump γ or t_inv for adequate MC sample size")
+        lengths = tract_lengths(flux)
+        raw_lengths[mode] = lengths
+        s_at_lam = float((lengths >= lam).mean())
+        s_at_2lam = float((lengths >= 2 * lam).mean())
+        results[mode] = (s_at_lam, s_at_2lam, len(flux))
+
+    # 'fixed' mode: every tract has length == λ (up to float rounding ≤ 1e-9),
+    # so S(λ) = 1.0 and S(2λ) = 0.0.  We use a tiny eps on the threshold to
+    # absorb double-precision representation noise (observed max deviation < 1e-12).
+    _, _, n_fixed = results['fixed']
+    eps = 1e-9
+    lens_fixed = raw_lengths['fixed']
+    s_lam_fixed_adj = float((lens_fixed >= lam - eps).mean())
+    s_2lam_fixed_adj = float((lens_fixed >= 2 * lam - eps).mean())
+
+    assert s_lam_fixed_adj == 1.0, (
+        f"'fixed': S(λ-ε) = {s_lam_fixed_adj}, expected exactly 1.0 "
+        f"(n_events={n_fixed}; max deviation from λ should be < 1e-9)")
+    assert s_2lam_fixed_adj == 0.0, (
+        f"'fixed': S(2λ-ε) = {s_2lam_fixed_adj}, expected exactly 0.0 "
+        f"(n_events={n_fixed})")
+
+    # 'geometric' mode: S(λ) ≈ exp(-1) ≈ 0.368; S(2λ) ≈ exp(-2) ≈ 0.135.
+    s_lam_geom, s_2lam_geom, n_geom = results['geometric']
+    assert abs(s_lam_geom - 0.368) < 0.05, (
+        f"'geometric': S(λ) = {s_lam_geom:.3f}, expected 0.368 ± 0.05 "
+        f"(n_events={n_geom})")
+    assert abs(s_2lam_geom - 0.135) < 0.05, (
+        f"'geometric': S(2λ) = {s_2lam_geom:.3f}, expected 0.135 ± 0.05 "
+        f"(n_events={n_geom})")

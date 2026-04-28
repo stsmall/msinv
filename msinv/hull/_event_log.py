@@ -60,18 +60,20 @@ def samples_converted_at(flux_records, ts, position):
     """Fraction of samples whose ancestry at `position` was hit by ≥1
     flux event.
 
-    For each flux record, takes descendants of `node_id_at_position`
-    in the marginal tree at `position` and unions them into a
-    converted set.
+    For each flux record whose tract covers `position`, find the
+    segment in `tract_segments` that contains `position`, take its
+    `node_id`, and union the descendant samples (in the marginal tree
+    at `position`) into a converted set.
 
     Parameters
     ----------
     flux_records : iterable of dicts
         Filtered flux records (from `filter_flux`). Each record must
-        contain key "node_id_at_position".
+        contain `tract_left`, `tract_right`, and `tract_segments`
+        (a list of dicts with keys `seg_left`, `seg_right`, `node_id`
+        spanning the tract).
     ts : tskit.TreeSequence
     position : float
-        Genomic position; should lie inside the inversion under test.
 
     Returns
     -------
@@ -83,11 +85,22 @@ def samples_converted_at(flux_records, ts, position):
     tree = ts.at(position)
     converted: set[int] = set()
     for rec in flux_records:
-        u = int(rec["node_id_at_position"])
-        if u < 0:
+        if not (rec["tract_left"] <= position <= rec["tract_right"]):
             continue
-        if u >= ts.num_nodes:
+        segs = rec.get("tract_segments")
+        if not segs:
             continue
-        for s in tree.samples(u):
+        node_id = -1
+        for seg in segs:
+            if seg["seg_left"] <= position < seg["seg_right"]:
+                node_id = int(seg["node_id"])
+                break
+        if node_id < 0 and segs:
+            last = segs[-1]
+            if last["seg_left"] <= position <= last["seg_right"]:
+                node_id = int(last["node_id"])
+        if node_id < 0 or node_id >= ts.num_nodes:
+            continue
+        for s in tree.samples(node_id):
             converted.add(int(s))
     return len(converted) / ts.num_samples

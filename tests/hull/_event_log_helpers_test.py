@@ -88,7 +88,13 @@ def test_samples_converted_at_root_node_returns_one():
                               recombination_rate=0, random_seed=2)
     tree = ts.at(50.0)
     root = tree.root
-    rec = {"kind": "flux", "node_id_at_position": int(root)}
+    rec = {
+        "kind": "flux",
+        "tract_left": 0.0,
+        "tract_right": 100.0,
+        "tract_segments": [{"seg_left": 0.0, "seg_right": 100.0,
+                            "node_id": int(root)}],
+    }
     assert samples_converted_at([rec], ts, 50.0) == 1.0
 
 
@@ -110,6 +116,12 @@ def test_samples_converted_at_specific_descendants_match():
                 chosen = u
                 break
     assert chosen is not None, "expected an internal non-root node"
-    rec = {"kind": "flux", "node_id_at_position": int(chosen)}
+    rec = {
+        "kind": "flux",
+        "tract_left": 0.0,
+        "tract_right": 100.0,
+        "tract_segments": [{"seg_left": 0.0, "seg_right": 100.0,
+                            "node_id": int(chosen)}],
+    }
     expected_frac = len(list(tree.samples(chosen))) / ts.num_samples
     assert samples_converted_at([rec], ts, 50.0) == expected_frac

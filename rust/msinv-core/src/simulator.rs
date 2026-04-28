@@ -1955,25 +1955,6 @@ fn flux_lineage_rate_segs(
     rate
 }
 
-/// Find the tskit node_id of the segment that covers `x` in the
-/// lineage's segment chain. Returns -1 if no segment covers `x`
-/// (caller's invariant violation; flux event should not fire on a
-/// position with no covering segment).
-fn segment_node_id_at(
-    head: SegIdx, x: f64, arena: &SegmentArena,
-) -> i32 {
-    let mut cur = head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        if seg.left <= x && x < seg.right {
-            return seg.node_id;
-        }
-        if seg.left >= x { break; }
-        cur = seg.next;
-    }
-    -1
-}
-
 /// Apply a gene-flux event: split tract out of lineage, flip class
 /// for the specified inversion.
 fn apply_gene_flux(
@@ -2004,14 +1985,35 @@ fn apply_gene_flux(
     }
     if !tract_hits_material { return; }
 
-    // Capture uid + node_id_at_position BEFORE any active.push() that
-    // might reallocate or any split_at() that mutates the chain.
+    // Capture uid BEFORE any active.push() that might reallocate or
+    // any split_at() that mutates the chain.
     let lineage_uid = active[lin_idx].uid;
-    let node_id_at_position =
-        segment_node_id_at(active[lin_idx].head, x_event, arena);
-    debug_assert!(node_id_at_position >= 0,
-        "flux event at x_event={} has no covering segment in lineage uid={}",
-        x_event, lineage_uid);
+
+    // Build per-segment (left, right, node_id) list spanning the tract,
+    // but ONLY when an event log is attached. Off-path (`log is None`)
+    // pays zero overhead: no segment walk, no allocation.
+    let tract_segments: Option<Vec<(f64, f64, i32)>> = if log.is_some() {
+        let mut segs: Vec<(f64, f64, i32)> = Vec::new();
+        let mut cur = active[lin_idx].head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            if seg.left >= tract_right { break; }
+            if seg.right > tract_left {
+                let l = seg.left.max(tract_left);
+                let r = seg.right.min(tract_right);
+                if r > l {
+                    segs.push((l, r, seg.node_id));
+                }
+            }
+            cur = seg.next;
+        }
+        debug_assert!(!segs.is_empty(),
+            "flux event at x_event={} has no covering segments in lineage uid={}",
+            x_event, lineage_uid);
+        Some(segs)
+    } else {
+        None
+    };
 
     if tract_left <= first_left {
         // Fast path: no material precedes the tract, so split at
@@ -2036,7 +2038,7 @@ fn apply_gene_flux(
                 tract_left,
                 tract_right,
                 inv_id: inv.inv_id,
-                node_id_at_position,
+                tract_segments: tract_segments.expect("tract_segments built when log is Some"),
             });
         }
         return;
@@ -2078,7 +2080,7 @@ fn apply_gene_flux(
             tract_left,
             tract_right,
             inv_id: inv.inv_id,
-            node_id_at_position,
+            tract_segments: tract_segments.expect("tract_segments built when log is Some"),
         });
     }
 }
@@ -3397,7 +3399,7 @@ mod tests {
         let result = sim.simulate();
         let log = result.event_log.expect("event_log should be Some");
         let flux_recs: Vec<_> = log.records().iter()
-            .filter_map(|r| if let EventRecord::Flux(f) = r { Some(*f) } else { None })
+            .filter_map(|r| if let EventRecord::Flux(f) = r { Some(f.clone()) } else { None })
             .collect();
         assert!(!flux_recs.is_empty(),
             "expected at least one FluxRecord; tune gene_conversion_rate/t_inv if zero");

@@ -1,7 +1,7 @@
 # Peischl 2013 b2 Flux Upgrade — Design
 
 **Date:** 2026-04-27
-**Status:** Brainstorming sections approved; awaiting user review of written spec before writing-plans handoff
+**Status:** Implemented — landed in commits 89af630..3163d51 (10 commits via subagent-driven development); Tier 3 + cross-feature deferred validation captured in the Deferred Validation Roadmap section. See also `feedback_parity_misnomer.md` for a meta-finding about the "parity" test naming.
 **Owner:** stsmall
 **Related memory:** `project_msinv_todo.md`, `feedback_inversion_freq_dynamics.md`
 

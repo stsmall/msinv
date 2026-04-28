@@ -140,8 +140,9 @@ pub fn build_joint_trajectory(
         // Selection + drift + flux step (per pop)
         for (p_idx, f) in state.iter_mut().enumerate() {
             apply_selection_inplace(f, spec.s);
+            let n = pop_size_at(t, p_idx as u32);
+            apply_recurrent_inplace(f, spec.recurrent_mutation_rate, 2.0 * n, &mut rng);
             if matches!(spec.mode, SweepMode::Stochastic) {
-                let n = pop_size_at(t, p_idx as u32);
                 wf_resample(f, 2.0 * n, &mut rng);
             }
             apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
@@ -294,6 +295,46 @@ fn apply_migration_inplace(
             state[i][k] = self_share.max(0.0) * snapshot[i][k] + new_f[k];
         }
         renormalize_inplace(&mut state[i]);
+    }
+}
+
+/// Per-generation recurrent de novo: with rate uA · 2N_pop, mutate
+/// one (a) → (A) on a random kary background with probability
+/// proportional to current a-class counts in that pop.
+fn apply_recurrent_inplace(
+    f: &mut [f64; 4],
+    ua: f64,
+    two_n: f64,
+    rng: &mut Xoshiro256PlusPlus,
+) {
+    if ua <= 0.0 || two_n <= 0.0 {
+        return;
+    }
+    use rand_distr::Poisson;
+    let lambda = ua * two_n;
+    let dist = match Poisson::new(lambda) {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let n_events = dist.sample(rng).round() as u64;
+    if n_events == 0 {
+        return;
+    }
+    let delta = 1.0 / two_n;
+    use rand::Rng;
+    for _ in 0..n_events {
+        let total_a = f[CLASS_S_A] + f[CLASS_I_A];
+        if total_a <= 0.0 { break; }
+        let pick_s = rng.random::<f64>() < f[CLASS_S_A] / total_a;
+        if pick_s {
+            let take = delta.min(f[CLASS_S_A]);
+            f[CLASS_S_A] -= take;
+            f[CLASS_S_A_BENEF] += take;
+        } else {
+            let take = delta.min(f[CLASS_I_A]);
+            f[CLASS_I_A] -= take;
+            f[CLASS_I_A_BENEF] += take;
+        }
     }
 }
 
@@ -568,5 +609,53 @@ mod tests {
         );
         let pop1_a = traj.samples.last().unwrap().freq[1][CLASS_S_A_BENEF];
         assert!(pop1_a < 1e-9);
+    }
+
+    /// uA > 0: count of recurrent origin events should match Poisson(uA·2N·duration)
+    /// within MC error (3 sigma over 50 reps).
+    ///
+    /// Uses Neutral mode (no drift) so the prev-max heuristic isn't fooled by
+    /// drift dropping freq below earlier maxima. With s=0 + no drift, the only
+    /// thing that can raise freq[(S,A)] is the recurrent step. Heuristic still
+    /// undercounts when 2+ events fire in the same gen (rare for λ=0.2/gen).
+    #[test]
+    fn recurrent_origins_fire_at_expected_rate() {
+        let n = 10_000.0;
+        let ua = 1e-5;
+        let duration = 500.0;
+        let expected_count = ua * 2.0 * n * duration;
+        let n_reps = 50usize;
+        let mut total_origins = 0.0;
+        for r in 0..n_reps {
+            let spec = JointSweepSpec {
+                mode: SweepMode::Neutral,
+                s: 0.0,                     // neutral so we count origins, not sweep
+                t_origin: duration,
+                f0: 0.0,                    // no seeded origin
+                recurrent_mutation_rate: ua,
+                seed: r as u64 + 1,
+                ..Default::default()
+            };
+            let traj = build_joint_trajectory(
+                &spec, 1, 0, Karyotype::S, &[0.0],
+                &|_t, _p| n, &|_, _, _| 0.0, 0.0,
+            );
+            let mut prev_max = 0.0;
+            let mut origins = 0;
+            for s in &traj.samples {
+                let v = s.freq[0][CLASS_S_A_BENEF];
+                if v > prev_max + 0.5 / (2.0 * n) {
+                    origins += 1;
+                    prev_max = v;
+                }
+            }
+            total_origins += origins as f64;
+        }
+        let mean = total_origins / n_reps as f64;
+        let sigma = expected_count.sqrt();
+        assert!(
+            (mean - expected_count).abs() < 3.0 * sigma,
+            "mean origins = {mean}, expected = {expected_count} ± {sigma}"
+        );
     }
 }

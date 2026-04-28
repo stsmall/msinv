@@ -733,7 +733,10 @@ git commit -m "sweep-rewrite: forward WF flux step (S <-> I)"
 Append:
 
 ```rust
-    /// 2-pop: origin in pop 0, m=1e-3 to pop 1. Pop 1 should accumulate A.
+    /// 2-pop: origin in pop 0, m(1,0)=1e-3 means pop 1 absorbs 1e-3
+    /// of its gene pool from pop 0 each gen (matches simulator's
+    /// `Demography::migration_matrix[dst][src]` convention). Pop 1
+    /// should accumulate A.
     #[test]
     fn migration_spreads_sweep() {
         let spec = JointSweepSpec {
@@ -744,7 +747,7 @@ Append:
             partial_sweep_final_freq: 0.99,
             ..Default::default()
         };
-        let mig = |_t: f64, i: u32, j: u32| if i == 0 && j == 1 { 1e-3 } else { 0.0 };
+        let mig = |_t: f64, i: u32, j: u32| if i == 1 && j == 0 { 1e-3 } else { 0.0 };
         let traj = build_joint_trajectory(
             &spec, 2, 0, Karyotype::S, &[0.0, 0.0],
             &|_t, _p| 10_000.0, &mig, 0.0,

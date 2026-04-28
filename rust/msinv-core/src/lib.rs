@@ -1,4 +1,5 @@
 pub mod class_tag;
+pub mod event_log;
 pub mod segment;
 pub mod lineage;
 pub mod inversion;

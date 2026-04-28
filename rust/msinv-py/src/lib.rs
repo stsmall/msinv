@@ -103,7 +103,8 @@ fn parse_sweep_target(tc: Option<&str>) -> PyResult<Option<(u16, Karyotype)>> {
     stop_at = f64::INFINITY,
     compound_rate = false,
     iters_max = 10_000_000u64,
-    gc_stride = 160u32
+    gc_stride = 160u32,
+    record_events = false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn simulate_raw(
@@ -121,7 +122,8 @@ fn simulate_raw(
     compound_rate: bool,
     iters_max: u64,
     gc_stride: u32,
-) -> PyResult<Py<PyDict>> {
+    record_events: bool,
+) -> PyResult<(Py<PyDict>, PyObject)> {
     // --- Demography ---
     let mut demo = Demography::new(pop_sizes);
     if let Some(mig) = migration_matrix {
@@ -455,6 +457,7 @@ fn simulate_raw(
         compound_rate,
         iters_max,
         gc_stride,
+        record_events,
     };
     let mut result = CACHE.with(|c| {
         let mut slot = c.borrow_mut();
@@ -466,7 +469,54 @@ fn simulate_raw(
     // Sort edges into tskit canonical order so the Python bridge can
     // skip `tc.sort()` (previously ~3.6% of single-pop wall at rho=2000).
     result.tables.sort_edges();
-    tables_to_pydict(py, result)
+    let event_log = result.event_log.take();
+    let py_tables = tables_to_pydict(py, result)?;
+    let py_log = event_log_to_pylist(py, event_log)?;
+    Ok((py_tables, py_log))
+}
+
+/// Convert an optional `EventLog` into a Python list of dicts, or `None`.
+///
+/// Each record is a dict with a `kind` key (`"cmig"` or `"flux"`) plus the
+/// variant-specific fields. Returns `py.None()` when the log is absent (i.e.
+/// `record_events=False`).
+fn event_log_to_pylist(
+    py: Python<'_>,
+    log: Option<msinv_core::event_log::EventLog>,
+) -> PyResult<PyObject> {
+    use msinv_core::event_log::EventRecord;
+
+    let log = match log {
+        None => return Ok(py.None()),
+        Some(l) => l,
+    };
+    let py_list = PyList::empty(py);
+    for rec in log.into_records() {
+        let dict = PyDict::new(py);
+        match rec {
+            EventRecord::Cmig(c) => {
+                dict.set_item("kind", "cmig")?;
+                dict.set_item("t", c.t)?;
+                dict.set_item("src", c.src)?;
+                dict.set_item("dst", c.dst)?;
+                dict.set_item("kary", format!("{:?}", c.kary))?;
+                dict.set_item("inv_id", c.inv_id)?;
+                dict.set_item("n_eligible", c.n_eligible)?;
+                dict.set_item("n_moved", c.n_moved)?;
+            }
+            EventRecord::Flux(f) => {
+                dict.set_item("kind", "flux")?;
+                dict.set_item("t", f.t)?;
+                dict.set_item("lineage_uid", f.lineage_uid)?;
+                dict.set_item("position", f.position)?;
+                dict.set_item("tract_left", f.tract_left)?;
+                dict.set_item("tract_right", f.tract_right)?;
+                dict.set_item("inv_id", f.inv_id)?;
+            }
+        }
+        py_list.append(dict)?;
+    }
+    Ok(py_list.into())
 }
 
 /// msinv Rust core — PyO3 extension module.

@@ -2264,10 +2264,26 @@ fn apply_sweep(
     _recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
 ) {
-    // TODO sweep-rewrite Task 13: rewrite using JointSweepTrajectory.
+    // TODO sweep-rewrite Task 13+: rewrite using JointSweepTrajectory.
     // For now, this is a no-op: sweep events are tolerated but no
     // forced-coalescence operator runs. The old Hudson-Kaplan
     // endpoint operator was removed in Task 11.
+    //
+    // The helper methods needed for the v2 implementation are now
+    // available on `Sweep`:
+    //   - `sweep.assign_a_at_sample(pop, kary, rng)` decides if a lineage
+    //     at τ is A-bearing (uses `trajectory.p_allele_given_kary`).
+    //   - `sweep.hitchhiking_prob(x, recomb_rate)` gives the probability
+    //     that an A-bearing lineage at position x is linked to the sweep
+    //     MRCA (forced-coalescence at t_origin).
+    //   - `sweep.ne_cell_or_fallback(t, pop, kary, n_pop_t, fallback)` is
+    //     the time-varying coalescent rate driver inside the sweep window.
+    //
+    // Full integration (v2) needs to walk active lineages, mark A-bearers
+    // using assign_a_at_sample, run hitchhiking retention with hitchhiking_prob,
+    // and force-coalesce A-bearing lineages at t_origin. This is gated on
+    // ARG/segment-tree invariants and is tracked as Task 13+ in the
+    // sweep-rewrite plan.
 }
 
 /// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.

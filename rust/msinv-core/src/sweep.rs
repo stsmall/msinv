@@ -81,6 +81,36 @@ impl Sweep {
         }
         n_pop_t * fallback_p_kary
     }
+
+    /// Probability that a lineage at position `x` is linked to the
+    /// sweep MRCA, given recombination rate `r`. Approximation:
+    /// `exp(-r·d·T_eff)` where `T_eff = t_origin - tau` (full sweep
+    /// duration). The proper integral over the trajectory shape is
+    /// a TODO refinement.
+    pub fn hitchhiking_prob(&self, x: f64, recomb_rate: f64) -> f64 {
+        if self.trajectory.is_none() {
+            return 1.0;
+        }
+        let d = (x - self.x_sel).abs();
+        let t_eff = self.joint.t_origin - self.tau;
+        (-recomb_rate * d * t_eff).exp()
+    }
+
+    /// At sample time τ, randomly assign a lineage to the swept (A) vs
+    /// unswept (a) fraction with probability equal to the trajectory's
+    /// per-(pop, kary) A frequency. Returns true for A.
+    pub fn assign_a_at_sample<R: rand::Rng>(
+        &self,
+        pop: u32,
+        kary: Karyotype,
+        rng: &mut R,
+    ) -> bool {
+        let p_a = match &self.trajectory {
+            Some(t) => t.p_allele_given_kary(self.tau, pop, kary),
+            None => return false,
+        };
+        rng.random::<f64>() < p_a
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +163,60 @@ mod tests {
         // ne_cell scales as p_kary * N_pop
         let ne_mid = sw.trajectory.as_ref().unwrap().ne_cell(50.0, 0, Karyotype::I, 10_000.0);
         assert!((ne_mid - 10_000.0 * p_i_mid).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hitchhiking_probability_decays_with_distance() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        // T_eff = t_origin - tau = 500. To straddle p = 0.5 we need
+        //   r * d * T_eff ≈ ln(2) ≈ 0.69
+        // Pick recomb_rate = 1e-5 so the threshold distance is
+        //   d* = ln(2) / (r * T_eff) = 0.69 / (1e-5 * 500) ≈ 138.6 bp.
+        // Original task spec used r = 1e-3 which is mathematically
+        // inconsistent with `p_near > 0.5` (would give exp(-5) ≈ 0.007).
+        let p_near = sw.hitchhiking_prob(5_010.0, 1e-5);
+        let p_far  = sw.hitchhiking_prob(5_500.0, 1e-5);
+        assert!(p_near > p_far, "expected hitchhiking decay; near={p_near}, far={p_far}");
+        assert!(p_near > 0.5, "p_near={p_near}");
+        assert!(p_far  < 0.5, "p_far={p_far}");
+    }
+
+    #[test]
+    fn assign_a_at_sample_uses_trajectory_freq() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        use rand_xoshiro::Xoshiro256PlusPlus;
+        use rand::SeedableRng;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        let mut a_count = 0;
+        let n_trials = 1000;
+        for _ in 0..n_trials {
+            if sw.assign_a_at_sample(0, Karyotype::S, &mut rng) {
+                a_count += 1;
+            }
+        }
+        let observed = a_count as f64 / n_trials as f64;
+        let traj = sw.trajectory.as_ref().unwrap();
+        let expected = traj.p_allele_given_kary(0.0, 0, Karyotype::S);
+        // Within 3 sigma of binomial
+        let sigma = (expected * (1.0 - expected) / n_trials as f64).sqrt();
+        assert!((observed - expected).abs() < 3.0 * sigma,
+            "observed={observed}, expected={expected}, sigma={sigma}");
     }
 
     #[test]

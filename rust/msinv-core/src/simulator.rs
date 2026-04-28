@@ -231,15 +231,17 @@ impl HullSimulator {
                     caches and is slower than the bucket path at biological rho. \
                     Work continues on the feature/compound-caches branch.");
         }
+        let mut event_log: Option<event_log::EventLog> =
+            if self.record_events { Some(event_log::EventLog::new()) } else { None };
         self.run_loop(&mut active, &mut arena, &mut tables,
                        &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions, rate_cache);
+                       &mut inversions, rate_cache, event_log.as_mut());
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
         // `tc.sort()` can be skipped. Bench / test paths that just
         // read `SimResult::tables` skip the sort cost.
-        SimResult { tables, event_log: None }
+        SimResult { tables, event_log }
     }
 
     // ---------------------------------------------------------------
@@ -398,7 +400,7 @@ impl HullSimulator {
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
-                        &mut sweep_cursor);
+                        &mut sweep_cursor, None);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
                     total_material = active.iter().map(|l| l.cached_len).sum();
@@ -417,7 +419,7 @@ impl HullSimulator {
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
-                    &mut sweep_cursor);
+                    &mut sweep_cursor, None);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
                 total_material = active.iter().map(|l| l.cached_len).sum();
@@ -602,6 +604,7 @@ impl HullSimulator {
         demo: &mut Demography,
         inversions: &mut Vec<InversionSpec>,
         rate_cache: &mut RateCache,
+        mut event_log: Option<&mut event_log::EventLog>,
     ) {
         let mut t: f64 = 0.0;
 
@@ -812,7 +815,8 @@ impl HullSimulator {
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
-                        &mut sweep_cursor);
+                        &mut sweep_cursor,
+                        event_log.as_deref_mut());
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -837,7 +841,8 @@ impl HullSimulator {
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
-                    &mut sweep_cursor);
+                    &mut sweep_cursor,
+                    event_log.as_deref_mut());
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -2039,6 +2044,7 @@ fn apply_boundary(
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
+    event_log: Option<&mut event_log::EventLog>,
 ) {
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
@@ -2066,8 +2072,10 @@ fn apply_boundary(
     // Class-conditional migration: needs arena (read class) + rng
     // (proportion < 1 sampling).  Applied after inv_changes so the
     // class queries reflect the post-event inversion frequencies.
+    let mut log_ref = event_log;
     for spec in class_mig {
-        apply_class_mig(active, arena, &spec, rng, inversions);
+        apply_class_mig(active, arena, &spec, rng, inversions,
+                         log_ref.as_deref_mut(), t);
     }
 }
 
@@ -2080,19 +2088,36 @@ fn apply_class_mig(
     spec: &crate::demography::ClassMigSpec,
     rng: &mut Xoshiro256PlusPlus,
     inversions: &[InversionSpec],
+    log: Option<&mut event_log::EventLog>,
+    t: f64,
 ) {
     use rand::Rng;
     // Locate the InversionSpec for the requested inv_id (just for any
     // future class-aware logic — currently only inv_id is used to
     // look up segment class via inversion bp range).
     let _ = inversions;
+    let mut n_eligible: u32 = 0;
+    let mut n_moved: u32 = 0;
     for lin in active.iter_mut() {
         if lin.population != spec.src { continue; }
         let kary = lineage_class_for_inv_id_arena(lin.head, spec.inv_id, arena);
         if kary != Some(spec.kary) { continue; }
+        n_eligible += 1;
         if spec.proportion >= 1.0 - 1e-12 || rng.random::<f64>() < spec.proportion {
             lin.population = spec.dst;
+            n_moved += 1;
         }
+    }
+    if let Some(log) = log {
+        log.push_cmig(event_log::CmigRecord {
+            t,
+            src: spec.src,
+            dst: spec.dst,
+            kary: spec.kary,
+            inv_id: spec.inv_id,
+            n_eligible,
+            n_moved,
+        });
     }
 }
 
@@ -3096,7 +3121,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
 
         // Both S-class lineages should now be in pop 0.
         // Both I-class lineages should still be in pop 1.
@@ -3120,7 +3145,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::I, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
 
         assert_eq!(active[0].population, 1, "S lineage wrongly moved");
         assert_eq!(active[1].population, 0, "I lineage 1 not moved");
@@ -3140,7 +3165,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
 
         assert_eq!(active[0].population, 0, "pop-0 S lineage moved (shouldn't)");
         assert_eq!(active[1].population, 0, "pop-1 S lineage not moved");
@@ -3159,7 +3184,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
         // PAN lineage has no class tag for inv 0 → skipped, stays in pop 1.
         assert_eq!(active[0].population, 1,
             "PAN lineage incorrectly migrated by cmig");
@@ -3179,7 +3204,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 0.5,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[]);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
         let moved = active.iter().filter(|l| l.population == 0).count();
         // 200 * 0.5 = 100, ±3*sqrt(200*0.5*0.5) ≈ ±21
         assert!((moved as i64 - 100).abs() < 25,
@@ -3206,5 +3231,73 @@ mod tests {
             .cloned().fold(0.0_f64, f64::max);
         assert!(t_mrca > 2000.0,
             "Soft sweep K=5 with rho=40: T_MRCA={:.1}, expected >> 500", t_mrca);
+    }
+
+    #[test]
+    fn record_events_logs_one_cmig_event() {
+        use crate::event_log::EventRecord;
+        use crate::demography::{Demography, DemoEvent};
+
+        // 2-population demography with a single cmig event at t=50:
+        // all S-class lineages in pop 1 move to pop 0.
+        let mut demo = Demography::new(vec![1000.0, 1000.0]);
+        demo.add_event(DemoEvent::ClassMig {
+            t: 50.0,
+            src: 1,
+            dst: 0,
+            kary: Karyotype::S,
+            inv_id: 0,
+            proportion: 1.0,
+        });
+        // Merge remaining lineages at t=500 so the simulation terminates.
+        demo.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
+
+        // Inversion spanning the whole sequence so S/I class tags are set.
+        let inv = {
+            let mut s = InversionSpec::with_p_inv(0.0, 10000.0, vec![0.5], 5000.0);
+            s.gene_conversion_rate = 1e-9;
+            s.inv_id = 0;
+            s
+        };
+
+        let mut sim = HullSimulator {
+            samples: vec![
+                SampleEntry {
+                    karyotypes: vec![Some(Karyotype::S)],
+                    population: 0,
+                    count: 3,
+                },
+                SampleEntry {
+                    karyotypes: vec![Some(Karyotype::S)],
+                    population: 1,
+                    count: 3,
+                },
+            ],
+            demography: demo,
+            sequence_length: 10000.0,
+            recombination_rate: 1e-8,
+            inversions: vec![inv],
+            sweeps: vec![],
+            seed: 42,
+            stop_at: f64::INFINITY,
+            compound_rate: false,
+            iters_max: 10_000_000,
+            gc_stride: 160,
+            record_events: false,
+        };
+        sim.record_events = true;
+
+        let result = sim.simulate();
+        let log = result.event_log.expect("event_log should be Some");
+        let cmig_recs: Vec<_> = log.records().iter()
+            .filter_map(|r| if let EventRecord::Cmig(c) = r { Some(*c) } else { None })
+            .collect();
+        assert_eq!(cmig_recs.len(), 1,
+            "expected exactly one cmig record, got {}", cmig_recs.len());
+        assert_eq!(cmig_recs[0].src, 1);
+        assert_eq!(cmig_recs[0].dst, 0);
+        assert_eq!(cmig_recs[0].inv_id, 0);
+        assert!(cmig_recs[0].n_eligible > 0,
+            "test setup defective: no eligible lineages — kary check or inv_id wrong");
     }
 }

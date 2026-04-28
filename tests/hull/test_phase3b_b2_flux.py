@@ -294,3 +294,72 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
     assert abs(s_2lam_geom - 0.135) < 0.05, (
         f"'geometric': S(2λ) = {s_2lam_geom:.3f}, expected 0.135 ± 0.05 "
         f"(n_events={n_geom})")
+
+
+# ---------------------------------------------------------------------------
+# Tier 3-cheap (Q5b): Andolfatto event-coverage monotonicity
+# ---------------------------------------------------------------------------
+
+def test_andolfatto_event_coverage_monotone_in_t_inv():
+    """Q5b: event-coverage at the inversion center
+
+    (i)  increases monotonically with t_inv at fixed (γ, λ);
+    (ii) has equal mean between 'fixed' and 'geometric' at matched λ
+         (within 20% relative tolerance — variance differs, mean shouldn't).
+    """
+    from msinv.hull._event_log import filter_flux, coverage_count
+
+    gamma = 5e-3   # bumped well above biological for sufficient event counts
+    lam = 300.0
+    t_inv_ladder = [500.0, 2000.0, 5000.0]
+    n_seeds = 20
+    inv_center = 5000.0  # midpoint of bp_left=2000, bp_right=8000
+
+    means_by_mode = {}
+
+    for mode in ['fixed', 'geometric']:
+        means_per_t = []
+        for t_inv in t_inv_ladder:
+            covers = []
+            for seed in range(n_seeds):
+                inv = InversionSpec(
+                    bp_left=2000.0, bp_right=8000.0,
+                    p_inv=0.5, t_inv=t_inv,
+                    gene_conversion_rate=gamma,
+                    mean_tract_length=lam,
+                    tract_distribution=mode,
+                )
+                demo = Demography(pop_sizes=[1000])
+                sim = HullSimulator(
+                    sample_config={('S', 0): 10, ('I', 0): 10},
+                    demography=demo,
+                    sequence_length=10_000,
+                    recombination_rate=1e-8,
+                    inversions=[inv],
+                    seed=seed,
+                    record_events=True,
+                )
+                sim.simulate()
+                flux = filter_flux(sim.event_log, inv_id=0)
+                covers.append(coverage_count(flux, inv_center))
+            means_per_t.append(float(np.mean(covers)))
+
+        # (i) monotonicity in t_inv at fixed (γ, λ)
+        assert means_per_t[0] < means_per_t[1] < means_per_t[2], (
+            f"mode={mode}: not monotone in t_inv: "
+            f"means at t_inv={t_inv_ladder} = {means_per_t}")
+
+        means_by_mode[mode] = means_per_t
+
+    # (ii) at each t_inv, 'fixed' and 'geometric' should have equal MEAN
+    #      coverage at matched λ. Variance differs; mean shouldn't.
+    for i, t_inv in enumerate(t_inv_ladder):
+        m_fixed = means_by_mode['fixed'][i]
+        m_geom  = means_by_mode['geometric'][i]
+        scale = max(m_fixed, m_geom, 1.0)
+        rel_diff = abs(m_fixed - m_geom) / scale
+        assert rel_diff < 0.20, (
+            f"t_inv={t_inv}: mean coverage diverges between modes — "
+            f"fixed={m_fixed:.2f}, geom={m_geom:.2f}, "
+            f"rel_diff={rel_diff:.3f}; expected agreement within 20% "
+            f"at n_seeds={n_seeds}")

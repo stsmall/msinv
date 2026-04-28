@@ -14,15 +14,19 @@ fn rel_err(observed: f64, expected: f64) -> f64 {
 
 #[test]
 fn a1_sojourn_time_matches_simulation() {
+    // Sojourn time as defined by Kim-Stephan: time from f0 = 1/(2Ne)
+    // up to near-fixation 1 - 1/(2Ne). Use that threshold for the
+    // measurement to keep apples-to-apples with the closed form.
     let s = 0.01;
     let ne = 10_000.0;
     let expected = ks::sojourn_time(s, ne);
+    let near_fix = 1.0 - 1.0 / (2.0 * ne);
     let spec = JointSweepSpec {
         mode: SweepMode::Deterministic,
         s,
         t_origin: 5.0 * expected,
         f0: 1.0 / (2.0 * ne),
-        partial_sweep_final_freq: 0.99,
+        partial_sweep_final_freq: near_fix,
         ..Default::default()
     };
     let traj = build_joint_trajectory(
@@ -31,7 +35,7 @@ fn a1_sojourn_time_matches_simulation() {
     );
     let t_cross = traj.samples
         .iter()
-        .find(|s_| s_.freq[0][CLASS_S_A_BENEF] >= 0.99)
+        .find(|s_| s_.freq[0][CLASS_S_A_BENEF] >= near_fix)
         .map(|s_| spec.t_origin - s_.t)
         .unwrap_or(spec.t_origin);
     let err = rel_err(t_cross, expected);

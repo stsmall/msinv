@@ -172,7 +172,7 @@ Append to `rust/msinv-core/src/sweep_trajectory.rs` test module:
         let p_kary_init = vec![0.0]; // origin_kary = I (index 1); colinear S = 1 - p_inv = 1.0... but origin must be on I
         // Choose origin_kary = S for the simplest test (all on S background)
         let origin_pop = 0u32;
-        let origin_kary = Karyotype::Colinear; // S
+        let origin_kary = Karyotype::S; // S
         let traj = build_joint_trajectory(
             &spec,
             n_pops,
@@ -236,19 +236,18 @@ pub fn build_joint_trajectory(
             // Seed origin: f0 of A on origin_kary in origin_pop
             if p == origin_pop {
                 match origin_kary {
-                    Karyotype::Colinear => {
+                    Karyotype::S => {
                         let kary_freq = p_s;
                         let a_freq = spec.f0 * kary_freq;
                         f[CLASS_S_A] = (kary_freq - a_freq).max(0.0);
                         f[CLASS_S_A_BENEF] = a_freq;
                     }
-                    Karyotype::Inverted => {
+                    Karyotype::I => {
                         let kary_freq = p_inv;
                         let a_freq = spec.f0 * kary_freq;
                         f[CLASS_I_A] = (kary_freq - a_freq).max(0.0);
                         f[CLASS_I_A_BENEF] = a_freq;
                     }
-                    Karyotype::Pan => panic!("origin_kary must be S or I, not Pan"),
                 }
             }
             f
@@ -371,7 +370,7 @@ Append to test module:
             &spec,
             1,
             0,
-            Karyotype::Colinear,
+            Karyotype::S,
             &[0.0],
             &|_t, _p| 1e6,
             &|_t, _i, _j| 0.0,
@@ -432,7 +431,7 @@ Append:
             &mk_spec(0, SweepMode::Deterministic),
             1,
             0,
-            Karyotype::Colinear,
+            Karyotype::S,
             &[0.0],
             &|_t, _p| 10_000.0,
             &|_t, _i, _j| 0.0,
@@ -445,7 +444,7 @@ Append:
                 &mk_spec(r as u64 + 1, SweepMode::Stochastic),
                 1,
                 0,
-                Karyotype::Colinear,
+                Karyotype::S,
                 &[0.0],
                 &|_t, _p| 10_000.0,
                 &|_t, _i, _j| 0.0,
@@ -498,7 +497,7 @@ Expected: PASS or FAIL. Stochastic mode is currently a no-op extra over DetOnly 
                     },
                     1,
                     0,
-                    Karyotype::Colinear,
+                    Karyotype::S,
                     &[0.0],
                     &|_t, _p| 1_000.0,
                     &|_t, _i, _j| 0.0,
@@ -635,7 +634,7 @@ Append:
             &spec,
             1,
             0,
-            Karyotype::Inverted, // A originates on I
+            Karyotype::I, // A originates on I
             &[0.3],              // p_inv_init = 0.3
             &|_t, _p| 10_000.0,
             &|_t, _i, _j| 0.0,
@@ -661,7 +660,7 @@ Append:
             ..Default::default()
         };
         let traj = build_joint_trajectory(
-            &spec, 1, 0, Karyotype::Inverted, &[0.3],
+            &spec, 1, 0, Karyotype::I, &[0.3],
             &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
         );
         let final_freq = traj.samples.last().unwrap().freq[0];
@@ -745,7 +744,7 @@ Append:
         };
         let mig = |_t: f64, i: u32, j: u32| if i == 0 && j == 1 { 1e-3 } else { 0.0 };
         let traj = build_joint_trajectory(
-            &spec, 2, 0, Karyotype::Colinear, &[0.0, 0.0],
+            &spec, 2, 0, Karyotype::S, &[0.0, 0.0],
             &|_t, _p| 10_000.0, &mig, 0.0,
         );
         let final_freq = traj.samples.last().unwrap().freq.clone();
@@ -763,7 +762,7 @@ Append:
             ..Default::default()
         };
         let traj = build_joint_trajectory(
-            &spec, 2, 0, Karyotype::Colinear, &[0.0, 0.0],
+            &spec, 2, 0, Karyotype::S, &[0.0, 0.0],
             &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
         );
         let pop1_a = traj.samples.last().unwrap().freq[1][CLASS_S_A_BENEF];
@@ -860,7 +859,7 @@ Append:
                 ..Default::default()
             };
             let traj = build_joint_trajectory(
-                &spec, 1, 0, Karyotype::Colinear, &[0.0],
+                &spec, 1, 0, Karyotype::S, &[0.0],
                 &|_t, _p| n, &|_, _, _| 0.0, 0.0,
             );
             // Count generations in which (S,A) increased above its previous max
@@ -970,11 +969,11 @@ Append:
             ..Default::default()
         };
         let traj = build_joint_trajectory(
-            &spec, 1, 0, Karyotype::Colinear, &[0.3],
+            &spec, 1, 0, Karyotype::S, &[0.3],
             &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
         );
-        let p_s = traj.p_kary(50.0, 0, Karyotype::Colinear);
-        let p_i = traj.p_kary(50.0, 0, Karyotype::Inverted);
+        let p_s = traj.p_kary(50.0, 0, Karyotype::S);
+        let p_i = traj.p_kary(50.0, 0, Karyotype::I);
         assert!((p_s + p_i - 1.0).abs() < 1e-6, "p_S + p_I = {} != 1", p_s + p_i);
     }
 
@@ -987,11 +986,11 @@ Append:
             ..Default::default()
         };
         let traj = build_joint_trajectory(
-            &spec, 1, 0, Karyotype::Colinear, &[0.5],
+            &spec, 1, 0, Karyotype::S, &[0.5],
             &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
         );
-        let ne_s = traj.ne_cell(50.0, 0, Karyotype::Colinear, 10_000.0);
-        let p_s = traj.p_kary(50.0, 0, Karyotype::Colinear);
+        let ne_s = traj.ne_cell(50.0, 0, Karyotype::S, 10_000.0);
+        let p_s = traj.p_kary(50.0, 0, Karyotype::S);
         assert!((ne_s - 10_000.0 * p_s).abs() < 1e-6);
     }
 ```
@@ -1022,9 +1021,8 @@ impl JointSweepTrajectory {
         let i = self.idx_at(t);
         let f = &self.samples[i].freq[pop as usize];
         match kary {
-            Karyotype::Colinear => f[CLASS_S_A] + f[CLASS_S_A_BENEF],
-            Karyotype::Inverted => f[CLASS_I_A] + f[CLASS_I_A_BENEF],
-            Karyotype::Pan => 1.0,
+            Karyotype::S => f[CLASS_S_A] + f[CLASS_S_A_BENEF],
+            Karyotype::I => f[CLASS_I_A] + f[CLASS_I_A_BENEF],
         }
     }
 
@@ -1032,12 +1030,8 @@ impl JointSweepTrajectory {
         let i = self.idx_at(t);
         let f = &self.samples[i].freq[pop as usize];
         let (num, denom) = match kary {
-            Karyotype::Colinear => (f[CLASS_S_A_BENEF], f[CLASS_S_A] + f[CLASS_S_A_BENEF]),
-            Karyotype::Inverted => (f[CLASS_I_A_BENEF], f[CLASS_I_A] + f[CLASS_I_A_BENEF]),
-            Karyotype::Pan => (
-                f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF],
-                f.iter().sum::<f64>(),
-            ),
+            Karyotype::S => (f[CLASS_S_A_BENEF], f[CLASS_S_A] + f[CLASS_S_A_BENEF]),
+            Karyotype::I => (f[CLASS_I_A_BENEF], f[CLASS_I_A] + f[CLASS_I_A_BENEF]),
         };
         if denom <= 0.0 { 0.0 } else { num / denom }
     }
@@ -1206,7 +1200,7 @@ fn a1_sojourn_time_matches_simulation() {
         ..Default::default()
     };
     let traj = build_joint_trajectory(
-        &spec, 1, 0, Karyotype::Colinear, &[0.0],
+        &spec, 1, 0, Karyotype::S, &[0.0],
         &|_t, _p| ne, &|_, _, _| 0.0, 0.0,
     );
     // Find the time at which p crosses partial_sweep_final_freq
@@ -1237,7 +1231,7 @@ fn a2_fixation_probability_over_reps() {
             ..Default::default()
         };
         let traj = build_joint_trajectory(
-            &spec, 1, 0, Karyotype::Colinear, &[0.0],
+            &spec, 1, 0, Karyotype::S, &[0.0],
             &|_t, _p| ne, &|_, _, _| 0.0, 0.0,
         );
         if traj.samples.last().unwrap().freq[0][CLASS_S_A_BENEF] > 0.5 {
@@ -1375,7 +1369,7 @@ mod tests {
     #[test]
     fn sweep_covers_window() {
         let sw = Sweep::new(
-            5_000.0, 100.0, 0, Karyotype::Colinear, 0,
+            5_000.0, 100.0, 0, Karyotype::S, 0,
             JointSweepSpec { t_origin: 1_000.0, ..Default::default() },
         );
         assert!(sw.covers(500.0));
@@ -1386,7 +1380,7 @@ mod tests {
     #[test]
     fn sweep_with_trajectory_populates() {
         let sw = Sweep::new(
-            5_000.0, 0.0, 0, Karyotype::Colinear, 0,
+            5_000.0, 0.0, 0, Karyotype::S, 0,
             JointSweepSpec {
                 mode: SweepMode::Deterministic,
                 s: 0.05, t_origin: 200.0, f0: 0.001,
@@ -1460,12 +1454,12 @@ Append to `rust/msinv-core/src/rate_index.rs` test module:
             ..Default::default()
         };
         let sw = Sweep::new(
-            5_000.0, 0.0, 0, Karyotype::Inverted, 0, spec,
+            5_000.0, 0.0, 0, Karyotype::I, 0, spec,
         ).with_trajectory(1, &[0.3], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
         // Verify ne_cell at mid-sweep differs from ne_cell pre-sweep
         let traj = sw.trajectory.as_ref().unwrap();
-        let ne_pre = traj.ne_cell(150.0, 0, Karyotype::Inverted, 10_000.0);
-        let ne_mid = traj.ne_cell(50.0, 0, Karyotype::Inverted, 10_000.0);
+        let ne_pre = traj.ne_cell(150.0, 0, Karyotype::I, 10_000.0);
+        let ne_mid = traj.ne_cell(50.0, 0, Karyotype::I, 10_000.0);
         assert!(ne_mid > ne_pre, "Inverted Ne should rise during sweep on I; pre={ne_pre}, mid={ne_mid}");
     }
 ```
@@ -1545,7 +1539,7 @@ In `rust/msinv-core/src/sweep.rs` test module:
     #[test]
     fn hitchhiking_probability_decays_with_distance() {
         let sw = Sweep::new(
-            5_000.0, 0.0, 0, Karyotype::Colinear, 0,
+            5_000.0, 0.0, 0, Karyotype::S, 0,
             JointSweepSpec {
                 mode: SweepMode::Deterministic,
                 s: 0.05, t_origin: 500.0, f0: 0.001,

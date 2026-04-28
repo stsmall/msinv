@@ -363,6 +363,9 @@ def test_class_mig_count_matches_binomial(p):
     np ± 2·sqrt(np(1-p)) band. This validates the per-lineage
     Bernoulli(p) sampling inside apply_class_mig.
 
+    n_samples=50 in pop 1 ensures n_eligible ≥ ~20 with p_inv=0.5, which
+    is the asymptotic regime where ±2σ → ~95% Binomial coverage holds.
+
     Hook is required: turn record_events on to see n_eligible/n_moved.
     Closes the T3 TODO documented at the top of this file (lines 20-22).
     """
@@ -380,7 +383,7 @@ def test_class_mig_count_matches_binomial(p):
                                karyotype='S', inv_id=0, proportion=p)
         d.add_event(('ej', 10000.0, 1, 0))
         sim = HullSimulator(
-            sample_config={('S', 0): 5, ('S', 1): 20, ('I', 1): 5},
+            sample_config={('S', 0): 5, ('S', 1): 50, ('I', 1): 5},
             demography=d, sequence_length=10000,
             recombination_rate=1e-8,
             inversions=[_build_inv(t_inv=20000.0)],
@@ -404,11 +407,10 @@ def test_class_mig_count_matches_binomial(p):
     assert seeds_with_eligible >= n_seeds * 0.7, (
         f"p={p}: only {seeds_with_eligible}/{n_seeds} seeds had eligible "
         f"lineages — sample size or fixture is misconfigured")
-    # ≥80% of seeds within ±2σ.  The theoretical coverage of the ±2σ band
-    # for a discrete Binomial(n, p) can be below 95% when n is small and p
-    # is extreme (e.g., n≈5, p=0.1 → coverage ≈ 92%).  A threshold of 80%
-    # is well above what a truly biased sampler would achieve (which would
-    # fall below 50%) while tolerating discreteness artefacts.
-    assert band_hits >= 0.80 * seeds_with_eligible, (
+    # For extreme p (0.1, 0.9) the discrete Binomial ±2σ band covers ~96%
+    # asymptotically, but with 30 seeds the Monte Carlo variance means we
+    # accept ≥93% hits.  All other p values use the full 95% threshold.
+    expected_threshold = 0.93 if p in (0.1, 0.9) else 0.95
+    assert band_hits >= expected_threshold * seeds_with_eligible, (
         f"p={p}: only {band_hits}/{seeds_with_eligible} within ±2σ band; "
         f"per-lineage Bernoulli(p) sampling may be biased")

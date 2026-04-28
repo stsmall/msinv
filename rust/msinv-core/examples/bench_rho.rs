@@ -116,5 +116,6 @@ fn build_multi_pop(
         compound_rate: false,
         iters_max: 10_000_000,
         gc_stride: 160,
+        record_events: false,
     }
 }

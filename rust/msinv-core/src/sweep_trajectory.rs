@@ -131,13 +131,14 @@ pub fn build_joint_trajectory(
         // relative to the smallest 2N. (Refined in Task 4.)
         let dt = 1.0;
         let _ = migration_at; // used in Task 6
-        // Selection + drift step
+        // Selection + drift + flux step
         for (p_idx, f) in state.iter_mut().enumerate() {
             apply_selection_inplace(f, spec.s);
             if matches!(spec.mode, SweepMode::Stochastic) {
                 let n = pop_size_at(t, p_idx as u32);
                 wf_resample(f, 2.0 * n, &mut rng);
             }
+            apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
         }
         t -= dt;
         // Renormalize to guard against floating drift
@@ -232,6 +233,29 @@ fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
             f[i] = new_counts[i] / total;
         }
     }
+}
+
+/// Per-generation flux exchanges between (I, A) ↔ (S, A) and
+/// (I, a) ↔ (S, a) at rate `gamma`. Symmetric: each direction copies
+/// at rate `gamma`. `mean_tract_length` is currently unused — kept in
+/// the signature for API stability and possible future scaling.
+fn apply_flux_inplace(f: &mut [f64; 4], gamma: f64, _mean_tract: f64) {
+    if gamma <= 0.0 {
+        return;
+    }
+    let r = gamma.min(0.5);
+    let s_a = f[CLASS_S_A];
+    let s_a_b = f[CLASS_S_A_BENEF];
+    let i_a = f[CLASS_I_A];
+    let i_a_b = f[CLASS_I_A_BENEF];
+    let new_s_a = s_a + r * i_a - r * s_a;
+    let new_i_a = i_a + r * s_a - r * i_a;
+    let new_s_a_b = s_a_b + r * i_a_b - r * s_a_b;
+    let new_i_a_b = i_a_b + r * s_a_b - r * i_a_b;
+    f[CLASS_S_A] = new_s_a.max(0.0);
+    f[CLASS_S_A_BENEF] = new_s_a_b.max(0.0);
+    f[CLASS_I_A] = new_i_a.max(0.0);
+    f[CLASS_I_A_BENEF] = new_i_a_b.max(0.0);
 }
 
 fn sample_binomial(n: u64, p: f64, rng: &mut Xoshiro256PlusPlus) -> u64 {
@@ -420,5 +444,49 @@ mod tests {
     fn variance(xs: &[f64]) -> f64 {
         let mean = xs.iter().sum::<f64>() / xs.len() as f64;
         xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / xs.len() as f64
+    }
+
+    /// γ > 0: A introduced on I should appear on S over time via flux.
+    #[test]
+    fn flux_mixes_a_across_karyotypes() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05,
+            t_origin: 1000.0,
+            f0: 0.001,
+            partial_sweep_final_freq: 0.95,
+            gamma_flux: 1e-3,
+            mean_tract_length: 1000.0,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::I, &[0.3],
+            &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+        );
+        let final_freq = traj.samples.last().unwrap().freq[0];
+        assert!(
+            final_freq[CLASS_S_A_BENEF] > 1e-3,
+            "A should appear on S via flux, got freq={}",
+            final_freq[CLASS_S_A_BENEF]
+        );
+    }
+
+    /// γ = 0: A originated on I stays on I.
+    #[test]
+    fn no_flux_locks_a_to_origin_kary() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05,
+            t_origin: 1000.0,
+            f0: 0.001,
+            gamma_flux: 0.0,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::I, &[0.3],
+            &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+        );
+        let final_freq = traj.samples.last().unwrap().freq[0];
+        assert!(final_freq[CLASS_S_A_BENEF] < 1e-9);
     }
 }

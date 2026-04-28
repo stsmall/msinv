@@ -1936,6 +1936,25 @@ fn flux_lineage_weight_segs(
     weight
 }
 
+/// Find the tskit node_id of the segment that covers `x` in the
+/// lineage's segment chain. Returns -1 if no segment covers `x`
+/// (caller's invariant violation; flux event should not fire on a
+/// position with no covering segment).
+fn segment_node_id_at(
+    head: SegIdx, x: f64, arena: &SegmentArena,
+) -> i32 {
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        if seg.left <= x && x < seg.right {
+            return seg.node_id;
+        }
+        if seg.left >= x { break; }
+        cur = seg.next;
+    }
+    -1
+}
+
 /// Apply a gene-flux event: split tract out of lineage, flip class
 /// for the specified inversion.
 fn apply_gene_flux(
@@ -1966,8 +1985,14 @@ fn apply_gene_flux(
     }
     if !tract_hits_material { return; }
 
-    // Capture uid BEFORE any active.push() that might reallocate.
+    // Capture uid + node_id_at_position BEFORE any active.push() that
+    // might reallocate or any split_at() that mutates the chain.
     let lineage_uid = active[lin_idx].uid;
+    let node_id_at_position =
+        segment_node_id_at(active[lin_idx].head, x_event, arena);
+    debug_assert!(node_id_at_position >= 0,
+        "flux event at x_event={} has no covering segment in lineage uid={}",
+        x_event, lineage_uid);
 
     if tract_left <= first_left {
         // Fast path: no material precedes the tract, so split at
@@ -1992,6 +2017,7 @@ fn apply_gene_flux(
                 tract_left,
                 tract_right,
                 inv_id: inv.inv_id,
+                node_id_at_position,
             });
         }
         return;
@@ -2033,6 +2059,7 @@ fn apply_gene_flux(
             tract_left,
             tract_right,
             inv_id: inv.inv_id,
+            node_id_at_position,
         });
     }
 }

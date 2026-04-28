@@ -27,6 +27,12 @@ pub struct FluxRecord {
     pub tract_left: f64,
     pub tract_right: f64,
     pub inv_id: u16,
+    /// tskit node_id of the segment covering `position` at the moment
+    /// the flux event fired. Used by Tier 3-full sample-conversion
+    /// validation to identify which present-day samples descend from
+    /// this lineage at this position. -1 sentinel only if the segment
+    /// walk failed (should never happen on a successful flux fire).
+    pub node_id_at_position: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,6 +88,7 @@ mod tests {
         let r = FluxRecord {
             t: 250.0, lineage_uid: 42, position: 5000.0,
             tract_left: 4850.0, tract_right: 5150.0, inv_id: 0,
+            node_id_at_position: 17,
         };
         log.push_flux(r);
         assert_eq!(log.len(), 1);
@@ -101,6 +108,7 @@ mod tests {
         log.push_flux(FluxRecord {
             t: 20.0, lineage_uid: 1, position: 100.0,
             tract_left: 90.0, tract_right: 110.0, inv_id: 0,
+            node_id_at_position: 5,
         });
         let recs = log.into_records();
         assert_eq!(recs.len(), 2);

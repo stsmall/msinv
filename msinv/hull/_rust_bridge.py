@@ -18,11 +18,24 @@ except ImportError:
         RUST_AVAILABLE = False
 
 
-def rust_simulate(simulator) -> 'tskit.TreeSequence':
-    """Run a simulation using the Rust core and return a tskit TreeSequence.
+def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
+    """Run a simulation using the Rust core.
 
-    ``simulator`` is a Python HullSimulator instance — we read its
-    attributes and pass them to the Rust function.
+    Parameters
+    ----------
+    simulator : HullSimulator
+        A Python HullSimulator instance — its attributes are read and
+        passed to the Rust ``simulate_raw`` function.
+
+    Returns
+    -------
+    (tskit.TreeSequence, list | None)
+        - First element: the tree sequence (with simplify already applied).
+        - Second element: the event log as a list of dicts when the
+          simulator was constructed with ``record_events=True``,
+          otherwise ``None``. Each dict has a ``"kind"`` key of
+          ``"cmig"`` or ``"flux"`` plus the variant fields. See
+          :mod:`msinv.hull._event_log` for parsing helpers.
     """
     # --- Sample config ---
     # Convert sample_config dict → list of (kary_str, pop, count) tuples.

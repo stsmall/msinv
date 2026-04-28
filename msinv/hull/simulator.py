@@ -525,14 +525,21 @@ class HullSimulator:
                 f"recombination_rate must be > 0 (got {self.r}). "
                 "rho=0 is not supported. For non-recombining loci, "
                 "simulate each locus separately.")
-        # Sweeps: list of Sweep objects, sorted by t_event.
+        # Sweeps: the new joint forward WF sweep API (msinv.hull.sweep.Sweep)
+        # is implemented only in the Rust backend (see
+        # docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md).
+        # The legacy Python fallback simulator no longer supports the
+        # old t_event/target_class Hudson-Kaplan sweep model; pass
+        # ``sweeps=`` through the Rust path (HullSimulator via
+        # msinv/hull/_rust_bridge.py) instead.
         self.sweeps = []
         if sweeps:
-            for s in sweeps:
-                if not isinstance(s, Sweep):
-                    s = Sweep(*s) if isinstance(s, tuple) else Sweep(**dict(s))
-                self.sweeps.append(s)
-            self.sweeps.sort(key=lambda s: s.t_event)
+            raise NotImplementedError(
+                "The Python fallback simulator no longer supports sweeps. "
+                "Use the Rust backend (msinv.hull._rust_bridge) for the "
+                "new Sweep API. See docs/superpowers/specs/"
+                "2026-04-28-sweep-rewrite-design.md."
+            )
         self.rng = np.random.default_rng(seed)
         self.stop_at = stop_at
         self.compound_rate = compound_rate

@@ -354,8 +354,10 @@ git commit -m "sweep-rewrite: forward WF selection step (DetOnly, single pop)"
 Append to test module:
 
 ```rust
-    /// DetOnly with f0=0.01 reaches discrete logistic frequency
-    /// p(t) = f0·exp(s·t) / (1 - f0 + f0·exp(s·t)) within 1e-6 per gen.
+    /// DetOnly with f0=0.01 reaches discrete-time logistic frequency
+    /// p(t) = f0·(1+s)^t / (1 - f0 + f0·(1+s)^t) within 1e-9 per gen.
+    /// (Discrete form because the simulator's multiplicative update is
+    /// p_{t+1} = p_t·(1+s)/(1+s·p_t), not the continuous-time exp(s·t).)
     #[test]
     fn det_logistic_matches_closed_form() {
         let spec = JointSweepSpec {
@@ -380,11 +382,11 @@ Append to test module:
         let mid = &traj.samples[traj.samples.len() / 2];
         let forward_t = spec.t_origin - mid.t;
         let f0 = spec.f0;
-        let expected =
-            f0 * (spec.s * forward_t).exp() / (1.0 - f0 + f0 * (spec.s * forward_t).exp());
+        let growth = (1.0 + spec.s).powf(forward_t);
+        let expected = f0 * growth / (1.0 - f0 + f0 * growth);
         let observed = mid.freq[0][CLASS_S_A_BENEF];
         assert!(
-            (observed - expected).abs() < 1e-6,
+            (observed - expected).abs() < 1e-9,
             "expected={expected}, observed={observed}, t={forward_t}"
         );
     }

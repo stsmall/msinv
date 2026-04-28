@@ -253,4 +253,41 @@ mod tests {
         assert!(final_freq[CLASS_S_A_BENEF] > 0.95);
         assert!(final_freq[CLASS_I_A_BENEF] < 1e-6);
     }
+
+    /// DetOnly with f0=0.01 reaches discrete-time logistic frequency
+    /// p(t) = f0·(1+s)^t / (1 - f0 + f0·(1+s)^t) within 1e-9 per gen.
+    /// (Discrete form because the simulator's multiplicative update is
+    /// p_{t+1} = p_t·(1+s)/(1+s·p_t), not the continuous-time exp(s·t).)
+    #[test]
+    fn det_logistic_matches_closed_form() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.01,
+            t_origin: 500.0,
+            f0: 0.01,
+            partial_sweep_final_freq: 1.0,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec,
+            1,
+            0,
+            Karyotype::S,
+            &[0.0],
+            &|_t, _p| 1e6,
+            &|_t, _i, _j| 0.0,
+            0.0,
+        );
+        // Pick mid-sweep sample, compute closed form forward time = (t_origin - t)
+        let mid = &traj.samples[traj.samples.len() / 2];
+        let forward_t = spec.t_origin - mid.t;
+        let f0 = spec.f0;
+        let growth = (1.0 + spec.s).powf(forward_t);
+        let expected = f0 * growth / (1.0 - f0 + f0 * growth);
+        let observed = mid.freq[0][CLASS_S_A_BENEF];
+        assert!(
+            (observed - expected).abs() < 1e-9,
+            "expected={expected}, observed={observed}, t={forward_t}"
+        );
+    }
 }

@@ -46,7 +46,7 @@ log to land three deferred validation tests:
 | Scope | T3 cmig **+** Tier 3-cheap (Q) | Resume-note-recommended bundle; one hook serves both |
 | Hook mechanism | Rust-side `Vec<EventRecord>`, **opt-in** | Cheapest; observer pattern rejected for FFI cost |
 | Default state | `record_events=False` | Production sims pay zero overhead |
-| Record schema | Rich (cmig: 7 fields; flux: 8 fields) | +luxury fields ≈ +5 MB at 10⁵ events; acceptable |
+| Record schema | Cmig: 7 fields; flux: 6 fields | `donor/acceptor_class` dropped — not unambiguous within heterogeneous-class tracts and not needed by Q5a/Q5b |
 | API exposure | Wrapper attribute (`sim.event_log`) | Non-breaking; existing tests untouched |
 | T3 stat test | Pointwise ±2σ vs Binomial(n_eligible, p) | Simplest readable check; matches resume-note framing |
 | Q5a LD-decay | Hook-based tract-break survival `S(d)` | Direct, low-noise; haplotype-based LD considered and rejected as noisier |
@@ -122,12 +122,10 @@ pub struct CmigRecord {
 pub struct FluxRecord {
     pub t: f64,
     pub lineage_uid: LinUid,
-    pub position: f64,        // sampled seed point
+    pub position: f64,        // sampled seed point (x_event)
     pub tract_left: f64,
     pub tract_right: f64,
     pub inv_id: u16,
-    pub donor_class: Karyotype,
-    pub acceptor_class: Karyotype,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,9 +184,10 @@ impl EventLog {
   }
   ```
 - `apply_gene_flux` (currently at `simulator.rs:1928`) gains
-  `log: Option<&mut EventLog>`. The donor/acceptor classes and
-  tract endpoints are already locally available at the call site;
-  one `log.push_flux(...)` at the end of the function body.
+  `log: Option<&mut EventLog>` plus `t: f64` and `x_event: f64`
+  (already in scope at the call sites). One `log.push_flux(...)` at
+  the end of the function body using `active[lin_idx].uid` for
+  `lineage_uid`.
 - The two flux dispatch sites (`simulator.rs:441`, `simulator.rs:1193`)
   thread `event_log.as_mut()` through.
 - The cmig dispatch site (`simulator.rs:2063`) threads `event_log.as_mut()`

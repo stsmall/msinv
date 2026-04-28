@@ -416,3 +416,135 @@ def test_event_log_size_bounded_at_biological_gamma():
 
     # Print the actual count for reference in CI logs.
     print(f"\nevent_log at biological γ=1e-7: n_total={n_total} (flux={n_flux})")
+
+
+# ---------------------------------------------------------------------------
+# Tier 3-full (R): closed-form Andolfatto + coalescent event-count anchors
+# ---------------------------------------------------------------------------
+
+def _run_tier3_sim(t_inv, gamma, seed,
+                   bp_left=2000.0, bp_right=8000.0,
+                   lam=300.0, p_inv=0.5,
+                   Ne=1000, n_S=10, n_I=10,
+                   sequence_length=10_000,
+                   recombination_rate=1e-8):
+    """Run a Tier 3-full sim and return (ts, event_log).
+
+    Centralizes parameters so test C and test D differ only in t_inv and γ.
+    """
+    inv = InversionSpec(
+        bp_left=bp_left, bp_right=bp_right,
+        p_inv=p_inv, t_inv=t_inv,
+        gene_conversion_rate=gamma,
+        mean_tract_length=lam,
+        tract_distribution='geometric',
+    )
+    sim = HullSimulator(
+        sample_config={('S', 0): n_S, ('I', 0): n_I},
+        demography=Demography(pop_sizes=[Ne]),
+        sequence_length=sequence_length,
+        recombination_rate=recombination_rate,
+        inversions=[inv],
+        seed=seed,
+        record_events=True,
+    )
+    ts = sim.simulate()
+    return ts, sim.event_log
+
+
+def test_andolfatto_sample_fraction_matches_closed_form():
+    """Tier 3-full (R), interpretation (b): empirical f̂(t) tracks the
+    Andolfatto-style closed form 1 − exp(−γ·p_other·λ²·t/L) over a
+    4-point t_inv ladder.
+
+    Tolerance is intentionally loose: max(0.15 abs, 0.50 rel) per
+    point. The closed form systematically over-predicts the simulator
+    by ~25% because it doesn't model lineage-coverage fragmentation —
+    after multiple flux events on a descent line, the surviving
+    lineage at x_center may have coverage holes that block subsequent
+    flips. See memory/project_andolfatto_closed_form_correction.md
+    for theory direction.
+
+    The test catches order-of-magnitude rate errors (e.g., a missed
+    factor of λ in the rate calc, or a sign flip in p_other), not
+    fine-grained accuracy. For tighter validation, derive the
+    fragmentation-corrected closed form first.
+    """
+    from msinv.hull._event_log import filter_flux, samples_converted_at
+
+    gamma = 1.5e-5     # γ_C: rate puts f_pred in [0.10, 0.95] over ladder
+    lam = 300.0
+    bp_left, bp_right = 2000.0, 8000.0
+    L = bp_right - bp_left          # 6000.0
+    Ne, p_inv = 1000, 0.5
+    p_other = 1.0 - p_inv           # 0.5 (symmetric at p_inv=0.5)
+    inv_center = 0.5 * (bp_left + bp_right)   # 5000.0
+    n_seeds = 30
+    t_inv_ladder = [1000.0, 4000.0, 10_000.0, 25_000.0]
+
+    for t_inv in t_inv_ladder:
+        f_emp = []
+        for seed in range(n_seeds):
+            ts, log = _run_tier3_sim(t_inv=t_inv, gamma=gamma, seed=seed,
+                                     bp_left=bp_left, bp_right=bp_right,
+                                     lam=lam, p_inv=p_inv, Ne=Ne)
+            flux = filter_flux(log, inv_id=0)
+            f_emp.append(samples_converted_at(flux, ts, inv_center))
+        f_hat = float(np.mean(f_emp))
+        f_pred = 1.0 - math.exp(-gamma * p_other * (lam ** 2) * t_inv / L)
+        tol = max(0.15, 0.50 * f_pred)
+        assert abs(f_hat - f_pred) < tol, (
+            f"t_inv={t_inv}: f̂={f_hat:.3f} vs predicted {f_pred:.3f} "
+            f"(tol={tol:.3f}, n_seeds={n_seeds}). "
+            f"~25% systematic under-prediction expected (fragmentation); "
+            f"larger gaps indicate a real rate-calc regression.")
+
+
+def test_event_coverage_matches_coalescent_closed_form():
+    """Tier 3-full (D): empirical mean coverage_count(x_center) tracks
+    γ·p_other·(λ²/L) · 4Ne·H_{n−1} at t_inv ≫ 2Ne, within ±50%.
+
+    Like test C, tolerance is loose to absorb the simulator's
+    coalescent-integral behavior — the simulator runs past TMRCA
+    until full coalescence (post-TMRCA recomb generates new lineages
+    that contribute to events). The pure-coalescent prediction
+    underestimates the actual event count by ~3×; we use a single
+    multiplicative anchor with very loose tolerance to catch
+    order-of-magnitude regressions, not absolute calibration. The
+    quantitative correction is theory-todo; see
+    memory/project_andolfatto_closed_form_correction.md.
+    """
+    from msinv.hull._event_log import filter_flux, coverage_count
+
+    gamma = 5e-3       # γ_D: matches Q5b; ~500 events/seed at t_inv=25k
+    lam = 300.0
+    bp_left, bp_right = 2000.0, 8000.0
+    L = bp_right - bp_left
+    Ne, p_inv = 1000, 0.5
+    p_other = 1.0 - p_inv
+    n_S, n_I = 10, 10
+    n = n_S + n_I                       # 20 lineages at t=0
+    t_inv = 25_000.0                    # ≫ 2Ne; truncation corr. ~4e-6
+    inv_center = 5000.0
+    n_seeds = 30
+
+    H = sum(1.0 / k for k in range(1, n))                  # H_{n−1} ≈ 3.548
+    e_total_branch = 4.0 * Ne * H                          # generations
+    expected = gamma * p_other * (lam ** 2 / L) * e_total_branch
+
+    counts = []
+    for seed in range(n_seeds):
+        ts, log = _run_tier3_sim(t_inv=t_inv, gamma=gamma, seed=seed,
+                                 bp_left=bp_left, bp_right=bp_right,
+                                 lam=lam, p_inv=p_inv, Ne=Ne)
+        flux = filter_flux(log, inv_id=0)
+        counts.append(coverage_count(flux, inv_center))
+
+    mean_emp = float(np.mean(counts))
+    # Empirical is ~3× expected (post-TMRCA recomb generates extra events).
+    # Allow [0.3×, 5×] of expected — ~order-of-magnitude anchor only.
+    assert expected * 0.3 < mean_emp < expected * 5.0, (
+        f"empirical coverage {mean_emp:.1f} outside [0.3×, 5×] of "
+        f"closed-form prediction {expected:.1f}. Pure Kingman predicts "
+        f"~{expected:.0f}; simulator typically gives ~3× this due to "
+        f"post-TMRCA recomb. A 10× drift indicates a real regression.")

@@ -363,3 +363,56 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
             f"fixed={m_fixed:.2f}, geom={m_geom:.2f}, "
             f"rel_diff={rel_diff:.3f}; expected agreement within 20% "
             f"at n_seeds={n_seeds}")
+
+
+# ---------------------------------------------------------------------------
+# Sanity: log size stays bounded at biological γ (regression guard)
+# ---------------------------------------------------------------------------
+
+def test_event_log_size_bounded_at_biological_gamma():
+    """At a biologically-realistic γ (1e-7) and modest scale,
+    sim.event_log stays under 1M records — guards against future
+    scale changes silently OOM-ing.
+
+    This is NOT a correctness test; it just records the actual
+    log size at sane parameters so a regression that suddenly
+    explodes the log surfaces here rather than as a memory error.
+    """
+    from msinv.hull._event_log import filter_flux
+
+    inv = InversionSpec(
+        bp_left=1000.0, bp_right=9000.0,
+        p_inv=0.5, t_inv=5000.0,
+        gene_conversion_rate=1e-7,  # biological γ
+        mean_tract_length=100.0,
+        tract_distribution='geometric',
+    )
+    demo = Demography(pop_sizes=[1000])
+    sim = HullSimulator(
+        sample_config={('S', 0): 10, ('I', 0): 10},
+        demography=demo,
+        sequence_length=10_000,
+        recombination_rate=1e-8,
+        inversions=[inv],
+        seed=42,
+        record_events=True,
+    )
+    sim.simulate()
+    n_total = len(sim.event_log) if sim.event_log is not None else 0
+    n_flux = len(filter_flux(sim.event_log)) if sim.event_log else 0
+
+    # 1M records is far above any plausible at biological γ.
+    assert n_total < 1_000_000, (
+        f"event_log unexpectedly large: {n_total} records (flux={n_flux}). "
+        f"This may indicate a scale regression — investigate before "
+        f"running production sims with record_events=True.")
+
+    # Sanity: at biological γ, expect a small but non-zero count.
+    # If this assertion ever fails low, our γ assumption changed.
+    if n_total > 0:
+        assert n_total < 10_000, (
+            f"event_log size {n_total} suggests parameters changed; "
+            f"update this test or investigate.")
+
+    # Print the actual count for reference in CI logs.
+    print(f"\nevent_log at biological γ=1e-7: n_total={n_total} (flux={n_flux})")

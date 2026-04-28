@@ -6,7 +6,7 @@
 
 use msinv_core::class_tag::Karyotype;
 use msinv_core::demography::{Demography, DemoEvent};
-use msinv_core::inversion::InversionSpec;
+use msinv_core::inversion::{InversionSpec, TractDistribution};
 use msinv_core::simulator::{HullSimulator, SampleEntry};
 use msinv_core::sweep::Sweep;
 
@@ -20,6 +20,26 @@ fn inv(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, id: u16) -> InversionSpec {
 fn inv_gamma(bp_l: f64, bp_r: f64, p_inv: f64, t_inv: f64, gamma: f64, id: u16) -> InversionSpec {
     let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
     s.gene_conversion_rate = gamma;
+    s.inv_id = id;
+    s
+}
+
+/// Helper for b2-flux fixtures: gene_conversion_rate plus pinned
+/// mean_tract_length and tract_distribution.
+fn inv_b2(
+    bp_l: f64,
+    bp_r: f64,
+    p_inv: f64,
+    t_inv: f64,
+    gamma: f64,
+    mean_tract_length: f64,
+    tract_distribution: TractDistribution,
+    id: u16,
+) -> InversionSpec {
+    let mut s = InversionSpec::with_p_inv(bp_l, bp_r, vec![p_inv], t_inv);
+    s.gene_conversion_rate = gamma;
+    s.mean_tract_length = mean_tract_length;
+    s.tract_distribution = tract_distribution;
     s.inv_id = id;
     s
 }
@@ -78,6 +98,50 @@ fn gamma_positive_gives_more_trees() {
     assert!(r_yes.tables.num_nodes() >= r_no.tables.num_nodes(),
         "flux={} vs no_flux={}", r_yes.tables.num_nodes(),
         r_no.tables.num_nodes());
+}
+
+#[test]
+fn parity_b2_flux_fixed() {
+    // b2-flux model with tract_distribution = Fixed: every flux
+    // event uses tract length L = mean_tract_length deterministically.
+    // Ne=1000, L=10000, r=1e-8 → rho=0.4. mean_tract_length=200 bp,
+    // gamma=1e-5 fires occasional events without saturating the ARG.
+    for seed in 1..=3u64 {
+        let spec = inv_b2(
+            0.0, 10000.0, 0.5, 20000.0, 1e-5,
+            200.0, TractDistribution::Fixed, 0);
+        let sim = HullSimulator::simple(
+            4, 4, 1000.0, 10000.0, 1e-8, vec![spec], seed);
+        let result = sim.simulate();
+        // Sanity: must complete and produce nodes.
+        assert!(result.tables.num_nodes() >= 8,
+            "seed={}: only {} nodes", seed, result.tables.num_nodes());
+        for i in 8..result.tables.num_nodes() {
+            assert!(result.tables.node_time[i] > 0.0,
+                "seed={}: node {} has time 0", seed, i);
+        }
+    }
+}
+
+#[test]
+fn parity_b2_flux_geometric() {
+    // b2-flux model with tract_distribution = Geometric: tract length
+    // per event is Exponential(1/mean_tract_length). Same parameters
+    // as the Fixed fixture so the two are directly comparable.
+    for seed in 1..=3u64 {
+        let spec = inv_b2(
+            0.0, 10000.0, 0.5, 20000.0, 1e-5,
+            200.0, TractDistribution::Geometric, 0);
+        let sim = HullSimulator::simple(
+            4, 4, 1000.0, 10000.0, 1e-8, vec![spec], seed);
+        let result = sim.simulate();
+        assert!(result.tables.num_nodes() >= 8,
+            "seed={}: only {} nodes", seed, result.tables.num_nodes());
+        for i in 8..result.tables.num_nodes() {
+            assert!(result.tables.node_time[i] > 0.0,
+                "seed={}: node {} has time 0", seed, i);
+        }
+    }
 }
 
 // ---------------------------------------------------------------

@@ -21,6 +21,15 @@ from .demography import Demography
 from .inversion import InversionSpec
 from .sweep import Sweep
 from .simulator import HullSimulator
+from ._event_log import (
+    filter_cmig,
+    filter_flux,
+    tract_lengths,
+    survival_curve,
+    coverage_count,
+)
 
 __all__ = ['Segment', 'Lineage', 'Demography', 'InversionSpec',
-           'Sweep', 'HullSimulator', '__phase__']
+           'Sweep', 'HullSimulator', '__phase__',
+           'filter_cmig', 'filter_flux', 'tract_lengths',
+           'survival_curve', 'coverage_count']

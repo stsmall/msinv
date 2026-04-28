@@ -200,7 +200,8 @@ fn renormalize_inplace(f: &mut [f64; 4]) {
 
 /// Stochastic WF resample of a 4-element frequency vector at finite N.
 /// Uses sequential conditional binomials with a Gaussian-CLT shortcut
-/// when 2N·p_class*(1-p_class) >= 25.
+/// when both tails satisfy `mu >= 25` AND `n - mu >= 25` AND var > 0.
+/// Otherwise falls back to an integer-Binomial draw via `sample_binomial`.
 fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
     let mut remaining_n = two_n;
     let mut remaining_p = 1.0;
@@ -214,7 +215,7 @@ fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
         let n = remaining_n;
         let mu = n * p_cond;
         let var = n * p_cond * (1.0 - p_cond);
-        let count = if mu >= 25.0 && var > 0.0 {
+        let count = if mu >= 25.0 && (n - mu) >= 25.0 && var > 0.0 {
             let normal = Normal::new(mu, var.sqrt()).unwrap();
             normal.sample(rng).round().clamp(0.0, n)
         } else {

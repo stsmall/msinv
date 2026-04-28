@@ -137,8 +137,7 @@ pub fn build_joint_trajectory(
         // For DetOnly we step in 1-gen units; for Stoch we use dt_scalar
         // relative to the smallest 2N. (Refined in Task 4.)
         let dt = 1.0;
-        let _ = migration_at; // used in Task 6
-        // Selection + drift + flux step
+        // Selection + drift + flux step (per pop)
         for (p_idx, f) in state.iter_mut().enumerate() {
             apply_selection_inplace(f, spec.s);
             if matches!(spec.mode, SweepMode::Stochastic) {
@@ -147,6 +146,8 @@ pub fn build_joint_trajectory(
             }
             apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
         }
+        // Migration step (across pops)
+        apply_migration_inplace(&mut state, t, migration_at);
         t -= dt;
         // Renormalize to guard against floating drift
         for f in state.iter_mut() {
@@ -263,6 +264,37 @@ fn apply_flux_inplace(f: &mut [f64; 4], gamma: f64, _mean_tract: f64) {
     f[CLASS_S_A_BENEF] = new_s_a_b.max(0.0);
     f[CLASS_I_A] = new_i_a.max(0.0);
     f[CLASS_I_A_BENEF] = new_i_a_b.max(0.0);
+}
+
+/// Per-generation migration: redistribute haplotype-class counts using
+/// the migration matrix `m_ij(t)` — the per-gen forward fraction of
+/// pop `i` that came from pop `j`.
+fn apply_migration_inplace(
+    state: &mut [[f64; 4]],
+    t: f64,
+    migration_at: &dyn Fn(f64, u32, u32) -> f64,
+) {
+    let n_pops = state.len();
+    if n_pops < 2 {
+        return;
+    }
+    let snapshot = state.to_vec();
+    for i in 0..n_pops {
+        let mut self_share = 1.0;
+        let mut new_f = [0.0; 4];
+        for j in 0..n_pops {
+            if i == j { continue; }
+            let m = migration_at(t, i as u32, j as u32);
+            self_share -= m;
+            for k in 0..4 {
+                new_f[k] += m * snapshot[j][k];
+            }
+        }
+        for k in 0..4 {
+            state[i][k] = self_share.max(0.0) * snapshot[i][k] + new_f[k];
+        }
+        renormalize_inplace(&mut state[i]);
+    }
 }
 
 fn sample_binomial(n: u64, p: f64, rng: &mut Xoshiro256PlusPlus) -> u64 {
@@ -495,5 +527,46 @@ mod tests {
         );
         let final_freq = traj.samples.last().unwrap().freq[0];
         assert!(final_freq[CLASS_S_A_BENEF] < 1e-9);
+    }
+
+    /// 2-pop: origin in pop 0, m(1,0)=1e-3 means pop 1 absorbs 1e-3
+    /// of its gene pool from pop 0 each gen (matches simulator's
+    /// `Demography::migration_matrix[dst][src]` convention). Pop 1
+    /// should accumulate A.
+    #[test]
+    fn migration_spreads_sweep() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05,
+            t_origin: 1000.0,
+            f0: 0.001,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let mig = |_t: f64, i: u32, j: u32| if i == 1 && j == 0 { 1e-3 } else { 0.0 };
+        let traj = build_joint_trajectory(
+            &spec, 2, 0, Karyotype::S, &[0.0, 0.0],
+            &|_t, _p| 10_000.0, &mig, 0.0,
+        );
+        let final_freq = traj.samples.last().unwrap().freq.clone();
+        let pop1_a = final_freq[1][CLASS_S_A_BENEF];
+        assert!(pop1_a > 1e-3, "pop1 A freq = {pop1_a}, expected > 1e-3");
+    }
+
+    /// m=0 keeps pops independent.
+    #[test]
+    fn no_migration_keeps_pops_independent() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05, t_origin: 1000.0, f0: 0.001,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 2, 0, Karyotype::S, &[0.0, 0.0],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
+        );
+        let pop1_a = traj.samples.last().unwrap().freq[1][CLASS_S_A_BENEF];
+        assert!(pop1_a < 1e-9);
     }
 }

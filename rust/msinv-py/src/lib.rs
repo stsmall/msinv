@@ -55,29 +55,10 @@ fn parse_kary(c: char) -> Option<Karyotype> {
     }
 }
 
-/// Parse a sweep `target_class` string — None or "any" → no filter,
-/// "S"/"I" → inv 0, "S<id>"/"I<id>" → that inv. "P" (panmictic-only)
-/// is rejected: Rust Sweep can't express it.
-fn parse_sweep_target(tc: Option<&str>) -> PyResult<Option<(u16, Karyotype)>> {
-    let s = match tc {
-        None | Some("any") => return Ok(None),
-        Some("P") => return Err(pyo3::exceptions::PyValueError::new_err(
-            "target_class='P' (panmictic-only sweep) is not supported by the \
-             Rust backend. Use 'any', or an 'S'/'I'/'S<id>'/'I<id>' karyotype.")),
-        Some(s) => s,
-    };
-    let mut chars = s.chars();
-    let kary = parse_kary(chars.next().unwrap())
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-            format!("unrecognised target_class {s:?}; first char must be 'S' or 'I'")))?;
-    let inv_id: u16 = if s.len() == 1 {
-        0
-    } else {
-        s[1..].parse().map_err(|_| pyo3::exceptions::PyValueError::new_err(
-            format!("invalid inv_id in target_class {s:?}")))?
-    };
-    Ok(Some((inv_id, kary)))
-}
+// `parse_sweep_target` was removed in Task 11 of the sweep rewrite.
+// The new Sweep API uses `JointSweepSpec` directly (see Task 14 for
+// the Python wiring). Callers that passed `target_class` strings now
+// receive a `NotImplementedError` from the sweep block below.
 
 // ---------------------------------------------------------------
 // simulate_raw: the main entry point from Python
@@ -395,29 +376,19 @@ fn simulate_raw(
     }
 
     // --- Sweeps ---
-    let mut sweep_specs: Vec<Sweep> = Vec::new();
+    // TODO sweep-rewrite Task 14: rewrite under new JointSweepSpec API.
+    // The old Hudson-Kaplan kwargs (`t_event`, `sweep_window`,
+    // `selection_coefficient`, `starting_frequency`, `target_class`)
+    // are no longer accepted; passing a non-empty sweeps list raises
+    // a NotImplementedError until Task 14 lands the new Python wiring.
+    let sweep_specs: Vec<Sweep> = Vec::new();
     if let Some(sw_list) = sweeps {
-        for item in sw_list.iter() {
-            let d: &Bound<'_, PyDict> = item.downcast()?;
-            let x_sel: f64 = d.get_item("x_sel")?.unwrap().extract()?;
-            let t_event: f64 = d.get_item("t_event")?.unwrap().extract()?;
-            let sw_win: f64 = d.get_item("sweep_window")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            let pop: Option<u32> = d.get_item("population")?
-                .and_then(|v| v.extract().ok());
-            let target: Option<(u16, Karyotype)> =
-                parse_sweep_target(d.get_item("target_class")?
-                    .and_then(|v| v.extract::<String>().ok()).as_deref())?;
-            let sel_coeff: f64 = d.get_item("selection_coefficient")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            let start_freq: f64 = d.get_item("starting_frequency")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            sweep_specs.push(Sweep {
-                x_sel, t_event, target, population: pop,
-                sweep_window: sw_win,
-                selection_coefficient: sel_coeff,
-                starting_frequency: start_freq,
-            });
+        if sw_list.len() > 0 {
+            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "sweeps are temporarily unsupported through the Python \
+                 interface (sweep-rewrite Task 11→14 in progress); the \
+                 new JointSweepSpec wiring lands in Task 14.",
+            ));
         }
     }
 

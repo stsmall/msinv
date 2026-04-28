@@ -87,7 +87,7 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         demo_events.append(ev)  # already tuples like ('ej', t, src, dst)
 
     # --- Call Rust ---
-    raw = _simulate_raw(
+    raw, event_log = _simulate_raw(
         sample_config=sample_list,
         pop_sizes=pop_sizes,
         sequence_length=float(simulator.L),
@@ -102,6 +102,7 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
         compound_rate=bool(getattr(simulator, 'compound_rate', False)),
         iters_max=int(getattr(simulator, 'iters_max', 10_000_000)),
         gc_stride=int(getattr(simulator, 'gc_stride', 160)),
+        record_events=bool(getattr(simulator, '_record_events', False)),
     )
 
     # --- Convert to tskit TreeSequence ---
@@ -122,4 +123,5 @@ def rust_simulate(simulator) -> 'tskit.TreeSequence':
     # Rust emits edges pre-sorted in tskit canonical order
     # (time[parent] asc, parent, child, left); skip tc.sort().
     ts = tc.tree_sequence()
-    return ts.simplify()
+    # event_log is None when record_events=False, or a list of dicts when True.
+    return ts.simplify(), event_log

@@ -357,7 +357,8 @@ class HullSimulator:
                  stop_at: float = float('inf'),
                  compound_rate: bool = False,
                  iters_max: int = 10_000_000,
-                 gc_stride: int = 160):
+                 gc_stride: int = 160,
+                 record_events: bool = False):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
         ``demography`` for multi-pop work).
@@ -537,6 +538,8 @@ class HullSimulator:
         self.compound_rate = compound_rate
         self.iters_max = int(iters_max)
         self.gc_stride = int(gc_stride)
+        self._record_events = record_events
+        self.event_log = None  # populated after simulate() when record_events=True
         # Sanity: cross-population reachability. Without a path between
         # populations (via migration or 'ej'), lineages in disjoint pops
         # never coalesce and downstream msprime recap hangs. Warn now
@@ -1222,7 +1225,9 @@ class HullSimulator:
                 use_rust = False
         if use_rust:
             from ._rust_bridge import rust_simulate
-            return rust_simulate(self)
+            ts, event_log = rust_simulate(self)
+            self.event_log = event_log
+            return ts
         reset_uids()
         self._sweep_base_t = None
         self._sweep_merge_k = 0

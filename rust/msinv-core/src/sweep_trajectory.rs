@@ -32,7 +32,14 @@ pub struct JointSweepSpec {
     pub f0: f64,
     pub partial_sweep_final_freq: f64,
     pub recurrent_mutation_rate: f64,
+    /// Gene-conversion rate per generation. In v1 this is treated as
+    /// the per-gen exchange rate directly; `mean_tract_length` is
+    /// reserved (see note on that field).
     pub gamma_flux: f64,
+    /// Reserved for v1: not currently consumed by `apply_flux_inplace`
+    /// (gamma is interpreted as already-per-generation). Kept in the
+    /// public API for forward compatibility with a future tract-length
+    /// scaling.
     pub mean_tract_length: f64,
     pub seed: u64,
     pub dt_scalar: f64,

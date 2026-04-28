@@ -27,9 +27,10 @@ from ._event_log import (
     tract_lengths,
     survival_curve,
     coverage_count,
+    samples_converted_at,
 )
 
 __all__ = ['Segment', 'Lineage', 'Demography', 'InversionSpec',
            'Sweep', 'HullSimulator', '__phase__',
            'filter_cmig', 'filter_flux', 'tract_lengths',
-           'survival_curve', 'coverage_count']
+           'survival_curve', 'coverage_count', 'samples_converted_at']

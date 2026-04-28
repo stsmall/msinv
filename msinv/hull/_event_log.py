@@ -54,3 +54,40 @@ def coverage_count(flux_records, position):
     """How many flux events have tract_left <= position <= tract_right."""
     return sum(1 for r in flux_records
                  if r["tract_left"] <= position <= r["tract_right"])
+
+
+def samples_converted_at(flux_records, ts, position):
+    """Fraction of samples whose ancestry at `position` was hit by ≥1
+    flux event.
+
+    For each flux record, takes descendants of `node_id_at_position`
+    in the marginal tree at `position` and unions them into a
+    converted set.
+
+    Parameters
+    ----------
+    flux_records : iterable of dicts
+        Filtered flux records (from `filter_flux`). Each record must
+        contain key "node_id_at_position".
+    ts : tskit.TreeSequence
+    position : float
+        Genomic position; should lie inside the inversion under test.
+
+    Returns
+    -------
+    fraction : float in [0.0, 1.0]
+        len(converted) / ts.num_samples; 0.0 if num_samples == 0.
+    """
+    if ts.num_samples == 0:
+        return 0.0
+    tree = ts.at(position)
+    converted: set[int] = set()
+    for rec in flux_records:
+        u = int(rec["node_id_at_position"])
+        if u < 0:
+            continue
+        if u >= ts.num_nodes:
+            continue
+        for s in tree.samples(u):
+            converted.add(int(s))
+    return len(converted) / ts.num_samples

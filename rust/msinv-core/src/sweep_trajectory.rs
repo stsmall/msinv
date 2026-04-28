@@ -6,6 +6,9 @@
 //! inversion frequency module) — same math, separate evolution paths.
 
 use crate::class_tag::Karyotype;
+use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
+use rand_xoshiro::Xoshiro256PlusPlus;
 
 /// Index into the 4-element class array.
 /// `[0] = (S, a)`, `[1] = (S, A)`, `[2] = (I, a)`, `[3] = (I, A)`
@@ -121,16 +124,20 @@ pub fn build_joint_trajectory(
     let mut samples = Vec::new();
     samples.push(JointSample { t: spec.t_origin, freq: state.clone() });
 
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(spec.seed);
     let mut t = spec.t_origin;
     while t > tau {
         // For DetOnly we step in 1-gen units; for Stoch we use dt_scalar
         // relative to the smallest 2N. (Refined in Task 4.)
         let dt = 1.0;
-        let _ = pop_size_at; // used in later tasks
         let _ = migration_at; // used in Task 6
-        // Selection step
-        for f in state.iter_mut() {
+        // Selection + drift step
+        for (p_idx, f) in state.iter_mut().enumerate() {
             apply_selection_inplace(f, spec.s);
+            if matches!(spec.mode, SweepMode::Stochastic) {
+                let n = pop_size_at(t, p_idx as u32);
+                wf_resample(f, 2.0 * n, &mut rng);
+            }
         }
         t -= dt;
         // Renormalize to guard against floating drift
@@ -189,6 +196,53 @@ fn renormalize_inplace(f: &mut [f64; 4]) {
             *x /= total;
         }
     }
+}
+
+/// Stochastic WF resample of a 4-element frequency vector at finite N.
+/// Uses sequential conditional binomials with a Gaussian-CLT shortcut
+/// when 2N·p_class*(1-p_class) >= 25.
+fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
+    let mut remaining_n = two_n;
+    let mut remaining_p = 1.0;
+    let mut new_counts = [0.0; 4];
+    for i in 0..3 {
+        let p_cond = if remaining_p > 0.0 {
+            (f[i] / remaining_p).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let n = remaining_n;
+        let mu = n * p_cond;
+        let var = n * p_cond * (1.0 - p_cond);
+        let count = if mu >= 25.0 && var > 0.0 {
+            let normal = Normal::new(mu, var.sqrt()).unwrap();
+            normal.sample(rng).round().clamp(0.0, n)
+        } else {
+            sample_binomial(n.round() as u64, p_cond, rng) as f64
+        };
+        new_counts[i] = count;
+        remaining_n -= count;
+        remaining_p -= f[i];
+    }
+    new_counts[3] = remaining_n.max(0.0);
+    let total: f64 = new_counts.iter().sum();
+    if total > 0.0 {
+        for i in 0..4 {
+            f[i] = new_counts[i] / total;
+        }
+    }
+}
+
+fn sample_binomial(n: u64, p: f64, rng: &mut Xoshiro256PlusPlus) -> u64 {
+    use rand::Rng;
+    let mut k = 0u64;
+    for _ in 0..n {
+        let u: f64 = rng.random();
+        if u < p {
+            k += 1;
+        }
+    }
+    k
 }
 
 #[cfg(test)]
@@ -289,5 +343,81 @@ mod tests {
             (observed - expected).abs() < 1e-9,
             "expected={expected}, observed={observed}, t={forward_t}"
         );
+    }
+
+    /// Stochastic mode mean over 100 reps should track DetOnly within
+    /// ±0.05 absolute at any sampled time.
+    #[test]
+    fn stoch_mean_tracks_deterministic() {
+        let mk_spec = |seed: u64, mode: SweepMode| JointSweepSpec {
+            mode,
+            s: 0.02,
+            t_origin: 800.0,
+            f0: 0.01,
+            partial_sweep_final_freq: 1.0,
+            seed,
+            ..Default::default()
+        };
+        let det = build_joint_trajectory(
+            &mk_spec(0, SweepMode::Deterministic),
+            1, 0, Karyotype::S, &[0.0],
+            &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+        );
+        let n_reps = 100;
+        let mut means = vec![0.0_f64; det.samples.len()];
+        for r in 0..n_reps {
+            let st = build_joint_trajectory(
+                &mk_spec(r as u64 + 1, SweepMode::Stochastic),
+                1, 0, Karyotype::S, &[0.0],
+                &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+            );
+            for (i, s) in st.samples.iter().enumerate().take(means.len()) {
+                means[i] += s.freq[0][CLASS_S_A_BENEF];
+            }
+        }
+        for m in means.iter_mut() {
+            *m /= n_reps as f64;
+        }
+        for frac in [0.25, 0.5, 0.75] {
+            let i = (means.len() as f64 * frac) as usize;
+            let observed = means[i];
+            let expected = det.samples[i].freq[0][CLASS_S_A_BENEF];
+            assert!(
+                (observed - expected).abs() < 0.05,
+                "at frac {}: stoch mean={}, det={}",
+                frac, observed, expected
+            );
+        }
+    }
+
+    /// Stochastic-mode reps should NOT all be identical (drift must
+    /// produce variance).
+    #[test]
+    fn stoch_reps_vary() {
+        let trajs: Vec<_> = (0..10)
+            .map(|r| {
+                build_joint_trajectory(
+                    &JointSweepSpec {
+                        mode: SweepMode::Stochastic,
+                        s: 0.02, t_origin: 500.0, f0: 0.01,
+                        seed: r as u64 + 1,
+                        ..Default::default()
+                    },
+                    1, 0, Karyotype::S, &[0.0],
+                    &|_t, _p| 1_000.0, &|_t, _i, _j| 0.0, 0.0,
+                )
+            })
+            .collect();
+        let final_freqs: Vec<f64> = trajs
+            .iter()
+            .map(|t| t.samples.last().unwrap().freq[0][CLASS_S_A_BENEF])
+            .collect();
+        let var = variance(&final_freqs);
+        assert!(var > 1e-6, "expected drift variance > 1e-6, got {var}");
+    }
+
+    fn variance(xs: &[f64]) -> f64 {
+        let mean = xs.iter().sum::<f64>() / xs.len() as f64;
+        xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / xs.len() as f64
     }
 }

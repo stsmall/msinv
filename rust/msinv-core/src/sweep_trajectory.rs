@@ -350,6 +350,58 @@ fn sample_binomial(n: u64, p: f64, rng: &mut Xoshiro256PlusPlus) -> u64 {
     k
 }
 
+impl JointSweepTrajectory {
+    /// Find the sample index nearest to `t`. Samples are stored in
+    /// order from oldest (first) to most recent (last), so `t` decreases
+    /// as the index increases.
+    fn idx_at(&self, t: f64) -> usize {
+        if self.samples.is_empty() {
+            return 0;
+        }
+        // Find the index where samples[i].t <= t < samples[i-1].t.
+        // Since t is decreasing, we look for the largest i with samples[i].t >= t.
+        // Linear scan is fine — sample count is bounded by t_origin generations.
+        let mut best = 0usize;
+        for (i, s) in self.samples.iter().enumerate() {
+            if s.t >= t {
+                best = i;
+            } else {
+                break;
+            }
+        }
+        best
+    }
+
+    pub fn p_kary(&self, t: f64, pop: u32, kary: Karyotype) -> f64 {
+        let i = self.idx_at(t);
+        let f = &self.samples[i].freq[pop as usize];
+        match kary {
+            Karyotype::S => f[CLASS_S_A] + f[CLASS_S_A_BENEF],
+            Karyotype::I => f[CLASS_I_A] + f[CLASS_I_A_BENEF],
+        }
+    }
+
+    pub fn p_allele_given_kary(&self, t: f64, pop: u32, kary: Karyotype) -> f64 {
+        let i = self.idx_at(t);
+        let f = &self.samples[i].freq[pop as usize];
+        let (num, denom) = match kary {
+            Karyotype::S => (f[CLASS_S_A_BENEF], f[CLASS_S_A] + f[CLASS_S_A_BENEF]),
+            Karyotype::I => (f[CLASS_I_A_BENEF], f[CLASS_I_A] + f[CLASS_I_A_BENEF]),
+        };
+        if denom <= 0.0 { 0.0 } else { num / denom }
+    }
+
+    pub fn ne_cell(&self, t: f64, pop: u32, kary: Karyotype, n_pop_t: f64) -> f64 {
+        n_pop_t * self.p_kary(t, pop, kary)
+    }
+
+    pub fn p_allele_overall(&self, t: f64, pop: u32) -> f64 {
+        let i = self.idx_at(t);
+        let f = &self.samples[i].freq[pop as usize];
+        f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,5 +709,39 @@ mod tests {
             (mean - expected_count).abs() < 3.0 * sigma,
             "mean origins = {mean}, expected = {expected_count} ± {sigma}"
         );
+    }
+
+    #[test]
+    fn p_kary_query_sums_classes() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05, t_origin: 100.0, f0: 0.001,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::S, &[0.3],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
+        );
+        let p_s = traj.p_kary(50.0, 0, Karyotype::S);
+        let p_i = traj.p_kary(50.0, 0, Karyotype::I);
+        assert!((p_s + p_i - 1.0).abs() < 1e-6, "p_S + p_I = {} != 1", p_s + p_i);
+    }
+
+    #[test]
+    fn ne_cell_scales_with_pop_size() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05, t_origin: 100.0, f0: 0.001,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::S, &[0.5],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0, 0.0,
+        );
+        let ne_s = traj.ne_cell(50.0, 0, Karyotype::S, 10_000.0);
+        let p_s = traj.p_kary(50.0, 0, Karyotype::S);
+        assert!((ne_s - 10_000.0 * p_s).abs() < 1e-6);
     }
 }

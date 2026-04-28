@@ -18,12 +18,14 @@ use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
+use crate::event_log;
 
 // ---------------------------------------------------------------
 // Simulation result
 // ---------------------------------------------------------------
 pub struct SimResult {
     pub tables: TableBuilder,
+    pub event_log: Option<event_log::EventLog>,
 }
 
 // ---------------------------------------------------------------
@@ -103,6 +105,9 @@ pub struct HullSimulator {
     /// overhead, most pruning). Downstream: fewer active lineages at
     /// `stop_at` means tractable Hudson recap in msprime.
     pub gc_stride: u32,
+    /// If true, simulate_with_cache populates SimResult::event_log.
+    /// Default false; production sims should leave this off.
+    pub record_events: bool,
 }
 
 impl HullSimulator {
@@ -143,6 +148,7 @@ impl HullSimulator {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         }
     }
 
@@ -170,6 +176,7 @@ impl HullSimulator {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         }
     }
 
@@ -232,7 +239,7 @@ impl HullSimulator {
         // `tables.sort_edges()` before handing columns to tskit so
         // `tc.sort()` can be skipped. Bench / test paths that just
         // read `SimResult::tables` skip the sort cost.
-        SimResult { tables }
+        SimResult { tables, event_log: None }
     }
 
     // ---------------------------------------------------------------
@@ -2564,6 +2571,7 @@ mod tests {
             compound_rate: true,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 15);
@@ -2591,6 +2599,7 @@ mod tests {
             compound_rate: true,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
         // 6 samples, no recomb → 11 nodes.
@@ -2691,6 +2700,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
 
@@ -2917,6 +2927,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -2956,6 +2967,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -2996,6 +3008,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
+            record_events: false,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);

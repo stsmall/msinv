@@ -341,18 +341,9 @@ impl HullSimulator {
                 if !barrier_active[ii] { continue; }
                 if inv.gene_conversion_rate <= 0.0 { continue; }
                 for li in 0..active.len() {
-                    let kary = lineage_class_for_inv_arena(
-                        active[li].head, inv, arena);
-                    let p_other = match kary {
-                        Some(Karyotype::S) => inv.p_inv_at(t, active[li].population),
-                        Some(Karyotype::I) => 1.0 - inv.p_inv_at(t, active[li].population),
-                        None => continue,
-                    };
-                    if p_other <= 0.0 { continue; }
-                    let w = flux_lineage_weight_arena(
-                        active[li].head, inv, arena);
-                    if w <= 0.0 { continue; }
-                    let r = inv.gene_conversion_rate * p_other * w;
+                    let r = flux_lineage_rate_arena(
+                        active[li].head, inv,
+                        active[li].population, t, arena);
                     if r > 0.0 {
                         flux_entries.push((li, ii, r));
                         flux_rate += r;
@@ -1461,18 +1452,7 @@ fn compute_lin_flux_into(
     for (ii, inv) in inversions.iter().enumerate() {
         if !barrier_active[ii] { continue; }
         if inv.gene_conversion_rate <= 0.0 { continue; }
-        let p_inv_pop = inv.p_inv_at(t, pop);
-        let p_std_pop = 1.0 - p_inv_pop;
-        let kary = lineage_class_for_inv_segs(segs, inv);
-        let p_other = match kary {
-            Some(Karyotype::S) => p_inv_pop,
-            Some(Karyotype::I) => p_std_pop,
-            None => continue,
-        };
-        if p_other <= 0.0 { continue; }
-        let w = flux_lineage_weight_segs(segs, inv);
-        if w <= 0.0 { continue; }
-        let rate = inv.gene_conversion_rate * p_other * w;
+        let rate = flux_lineage_rate_segs(segs, inv, pop, t);
         if rate > 0.0 {
             out.push((ii, rate));
         }
@@ -1870,27 +1850,53 @@ fn lineage_class_for_inv_arena(
     else { None }
 }
 
-/// Arena-walking counterpart to `flux_lineage_weight_segs`.
-fn flux_lineage_weight_arena(
-    head: SegIdx, inv: &InversionSpec, arena: &SegmentArena,
+/// Per-lineage flux rate with class resolved per segment.
+///
+/// Sums over each in-inv segment of `head`'s chain:
+///   γ · p_other(seg.class) · phi_integral(seg-normalized-bounds, w) · inv_len
+/// where p_other = p_inv(t, pop) for class S segments, 1 - p_inv for class I.
+/// Panmictic segments (`get_inv → None`) contribute 0.
+///
+/// Replaces the prior "one karyotype per lineage" model: mixed-class lineages
+/// (which b2-flux's partial-tract events create regularly) now contribute the
+/// correct non-zero rate from BOTH their S and I segments, instead of being
+/// zero-blocked by `lineage_class_for_inv_arena` returning None.
+fn flux_lineage_rate_arena(
+    head: SegIdx,
+    inv: &InversionSpec,
+    pop: u32,
+    t: f64,
+    arena: &SegmentArena,
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
-    let w = inv.mean_tract_length / inv_len;
-    let mut weight = 0.0;
+    let w_phi = inv.mean_tract_length / inv_len;
+    let p_inv_v = inv.p_inv_at(t, pop);
+    let mut rate = 0.0;
     let mut cur = head;
     while cur != SEG_NIL {
         let seg = arena.get(cur);
+        let next = seg.next;
         let l = seg.left.max(inv.bp_left);
         let r = seg.right.min(inv.bp_right);
         if r > l {
-            let a = (l - inv.bp_left) / inv_len;
-            let b = (r - inv.bp_left) / inv_len;
-            weight += phi_integral(a, b, w) * inv_len;
+            if let Some(kary) = seg.branch_class.get_inv(inv.inv_id) {
+                let p_other = match kary {
+                    Karyotype::S => p_inv_v,
+                    Karyotype::I => 1.0 - p_inv_v,
+                };
+                if p_other > 0.0 {
+                    let a = (l - inv.bp_left) / inv_len;
+                    let b = (r - inv.bp_left) / inv_len;
+                    rate += inv.gene_conversion_rate * p_other
+                          * phi_integral(a, b, w_phi) * inv_len;
+                }
+            }
+            // Panmictic (None) → no flux contribution.
         }
-        cur = seg.next;
+        cur = next;
     }
-    weight
+    rate
 }
 
 /// Determine a lineage's karyotype for one inversion, reading flat segs.
@@ -1915,25 +1921,38 @@ fn lineage_class_for_inv_segs(
     else { None }
 }
 
-/// Per-lineage flux weight reading flat segs: integral of phi(x) over
-/// in-inv material.
-fn flux_lineage_weight_segs(
-    segs: &[FlatSeg], inv: &InversionSpec,
+/// Flat-segs counterpart of `flux_lineage_rate_arena`. Same semantics; used
+/// by the cache-rebuild path that operates on the RateCache flat-seg mirror.
+fn flux_lineage_rate_segs(
+    segs: &[FlatSeg],
+    inv: &InversionSpec,
+    pop: u32,
+    t: f64,
 ) -> f64 {
     let inv_len = inv.length();
     if inv_len <= 0.0 { return 0.0; }
-    let w = inv.mean_tract_length / inv_len;
-    let mut weight = 0.0;
-    for &(sl, sr, _) in segs {
+    let w_phi = inv.mean_tract_length / inv_len;
+    let p_inv_v = inv.p_inv_at(t, pop);
+    let mut rate = 0.0;
+    for &(sl, sr, cls) in segs {
         let l = sl.max(inv.bp_left);
         let r = sr.min(inv.bp_right);
         if r > l {
-            let a = (l - inv.bp_left) / inv_len;
-            let b = (r - inv.bp_left) / inv_len;
-            weight += phi_integral(a, b, w) * inv_len;
+            if let Some(kary) = cls.get_inv(inv.inv_id) {
+                let p_other = match kary {
+                    Karyotype::S => p_inv_v,
+                    Karyotype::I => 1.0 - p_inv_v,
+                };
+                if p_other > 0.0 {
+                    let a = (l - inv.bp_left) / inv_len;
+                    let b = (r - inv.bp_left) / inv_len;
+                    rate += inv.gene_conversion_rate * p_other
+                          * phi_integral(a, b, w_phi) * inv_len;
+                }
+            }
         }
     }
-    weight
+    rate
 }
 
 /// Apply a gene-flux event: split tract out of lineage, flip class
@@ -1966,8 +1985,35 @@ fn apply_gene_flux(
     }
     if !tract_hits_material { return; }
 
-    // Capture uid BEFORE any active.push() that might reallocate.
+    // Capture uid BEFORE any active.push() that might reallocate or
+    // any split_at() that mutates the chain.
     let lineage_uid = active[lin_idx].uid;
+
+    // Build per-segment (left, right, node_id) list spanning the tract,
+    // but ONLY when an event log is attached. Off-path (`log is None`)
+    // pays zero overhead: no segment walk, no allocation.
+    let tract_segments: Option<Vec<(f64, f64, i32)>> = if log.is_some() {
+        let mut segs: Vec<(f64, f64, i32)> = Vec::new();
+        let mut cur = active[lin_idx].head;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            if seg.left >= tract_right { break; }
+            if seg.right > tract_left {
+                let l = seg.left.max(tract_left);
+                let r = seg.right.min(tract_right);
+                if r > l {
+                    segs.push((l, r, seg.node_id));
+                }
+            }
+            cur = seg.next;
+        }
+        debug_assert!(!segs.is_empty(),
+            "flux event at x_event={} has no covering segments in lineage uid={}",
+            x_event, lineage_uid);
+        Some(segs)
+    } else {
+        None
+    };
 
     if tract_left <= first_left {
         // Fast path: no material precedes the tract, so split at
@@ -1992,6 +2038,7 @@ fn apply_gene_flux(
                 tract_left,
                 tract_right,
                 inv_id: inv.inv_id,
+                tract_segments: tract_segments.expect("tract_segments built when log is Some"),
             });
         }
         return;
@@ -2033,6 +2080,7 @@ fn apply_gene_flux(
             tract_left,
             tract_right,
             inv_id: inv.inv_id,
+            tract_segments: tract_segments.expect("tract_segments built when log is Some"),
         });
     }
 }
@@ -3351,7 +3399,7 @@ mod tests {
         let result = sim.simulate();
         let log = result.event_log.expect("event_log should be Some");
         let flux_recs: Vec<_> = log.records().iter()
-            .filter_map(|r| if let EventRecord::Flux(f) = r { Some(*f) } else { None })
+            .filter_map(|r| if let EventRecord::Flux(f) = r { Some(f.clone()) } else { None })
             .collect();
         assert!(!flux_recs.is_empty(),
             "expected at least one FluxRecord; tune gene_conversion_rate/t_inv if zero");

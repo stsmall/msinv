@@ -19,7 +19,7 @@ pub struct CmigRecord {
     pub n_moved: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FluxRecord {
     pub t: f64,
     pub lineage_uid: LinUid,
@@ -27,9 +27,23 @@ pub struct FluxRecord {
     pub tract_left: f64,
     pub tract_right: f64,
     pub inv_id: u16,
+    /// Per-segment node IDs spanning the tract at the moment the flux
+    /// event fired. Each entry is `(seg_left, seg_right, node_id)`
+    /// where `seg_left/seg_right` are the segment's bounds (clamped to
+    /// the tract; `seg_left ≥ tract_left`, `seg_right ≤ tract_right`)
+    /// and `node_id` is the tskit node ID for that segment at fire time.
+    ///
+    /// Used by Tier 3-full sample-conversion validation: for a query
+    /// position p ∈ [tract_left, tract_right], the helper finds the
+    /// entry with `seg_left ≤ p < seg_right` and queries
+    /// `tree.samples(node_id)` against the marginal tree at p.
+    /// Replaces the prior single `node_id_at_position`, which was
+    /// captured at `x_event` only and missed the right node when the
+    /// lineage's segment chain was fragmented within the tract.
+    pub tract_segments: Vec<(f64, f64, i32)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EventRecord {
     Cmig(CmigRecord),
     Flux(FluxRecord),
@@ -82,11 +96,12 @@ mod tests {
         let r = FluxRecord {
             t: 250.0, lineage_uid: 42, position: 5000.0,
             tract_left: 4850.0, tract_right: 5150.0, inv_id: 0,
+            tract_segments: vec![(4850.0, 5150.0, 17)],
         };
-        log.push_flux(r);
+        log.push_flux(r.clone());
         assert_eq!(log.len(), 1);
-        match log.records()[0] {
-            EventRecord::Flux(got) => assert_eq!(got, r),
+        match &log.records()[0] {
+            EventRecord::Flux(got) => assert_eq!(got, &r),
             _ => panic!("expected Flux variant"),
         }
     }
@@ -101,6 +116,7 @@ mod tests {
         log.push_flux(FluxRecord {
             t: 20.0, lineage_uid: 1, position: 100.0,
             tract_left: 90.0, tract_right: 110.0, inv_id: 0,
+            tract_segments: vec![(90.0, 110.0, 5)],
         });
         let recs = log.into_records();
         assert_eq!(recs.len(), 2);

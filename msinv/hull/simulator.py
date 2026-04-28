@@ -803,31 +803,60 @@ class HullSimulator:
             seg = seg.next
         return self.L
 
-    def _flux_lineage_weight(self, lineage, inv):
-        """Per-lineage gene-flux weight under one ``InversionSpec``:
-        ∫_inv phi(x) dx over the lineage's in-inv ancestral material,
-        in inversion-relative coordinates. Multiplying this weight by
-        ``inv.gene_conversion_rate`` and ``p_other`` gives a rate in
-        events/generation.
+    def _flux_lineage_rate(self, lineage, inv):
+        """Per-lineage flux rate with class resolved per segment.
+
+        Sums over each in-inv segment of the lineage:
+            γ · p_other(seg.class) · phi_integral(seg-bounds, w) · inv_len
+        where p_other = p_inv(pop) for class S segments, 1 - p_inv for class I.
+        Panmictic segments (no S/I tag for this inversion) contribute 0.
+
+        Replaces the prior "one karyotype per lineage" model: mixed-class
+        lineages — which b2-flux's partial-tract events create regularly —
+        now contribute the correct non-zero rate from BOTH their S and I
+        segments, instead of being zero-blocked by ``_lineage_class_for_inv``
+        returning None.
+
+        Mirrors Rust's ``flux_lineage_rate_arena``.
         """
         if inv.bp_left is None:
             return 0.0
         inv_len = inv.bp_right - inv.bp_left
         if inv_len <= 0:
             return 0.0
-        # b2-flux: w is mean_tract_length / inv_length.
-        w = inv.mean_tract_length / inv_len
-        weight = 0.0
+        # b2-flux: w_phi is mean_tract_length / inv_length.
+        w_phi = inv.mean_tract_length / inv_len
+        pop = lineage.population
+        p_inv_v = inv.p_inv_for(pop)
+        cls_S = inv.class_S()
+        cls_I = inv.class_I()
+        rate = 0.0
         seg = lineage.head
         while seg is not None:
             l = max(seg.left, inv.bp_left)
             r = min(seg.right, inv.bp_right)
             if r > l:
-                a = (l - inv.bp_left) / inv_len
-                b = (r - inv.bp_left) / inv_len
-                weight += _phi_integral(a, b, w) * inv_len
+                bc = seg.branch_class
+                seg_class = None
+                if isinstance(bc, frozenset):
+                    if cls_S in bc:
+                        seg_class = 'S'
+                    elif cls_I in bc:
+                        seg_class = 'I'
+                else:
+                    if bc == cls_S:
+                        seg_class = 'S'
+                    elif bc == cls_I:
+                        seg_class = 'I'
+                if seg_class is not None:
+                    p_other = p_inv_v if seg_class == 'S' else 1.0 - p_inv_v
+                    if p_other > 0.0:
+                        a = (l - inv.bp_left) / inv_len
+                        b = (r - inv.bp_left) / inv_len
+                        rate += (inv.gene_conversion_rate * p_other
+                                 * _phi_integral(a, b, w_phi) * inv_len)
             seg = seg.next
-        return weight
+        return rate
 
     def _lineage_class_for_inv(self, lineage, inv):
         """Return 'S', 'I', or None for the lineage's karyotype at
@@ -835,8 +864,12 @@ class HullSimulator:
         (a string like 'S0' or a frozenset for nested inversions).
         Returns None if the lineage has no in-inv material, has been
         flipped to panmictic ('P'), or carries inconsistent classes
-        across its segments (shouldn't normally happen mid-sim, but
-        is treated as "no flux event possible" if it does).
+        across its segments.
+
+        Used by class-conditional migration (cmig). NOT used for flux
+        rate computation since the per-segment refactor — the flux rate
+        path now uses ``_flux_lineage_rate`` to handle mixed-class
+        lineages correctly.
         """
         cls_S = inv.class_S()
         cls_I = inv.class_I()
@@ -866,8 +899,10 @@ class HullSimulator:
         """List of (kind, rate, payload) for gene-flux events.
 
         One entry per (lineage, inversion) combination with non-zero
-        flux rate. Payload is ``(lineage_idx, inv_id)`` so the
-        executor knows which inversion's class to flip.
+        flux rate. Rate is computed per-segment via ``_flux_lineage_rate``
+        so mixed-class lineages contribute correctly (unlike the prior
+        per-lineage class lookup which zero-blocked them).
+        Payload is ``(lineage_idx, inv_id)``.
         """
         rates = []
         for inv in self.inversions:
@@ -876,23 +911,7 @@ class HullSimulator:
             if inv.bp_left is None or inv.bp_right <= inv.bp_left:
                 continue
             for idx, lin in enumerate(active):
-                # Per-population inversion frequency.
-                pop = lin.population
-                p_inv_v = inv.p_inv_for(pop)
-                p_std_v = 1.0 - p_inv_v
-                cls = self._lineage_class_for_inv(lin, inv)
-                if cls == 'S':
-                    p_other = p_inv_v
-                elif cls == 'I':
-                    p_other = p_std_v
-                else:
-                    continue
-                if p_other <= 0:
-                    continue
-                w_lin = self._flux_lineage_weight(lin, inv)
-                if w_lin <= 0:
-                    continue
-                rate = inv.gene_conversion_rate * p_other * w_lin
+                rate = self._flux_lineage_rate(lin, inv)
                 if rate > 0:
                     rates.append(('flux', rate, (idx, inv.inv_id)))
         return rates

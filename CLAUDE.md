@@ -6,7 +6,8 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (96 lib + 23 parity as of 2026-04-27)
+- Rust: `cd rust && cargo test --release` (107 lib + 25 integration as of 2026-04-28).
+  `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/` — expect 17 pre-existing sweep failures (see below)
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
@@ -23,6 +24,8 @@ cd rust && cargo build --release -p msinv-py
 17 sweep tests use `target_class='P'` which `msinv/hull/_rust_bridge.py:89` rejects with
 `ValueError: target_class='P' (panmictic-only sweep) is not supported by the Rust backend`:
 `test_phase6_sweep.py::{test_sweep_forces_coalescence_at_x_sel,test_sweep_does_not_affect_distant_positions,test_sweep_hitchhiking_produces_valid_ts_at_moderate_rho,test_sweep_window_mode_no_disjoint_corruption[*],test_soft_sweep_diversity_signature,test_two_simultaneous_window_sweeps[*-True],test_two_simultaneous_hitchhiking_sweeps[*-True]}`.
+Plus: `test_stress_corners.py::test_flux_in_nested_inv_only_flips_one_inv_class` hangs (>15 min,
+~35 GB RAM) at the remnant-ratchet path. `--ignore=tests/hull/test_stress_corners.py` for full-suite runs.
 Confirm pre-existing via `git stash`+rerun before chasing.  Deselect with
 `--deselect tests/hull/test_phase6_sweep.py::<name>`.
 
@@ -73,3 +76,4 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
 - New features → feature branch. Do not break `main` event loop.
 - Bug fixes → regression test in cargo before commit.
 - Rust ↔ Python divergence is a common bug vector — diff both when in doubt.
+- Adding a field to a public Rust struct: audit `Self { ... }` literals in `src/`, `tests/`, `examples/`, `benches/` and the PyO3 bridge — `cargo build -p <crate>` catches `src/` only.

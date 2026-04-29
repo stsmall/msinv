@@ -480,8 +480,10 @@ fn simulate_raw(
     // (built via `from msinv._msinv_core import PySweep`). Each is
     // unwrapped to the underlying `msinv_core::sweep::Sweep` and
     // handed to the simulator. The simulator builds the joint
-    // trajectory itself using the live demography accessors, so any
-    // trajectory pre-built on the PySweep is overwritten.
+    // trajectory at run time using a snapshot of the live Demography
+    // (pop_sizes, growth_rates, events, migration_matrix), but respects
+    // any caller-supplied pre-built trajectory via an is_some() guard
+    // at the run-loop sites (simulator does not overwrite).
     let mut sweep_specs: Vec<Sweep> = Vec::new();
     if let Some(sw_list) = sweeps {
         for item in sw_list.iter() {

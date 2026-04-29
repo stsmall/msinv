@@ -44,6 +44,7 @@ fn tables_to_pydict(py: Python<'_>, result: SimResult) -> PyResult<Py<PyDict>> {
     dict.set_item("edge_right", PyArray1::from_vec(py, t.edge_right))?;
     dict.set_item("edge_parent", PyArray1::from_vec(py, t.edge_parent))?;
     dict.set_item("edge_child", PyArray1::from_vec(py, t.edge_child))?;
+    dict.set_item("sweep_a_count", result.sweep_a_count)?;
     Ok(dict.into())
 }
 
@@ -112,22 +113,44 @@ impl PySweep {
         })
     }
 
-    /// Build the joint trajectory using a constant pop_size and zero migration.
-    /// Convenience for tests; production path uses the simulator's demography.
+    /// Build the joint trajectory using per-pop sizes and a migration
+    /// matrix. `migration_matrix[dst][src]` matches Demography's
+    /// convention. Convenience for tests; production path uses the live
+    /// simulator demography.
+    #[pyo3(signature = (n_pops, p_inv_init, pop_sizes, migration_matrix=None))]
     fn build_trajectory(
         &mut self,
         n_pops: u32,
         p_inv_init: Vec<f64>,
-        pop_size: f64,
+        pop_sizes: Vec<f64>,
+        migration_matrix: Option<Vec<Vec<f64>>>,
     ) -> PyResult<()> {
         if p_inv_init.len() != n_pops as usize {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 format!("p_inv_init.len() = {} != n_pops = {}", p_inv_init.len(), n_pops)));
         }
+        if pop_sizes.len() != n_pops as usize {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("pop_sizes.len() = {} != n_pops = {}", pop_sizes.len(), n_pops)));
+        }
+        let mig = migration_matrix.unwrap_or_else(||
+            vec![vec![0.0; n_pops as usize]; n_pops as usize]);
+        if mig.len() != n_pops as usize {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("migration_matrix outer dim = {} != n_pops = {}", mig.len(), n_pops)));
+        }
+        for row in &mig {
+            if row.len() != n_pops as usize {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "migration_matrix rows must each have n_pops entries"));
+            }
+        }
+        let pop_sizes_clone = pop_sizes.clone();
+        let mig_clone = mig.clone();
         let inner = self.inner.clone().with_trajectory(
             n_pops, &p_inv_init,
-            &|_t, _p| pop_size,
-            &|_t, _i, _j| 0.0,
+            &|_t: f64, p: u32| pop_sizes_clone[p as usize],
+            &|_t: f64, i: u32, j: u32| mig_clone[i as usize][j as usize],
         );
         self.inner = inner;
         Ok(())
@@ -480,8 +503,10 @@ fn simulate_raw(
     // (built via `from msinv._msinv_core import PySweep`). Each is
     // unwrapped to the underlying `msinv_core::sweep::Sweep` and
     // handed to the simulator. The simulator builds the joint
-    // trajectory itself using the live demography accessors, so any
-    // trajectory pre-built on the PySweep is overwritten.
+    // trajectory at run time using a snapshot of the live Demography
+    // (pop_sizes, growth_rates, events, migration_matrix), but respects
+    // any caller-supplied pre-built trajectory via an is_some() guard
+    // at the run-loop sites (simulator does not overwrite).
     let mut sweep_specs: Vec<Sweep> = Vec::new();
     if let Some(sw_list) = sweeps {
         for item in sw_list.iter() {

@@ -26,6 +26,9 @@ use crate::event_log;
 pub struct SimResult {
     pub tables: TableBuilder,
     pub event_log: Option<event_log::EventLog>,
+    /// Number of sample lineages assigned to the A (swept) haplotype
+    /// at τ. Populated by `apply_sweep` tags; 0 when no sweeps fire.
+    pub sweep_a_count: u64,
 }
 
 // ---------------------------------------------------------------
@@ -225,6 +228,14 @@ impl HullSimulator {
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
+        // v1 sweep API supports a single sweep per simulation. Multiple
+        // sweeps with overlapping windows would silently mis-apply
+        // ne_cell scaling because emit_coal_events_from_cache uses
+        // .find(|s| s.covers(t)). Out of v1 scope per
+        // docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md §"In scope (v1)".
+        debug_assert!(self.sweeps.len() <= 1,
+            "v1 sweep API supports a single sweep; got {}", self.sweeps.len());
+
         if self.compound_rate {
             panic!("compound_rate=True is experimental and disabled on main; \
                     the compound event loop lacks incremental flux + lineage-length \
@@ -233,15 +244,16 @@ impl HullSimulator {
         }
         let mut event_log: Option<event_log::EventLog> =
             if self.record_events { Some(event_log::EventLog::new()) } else { None };
-        self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions, rate_cache, event_log.as_mut());
+        let sweep_a_count = self.run_loop(
+            &mut active, &mut arena, &mut tables,
+            &mut next_uid, &mut rng, &mut demo,
+            &mut inversions, rate_cache, event_log.as_mut());
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
         // `tc.sort()` can be skipped. Bench / test paths that just
         // read `SimResult::tables` skip the sort cost.
-        SimResult { tables, event_log }
+        SimResult { tables, event_log, sweep_a_count }
     }
 
     // ---------------------------------------------------------------
@@ -295,7 +307,13 @@ impl HullSimulator {
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
+        // Snapshot demography state into each sweep's trajectory closures
+        // BEFORE any apply_events_at calls fire — otherwise the snapshot
+        // would capture mutated pop_sizes rather than t=0 values.
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
 
         let mut t: f64 = 0.0;
         let max_lins = (active.len() * 40).max(2048);
@@ -328,7 +346,9 @@ impl HullSimulator {
             let t_demo = demo.next_event_time(t);
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
-            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
+            let t_sweep_origin = finalized_sweeps.first()
+                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
@@ -389,9 +409,9 @@ impl HullSimulator {
                     t = next_boundary;
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
-                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
-                        &mut sweep_cursor, None);
+                        &mut sweep_cursor, None, &mut a_tag);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
                     total_material = active.iter().map(|l| l.cached_len).sum();
@@ -408,9 +428,9 @@ impl HullSimulator {
                 t = next_boundary;
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
-                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
-                    &mut sweep_cursor, None);
+                    &mut sweep_cursor, None, &mut a_tag);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
                 total_material = active.iter().map(|l| l.cached_len).sum();
@@ -502,7 +522,8 @@ impl HullSimulator {
                 let old_i_len = active[i].cached_len;
                 let old_j_len = active[j].cached_len;
                 apply_coalescence_compound(
-                    active, i, j, t, arena, tables, next_uid);
+                    active, i, j, t, arena, tables, next_uid,
+                    Some(&mut a_tag));
                 let post_len = active.len();
                 let mut delta = -old_i_len - old_j_len;
                 for new_idx in (pre_len - 2)..post_len {
@@ -536,7 +557,8 @@ impl HullSimulator {
                     self.sequence_length);
                 let len_before = active.len();
                 apply_recombination(
-                    active, chosen_idx, x, arena, next_uid);
+                    active, chosen_idx, x, arena, next_uid,
+                    Some(&mut a_tag));
                 let len_after = active.len();
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -596,7 +618,7 @@ impl HullSimulator {
         inversions: &mut Vec<InversionSpec>,
         rate_cache: &mut RateCache,
         mut event_log: Option<&mut event_log::EventLog>,
-    ) {
+    ) -> u64 {
         let mut t: f64 = 0.0;
 
         // Track which inversions' barriers are still active.
@@ -606,11 +628,25 @@ impl HullSimulator {
         // Pending sweeps, sorted by tau (earliest first).
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        let mut finalized_sweeps: Vec<Sweep> = Vec::new();
 
         // Monotone sweep-merge cursor shared across all sweeps at the
         // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
         // sweeps fire simultaneously).
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        // Record sample UIDs before any recombination/coalescence so we can
+        // count only the *initial sample lineages* that were tagged A at τ.
+        // Using a_tag.values().count() would also count recombination children
+        // (which inherit the flag via propagate_a_flag_recomb), inflating the
+        // count above n_samples.
+        let sample_uids: Vec<LinUid> = active.iter().map(|l| l.uid).collect();
+        let count_a_samples = |map: &std::collections::HashMap<LinUid, bool>| -> u64 {
+            sample_uids.iter()
+                .filter(|uid| map.get(uid).copied().unwrap_or(false))
+                .count() as u64
+        };
 
         // Running totals for O(1) recombination rate (Phase A).
         let mut total_material: f64 = active.iter()
@@ -670,9 +706,9 @@ impl HullSimulator {
                 if n == 0 || active[0].total_length(arena)
                     >= self.sequence_length - 1e-9
                 {
-                    return;
+                    return count_a_samples(&a_tag);
                 }
-                return;
+                return count_a_samples(&a_tag);
             }
 
             if lin_tree_dirty || lin_len_tree.len() < active.len() {
@@ -738,10 +774,12 @@ impl HullSimulator {
                     rate_cache.rebuild(active, arena);
                     cache_dirty = false;
                 }
+                let active_sweep: Option<&Sweep> = finalized_sweeps.iter()
+                    .find(|s| s.covers(t));
                 emit_coal_events_from_cache(
                     &rate_cache, active, &*demo, t,
                     inversions, &barrier_active,
-                    &mut all_events);
+                    &mut all_events, active_sweep);
 
                 // Recombination.
                 if total_recomb_rate > 0.0 {
@@ -795,19 +833,21 @@ impl HullSimulator {
             // Next sweep boundary.
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
+            let t_sweep_origin = finalized_sweeps.first()
+                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
 
             // Next deterministic boundary.
-            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             if total_rate <= 0.0 {
                 if next_boundary < f64::INFINITY {
                     t = next_boundary;
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
-                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
                         &mut sweep_cursor,
-                        event_log.as_deref_mut());
+                        event_log.as_deref_mut(), &mut a_tag);
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -817,7 +857,7 @@ impl HullSimulator {
                     flux_dirty = true;
                     continue;
                 }
-                return;
+                return count_a_samples(&a_tag);
             }
 
             // Draw waiting time.
@@ -830,10 +870,10 @@ impl HullSimulator {
                 t = next_boundary;
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
-                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
                     &mut sweep_cursor,
-                    event_log.as_deref_mut());
+                    event_log.as_deref_mut(), &mut a_tag);
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -883,7 +923,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed);
+                        allowed, Some(&mut a_tag));
                     let post_len = active.len();
                     // Incremental total_material: remove the two merged
                     // lineages' contributions, add the new lineages'.
@@ -944,7 +984,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed);
+                        allowed, Some(&mut a_tag));
                     let post_len = active.len();
                     let mut delta = -old_i_len - old_j_len;
                     for new_idx in (pre_len - 2)..post_len {
@@ -1029,7 +1069,7 @@ impl HullSimulator {
                         let pre_len = active.len();
                         apply_coalescence(
                             active, a, b, t, arena,
-                            tables, next_uid);
+                            tables, next_uid, Some(&mut a_tag));
                         let post_len = active.len();
                         // Incremental total_material + lin_len_tree.
                         let mut delta = -old_a_len - old_b_len;
@@ -1076,7 +1116,7 @@ impl HullSimulator {
                                            arena, self.sequence_length);
                     let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
-                                         next_uid);
+                                         next_uid, Some(&mut a_tag));
                     let len_after_split = active.len();
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -1264,6 +1304,7 @@ impl HullSimulator {
             total_recomb_rate = total_material * self.recombination_rate;
         }
         self.warn_cap_hit(t, inversions, "bucket");
+        count_a_samples(&a_tag)
     }
 
     // ---------------------------------------------------------------
@@ -1631,6 +1672,11 @@ fn gc_sole_lineages_with_removed(
 /// where k = number of distinct (pop, class) combinations, typically
 /// ≤ pops × 2^|inversions|. Dispatch samples a specific pair from
 /// iter_pairs when the aggregate fires.
+///
+/// When `active_sweep` is Some and `t` is inside the sweep window for
+/// the swept (pop, kary) cell, the denominator switches to
+/// `2 * ne_cell(t, pop, kary)` from the trajectory instead of
+/// `2 * ne * p_class`. This drives the Kim-Stephan coalescence footprint.
 fn emit_coal_events_from_cache(
     cache: &RateCache,
     _active: &[Lineage],
@@ -1639,6 +1685,7 @@ fn emit_coal_events_from_cache(
     inversions: &[InversionSpec],
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
+    active_sweep: Option<&Sweep>,
 ) {
     // Read pair counts directly from the pair_buckets — each bucket's
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
@@ -1647,7 +1694,19 @@ fn emit_coal_events_from_cache(
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
         if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
-        let rate = count / (2.0 * ne * p_class);
+        let denom = match active_sweep {
+            Some(sw) if sw.covers(t) && sw.origin_pop == pop => {
+                if let Some(kary) = cls.get_inv(sw.target_inv) {
+                    // Inside sweep window, swept (pop, kary) cell:
+                    // use trajectory's ne_cell instead of ne * p_class.
+                    2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
+                } else {
+                    2.0 * ne * p_class
+                }
+            }
+            _ => 2.0 * ne * p_class,
+        };
+        let rate = count / denom;
         events.push((rate, Event::CoalAggregate { pop, class: cls }));
     }
 }
@@ -2115,6 +2174,7 @@ fn apply_boundary(
     barrier_active: &mut [bool],
     demo: &mut Demography,
     pending_sweeps: &mut Vec<Sweep>,
+    finalized_sweeps: &mut Vec<Sweep>,
     t: f64,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
@@ -2123,6 +2183,7 @@ fn apply_boundary(
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
@@ -2130,11 +2191,8 @@ fn apply_boundary(
     // populations — firing demo first would silently zero the sweep's
     // target pool when Ej moves all pop-N lineages into pop-M.
     HullSimulator::cross_barriers_static(inversions, active, arena, barrier_active, t);
-    // Drain all sweeps scheduled at this t (simultaneous sweeps).
-    // TODO sweep-rewrite Task 13: rewrite using JointSweepTrajectory.
-    // For now, sweeps are silently consumed without applying any
-    // forced-coalescence operator — keeps the simulator green while
-    // the new Sweep API is wired up.
+    // Drain all τ-boundary sweeps: tag lineages (Phase B), then move to
+    // finalized_sweeps queue for the t_origin forced-coalescence (Phase C1).
     while !pending_sweeps.is_empty()
         && (pending_sweeps[0].tau - t).abs() < 1e-9
     {
@@ -2142,7 +2200,18 @@ fn apply_boundary(
         let ne_sweep = demo.size_at(sweep.origin_pop, t).max(1.0);
         apply_sweep(active, &sweep, t, arena, tables,
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
-                     sweep_cursor);
+                     sweep_cursor, a_tag);
+        finalized_sweeps.push(sweep);
+    }
+    // Keep finalized_sweeps sorted by t_origin so [0] is the next to fire.
+    finalized_sweeps.sort_by(|a, b| a.joint.t_origin.partial_cmp(&b.joint.t_origin).unwrap());
+    // Drain finalized sweeps whose t_origin matches the current boundary.
+    while !finalized_sweeps.is_empty()
+        && (finalized_sweeps[0].joint.t_origin - t).abs() < 1e-9
+    {
+        let sweep = finalized_sweeps.remove(0);
+        apply_sweep_finalize(active, &sweep, t, arena, tables,
+                              next_uid, rng, recomb_rate, sweep_cursor, a_tag);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2224,9 +2293,6 @@ fn lineage_class_for_inv_id_arena(
 /// Monotonically increasing merge time, shared across all sweep merges
 /// at the same base `t`. Resets when `t` changes.
 ///
-/// Currently unused (sweep dispatch is a no-op stub since Task 11);
-/// will be wired back in by Task 13's new sweep operator.
-#[allow(dead_code)]
 fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
     if cursor.0 != t {
         *cursor = (t, 0);
@@ -2234,6 +2300,71 @@ fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
     cursor.1 += 1;
     let eps = (t * 1e-12).max(1e-9);
     t + (cursor.1 as f64) * eps
+}
+
+/// Populate `Sweep::trajectory` for any sweep that doesn't already carry one,
+/// using closures that snapshot the current `Demography` arrays. Called once
+/// at sim entry from each run-loop. Sweeps with a caller-supplied trajectory
+/// are respected (skip-if-some).
+fn populate_sweep_trajectories(
+    pending_sweeps: &mut [Sweep],
+    demo: &crate::demography::Demography,
+    inversions: &[InversionSpec],
+) {
+    let n_pops = demo.n_pops;
+    let pop_sizes_snap = demo.pop_sizes.clone();
+    let growth_rates_snap = demo.growth_rates.clone();
+    let growth_start_snap = demo.growth_start.clone();
+    let events_snap = demo.events.clone();
+    let mig_snap = demo.migration_matrix.clone();
+
+    for sw in pending_sweeps.iter_mut() {
+        if sw.trajectory.is_some() { continue; }
+        let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
+            inversions.iter().find(|i| i.inv_id == sw.target_inv)
+                .map(|i| i.p_inv_at(0.0, p as u32))
+                .unwrap_or(0.0)
+        }).collect();
+        // Per-sweep clones so the closures own their data and don't hold a
+        // borrow on the outer snapshot vectors (which a future multi-sweep
+        // loop iteration could otherwise contend with).
+        let ps = pop_sizes_snap.clone();
+        let gr = growth_rates_snap.clone();
+        let gs = growth_start_snap.clone();
+        let ev = events_snap.clone();
+        let mg = mig_snap.clone();
+        let pop_size_at = move |t: f64, p: u32| -> f64 {
+            let pp = p as usize;
+            if pp >= ps.len() { return 1.0; }
+            let mut size = ps[pp];
+            let mut growth = gr[pp];
+            let mut growth_start = gs[pp];
+            for e in &ev {
+                if e.time() > t { break; }
+                match e {
+                    crate::demography::DemoEvent::EN { n, .. } =>
+                        { size = *n; growth = 0.0; growth_start = e.time(); }
+                    crate::demography::DemoEvent::En { pop: p2, n, .. } if *p2 as usize == pp =>
+                        { size = *n; growth = 0.0; growth_start = e.time(); }
+                    crate::demography::DemoEvent::EG { alpha, .. } =>
+                        { growth = *alpha; growth_start = e.time(); }
+                    crate::demography::DemoEvent::Eg { pop: p2, alpha, .. } if *p2 as usize == pp =>
+                        { growth = *alpha; growth_start = e.time(); }
+                    _ => {}
+                }
+            }
+            if growth == 0.0 { size } else { size * (-growth * (t - growth_start)).exp() }
+        };
+        let mig_at = move |_t: f64, i: u32, j: u32| -> f64 {
+            if (i as usize) >= mg.len() { return 0.0; }
+            *mg[i as usize].get(j as usize).unwrap_or(&0.0)
+        };
+        let placeholder = Sweep::new(
+            sw.x_sel, sw.tau, sw.origin_pop, sw.origin_kary,
+            sw.target_inv, sw.joint.clone());
+        let real = std::mem::replace(sw, placeholder);
+        *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
+    }
 }
 
 /// Force-coalesce qualifying lineages at a sweep event.
@@ -2252,44 +2383,103 @@ fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
 ///    K ≈ 1/f0 founding copies (discoal model). Lineages within each group
 ///    coalesce; K surviving ancestors continue at normal coalescent rate.
 fn apply_sweep(
-    _active: &mut Vec<Lineage>,
-    _sweep: &Sweep,
-    _t: f64,
-    _arena: &mut SegmentArena,
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
     _tables: &mut TableBuilder,
     _next_uid: &mut LinUid,
     _seq_len: f64,
-    _rng: &mut Xoshiro256PlusPlus,
+    rng: &mut Xoshiro256PlusPlus,
     _ne: f64,
     _recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
-    // TODO sweep-rewrite Task 13+: rewrite using JointSweepTrajectory.
-    // For now, this is a no-op: sweep events are tolerated but no
-    // forced-coalescence operator runs. The old Hudson-Kaplan
-    // endpoint operator was removed in Task 11.
-    //
-    // The helper methods needed for the v2 implementation are now
-    // available on `Sweep`:
-    //   - `sweep.assign_a_at_sample(pop, kary, rng)` decides if a lineage
-    //     at τ is A-bearing (uses `trajectory.p_allele_given_kary`).
-    //   - `sweep.hitchhiking_prob(x, recomb_rate)` gives the probability
-    //     that an A-bearing lineage at position x is linked to the sweep
-    //     MRCA (forced-coalescence at t_origin).
-    //   - `sweep.ne_cell_or_fallback(t, pop, kary, n_pop_t, fallback)` is
-    //     the time-varying coalescent rate driver inside the sweep window.
-    //
-    // Full integration (v2) needs to walk active lineages, mark A-bearers
-    // using assign_a_at_sample, run hitchhiking retention with hitchhiking_prob,
-    // and force-coalesce A-bearing lineages at t_origin. This is gated on
-    // ARG/segment-tree invariants and is tracked as Task 13+ in the
-    // sweep-rewrite plan.
+    // Phase B: at τ (entry into the sweep window going backward), tag every
+    // lineage overlapping x_sel in the sweep's (origin_pop, origin_kary) cell
+    // as A or a using the trajectory's per-(pop, kary) A frequency. Tagging
+    // is a one-shot at τ; later events inside the window (Phase C/D) consume
+    // the tag.
+    if (t - sweep.tau).abs() > 1e-9 {
+        return;
+    }
+    if sweep.trajectory.is_none() {
+        return;
+    }
+    for lin in active.iter() {
+        // Only tag lineages that overlap x_sel — others can't carry A
+        // since they don't cover the selected site.
+        if !lineage_overlaps_position(lin.head, sweep.x_sel, arena) {
+            continue;
+        }
+        let pop = lin.population;
+        // Determine kary at the inversion's range, defaulting to
+        // origin_kary if the lineage is panmictic at this site.
+        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+            .unwrap_or(sweep.origin_kary);
+        let is_a = sweep.assign_a_at_sample(pop, kary, rng);
+        a_tag.insert(lin.uid, is_a);
+    }
+}
+
+/// At `t == sweep.joint.t_origin`: for each A-bearing lineage,
+/// roll the hitchhiking-retention die. Survivors get forced into
+/// a single coalescent event at this time. Escapees drop their A
+/// flag and continue normally past the sweep window.
+fn apply_sweep_finalize(
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    rng: &mut Xoshiro256PlusPlus,
+    recomb_rate: f64,
+    sweep_cursor: &mut (f64, u64),
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+) {
+    use rand::Rng;
+    // Snapshot candidate UIDs first; separates the read pass from the
+    // later mutation (coalesce_uid_group removes/adds active entries).
+    let candidates: Vec<LinUid> = active.iter()
+        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+        .map(|lin| lin.uid)
+        .collect();
+    let mut a_uids: Vec<LinUid> = Vec::new();
+    for uid in candidates {
+        // Hitchhiking probability: exp(-r·d·T_eff) where d is distance
+        // to the selected site. Uses the lineage's position at x_sel
+        // (approximation: d=0 means always retained; finite d discounts).
+        let p_hh = sweep.hitchhiking_prob(sweep.x_sel, recomb_rate);
+        if rng.random::<f64>() < p_hh {
+            a_uids.push(uid);
+        } else {
+            // Escapes: drop A flag so this lineage continues normally.
+            a_tag.insert(uid, false);
+        }
+    }
+    if a_uids.len() < 2 { return; }
+    // Force-coalesce all survivors into a single MRCA at t.
+    coalesce_uid_group(active, &a_uids, t, arena, tables, next_uid, sweep_cursor);
+}
+
+fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
+    let mut s = head;
+    while s != SEG_NIL {
+        let seg = arena.get(s);
+        if seg.left <= x && x < seg.right {
+            return true;
+        }
+        s = seg.next;
+    }
+    false
 }
 
 /// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.
 ///
-/// Currently unused (sweep dispatch is a no-op stub since Task 11);
-/// will be wired back in by Task 13's new sweep operator.
+/// Currently unused; kept for future use by per-A-lineage finalize ops
+/// that may need to build a synthetic lineage during sweep dispatch.
 #[allow(dead_code)]
 fn build_lineage_from_segs(
     segs: &[(f64, f64, i32, BranchClass)],
@@ -2312,11 +2502,6 @@ fn build_lineage_from_segs(
 }
 
 /// Coalesce a group of lineages (identified by UID) sequentially.
-///
-/// Currently unused outside tests (sweep dispatch is a no-op stub
-/// since Task 11); will be wired back in by Task 13's new sweep
-/// operator.
-#[allow(dead_code)]
 fn coalesce_uid_group(
     active: &mut Vec<Lineage>,
     uids: &[LinUid],
@@ -2338,7 +2523,7 @@ fn coalesce_uid_group(
             if !segments_overlap(active[mi].head, active[oi].head, arena) {
                 continue;
             }
-            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid);
+            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid, None);
             merged_uid = active.last().unwrap().uid;
         }
     }
@@ -2466,13 +2651,6 @@ mod tests {
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 19,
             "Got {} nodes", result.tables.num_nodes());
-    }
-
-    #[test]
-    #[ignore = "compound_rate disabled on main; sweep body deleted in sweep-rewrite Task 11"]
-    fn compound_rate_with_sweep() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
     }
 
     #[test]
@@ -2612,13 +2790,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_fires_before_simultaneous_population_merge() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
-    #[test]
     fn coalesce_uid_group_skips_non_overlapping_pairs() {
         use crate::class_tag::BranchClass;
 
@@ -2647,13 +2818,6 @@ mod tests {
         assert_eq!(active.len(), 2,
             "non-overlapping pair was merged (active.len() = {})",
             active.len());
-    }
-
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_targeting_karyotype_should_skip_panmictic_lineages() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
     }
 
     #[test]
@@ -2886,20 +3050,6 @@ mod tests {
         assert!(result.tables.num_nodes() >= 11);
     }
 
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_reduces_diversity_in_window() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_on_s_class_only() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
     // -----------------------------------------------------------------
     // Class-conditional migration (cmig / ClassMig) unit tests
     // -----------------------------------------------------------------
@@ -3128,5 +3278,123 @@ mod tests {
                 "tract [{}, {}) out of sequence bounds [0, 10000)",
                 r.tract_left, r.tract_right);
         }
+    }
+
+    #[test]
+    fn apply_sweep_tags_lineages_with_assigned_a() {
+        use crate::class_tag::{BranchClass, Karyotype};
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use std::collections::HashMap;
+
+        let mut arena = SegmentArena::new();
+        let head_a = arena.alloc(0.0, 10_000.0, 0, BranchClass::PANMICTIC);
+        let head_b = arena.alloc(0.0, 10_000.0, 1, BranchClass::PANMICTIC);
+        let mut active = vec![
+            Lineage::new(head_a, head_a, 0, 0u32, &arena),
+            Lineage::new(head_b, head_b, 0, 1u32, &arena),
+        ];
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 200.0, f0: 0.99,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            }).with_trajectory(1, &[0.0],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+
+        let mut tables = TableBuilder::new(10_000.0, 1);
+        let mut next_uid: LinUid = 2;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut sweep_cursor = (0.0, 0u64);
+
+        apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut sweep_cursor, &mut a_tag);
+
+        // f0=0.99 with high A frequency on origin_kary=S → expect both lineages tagged.
+        assert_eq!(a_tag.len(), 2, "expected both lineages tagged");
+        let n_a = a_tag.values().filter(|&&v| v).count();
+        assert!(n_a >= 1, "expected at least 1 A-tagged with f0=0.99, got {n_a}");
+    }
+
+    #[test]
+    fn apply_sweep_skips_lineages_outside_x_sel_window() {
+        use crate::class_tag::{BranchClass, Karyotype};
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use std::collections::HashMap;
+
+        let mut arena = SegmentArena::new();
+        // Lineage A spans x_sel=5000; lineage B is to the right of x_sel and doesn't overlap.
+        let head_a = arena.alloc(0.0, 6_000.0, 0, BranchClass::PANMICTIC);
+        let head_b = arena.alloc(7_000.0, 10_000.0, 1, BranchClass::PANMICTIC);
+        let mut active = vec![
+            Lineage::new(head_a, head_a, 0, 0u32, &arena),
+            Lineage::new(head_b, head_b, 0, 1u32, &arena),
+        ];
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 200.0, f0: 0.99,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            }).with_trajectory(1, &[0.0],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+
+        let mut tables = TableBuilder::new(10_000.0, 1);
+        let mut next_uid: LinUid = 2;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut sweep_cursor = (0.0, 0u64);
+
+        apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut sweep_cursor, &mut a_tag);
+
+        assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
+        assert!(!a_tag.contains_key(&1u32), "lineage B does not overlap x_sel; should NOT be tagged");
+    }
+
+    /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A
+    /// assignment at τ). After the simulation reaches t_origin = 500, all
+    /// surviving A-bearing lineages collapse to a single MRCA; the deepest
+    /// internal node should be at time ≈ 500 (within sweep_cursor eps).
+    #[test]
+    fn forced_coal_collapses_a_lineages_at_t_origin() {
+        use crate::class_tag::Karyotype;
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use crate::demography::Demography;
+        use crate::sweep::Sweep;
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 1.0,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            });
+
+        let sim = HullSimulator {
+            samples: vec![SampleEntry { karyotypes: vec![], population: 0, count: 4 }],
+            demography: Demography::single_pop(10_000.0),
+            sequence_length: 10_000.0, recombination_rate: 1e-12,
+            inversions: vec![], sweeps: vec![sweep],
+            seed: 7, stop_at: f64::INFINITY,
+            compound_rate: false, iters_max: 1_000_000,
+            gc_stride: 160, record_events: false,
+        };
+        let result = sim.simulate();
+        // The deepest internal node should be at time ~ t_origin = 500.
+        // Allow small slop from sweep_cursor's eps offset (1e-9 to 1e-3).
+        let max_node_t = result.tables.node_time.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t < 500.0 + 1e-3,
+            "MRCA at {}, expected ~500 (t_origin)", max_node_t);
+        // 4 A-tagged samples → all forced together → exactly 1 MRCA event
+        // contributes the time-500 node. Sample nodes are at time 0.
+        let n_at_500: usize = result.tables.node_time.iter()
+            .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
+        assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
     }
 }

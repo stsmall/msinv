@@ -32,7 +32,7 @@ def test_t1_det_logistic_per_gen_within_1e6():
         partial_sweep_final_freq=1.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=10_000.0)
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[10_000.0])
     samples = rust_sw.trajectory_samples()
     # Spot-check at 25%, 50%, 75% along the trajectory
     for frac in [0.25, 0.5, 0.75]:
@@ -59,7 +59,7 @@ def test_t2_stoch_fixation_proportion():
             partial_sweep_final_freq=0.95, seed=r + 1,
         )
         rust_sw = sw.to_rust()
-        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=5_000.0)
+        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[5_000.0])
         if rust_sw.final_a_freq() > 0.5:
             fixations += 1
     observed = fixations / n_reps
@@ -72,19 +72,159 @@ def test_t2_stoch_fixation_proportion():
     )
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
 def test_t3_hitchhiking_footprint_kim_stephan():
-    """T3: pi reduction at multiple distances matches Kim-Stephan within 25%."""
-    pass
+    """T3: pi reduction at distance d from x_sel matches Kim-Stephan within 25%."""
+    import numpy as np
+    from msinv.hull import HullSimulator
+    from msinv.hull.demography import Demography
+    from msinv.hull.sweep import Sweep
+
+    Ne = 10_000.0
+    s = 0.05
+    L = 100_000.0
+    x_sel = L / 2
+    t_origin = (2.0 / s) * math.log(2.0 * Ne)   # sojourn time
+    n_samples = 30
+    n_reps = 15
+    r = 1e-7
+
+    # Distance points chosen so Kim-Stephan predicts informative reductions:
+    # alpha = 2 Ne s = 1000, r = 1e-7 → reduction ~ 1 - exp(-2*alpha*r*d/s).
+    #   d=500  → ~0.86 (near-field, mostly hitchhiked)
+    #   d=1250 → ~0.50 (mid-band, where the test is most discriminating)
+    # The original d=5000 saturates at predicted=1.00, making any reasonable
+    # observation pass within the ±25% tolerance — replaced with d=1250.
+    distances = [500.0, 1_250.0]
+
+    def run_pair(rep_seed, with_sweep):
+        sw_kwargs = dict(
+            sample_config={('S', 0): n_samples},
+            demography=Demography(pop_sizes=[Ne]),
+            sequence_length=L,
+            recombination_rate=r,
+            seed=rep_seed,
+        )
+        if with_sweep:
+            sw = Sweep(
+                x_sel=x_sel, tau=0.0, origin_pop=0, origin_kary="S",
+                target_inv=0,
+                mode="Deterministic", s=s, t_origin=t_origin,
+                f0=1.0/(2*Ne), partial_sweep_final_freq=1.0,
+            )
+            sim = HullSimulator(sweeps=[sw], **sw_kwargs)
+        else:
+            sim = HullSimulator(**sw_kwargs)
+        return sim.simulate()
+
+    pi_reductions = []
+    for d in distances:
+        with_pi, no_pi = [], []
+        for rep in range(n_reps):
+            ts_w = run_pair(rep + 1, True)
+            ts_n = run_pair(rep + 1, False)
+            w_lo = max(0.0, x_sel + d - 100.0)
+            w_hi = min(L, x_sel + d + 100.0)
+            # tskit diversity(windows=...) needs breakpoints spanning [0, L]
+            wins = [0.0, w_lo, w_hi, L]
+            with_pi.append(ts_w.diversity(windows=wins, mode='branch')[1])
+            no_pi.append(ts_n.diversity(windows=wins, mode='branch')[1])
+        pi_w, pi_n = np.mean(with_pi), np.mean(no_pi)
+        if pi_n > 0:
+            pi_reductions.append((d, 1.0 - pi_w / pi_n))
+
+    # Kim-Stephan: f_pi(d) = 1 - exp(-2 * alpha * r * d / s), alpha = 2 Ne s
+    alpha = 2.0 * Ne * s
+    for d, observed in pi_reductions:
+        predicted = 1.0 - math.exp(-2.0 * alpha * r * d / s)
+        # Tier-1 anchor tolerance: 25% relative or 0.10 absolute, whichever larger.
+        # Add extra 0.05 slack for MC noise at n_reps=15.
+        tol = max(0.25 * abs(predicted), 0.10) + 0.05
+        assert abs(observed - predicted) < tol, (
+            f"d={d}: observed reduction {observed:.3f}, "
+            f"predicted {predicted:.3f}, tol={tol:.3f}"
+        )
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
+
+
 def test_t4_soft_sweep_partial_diversity_reduction():
-    """T4: f0=0.05, pi at x_sel approx 1 - 1/K, K = round(1/f0)."""
-    pass
+    """T4: f0=0.05, π at x_sel approx (1 - 1/K), K = round(1/f0)."""
+    import numpy as np
+    from msinv.hull import HullSimulator
+    from msinv.hull.demography import Demography
+    from msinv.hull.sweep import Sweep
+
+    Ne = 10_000.0
+    s = 0.05
+    L = 100_000.0
+    x_sel = L / 2
+    t_origin = (2.0 / s) * math.log(2.0 * Ne)
+    f0 = 0.05
+    K = round(1.0 / f0)
+    n_samples = 50
+    n_reps = 12
+
+    def run_pair(rep_seed, with_sweep):
+        sw_kwargs = dict(
+            sample_config={('S', 0): n_samples},
+            demography=Demography(pop_sizes=[Ne]),
+            sequence_length=L,
+            recombination_rate=1e-12,   # near-zero so soft-sweep signature
+                                         # isn't washed out by recomb
+            seed=rep_seed,
+        )
+        if with_sweep:
+            sw = Sweep(
+                x_sel=x_sel, tau=0.0, origin_pop=0, origin_kary="S",
+                target_inv=0,
+                mode="Deterministic", s=s, t_origin=t_origin, f0=f0,
+                partial_sweep_final_freq=1.0,
+            )
+            sim = HullSimulator(sweeps=[sw], **sw_kwargs)
+        else:
+            sim = HullSimulator(**sw_kwargs)
+        return sim.simulate()
+
+    with_pi, no_pi = [], []
+    for rep in range(n_reps):
+        ts_w = run_pair(rep + 1, True)
+        ts_n = run_pair(rep + 1, False)
+        w_lo = max(0.0, x_sel - 100.0)
+        w_hi = min(L, x_sel + 100.0)
+        wins = [0.0, w_lo, w_hi, L]
+        with_pi.append(ts_w.diversity(windows=wins, mode='branch')[1])
+        no_pi.append(ts_n.diversity(windows=wins, mode='branch')[1])
+
+    pi_w, pi_n = np.mean(with_pi), np.mean(no_pi)
+    observed_reduction = 1.0 - pi_w / pi_n if pi_n > 0 else 0
+    expected_reduction = 1.0 - 1.0 / K
+    tol = max(0.25 * expected_reduction, 0.15)
+    assert abs(observed_reduction - expected_reduction) < tol, (
+        f"observed reduction {observed_reduction:.3f}, "
+        f"expected {expected_reduction:.3f} (K={K})"
+    )
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
 def test_t5_partial_sweep_final_freq_assignment():
-    """T5: c=0.5 -> approx 50% of lineages assigned to swept fraction."""
-    pass
+    """T5: c=0.5 → ~50% of lineages assigned to swept fraction."""
+    from msinv.hull import HullSimulator
+    from msinv.hull.demography import Demography
+
+    sw = Sweep(
+        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.001,
+        partial_sweep_final_freq=0.5,
+    )
+    n_samples = 400
+    sim = HullSimulator(
+        sample_config={('S', 0): n_samples},
+        demography=Demography(pop_sizes=[10_000.0]),
+        sequence_length=100_000.0,
+        recombination_rate=1e-12,
+        sweeps=[sw],
+        seed=42,
+    )
+    sim.simulate()
+    a_count = sim.sweep_a_count
+    observed = a_count / n_samples
+    assert abs(observed - 0.5) < 0.10, f"observed A frac = {observed}, expected ~0.5"

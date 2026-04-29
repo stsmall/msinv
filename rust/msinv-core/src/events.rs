@@ -29,9 +29,10 @@ pub fn apply_coalescence(
     arena: &mut SegmentArena,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
+    a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
 ) -> i32 {
     apply_coalescence_partial(active, idx_a, idx_b, t, arena, tables,
-                               next_uid, None)
+                               next_uid, None, a_tag)
 }
 
 /// Coalesce two lineages. `allowed_class = Some(cls)` restricts the
@@ -47,10 +48,20 @@ pub fn apply_coalescence_partial(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     allowed_class: Option<BranchClass>,
+    mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
 ) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
     let partial = allowed_class.is_some();
+    // Capture parent UIDs and flags before any mutation.
+    let parent_a_uid = active[idx_a].uid;
+    let parent_b_uid = active[idx_b].uid;
+    let (fa, fb) = if let Some(ref map) = a_tag {
+        (map.get(&parent_a_uid).copied().unwrap_or(false),
+         map.get(&parent_b_uid).copied().unwrap_or(false))
+    } else {
+        (false, false)
+    };
 
     let mut sa = active[idx_a].head;
     let mut sb = active[idx_b].head;
@@ -192,18 +203,27 @@ pub fn apply_coalescence_partial(
         active.swap_remove(lo);
     }
 
-    // Add output lineages.
+    // Add output lineages, propagating A-flag to each new UID.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fa || fb { map.insert(uid, true); }
+        }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fa { map.insert(uid, true); }
+        }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fb { map.insert(uid, true); }
+        }
     }
 
     new_node
@@ -230,9 +250,19 @@ pub fn apply_coalescence_compound(
     arena: &mut SegmentArena,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
+    mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
 ) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
+    // Capture parent UIDs and flags before any mutation.
+    let parent_a_uid = active[idx_a].uid;
+    let parent_b_uid = active[idx_b].uid;
+    let (fa, fb) = if let Some(ref map) = a_tag {
+        (map.get(&parent_a_uid).copied().unwrap_or(false),
+         map.get(&parent_b_uid).copied().unwrap_or(false))
+    } else {
+        (false, false)
+    };
 
     let mut sa = active[idx_a].head;
     let mut sb = active[idx_b].head;
@@ -337,17 +367,27 @@ pub fn apply_coalescence_compound(
         active.swap_remove(lo);
     }
 
+    // Add output lineages, propagating A-flag to each new UID.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fa || fb { map.insert(uid, true); }
+        }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fa { map.insert(uid, true); }
+        }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
+        if let Some(ref mut map) = a_tag {
+            if fb { map.insert(uid, true); }
+        }
     }
 
     new_node
@@ -363,16 +403,31 @@ pub fn apply_recombination(
     x: f64,
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
+    a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
 ) {
     let head = active[idx].head;
     if head == SEG_NIL { return; }
     // x at first_seg.left would empty active[idx] — treat as no-op.
     if x <= arena.get(head).left { return; }
+    let parent_uid = active[idx].uid;
     let uid = *next_uid;
     *next_uid += 1;
     let right = active[idx].split_at(x, arena, uid);
     if let Some(right_lin) = right {
         active.push(right_lin);
+        if let Some(map) = a_tag {
+            propagate_a_flag_recomb(map, parent_uid, uid);
+        }
+    }
+}
+
+fn propagate_a_flag_recomb(
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    parent: LinUid,
+    child: LinUid,
+) {
+    if let Some(&flag) = a_tag.get(&parent) {
+        a_tag.insert(child, flag);
     }
 }
 
@@ -430,7 +485,7 @@ mod tests {
         };
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
         assert_eq!(active.len(), 1, "expected 1 merged output");
         assert_eq!(tables.num_edges(), 2);
     }
@@ -453,7 +508,7 @@ mod tests {
             &[(0.0, 50.0, pan), (50.0, 100.0, s)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
         assert_eq!(active.len(), 1,
             "ratchet: expected 1 output (no remnants)");
         // Edges: one pair per overlap interval ([0,50) + [50,100)) ×
@@ -475,7 +530,7 @@ mod tests {
         let lin_b = build_lineage_cls(&mut arena, &[(0.0, 100.0, i)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
         assert_eq!(active.len(), 2,
             "barrier: both remain separate");
         assert_eq!(tables.num_edges(), 0);
@@ -499,7 +554,7 @@ mod tests {
             &[(0.0, 50.0, pan), (50.0, 100.0, i)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
         // Expected: merged (pan part) + a_rem (S at [50,100)) + b_rem (I).
         assert_eq!(active.len(), 3);
         // Edges: only pan overlap [0, 50) × 2 edges = 2.
@@ -526,7 +581,7 @@ mod tests {
         let mut active = vec![lin_a, lin_b];
 
         let new_node = apply_coalescence(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
 
         assert_eq!(active.len(), 1);
         assert_eq!(tables.node_time[new_node as usize], 5.0);
@@ -555,7 +610,7 @@ mod tests {
         let mut active = vec![lin_a, lin_b];
 
         let new_node = apply_coalescence(
-            &mut active, 0, 1, 3.0, &mut arena, &mut tables, &mut next_uid);
+            &mut active, 0, 1, 3.0, &mut arena, &mut tables, &mut next_uid, None);
 
         // Overlap is [40, 60) — 2 edges
         assert_eq!(tables.num_edges(), 2);
@@ -575,7 +630,7 @@ mod tests {
         let lin = build_lineage(&mut arena, &[(100.0, 200.0)], 0);
         let mut active = vec![lin];
 
-        apply_recombination(&mut active, 0, 100.0, &mut arena, &mut next_uid);
+        apply_recombination(&mut active, 0, 100.0, &mut arena, &mut next_uid, None);
 
         assert_eq!(active.len(), 1, "no zombie, no spurious split");
         assert_ne!(active[0].head, SEG_NIL);
@@ -589,10 +644,104 @@ mod tests {
         let lin = build_lineage(&mut arena, &[(0.0, 100.0)], 0);
         let mut active = vec![lin];
 
-        apply_recombination(&mut active, 0, 30.0, &mut arena, &mut next_uid);
+        apply_recombination(&mut active, 0, 30.0, &mut arena, &mut next_uid, None);
 
         assert_eq!(active.len(), 2);
         let total: f64 = active.iter().map(|l| l.total_length(&arena)).sum();
         assert!((total - 100.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_flag_propagates_through_recomb() {
+        use std::collections::HashMap;
+        let mut arena = SegmentArena::new();
+        let mut next_uid = 1u32;
+        // Single lineage spanning [0, 100]; UID 0 tagged A.
+        let lin = build_lineage(&mut arena, &[(0.0, 100.0)], 0u32);
+        let mut active = vec![lin];
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        a_tag.insert(0u32, true);
+
+        apply_recombination(&mut active, 0, 50.0, &mut arena, &mut next_uid,
+                             Some(&mut a_tag));
+
+        // Parent UID (0) should still be in the map (its left half kept that UID).
+        // The new right-half UID (1) should also be tagged A.
+        assert_eq!(active.len(), 2);
+        assert_eq!(a_tag.get(&0u32), Some(&true));
+        assert_eq!(a_tag.get(&1u32), Some(&true));
+    }
+
+    #[test]
+    fn a_flag_propagates_through_coal_or() {
+        use std::collections::HashMap;
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let mut next_uid = 10u32;
+        // Two overlapping panmictic lineages, A=tagged, B=not tagged.
+        let s0 = tables.add_sample(0.0, 0);
+        let s1 = tables.add_sample(0.0, 0);
+        let lin_a = {
+            let idx = arena.alloc(0.0, 100.0, s0, BranchClass::PANMICTIC);
+            Lineage::new(idx, idx, 0, 0u32, &arena)
+        };
+        let lin_b = {
+            let idx = arena.alloc(0.0, 100.0, s1, BranchClass::PANMICTIC);
+            Lineage::new(idx, idx, 0, 1u32, &arena)
+        };
+        let mut active = vec![lin_a, lin_b];
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        a_tag.insert(0u32, true);
+        a_tag.insert(1u32, false);
+
+        apply_coalescence(&mut active, 0, 1, 1.0, &mut arena, &mut tables,
+                          &mut next_uid, Some(&mut a_tag));
+
+        // Single output at active[0] with new UID. Should be tagged A (OR of inputs).
+        assert_eq!(active.len(), 1);
+        let new_uid = active[0].uid;
+        assert_eq!(a_tag.get(&new_uid), Some(&true), "merged should inherit A via OR");
+    }
+
+    #[test]
+    fn a_flag_propagates_through_coal_partial_remnants() {
+        use std::collections::HashMap;
+        use crate::class_tag::Karyotype;
+        // A: [0..50] S, [50..100] panmictic; UID 0, tagged A=true
+        // B: [0..100] S; UID 1, tagged A=false
+        // allowed_class = Some(S):
+        //   - S [0..50] on A and S [0..100] on B → merged gets [0..50] (OR → true)
+        //   - PAN [50..100] on A: class mismatch with S → a_rem (inherits A's flag = true)
+        //   - S [50..100] on B: non-overlapping with A's tail → b_rem (inherits B's flag = false)
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(100.0, 1);
+        let next_uid = 10u32;
+        let s_class = BranchClass::single(0, Karyotype::S);
+        let s02 = tables.add_sample(0.0, 0);
+        let s12 = tables.add_sample(0.0, 0);
+        let lin_a = {
+            let i0 = arena.alloc(0.0, 50.0, s02, s_class);
+            let i1 = arena.alloc(50.0, 100.0, s02, BranchClass::PANMICTIC);
+            arena.get_mut(i0).next = i1;
+            Lineage::new(i0, i1, 0, 0u32, &arena)
+        };
+        let lin_b = {
+            let i0 = arena.alloc(0.0, 100.0, s12, s_class);
+            Lineage::new(i0, i0, 0, 1u32, &arena)
+        };
+        let mut active = vec![lin_a, lin_b];
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        a_tag.insert(0u32, true);
+        a_tag.insert(1u32, false);
+        let mut next_uid2 = next_uid;
+
+        apply_coalescence_partial(&mut active, 0, 1, 1.0, &mut arena, &mut tables,
+                                   &mut next_uid2, Some(s_class), Some(&mut a_tag));
+
+        // At least one A-tagged output should exist (the merged lineage inherits OR=true).
+        let tagged_count = active.iter()
+            .filter(|lin| a_tag.get(&lin.uid) == Some(&true))
+            .count();
+        assert!(tagged_count >= 1, "expected at least one A-tagged output");
     }
 }

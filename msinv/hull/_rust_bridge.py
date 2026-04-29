@@ -73,19 +73,7 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
         inv_dicts.append(d)
 
     # --- Sweeps ---
-    sweep_dicts = []
-    for sw in simulator.sweeps:
-        sweep_dicts.append({
-            'x_sel': float(sw.x_sel),
-            't_event': float(sw.t_event),
-            'target_class': getattr(sw, 'target_class', 'any'),
-            'population': getattr(sw, 'population', None),
-            'sweep_window': float(sw.sweep_window),
-            'selection_coefficient': float(
-                getattr(sw, 'selection_coefficient', 0.0)),
-            'starting_frequency': float(
-                getattr(sw, 'starting_frequency', 0.0)),
-        })
+    sweep_specs = [sw.to_rust() for sw in simulator.sweeps]
 
     # --- Demography ---
     demo = simulator.demography
@@ -106,7 +94,7 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
         sequence_length=float(simulator.L),
         recombination_rate=float(simulator.r),
         inversions=inv_dicts if inv_dicts else None,
-        sweeps=sweep_dicts if sweep_dicts else None,
+        sweeps=sweep_specs if sweep_specs else None,
         demo_events=demo_events if demo_events else None,
         migration_matrix=mig,
         seed=int(simulator.rng.integers(0, 2**63))
@@ -137,4 +125,4 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
     # (time[parent] asc, parent, child, left); skip tc.sort().
     ts = tc.tree_sequence()
     # event_log is None when record_events=False, or a list of dicts when True.
-    return ts.simplify(), event_log
+    return ts.simplify(), event_log, int(raw.get("sweep_a_count", 0))

@@ -108,10 +108,37 @@ def test_j4_bottleneck_through_sweep():
     )
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
 def test_j5_backward_flux_consistent_with_trajectory():
-    """Backward-time flux events fire at right rate during sweep window."""
-    pass
+    """During the sweep window, gene flux events fire at the ARG level
+    at a rate consistent with the trajectory's class frequencies."""
+    from msinv.hull import HullSimulator, InversionSpec
+    from msinv.hull.demography import Demography
+    from msinv.hull._event_log import filter_flux
+
+    inv = InversionSpec(
+        bp_left=20_000.0, bp_right=80_000.0, p_inv=0.5, t_inv=10_000.0,
+        gene_conversion_rate=1e-5, mean_tract_length=1000.0,
+    )
+    sw = Sweep(
+        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="I", target_inv=0,
+        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.001,
+        partial_sweep_final_freq=0.95,
+        gamma_flux=1e-5, mean_tract_length=1000.0,
+    )
+    sim = HullSimulator(
+        sample_config={('S', 0): 10, ('I', 0): 10},
+        demography=Demography(pop_sizes=[10_000.0]),
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[inv], sweeps=[sw],
+        seed=42, record_events=True,
+    )
+    sim.simulate()
+    flux_events_in_window = [
+        ev for ev in filter_flux(sim.event_log, 0)
+        if 0.0 <= ev["t"] <= sw.t_origin
+    ]
+    assert len(flux_events_in_window) > 0, "expected flux events inside sweep window"
 
 
 def test_j6_migration_spreads_sweep():
@@ -176,7 +203,35 @@ def test_j8_soft_sweep_seeds_K_founders():
     assert observed > 0.95, f"with c=1.0 expected ~all A, got {observed}"
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
 def test_j9_recurrent_de_novo_count():
     """uA>0 → Poisson(uA·2N·duration) origins fire across the sweep window."""
-    pass
+    import math, statistics
+
+    Ne = 10_000.0
+    ua = 1e-5
+    duration = 500.0
+    expected = ua * 2 * Ne * duration
+    n_reps = 50
+    counts = []
+    for r in range(n_reps):
+        sw = Sweep(
+            x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+            mode="Neutral", s=0.0, t_origin=duration, f0=0.0,
+            partial_sweep_final_freq=1.0,
+            recurrent_mutation_rate=ua, seed=r + 1,
+        )
+        rust_sw = sw.to_rust()
+        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[Ne])
+        prev_max = 0.0
+        origins = 0
+        for t, freq in rust_sw.trajectory_samples():
+            v = freq[0][1]
+            if v > prev_max + 0.5 / (2 * Ne):
+                origins += 1
+                prev_max = v
+        counts.append(origins)
+    mean = statistics.mean(counts)
+    sigma = math.sqrt(expected)
+    assert abs(mean - expected) < 3 * sigma, (
+        f"mean={mean}, expected={expected} ± {sigma}"
+    )

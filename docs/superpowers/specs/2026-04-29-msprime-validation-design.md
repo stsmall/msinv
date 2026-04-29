@@ -74,16 +74,43 @@ budget without re-running.
 
 ## msprime equivalence
 
+### Population-size convention (load-bearing)
+
+msinv interprets `population_size=N` as **diploid effective size** (2N
+chromosomes; coal rate per pair = `1/(2N)`; ρ = `4·N·r·L`). This matches
+the standard pop-gen convention used in the Anopheles literature
+(`feedback_msprime_api.md`, CLAUDE.md "Anopheles rates" memory pointer)
+and the existing analytical anchors.
+
+msprime with `ploidy=1` interprets `population_size=N` as **haploid
+effective size** (N chromosomes; coal rate per pair = `1/N`; ρ = `2·N·r·L`).
+With `ploidy=2`, msprime treats `population_size=N` as **diploid effective
+size**, matching msinv — but `ploidy=2` requires integer numbers of diploid
+samples per pop, which breaks N2 (5 haploid per pop = 2.5 diploid).
+
+**Resolution:** msprime side uses `ploidy=1` (per `feedback_msprime_api.md`
+guidance: "ploidy=1 for stats") and **doubles** `population_size` to match
+msinv's diploid-N convention. Coal rate, ρ, and `E[T_MRCA]` then agree
+analytically. The migration rate is NOT rescaled — it's a per-lineage
+per-generation probability on both sides regardless of N.
+
+This convention difference was caught by the first run of the harness on
+2026-04-29: at the original `population_size=10000, ploidy=1` setting, all
+three msinv stats came in 2× their msprime counterparts, far outside the
+3·SE bound. The fix is the population_size doubling described here, NOT
+a relaxation of the bound.
+
 ### N1 — panmictic
 
 ```python
 msprime.sim_ancestry(
     samples=10,
-    population_size=10000.0,
+    population_size=20000.0,                # = 2 * msinv diploid Ne
     sequence_length=100_000,
     recombination_rate=1e-8,
     ploidy=1,
-    random_seed=seed + 1,  # msprime requires seed >= 1
+    record_full_arg=True,                   # match msinv ARG convention
+    random_seed=seed + 1,                   # msprime requires seed >= 1
 )
 ```
 
@@ -92,7 +119,7 @@ Equivalent to the msinv call:
 ```python
 HullSimulator(
     samples=10,
-    population_size=10000.0,
+    population_size=10000.0,                # diploid Ne (2N = 20000 chrom)
     sequence_length=100_000.0,
     recombination_rate=1e-8,
     inversions=[],
@@ -102,13 +129,13 @@ HullSimulator(
 
 ### N2 — two-pop migration
 
-msprime side:
+msprime side (population sizes doubled per the convention block above):
 
 ```python
 demo = msprime.Demography()
-demo.add_population(name="A", initial_size=10000.0)
-demo.add_population(name="B", initial_size=10000.0)
-demo.set_migration_rate(source="A", dest="B", rate=1e-4)
+demo.add_population(name="A", initial_size=20000.0)   # = 2 * 10000
+demo.add_population(name="B", initial_size=20000.0)
+demo.set_migration_rate(source="A", dest="B", rate=1e-4)  # NOT rescaled
 demo.set_migration_rate(source="B", dest="A", rate=1e-4)
 msprime.sim_ancestry(
     samples={"A": 5, "B": 5},
@@ -116,6 +143,7 @@ msprime.sim_ancestry(
     sequence_length=100_000,
     recombination_rate=1e-8,
     ploidy=1,
+    record_full_arg=True,
     random_seed=seed + 1,
 )
 ```
@@ -160,6 +188,30 @@ spec, but the equivalence is asserted here for future asymmetric extensions.
 gives `2 · E[T_2]` directly. (This matches the `feedback_msprime_api.md`
 guidance: `ploidy=1` for stats, `ploidy=2` only for tree-count comparisons,
 which we are not making here.)
+
+### `record_full_arg=True` (load-bearing for `n_trees`)
+
+msinv's TS records every recomb event as a tree-boundary, including
+recombs above the marginal MRCA (i.e., events that don't change any
+realized tree topology along the genome). msprime's default
+`sim_ancestry` simplifies these "non-ancestral" recombs out before
+returning the TS, so `ts.num_trees` is ~78% of msinv's count under
+otherwise-matched parameters.
+
+To make `num_trees` directly comparable, the msprime side passes
+`record_full_arg=True` so that all recomb events appear as edges in the
+returned TS. Verified empirically (50 reps, n=10, ρ=40): with
+`record_full_arg=True`, msprime n_trees ≈ msinv n_trees (114 vs 112,
+within 3·SE); without, msprime ≈ 87 (well outside the bound).
+
+`record_full_arg=True` does **not** change the underlying coalescent —
+`pi_branch` and `mean_tmrca` are unchanged across the two msprime modes
+(verified). It only controls which edges survive into the returned TS.
+
+Caught by the same harness run that surfaced the population-size
+convention bug: after fixing population_size doubling, `pi_branch` and
+`mean_tmrca` agreed but `n_trees` was msinv=114.5 vs msprime=89.78 (a
+~21% gap, well outside the bound).
 
 ## File layout
 

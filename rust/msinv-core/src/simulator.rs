@@ -300,6 +300,7 @@ impl HullSimulator {
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
         populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
         let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
 
@@ -334,7 +335,9 @@ impl HullSimulator {
             let t_demo = demo.next_event_time(t);
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
-            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
+            let t_sweep_origin = finalized_sweeps.first()
+                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             let coal_rate = pair_rates.total();
             let recomb_rate = total_material * self.recombination_rate;
@@ -395,7 +398,7 @@ impl HullSimulator {
                     t = next_boundary;
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
-                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
                         &mut sweep_cursor, None, &mut a_tag);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
@@ -414,7 +417,7 @@ impl HullSimulator {
                 t = next_boundary;
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
-                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
                     &mut sweep_cursor, None, &mut a_tag);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
@@ -615,6 +618,7 @@ impl HullSimulator {
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
         populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        let mut finalized_sweeps: Vec<Sweep> = Vec::new();
 
         // Monotone sweep-merge cursor shared across all sweeps at the
         // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
@@ -816,16 +820,18 @@ impl HullSimulator {
             // Next sweep boundary.
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
+            let t_sweep_origin = finalized_sweeps.first()
+                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
 
             // Next deterministic boundary.
-            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep);
+            let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             if total_rate <= 0.0 {
                 if next_boundary < f64::INFINITY {
                     t = next_boundary;
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
-                        demo, &mut pending_sweeps, t, tables, next_uid,
+                        demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
                         &mut sweep_cursor,
                         event_log.as_deref_mut(), &mut a_tag);
@@ -851,7 +857,7 @@ impl HullSimulator {
                 t = next_boundary;
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
-                    demo, &mut pending_sweeps, t, tables, next_uid,
+                    demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
                     &mut sweep_cursor,
                     event_log.as_deref_mut(), &mut a_tag);
@@ -2137,6 +2143,7 @@ fn apply_boundary(
     barrier_active: &mut [bool],
     demo: &mut Demography,
     pending_sweeps: &mut Vec<Sweep>,
+    finalized_sweeps: &mut Vec<Sweep>,
     t: f64,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
@@ -2153,11 +2160,8 @@ fn apply_boundary(
     // populations — firing demo first would silently zero the sweep's
     // target pool when Ej moves all pop-N lineages into pop-M.
     HullSimulator::cross_barriers_static(inversions, active, arena, barrier_active, t);
-    // Drain all sweeps scheduled at this t (simultaneous sweeps).
-    // TODO sweep-rewrite Task 13: rewrite using JointSweepTrajectory.
-    // For now, sweeps are silently consumed without applying any
-    // forced-coalescence operator — keeps the simulator green while
-    // the new Sweep API is wired up.
+    // Drain all τ-boundary sweeps: tag lineages (Phase B), then move to
+    // finalized_sweeps queue for the t_origin forced-coalescence (Phase C1).
     while !pending_sweeps.is_empty()
         && (pending_sweeps[0].tau - t).abs() < 1e-9
     {
@@ -2166,6 +2170,17 @@ fn apply_boundary(
         apply_sweep(active, &sweep, t, arena, tables,
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
                      sweep_cursor, a_tag);
+        finalized_sweeps.push(sweep);
+    }
+    // Keep finalized_sweeps sorted by t_origin so [0] is the next to fire.
+    finalized_sweeps.sort_by(|a, b| a.joint.t_origin.partial_cmp(&b.joint.t_origin).unwrap());
+    // Drain finalized sweeps whose t_origin matches the current boundary.
+    while !finalized_sweeps.is_empty()
+        && (finalized_sweeps[0].joint.t_origin - t).abs() < 1e-9
+    {
+        let sweep = finalized_sweeps.remove(0);
+        apply_sweep_finalize(active, &sweep, t, arena, tables,
+                              next_uid, rng, recomb_rate, sweep_cursor, a_tag);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2378,6 +2393,47 @@ fn apply_sweep(
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
     }
+}
+
+/// At `t == sweep.joint.t_origin`: for each A-bearing lineage,
+/// roll the hitchhiking-retention die. Survivors get forced into
+/// a single coalescent event at this time. Escapees drop their A
+/// flag and continue normally past the sweep window.
+fn apply_sweep_finalize(
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    tables: &mut TableBuilder,
+    next_uid: &mut LinUid,
+    rng: &mut Xoshiro256PlusPlus,
+    recomb_rate: f64,
+    sweep_cursor: &mut (f64, u64),
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+) {
+    use rand::Rng;
+    // Snapshot candidate UIDs first; separates the read pass from the
+    // later mutation (coalesce_uid_group removes/adds active entries).
+    let candidates: Vec<LinUid> = active.iter()
+        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+        .map(|lin| lin.uid)
+        .collect();
+    let mut a_uids: Vec<LinUid> = Vec::new();
+    for uid in candidates {
+        // Hitchhiking probability: exp(-r·d·T_eff) where d is distance
+        // to the selected site. Uses the lineage's position at x_sel
+        // (approximation: d=0 means always retained; finite d discounts).
+        let p_hh = sweep.hitchhiking_prob(sweep.x_sel, recomb_rate);
+        if rng.random::<f64>() < p_hh {
+            a_uids.push(uid);
+        } else {
+            // Escapes: drop A flag so this lineage continues normally.
+            a_tag.insert(uid, false);
+        }
+    }
+    if a_uids.len() < 2 { return; }
+    // Force-coalesce all survivors into a single MRCA at t.
+    coalesce_uid_group(active, &a_uids, t, arena, tables, next_uid, sweep_cursor);
 }
 
 fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
@@ -3311,5 +3367,46 @@ mod tests {
 
         assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
         assert!(!a_tag.contains_key(&1u32), "lineage B does not overlap x_sel; should NOT be tagged");
+    }
+
+    /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A
+    /// assignment at τ). After the simulation reaches t_origin = 500, all
+    /// surviving A-bearing lineages collapse to a single MRCA; the deepest
+    /// internal node should be at time ≈ 500 (within sweep_cursor eps).
+    #[test]
+    fn forced_coal_collapses_a_lineages_at_t_origin() {
+        use crate::class_tag::Karyotype;
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use crate::demography::Demography;
+        use crate::sweep::Sweep;
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 1.0,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            });
+
+        let sim = HullSimulator {
+            samples: vec![SampleEntry { karyotypes: vec![], population: 0, count: 4 }],
+            demography: Demography::single_pop(10_000.0),
+            sequence_length: 10_000.0, recombination_rate: 1e-12,
+            inversions: vec![], sweeps: vec![sweep],
+            seed: 7, stop_at: f64::INFINITY,
+            compound_rate: false, iters_max: 1_000_000,
+            gc_stride: 160, record_events: false,
+        };
+        let result = sim.simulate();
+        // The deepest internal node should be at time ~ t_origin = 500.
+        // Allow small slop from sweep_cursor's eps offset (1e-9 to 1e-3).
+        let max_node_t = result.tables.node_time.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t < 500.0 + 1e-3,
+            "MRCA at {}, expected ~500 (t_origin)", max_node_t);
+        // 4 A-tagged samples → all forced together → exactly 1 MRCA event
+        // contributes the time-500 node. Sample nodes are at time 0.
+        let n_at_500: usize = result.tables.node_time.iter()
+            .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
+        assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
     }
 }

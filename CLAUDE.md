@@ -87,3 +87,17 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
 - Bug fixes → regression test in cargo before commit.
 - Rust ↔ Python divergence is a common bug vector — diff both when in doubt.
 - Adding a field to a public Rust struct: audit `Self { ... }` literals in `src/`, `tests/`, `examples/`, `benches/` and the PyO3 bridge — `cargo build -p <crate>` catches `src/` only.
+- `Karyotype` enum (`rust/msinv-core/src/class_tag.rs`) has variants `S` and `I` only.
+  No `Colinear`/`Inverted`/`Pan` — panmictic is a `BranchClass` state, not a `Karyotype`.
+- Rust RNG: this crate is on rand 0.9 — use `rng.random::<f64>()`, NOT `rng.gen::<f64>()`.
+  See existing usage in `rust/msinv-core/src/trajectory.rs` (`sample_binomial_2n`).
+- Migration matrix convention: `m_ij` = "fraction of pop i ABSORBING FROM pop j",
+  matching `Demography::migration_matrix[dst][src]`. Forward-flow A→B needs
+  `m(B, A) > 0`, NOT `m(A, B) > 0`.
+- Sweep + inversion trajectories use the **discrete-time** WF logistic update
+  `p_{t+1} = p_t·(1+s)/(1+s·p_t)` with closed form `f0·(1+s)^t / (1 - f0 + f0·(1+s)^t)`.
+  Don't write tests against the continuous `exp(s·t)` form — they diverge at O(s²·t).
+- A PostToolUse hook runs `cargo check` after each Rust Edit/Write — every individual
+  edit must leave the workspace compiling. For API-rewrite tasks, bridge through a
+  transitional struct that carries both old and new fields, migrate callers, then
+  strip the compat shim. Don't try a single big-bang Edit.

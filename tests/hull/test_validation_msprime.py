@@ -137,3 +137,45 @@ def test_msprime_validation_n1_panmictic():
         )
 
     _run_validation("N1 panmictic", msinv_factory, msprime_factory)
+
+
+def test_msprime_validation_n2_two_pop_migration():
+    """Rust msinv vs msprime — two-pop symmetric migration, M=1e-4."""
+
+    def msinv_factory(seed):
+        demo = Demography(
+            pop_sizes=[10000.0, 10000.0],
+            migration_matrix=[[0.0, 1e-4], [1e-4, 0.0]],
+        )
+        return HullSimulator(
+            sample_config={(None, 0): 5, (None, 1): 5},
+            demography=demo,
+            sequence_length=100_000.0,
+            recombination_rate=1e-8,
+            inversions=[],
+            seed=seed,
+        ).simulate()
+
+    def msprime_factory(seed):
+        # population sizes doubled; migration rate NOT rescaled
+        # (per-lineage per-gen on both sides). See spec §"Population-size
+        # convention" and §"Migration convention check".
+        demo = msprime.Demography()
+        demo.add_population(name="A", initial_size=20000.0)
+        demo.add_population(name="B", initial_size=20000.0)
+        demo.set_migration_rate(source="A", dest="B", rate=1e-4)
+        demo.set_migration_rate(source="B", dest="A", rate=1e-4)
+        return msprime.sim_ancestry(
+            samples={"A": 5, "B": 5},
+            demography=demo,
+            sequence_length=100_000,
+            recombination_rate=1e-8,
+            ploidy=1,
+            record_full_arg=True,
+            random_seed=seed + 1,
+        )
+
+    _run_validation(
+        "N2 two-pop migration", msinv_factory, msprime_factory,
+        by_pop_dxy=True,
+    )

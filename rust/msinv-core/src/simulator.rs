@@ -297,6 +297,7 @@ impl HullSimulator {
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
         populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
 
         let mut t: f64 = 0.0;
         let max_lins = (active.len() * 40).max(2048);
@@ -392,7 +393,7 @@ impl HullSimulator {
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
-                        &mut sweep_cursor, None);
+                        &mut sweep_cursor, None, &mut a_tag);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
                     total_material = active.iter().map(|l| l.cached_len).sum();
@@ -411,7 +412,7 @@ impl HullSimulator {
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
-                    &mut sweep_cursor, None);
+                    &mut sweep_cursor, None, &mut a_tag);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
                 total_material = active.iter().map(|l| l.cached_len).sum();
@@ -613,6 +614,7 @@ impl HullSimulator {
         // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
         // sweeps fire simultaneously).
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
+        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
 
         // Running totals for O(1) recombination rate (Phase A).
         let mut total_material: f64 = active.iter()
@@ -809,7 +811,7 @@ impl HullSimulator {
                         demo, &mut pending_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
                         &mut sweep_cursor,
-                        event_log.as_deref_mut());
+                        event_log.as_deref_mut(), &mut a_tag);
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -835,7 +837,7 @@ impl HullSimulator {
                     demo, &mut pending_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
                     &mut sweep_cursor,
-                    event_log.as_deref_mut());
+                    event_log.as_deref_mut(), &mut a_tag);
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -2125,6 +2127,7 @@ fn apply_boundary(
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
@@ -2144,7 +2147,7 @@ fn apply_boundary(
         let ne_sweep = demo.size_at(sweep.origin_pop, t).max(1.0);
         apply_sweep(active, &sweep, t, arena, tables,
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
-                     sweep_cursor);
+                     sweep_cursor, a_tag);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2319,38 +2322,56 @@ fn populate_sweep_trajectories(
 ///    K ≈ 1/f0 founding copies (discoal model). Lineages within each group
 ///    coalesce; K surviving ancestors continue at normal coalescent rate.
 fn apply_sweep(
-    _active: &mut Vec<Lineage>,
-    _sweep: &Sweep,
-    _t: f64,
-    _arena: &mut SegmentArena,
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
     _tables: &mut TableBuilder,
     _next_uid: &mut LinUid,
     _seq_len: f64,
-    _rng: &mut Xoshiro256PlusPlus,
+    rng: &mut Xoshiro256PlusPlus,
     _ne: f64,
     _recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
-    // TODO sweep-rewrite Task 13+: rewrite using JointSweepTrajectory.
-    // For now, this is a no-op: sweep events are tolerated but no
-    // forced-coalescence operator runs. The old Hudson-Kaplan
-    // endpoint operator was removed in Task 11.
-    //
-    // The helper methods needed for the v2 implementation are now
-    // available on `Sweep`:
-    //   - `sweep.assign_a_at_sample(pop, kary, rng)` decides if a lineage
-    //     at τ is A-bearing (uses `trajectory.p_allele_given_kary`).
-    //   - `sweep.hitchhiking_prob(x, recomb_rate)` gives the probability
-    //     that an A-bearing lineage at position x is linked to the sweep
-    //     MRCA (forced-coalescence at t_origin).
-    //   - `sweep.ne_cell_or_fallback(t, pop, kary, n_pop_t, fallback)` is
-    //     the time-varying coalescent rate driver inside the sweep window.
-    //
-    // Full integration (v2) needs to walk active lineages, mark A-bearers
-    // using assign_a_at_sample, run hitchhiking retention with hitchhiking_prob,
-    // and force-coalesce A-bearing lineages at t_origin. This is gated on
-    // ARG/segment-tree invariants and is tracked as Task 13+ in the
-    // sweep-rewrite plan.
+    // Phase B: at τ (entry into the sweep window going backward), tag every
+    // lineage overlapping x_sel in the sweep's (origin_pop, origin_kary) cell
+    // as A or a using the trajectory's per-(pop, kary) A frequency. Tagging
+    // is a one-shot at τ; later events inside the window (Phase C/D) consume
+    // the tag.
+    if (t - sweep.tau).abs() > 1e-9 {
+        return;
+    }
+    if sweep.trajectory.is_none() {
+        return;
+    }
+    for lin in active.iter() {
+        // Only tag lineages that overlap x_sel — others can't carry A
+        // since they don't cover the selected site.
+        if !lineage_overlaps_position(lin.head, sweep.x_sel, arena) {
+            continue;
+        }
+        let pop = lin.population;
+        // Determine kary at the inversion's range, defaulting to
+        // origin_kary if the lineage is panmictic at this site.
+        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+            .unwrap_or(sweep.origin_kary);
+        let is_a = sweep.assign_a_at_sample(pop, kary, rng);
+        a_tag.insert(lin.uid, is_a);
+    }
+}
+
+fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
+    let mut s = head;
+    while s != SEG_NIL {
+        let seg = arena.get(s);
+        if seg.left <= x && x < seg.right {
+            return true;
+        }
+        s = seg.next;
+    }
+    false
 }
 
 /// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.
@@ -3195,5 +3216,82 @@ mod tests {
                 "tract [{}, {}) out of sequence bounds [0, 10000)",
                 r.tract_left, r.tract_right);
         }
+    }
+
+    #[test]
+    fn apply_sweep_tags_lineages_with_assigned_a() {
+        use crate::class_tag::{BranchClass, Karyotype};
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use std::collections::HashMap;
+
+        let mut arena = SegmentArena::new();
+        let head_a = arena.alloc(0.0, 10_000.0, 0, BranchClass::PANMICTIC);
+        let head_b = arena.alloc(0.0, 10_000.0, 1, BranchClass::PANMICTIC);
+        let mut active = vec![
+            Lineage::new(head_a, head_a, 0, 0u32, &arena),
+            Lineage::new(head_b, head_b, 0, 1u32, &arena),
+        ];
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 200.0, f0: 0.99,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            }).with_trajectory(1, &[0.0],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+
+        let mut tables = TableBuilder::new(10_000.0, 1);
+        let mut next_uid: LinUid = 2;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut sweep_cursor = (0.0, 0u64);
+
+        apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut sweep_cursor, &mut a_tag);
+
+        // f0=0.99 with high A frequency on origin_kary=S → expect both lineages tagged.
+        assert_eq!(a_tag.len(), 2, "expected both lineages tagged");
+        let n_a = a_tag.values().filter(|&&v| v).count();
+        assert!(n_a >= 1, "expected at least 1 A-tagged with f0=0.99, got {n_a}");
+    }
+
+    #[test]
+    fn apply_sweep_skips_lineages_outside_x_sel_window() {
+        use crate::class_tag::{BranchClass, Karyotype};
+        use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
+        use std::collections::HashMap;
+
+        let mut arena = SegmentArena::new();
+        // Lineage A spans x_sel=5000; lineage B is to the right of x_sel and doesn't overlap.
+        let head_a = arena.alloc(0.0, 6_000.0, 0, BranchClass::PANMICTIC);
+        let head_b = arena.alloc(7_000.0, 10_000.0, 1, BranchClass::PANMICTIC);
+        let mut active = vec![
+            Lineage::new(head_a, head_a, 0, 0u32, &arena),
+            Lineage::new(head_b, head_b, 0, 1u32, &arena),
+        ];
+
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 200.0, f0: 0.99,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            }).with_trajectory(1, &[0.0],
+            &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+
+        let mut tables = TableBuilder::new(10_000.0, 1);
+        let mut next_uid: LinUid = 2;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut sweep_cursor = (0.0, 0u64);
+
+        apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut sweep_cursor, &mut a_tag);
+
+        assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
+        assert!(!a_tag.contains_key(&1u32), "lineage B does not overlap x_sel; should NOT be tagged");
     }
 }

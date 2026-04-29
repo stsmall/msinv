@@ -1,12 +1,17 @@
 # Andolfatto fragmentation correction: derivation
 
-**Status:** Draft 2026-04-29. **Provisional formula in §3.4 has a known
-limitation:** it ignores coalescence and saturates at f→1/2 as t→∞,
-which contradicts both intuition (any nonzero per-gen rate eventually
-flips every sample) and the simulator's empirical f(25000) ≈ 0.70.
-The mean-field flux-only ODE is the cleanest analytic step forward;
-the next refinement (incorporating coalescence-driven coverage
-restoration) is queued behind Monte-Carlo validation. See §4.2.
+**Status: Refuted 2026-04-29.** MC validation (§8) shows the formula in
+§3.4 is *worse* than Andolfatto at the test parameters. The mean-field
+ODE in §3.2 over-aggressively decays coverage, predicting f→1/2 at
+large t when the single-lineage MC tracks Andolfatto within ~7%. The
+simulator's ~25% gap from Andolfatto is therefore *not* a single-
+lineage flux-fragmentation effect — it must come predominantly from
+coalescence (§4.2), which the §3 derivation does not include.
+
+The corrected formula in §3.4 should not be used. The MC tool at
+`scripts/validate_andolfatto_fragmentation.py` is preserved as the
+oracle for any future derivation. The existing loose-tolerance test
+(`test_andolfatto_sample_fraction_matches_closed_form`) is unchanged.
 
 **Goal:** Derive a fragmentation-corrected closed form for the per-sample
 position-conversion fraction `f(t)` in the msinv flux model. The
@@ -435,3 +440,64 @@ not yet calibrated against the simulator. §4 documents known
 approximations whose impact will be measured by §5's MC script.
 The formula is *not yet ready* to replace the loose-tolerance test;
 that's gated on MC validation.
+
+## §8. Validation results (2026-04-29)
+
+MC: `scripts/validate_andolfatto_fragmentation.py --gamma 1.5e-5
+--lam 300 --L 6000 --p-other 0.5 --n-reps 50000 --seed 0 --ladder
+1000,4000,10000,25000`. Implements the simulator's Peischl
+triangular-roof `phi` placement, exponential tract length capped at
+`0.99·L`, and uniform `b1` in the constraint window — same per-event
+mechanics as the simulator's `sample_flux_position` + `draw_tract`.
+
+| t     | f̂      | f_A    | f_corr (eq 9) | \|f̂ − f_A\| | \|f̂ − f_corr\| | 4σ_MC |
+|-------|--------|--------|---------------|--------------|------------------|-------|
+| 1000  | 0.1075 | 0.1064 | 0.0962        | **0.0011**   | 0.0113           | 0.0055|
+| 4000  | 0.3538 | 0.3624 | 0.2660        | **0.0086**   | 0.0878           | 0.0086|
+| 10000 | 0.6290 | 0.6753 | 0.4031        | **0.0463**   | 0.2259           | 0.0086|
+| 25000 | 0.8674 | 0.9399 | 0.4845        | **0.0725**   | 0.3829           | 0.0061|
+
+**Conclusion (outcome c per plan):** the single-lineage MC matches
+Andolfatto within 4σ_MC at small `t` (where `r_A·t ≪ 1`) and
+under-predicts by 5–8% at large `t`. The §3 corrected formula
+under-predicts by 23–38% at large `t` — substantially worse than
+Andolfatto. The mean-field ODE (eq 5) is too aggressive in decaying
+coverage; the §4.1 hypothesis (tract-piece self-fragmentation) is
+likely directionally relevant: tract events take the lineage to a
+*small* piece on which subsequent flux events have rate-vs-coverage
+ratio = 1, restoring the effective rate at `x_c`.
+
+**Implication for the simulator-vs-Andolfatto gap.** The simulator's
+Tier-3 test shows `f̂_sim/f_A ≈ 0.75` at large `t` (a ~25% gap). The
+single-lineage MC accounts for `f̂_MC/f_A ≈ 0.92` at `t = 25000` (a
+~7% gap). The residual ~18% gap between the simulator and the
+single-lineage MC is therefore attributable to coalescence —
+multiple samples sharing ancestors in the simulator's coalescent
+tree, which the single-lineage MC strips out. This locates the
+dominant correction (§4.2) and rules out the §3 mechanism as the
+primary effect.
+
+**No tightened test was added.** Tightening against `f_corrected`
+would lock in a wrong formula. Tightening against the MC table
+above is possible but couples the test to a numerical reference
+without an analytic explanation, which is brittle. The existing
+loose-tolerance test (`max(0.15, 0.50·f_pred)`) remains the right
+balance until a theoretically-justified closed form is derived.
+
+### Future direction
+
+A correct derivation needs to handle two effects jointly:
+1. **Tract-piece behavior** (§4.1): the lineage transitions to a
+   `~λ`-length piece on which subsequent events have effective
+   `x_c`-flip rate `~γ·p_other·λ ≈ r_A · L/λ` per gen, partially
+   counteracting the per-lineage rate decrease from reduced coverage.
+2. **Coalescence-driven coverage restoration** (§4.2): when sample
+   i's ancestral lineage at `x_c` coalesces with another lineage,
+   the merged ancestor inherits the union of their segments, so
+   coverage grows. This is the dominant effect at the test
+   parameters (Ne=1000, t up to 25,000 ~ 12·2Ne).
+
+Both effects argue for a derivation on the joint state space of
+*(lineage segment list, coalescent partition)* rather than a
+mean-field ODE on coverage alone. This is a substantially harder
+analytical task and is left for future work.

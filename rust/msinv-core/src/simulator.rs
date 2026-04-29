@@ -2282,9 +2282,6 @@ fn lineage_class_for_inv_id_arena(
 /// Monotonically increasing merge time, shared across all sweep merges
 /// at the same base `t`. Resets when `t` changes.
 ///
-/// Currently unused (sweep dispatch is a no-op stub since Task 11);
-/// will be wired back in by Task 13's new sweep operator.
-#[allow(dead_code)]
 fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
     if cursor.0 != t {
         *cursor = (t, 0);
@@ -2470,8 +2467,8 @@ fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool
 
 /// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.
 ///
-/// Currently unused (sweep dispatch is a no-op stub since Task 11);
-/// will be wired back in by Task 13's new sweep operator.
+/// Currently unused; kept for future use by per-A-lineage finalize ops
+/// that may need to build a synthetic lineage during sweep dispatch.
 #[allow(dead_code)]
 fn build_lineage_from_segs(
     segs: &[(f64, f64, i32, BranchClass)],
@@ -2494,11 +2491,6 @@ fn build_lineage_from_segs(
 }
 
 /// Coalesce a group of lineages (identified by UID) sequentially.
-///
-/// Currently unused outside tests (sweep dispatch is a no-op stub
-/// since Task 11); will be wired back in by Task 13's new sweep
-/// operator.
-#[allow(dead_code)]
 fn coalesce_uid_group(
     active: &mut Vec<Lineage>,
     uids: &[LinUid],
@@ -2651,13 +2643,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "compound_rate disabled on main; sweep body deleted in sweep-rewrite Task 11"]
-    fn compound_rate_with_sweep() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
-    #[test]
     #[ignore = "compound_rate disabled on main"]
     fn compound_rate_with_gene_flux() {
         // Active barrier + nontrivial gene conversion. Flux should
@@ -2794,13 +2779,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_fires_before_simultaneous_population_merge() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
-    #[test]
     fn coalesce_uid_group_skips_non_overlapping_pairs() {
         use crate::class_tag::BranchClass;
 
@@ -2829,13 +2807,6 @@ mod tests {
         assert_eq!(active.len(), 2,
             "non-overlapping pair was merged (active.len() = {})",
             active.len());
-    }
-
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_targeting_karyotype_should_skip_panmictic_lineages() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
     }
 
     #[test]
@@ -3066,20 +3037,6 @@ mod tests {
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);
-    }
-
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_reduces_diversity_in_window() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
-    }
-
-    #[test]
-    #[ignore = "TODO sweep-rewrite Task 16: rewrite under new Sweep API"]
-    fn sweep_on_s_class_only() {
-        // Body deleted in sweep-rewrite Task 11. Will be rewritten in
-        // Task 16 once the new JointSweepTrajectory operator lands.
     }
 
     // -----------------------------------------------------------------

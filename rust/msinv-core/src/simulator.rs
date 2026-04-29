@@ -295,61 +295,7 @@ impl HullSimulator {
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
-        // Build joint trajectories for any sweep that has no pre-built one.
-        // Snapshot the demography arrays so the closures don't hold a borrow
-        // on `demo` (which is mutated later by apply_events_at).
-        {
-            let n_pops = demo.n_pops;
-            let pop_sizes_snap = demo.pop_sizes.clone();
-            let growth_rates_snap = demo.growth_rates.clone();
-            let growth_start_snap = demo.growth_start.clone();
-            let events_snap = demo.events.clone();
-            let mig_snap = demo.migration_matrix.clone();
-            for sw in pending_sweeps.iter_mut() {
-                if sw.trajectory.is_some() { continue; }
-                let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
-                    inversions.iter().find(|i| i.inv_id == sw.target_inv)
-                        .map(|i| i.p_inv_for(p as u32))
-                        .unwrap_or(0.0)
-                }).collect();
-                let ps = pop_sizes_snap.clone();
-                let gr = growth_rates_snap.clone();
-                let gs = growth_start_snap.clone();
-                let ev = events_snap.clone();
-                let mg = mig_snap.clone();
-                let pop_size_at = move |t: f64, p: u32| -> f64 {
-                    let pp = p as usize;
-                    if pp >= ps.len() { return 1.0; }
-                    let mut size = ps[pp];
-                    let mut growth = gr[pp];
-                    let mut growth_start = gs[pp];
-                    for e in &ev {
-                        if e.time() > t { break; }
-                        match e {
-                            crate::demography::DemoEvent::EN { n, .. } =>
-                                { size = *n; growth = 0.0; growth_start = e.time(); }
-                            crate::demography::DemoEvent::En { pop: p2, n, .. } if *p2 as usize == pp =>
-                                { size = *n; growth = 0.0; growth_start = e.time(); }
-                            crate::demography::DemoEvent::EG { alpha, .. } =>
-                                { growth = *alpha; growth_start = e.time(); }
-                            crate::demography::DemoEvent::Eg { pop: p2, alpha, .. } if *p2 as usize == pp =>
-                                { growth = *alpha; growth_start = e.time(); }
-                            _ => {}
-                        }
-                    }
-                    if growth == 0.0 { size } else { size * (-growth * (t - growth_start)).exp() }
-                };
-                let mig_at = move |_t: f64, i: u32, j: u32| -> f64 {
-                    if (i as usize) >= mg.len() { return 0.0; }
-                    *mg[i as usize].get(j as usize).unwrap_or(&0.0)
-                };
-                let placeholder = Sweep::new(
-                    sw.x_sel, sw.tau, sw.origin_pop, sw.origin_kary,
-                    sw.target_inv, sw.joint.clone());
-                let real = std::mem::replace(sw, placeholder);
-                *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
-            }
-        }
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
 
         let mut t: f64 = 0.0;
@@ -661,61 +607,7 @@ impl HullSimulator {
         // Pending sweeps, sorted by tau (earliest first).
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
-        // Build joint trajectories for any sweep that has no pre-built one.
-        // Snapshot the demography arrays so the closures don't hold a borrow
-        // on `demo` (which is mutated later by apply_events_at).
-        {
-            let n_pops = demo.n_pops;
-            let pop_sizes_snap = demo.pop_sizes.clone();
-            let growth_rates_snap = demo.growth_rates.clone();
-            let growth_start_snap = demo.growth_start.clone();
-            let events_snap = demo.events.clone();
-            let mig_snap = demo.migration_matrix.clone();
-            for sw in pending_sweeps.iter_mut() {
-                if sw.trajectory.is_some() { continue; }
-                let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
-                    inversions.iter().find(|i| i.inv_id == sw.target_inv)
-                        .map(|i| i.p_inv_for(p as u32))
-                        .unwrap_or(0.0)
-                }).collect();
-                let ps = pop_sizes_snap.clone();
-                let gr = growth_rates_snap.clone();
-                let gs = growth_start_snap.clone();
-                let ev = events_snap.clone();
-                let mg = mig_snap.clone();
-                let pop_size_at = move |t: f64, p: u32| -> f64 {
-                    let pp = p as usize;
-                    if pp >= ps.len() { return 1.0; }
-                    let mut size = ps[pp];
-                    let mut growth = gr[pp];
-                    let mut growth_start = gs[pp];
-                    for e in &ev {
-                        if e.time() > t { break; }
-                        match e {
-                            crate::demography::DemoEvent::EN { n, .. } =>
-                                { size = *n; growth = 0.0; growth_start = e.time(); }
-                            crate::demography::DemoEvent::En { pop: p2, n, .. } if *p2 as usize == pp =>
-                                { size = *n; growth = 0.0; growth_start = e.time(); }
-                            crate::demography::DemoEvent::EG { alpha, .. } =>
-                                { growth = *alpha; growth_start = e.time(); }
-                            crate::demography::DemoEvent::Eg { pop: p2, alpha, .. } if *p2 as usize == pp =>
-                                { growth = *alpha; growth_start = e.time(); }
-                            _ => {}
-                        }
-                    }
-                    if growth == 0.0 { size } else { size * (-growth * (t - growth_start)).exp() }
-                };
-                let mig_at = move |_t: f64, i: u32, j: u32| -> f64 {
-                    if (i as usize) >= mg.len() { return 0.0; }
-                    *mg[i as usize].get(j as usize).unwrap_or(&0.0)
-                };
-                let placeholder = Sweep::new(
-                    sw.x_sel, sw.tau, sw.origin_pop, sw.origin_kary,
-                    sw.target_inv, sw.joint.clone());
-                let real = std::mem::replace(sw, placeholder);
-                *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
-            }
-        }
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
 
         // Monotone sweep-merge cursor shared across all sweeps at the
         // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
@@ -2344,6 +2236,71 @@ fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
     cursor.1 += 1;
     let eps = (t * 1e-12).max(1e-9);
     t + (cursor.1 as f64) * eps
+}
+
+/// Populate `Sweep::trajectory` for any sweep that doesn't already carry one,
+/// using closures that snapshot the current `Demography` arrays. Called once
+/// at sim entry from each run-loop. Sweeps with a caller-supplied trajectory
+/// are respected (skip-if-some).
+fn populate_sweep_trajectories(
+    pending_sweeps: &mut [Sweep],
+    demo: &crate::demography::Demography,
+    inversions: &[InversionSpec],
+) {
+    let n_pops = demo.n_pops;
+    let pop_sizes_snap = demo.pop_sizes.clone();
+    let growth_rates_snap = demo.growth_rates.clone();
+    let growth_start_snap = demo.growth_start.clone();
+    let events_snap = demo.events.clone();
+    let mig_snap = demo.migration_matrix.clone();
+
+    for sw in pending_sweeps.iter_mut() {
+        if sw.trajectory.is_some() { continue; }
+        let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
+            inversions.iter().find(|i| i.inv_id == sw.target_inv)
+                .map(|i| i.p_inv_at(0.0, p as u32))
+                .unwrap_or(0.0)
+        }).collect();
+        // Per-sweep clones so the closures own their data and don't hold a
+        // borrow on the outer snapshot vectors (which a future multi-sweep
+        // loop iteration could otherwise contend with).
+        let ps = pop_sizes_snap.clone();
+        let gr = growth_rates_snap.clone();
+        let gs = growth_start_snap.clone();
+        let ev = events_snap.clone();
+        let mg = mig_snap.clone();
+        let pop_size_at = move |t: f64, p: u32| -> f64 {
+            let pp = p as usize;
+            if pp >= ps.len() { return 1.0; }
+            let mut size = ps[pp];
+            let mut growth = gr[pp];
+            let mut growth_start = gs[pp];
+            for e in &ev {
+                if e.time() > t { break; }
+                match e {
+                    crate::demography::DemoEvent::EN { n, .. } =>
+                        { size = *n; growth = 0.0; growth_start = e.time(); }
+                    crate::demography::DemoEvent::En { pop: p2, n, .. } if *p2 as usize == pp =>
+                        { size = *n; growth = 0.0; growth_start = e.time(); }
+                    crate::demography::DemoEvent::EG { alpha, .. } =>
+                        { growth = *alpha; growth_start = e.time(); }
+                    crate::demography::DemoEvent::Eg { pop: p2, alpha, .. } if *p2 as usize == pp =>
+                        { growth = *alpha; growth_start = e.time(); }
+                    _ => {}
+                }
+            }
+            if growth == 0.0 { size } else { size * (-growth * (t - growth_start)).exp() }
+        };
+        let mig_at = move |_t: f64, i: u32, j: u32| -> f64 {
+            if (i as usize) >= mg.len() { return 0.0; }
+            *mg[i as usize].get(j as usize).unwrap_or(&0.0)
+        };
+        let placeholder = Sweep::new(
+            sw.x_sel, sw.tau, sw.origin_pop, sw.origin_kary,
+            sw.target_inv, sw.joint.clone());
+        let real = std::mem::replace(sw, placeholder);
+        *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
+    }
 }
 
 /// Force-coalesce qualifying lineages at a sweep event.

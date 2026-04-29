@@ -1,106 +1,242 @@
-/// Sweep: forced-coalescence event modelling a selective sweep.
-///
-/// ⚠️ APPROXIMATION-ONLY MODEL — NOT a frequency trajectory simulator.
-/// All three modes below are *outcome-conditioning* coalescent operators
-/// (Hudson-Kaplan family): they apply an instantaneous forced-coalescence
-/// at `t_event` rather than simulating the beneficial allele's frequency
-/// trajectory through time. For the discoal-style stochastic-then-
-/// deterministic trajectory model, see (TODO: port from legacy SMC engine
-/// at git `eb47504~1`, classes `StochasticTrajectory` /
-/// `DeterministicTrajectory`). Validation tests pending: at what (sweep
-/// age, selection coefficient, time-of-fixation) regimes does this
-/// approximation match a true-trajectory simulation? See project memory
-/// `feedback_no_silent_reverts.md`.
-///
-/// Three modes:
-///
-/// 1. **Window mode** (`selection_coefficient == 0`): all lineages
-///    with material in `[x_sel - sweep_window, x_sel + sweep_window]`
-///    are deterministically coalesced (Hudson-Kaplan approximation).
-///
-/// 2. **Hard sweep / hitchhiking mode** (`selection_coefficient > 0`,
-///    `starting_frequency == 0`): each lineage's inclusion is
-///    probabilistic, decaying with recombination distance from x_sel.
-///    All swept lineages coalesce to a single ancestor.
-///
-/// 3. **Soft sweep from standing variation** (`selection_coefficient > 0`,
-///    `starting_frequency > 0`): hitchhiking mode, but swept lineages
-///    are randomly partitioned among K ≈ 1/f0 "founding copies" of the
-///    beneficial allele (discoal model). Within each group lineages
-///    coalesce; the K surviving ancestors continue at the normal
-///    coalescent rate. Produces partial diversity reduction at x_sel.
+//! Sweep: a forced-coalescence event driven by a joint forward-time
+//! Wright-Fisher trajectory over (karyotype × allele × population)
+//! haplotype classes. See `docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md`.
+//!
+//! Replaces the prior Hudson-Kaplan endpoint-only operator. The
+//! trajectory is computed at sweep construction time
+//! (`Sweep::with_trajectory(...)`) and consumed by the backward-time
+//! coalescent event loop in subsequent tasks (Task 12+).
 
-use crate::class_tag::{BranchClass, Karyotype};
+use crate::class_tag::Karyotype;
+use crate::sweep_trajectory::{
+    build_joint_trajectory, JointSweepSpec, JointSweepTrajectory,
+};
+
+#[allow(unused_imports)]
+use crate::sweep_trajectory::SweepMode;
 
 #[derive(Clone, Debug)]
 pub struct Sweep {
-    /// Genomic position of the selected site.
     pub x_sel: f64,
-    /// Time (generations backward) of the sweep MRCA.
-    pub t_event: f64,
-    /// Target inversion + karyotype. None = any class ("hard sweep on
-    /// all carriers"). Some((inv_id, kary)) = only lineages that are
-    /// `kary` at inversion `inv_id` at position `x_sel`.
-    pub target: Option<(u16, Karyotype)>,
-    /// Restrict to lineages in this population (None = any).
-    pub population: Option<u32>,
-    /// Half-width of the sweep window (bp). The force-coalescence
-    /// applies to [x_sel - window, x_sel + window].
-    pub sweep_window: f64,
-    /// Selection coefficient for the swept allele. When > 0, enables
-    /// hitchhiking mode: inclusion probability decays with recombination
-    /// distance from x_sel. Default 0 (window mode).
-    pub selection_coefficient: f64,
-    /// Starting frequency of the beneficial allele (standing variation).
-    /// When > 0, enables soft-sweep mode: swept lineages are partitioned
-    /// among K ≈ 1/f0 founding copies instead of coalescing to 1.
-    /// 0.0 = hard sweep (single origin). Must be in [0, 1).
-    pub starting_frequency: f64,
-}
-
-impl Default for Sweep {
-    fn default() -> Self {
-        Self {
-            x_sel: 0.0,
-            t_event: 0.0,
-            target: None,
-            population: None,
-            sweep_window: 0.0,
-            selection_coefficient: 0.0,
-            starting_frequency: 0.0,
-        }
-    }
+    pub tau: f64,
+    pub origin_pop: u32,
+    pub origin_kary: Karyotype,
+    pub target_inv: u16,
+    pub joint: JointSweepSpec,
+    /// Pre-computed trajectory; populated by `with_trajectory`.
+    pub trajectory: Option<JointSweepTrajectory>,
 }
 
 impl Sweep {
-    /// None ≡ any class; Some((inv, kary)) requires exact karyotype
-    /// at `inv` (panmictic fails).
-    pub fn class_matches(&self, cls: BranchClass) -> bool {
-        match self.target {
-            None => true,
-            Some((inv_id, kary)) => cls.get_inv(inv_id) == Some(kary),
-        }
+    /// Construct a new Sweep without a trajectory (call `with_trajectory` to populate).
+    pub fn new(
+        x_sel: f64,
+        tau: f64,
+        origin_pop: u32,
+        origin_kary: Karyotype,
+        target_inv: u16,
+        joint: JointSweepSpec,
+    ) -> Self {
+        Self { x_sel, tau, origin_pop, origin_kary, target_inv, joint, trajectory: None }
     }
 
-    /// Number of founding copies for soft sweep partitioning.
-    /// Returns 1 for hard sweeps (starting_frequency == 0).
-    pub fn num_founders(&self) -> usize {
-        if self.starting_frequency <= 0.0 {
-            return 1;
-        }
-        (1.0 / self.starting_frequency).round().max(1.0) as usize
+    /// Build the joint trajectory using the given demography accessors.
+    pub fn with_trajectory(
+        mut self,
+        n_pops: u32,
+        p_inv_init_per_pop: &[f64],
+        pop_size_at: &dyn Fn(f64, u32) -> f64,
+        migration_at: &dyn Fn(f64, u32, u32) -> f64,
+    ) -> Self {
+        let traj = build_joint_trajectory(
+            &self.joint, n_pops, self.origin_pop, self.origin_kary,
+            p_inv_init_per_pop, pop_size_at, migration_at, self.tau,
+        );
+        self.trajectory = Some(traj);
+        self
     }
 
-    /// Hitchhiking probability that position `x` is linked to the sweep.
-    /// Requires `selection_coefficient > 0` and `recomb_rate > 0`.
-    /// `ne` is the effective population size for sweep duration.
-    pub fn hitchhiking_probability(&self, x: f64, recomb_rate: f64, ne: f64) -> f64 {
-        let s = self.selection_coefficient;
-        if s <= 0.0 || recomb_rate <= 0.0 {
+    /// Is `t` inside the sweep window (between tau and t_origin)?
+    pub fn covers(&self, t: f64) -> bool {
+        t >= self.tau && t <= self.joint.t_origin
+    }
+
+    /// Sweep-aware effective Ne for a (pop, kary) cell at backward
+    /// time `t`. If `t` is inside the sweep window AND the trajectory
+    /// is built, returns `n_pop_t * trajectory.p_kary(t, pop, kary)`.
+    /// Otherwise returns `n_pop_t * fallback_p_kary` — the caller's
+    /// pre-sweep p_kary value (typically from the inversion trajectory).
+    pub fn ne_cell_or_fallback(
+        &self,
+        t: f64,
+        pop: u32,
+        kary: Karyotype,
+        n_pop_t: f64,
+        fallback_p_kary: f64,
+    ) -> f64 {
+        if self.covers(t) {
+            if let Some(traj) = &self.trajectory {
+                return n_pop_t * traj.p_kary(t, pop, kary);
+            }
+        }
+        n_pop_t * fallback_p_kary
+    }
+
+    /// Probability that a lineage at position `x` is linked to the
+    /// sweep MRCA, given recombination rate `r`. Approximation:
+    /// `exp(-r·d·T_eff)` where `T_eff = t_origin - tau` (full sweep
+    /// duration). The proper integral over the trajectory shape is
+    /// a TODO refinement.
+    pub fn hitchhiking_prob(&self, x: f64, recomb_rate: f64) -> f64 {
+        if self.trajectory.is_none() {
             return 1.0;
         }
-        let t_dur = ((2.0 * ne * s).max(2.0)).ln() / s;
-        let dist = (x - self.x_sel).abs();
-        (-recomb_rate * dist * t_dur).exp()
+        let d = (x - self.x_sel).abs();
+        let t_eff = self.joint.t_origin - self.tau;
+        (-recomb_rate * d * t_eff).exp()
+    }
+
+    /// At sample time τ, randomly assign a lineage to the swept (A) vs
+    /// unswept (a) fraction with probability equal to the trajectory's
+    /// per-(pop, kary) A frequency. Returns true for A.
+    pub fn assign_a_at_sample<R: rand::Rng>(
+        &self,
+        pop: u32,
+        kary: Karyotype,
+        rng: &mut R,
+    ) -> bool {
+        let p_a = match &self.trajectory {
+            Some(t) => t.p_allele_given_kary(self.tau, pop, kary),
+            None => return false,
+        };
+        rng.random::<f64>() < p_a
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_covers_window() {
+        let sw = Sweep::new(
+            5_000.0, 100.0, 0, Karyotype::S, 0,
+            JointSweepSpec { t_origin: 1_000.0, ..Default::default() },
+        );
+        assert!(sw.covers(500.0));
+        assert!(!sw.covers(50.0));
+        assert!(!sw.covers(1_500.0));
+    }
+
+    #[test]
+    fn sweep_with_trajectory_populates() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 200.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0);
+        assert!(sw.trajectory.is_some());
+    }
+
+    #[test]
+    fn ne_cell_rises_during_sweep_on_inverted() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::I, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 100.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.3], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        // Outside the sweep window: trajectory query returns the closest sample (extrapolation).
+        // Strictly: pre-sweep-start is t > t_origin = 100, so should hold p_inv at initial 0.3.
+        // Inside window (t = 50): I-class should have grown via selection.
+        let traj = sw.trajectory.as_ref().unwrap();
+        let p_i_old = traj.p_kary(99.0, 0, Karyotype::I);
+        let p_i_mid = traj.p_kary(50.0, 0, Karyotype::I);
+        assert!(p_i_mid > p_i_old, "Inverted Ne should rise during sweep on I; old={p_i_old}, mid={p_i_mid}");
+        // ne_cell scales as p_kary * N_pop
+        let ne_mid = sw.trajectory.as_ref().unwrap().ne_cell(50.0, 0, Karyotype::I, 10_000.0);
+        assert!((ne_mid - 10_000.0 * p_i_mid).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hitchhiking_probability_decays_with_distance() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        // T_eff = t_origin - tau = 500. To straddle p = 0.5 we need
+        //   r * d * T_eff ≈ ln(2) ≈ 0.69
+        // Pick recomb_rate = 1e-5 so the threshold distance is
+        //   d* = ln(2) / (r * T_eff) = 0.69 / (1e-5 * 500) ≈ 138.6 bp.
+        // Original task spec used r = 1e-3 which is mathematically
+        // inconsistent with `p_near > 0.5` (would give exp(-5) ≈ 0.007).
+        let p_near = sw.hitchhiking_prob(5_010.0, 1e-5);
+        let p_far  = sw.hitchhiking_prob(5_500.0, 1e-5);
+        assert!(p_near > p_far, "expected hitchhiking decay; near={p_near}, far={p_far}");
+        assert!(p_near > 0.5, "p_near={p_near}");
+        assert!(p_far  < 0.5, "p_far={p_far}");
+    }
+
+    #[test]
+    fn assign_a_at_sample_uses_trajectory_freq() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        use rand_xoshiro::Xoshiro256PlusPlus;
+        use rand::SeedableRng;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        let mut a_count = 0;
+        let n_trials = 1000;
+        for _ in 0..n_trials {
+            if sw.assign_a_at_sample(0, Karyotype::S, &mut rng) {
+                a_count += 1;
+            }
+        }
+        let observed = a_count as f64 / n_trials as f64;
+        let traj = sw.trajectory.as_ref().unwrap();
+        let expected = traj.p_allele_given_kary(0.0, 0, Karyotype::S);
+        // Within 3 sigma of binomial
+        let sigma = (expected * (1.0 - expected) / n_trials as f64).sqrt();
+        assert!((observed - expected).abs() < 3.0 * sigma,
+            "observed={observed}, expected={expected}, sigma={sigma}");
+    }
+
+    #[test]
+    fn ne_cell_or_fallback_uses_trajectory_inside_window_only() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::I, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 100.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.3], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        // Outside window (t > t_origin): falls back
+        let ne_pre = sw.ne_cell_or_fallback(200.0, 0, Karyotype::I, 10_000.0, 0.3);
+        assert!((ne_pre - 3_000.0).abs() < 1e-6);
+        // Inside window: uses trajectory
+        let traj_p = sw.trajectory.as_ref().unwrap().p_kary(50.0, 0, Karyotype::I);
+        let ne_mid = sw.ne_cell_or_fallback(50.0, 0, Karyotype::I, 10_000.0, 0.3);
+        assert!((ne_mid - 10_000.0 * traj_p).abs() < 1e-6);
+        assert!(ne_mid > ne_pre, "expected ne to rise during sweep; pre={ne_pre}, mid={ne_mid}");
     }
 }

@@ -6,14 +6,19 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (107 lib + 25 integration as of 2026-04-28).
+- Rust: `cd rust && cargo test --release` (124 lib + 17 integration + 4 sweep-anchor as of 2026-04-28).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
-- Python: `.venv/bin/python -m pytest tests/hull/` — expect 17 pre-existing sweep failures (see below)
+- Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
+  (171 passed, 12 skipped as of 2026-04-28; the 12 skips are sweep-rewrite follow-up markers
+  in `test_phase6_sweep.py`/`test_phase6b_sweep_joint.py`).
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
 - Single Python file: `.venv/bin/python -m pytest tests/hull/test_phase8_trajectory_selection.py -v`.
 - New test files follow `test_phase{N}_*`: 1=panmictic, 2=class barrier, 3=gene flux,
   4=demography, 4b=class migration, 5=per-segment/multi-inv, 6=sweep, 8=trajectory selection.
+- New since 2026-04-28: `tests/hull/test_phase6_sweep.py` (rewritten as T1-T5 against
+  joint-WF Sweep API), `tests/hull/test_phase6b_sweep_joint.py` (J1-J9 trajectory
+  integration), `rust/msinv-core/tests/sweep_kim_stephan_anchors.rs` (Tier-1 closed-form anchors).
 
 ## Pytest progress visibility
 - `pytest ... 2>&1 | tail -N` BUFFERS — output appears only at exit.  For long runs:
@@ -21,13 +26,18 @@ cd rust && cargo build --release -p msinv-py
 - `-x` to fail-fast, `--timeout=30` per-test cap (pytest-timeout plugin).
 
 ## Pre-existing test failures (NOT regressions)
-17 sweep tests use `target_class='P'` which `msinv/hull/_rust_bridge.py:89` rejects with
-`ValueError: target_class='P' (panmictic-only sweep) is not supported by the Rust backend`:
-`test_phase6_sweep.py::{test_sweep_forces_coalescence_at_x_sel,test_sweep_does_not_affect_distant_positions,test_sweep_hitchhiking_produces_valid_ts_at_moderate_rho,test_sweep_window_mode_no_disjoint_corruption[*],test_soft_sweep_diversity_signature,test_two_simultaneous_window_sweeps[*-True],test_two_simultaneous_hitchhiking_sweeps[*-True]}`.
-Plus: `test_stress_corners.py::test_flux_in_nested_inv_only_flips_one_inv_class` hangs (>15 min,
-~35 GB RAM) at the remnant-ratchet path. `--ignore=tests/hull/test_stress_corners.py` for full-suite runs.
-Confirm pre-existing via `git stash`+rerun before chasing.  Deselect with
-`--deselect tests/hull/test_phase6_sweep.py::<name>`.
+- `test_stress_corners.py::test_flux_in_nested_inv_only_flips_one_inv_class` hangs (>15 min,
+  ~35 GB RAM) at the remnant-ratchet path. `--ignore=tests/hull/test_stress_corners.py` for full-suite runs.
+
+(Sweep tests: as of 2026-04-28 the 17 panmictic `target_class='P'` failures are gone — the sweep
+operator was rewritten on the joint forward WF model. See
+`docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md`.
+The new test files are `tests/hull/test_phase6_sweep.py` (T1-T5) and
+`tests/hull/test_phase6b_sweep_joint.py` (J1-J9). T3-T5, J4-J9 are
+`pytest.skip`-marked pending follow-up integration of the simulator-side
+`apply_sweep` dispatch.)
+
+Confirm pre-existing via `git stash`+rerun before chasing.
 
 ## Perf + debugging
 - Bench: `cd rust && cargo run --release --example bench_rho -- <rho> <reps> [n_pops]`

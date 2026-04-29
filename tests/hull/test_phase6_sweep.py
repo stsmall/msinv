@@ -1,565 +1,90 @@
-"""Phase-6 tests for the hull simulator: forced-coalescence sweep events.
+"""Phase 6 — selection sweeps (joint forward WF rewrite).
 
-A Sweep at (x_sel, t_event, target_class) forces all qualifying
-lineages (carrying material at x_sel of the target class) to
-coalesce into a single ancestor at t_event. Verifies:
+Tests against the new Sweep API (see docs/superpowers/specs/
+2026-04-28-sweep-rewrite-design.md).
 
-  - Without sweep: T_MRCA at x_sel follows the structured-coalescent
-    expectation (e.g. ~2·Ne for panmictic).
-  - With sweep at t_event: T_MRCA at x_sel is exactly t_event for all
-    target-class samples (sweep MRCA).
-  - Far from x_sel: T_MRCA unaffected by the sweep.
-  - Sweep targeting one class doesn't force-merge other-class samples.
+Replaces the prior Hudson-Kaplan tests, which targeted
+``target_class='P'`` and were rejected by the Rust backend.
+
+T1, T2 are active and exercise the trajectory directly via PyO3.
+T3, T4, T5 are skipped pending simulator-side `apply_sweep` dispatch
+(deferred per Task 13 of the sweep-rewrite plan).
 """
+
+import math
 
 import pytest
 
-from msinv.hull import HullSimulator, InversionSpec
 from msinv.hull.sweep import Sweep
 
-from .conftest import NEGLIGIBLE_GAMMA
+
+def _logistic_pt_discrete(t, s, f0):
+    """Discrete-time logistic: f0*(1+s)^t / (1 - f0 + f0*(1+s)^t)."""
+    growth = (1.0 + s) ** t
+    return f0 * growth / (1.0 - f0 + f0 * growth)
 
 
-# ---------------------------------------------------------------------------
-# Sweep event basic behaviour
-# ---------------------------------------------------------------------------
-
-def test_sweep_forces_coalescence_at_x_sel():
-    """All target-class samples should have T_MRCA = t_event at x_sel."""
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 200.0  # very recent — without sweep T_MRCA would be ~2·Ne
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep, target_class='P')
-
-    sim = HullSimulator(
-        samples=10,
-        population_size=Ne,
-        sequence_length=L,
-        recombination_rate=1e-8,
-        sweeps=[sweep],
-        seed=42,
+def test_t1_det_logistic_per_gen_within_1e6():
+    """T1: DetOnly, panmictic-on-S, no flux. Trajectory matches discrete logistic."""
+    sw = Sweep(
+        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.01,
+        partial_sweep_final_freq=1.0,
     )
-    ts = sim.simulate()
-    tree = ts.at(50_000.0)
-    samples = list(ts.samples())
-    tmrca = tree.time(tree.mrca(*samples))
-    assert tmrca <= t_sweep + 1.0, (
-        f"After sweep at t={t_sweep}, T_MRCA at x_sel should "
-        f"be ~{t_sweep}, got {tmrca}.")
-
-
-def test_no_sweep_gives_normal_coalescent_tmrca():
-    """Without a sweep, T_MRCA follows the standard panmictic
-    expectation (~2·Ne for n samples)."""
-    Ne = 10_000
-    n = 10
-    sim = HullSimulator(
-        samples=n,
-        population_size=Ne,
-        sequence_length=100_000.0,
-        recombination_rate=1e-8,
-        seed=42,
-    )
-    ts = sim.simulate()
-    samples = list(ts.samples())
-    tmrca = ts.first().time(ts.first().mrca(*samples))
-    # E[T_MRCA] = 2·Ne·(1 - 1/n) = 18000 for n=10
-    expected = 2 * Ne * (1 - 1 / n)
-    # Allow generous tolerance — single rep.
-    assert 0.3 * expected < tmrca < 3.0 * expected
-
-
-# ---------------------------------------------------------------------------
-# Sweep targeting a karyotype class inside an inversion
-# ---------------------------------------------------------------------------
-
-def test_sweep_on_S_class_inside_inversion():
-    """Sweep targeting S samples at x_sel inside an inversion: only
-    S samples force-coalesce, I samples remain at T_MRCA >= t_inv."""
-    Ne = 10_000
-    L = 100_000.0
-    t_inv = 20_000.0
-    t_sweep = 500.0
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep, target_class='S')
-
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=Ne, sequence_length=L,
-        p_inv=0.5, t_inv=t_inv,
-        bp_left=20_000.0, bp_right=80_000.0,
-        recombination_rate=1e-8,
-        sweeps=[sweep],
-        seed=42,
-    )
-    ts = sim.simulate()
-    samples = list(ts.samples())
-    S = samples[:5]; I = samples[5:]
-    tree = ts.at(50_000.0)
-    # All S samples should coalesce by t_sweep.
-    ss_mrca = tree.time(tree.mrca(*S))
-    assert ss_mrca <= t_sweep + 1.0, (
-        f"S samples should have T_MRCA ~{t_sweep}, got {ss_mrca}")
-    # I samples among themselves: NOT touched by the S-targeted
-    # sweep, so I-I T_MRCA should be > t_sweep.
-    ii_mrca = tree.time(tree.mrca(*I))
-    assert ii_mrca > t_sweep, (
-        f"I-I T_MRCA should be unaffected by S-targeted sweep, "
-        f"got {ii_mrca}.")
-    # Cross-class T_MRCA still >= t_inv (class barrier).
-    for s in S:
-        for i in I:
-            si_mrca = tree.time(tree.mrca(s, i))
-            assert si_mrca >= t_inv - 1e-6
-
-
-# ---------------------------------------------------------------------------
-# Sweep does not affect distant positions
-# ---------------------------------------------------------------------------
-
-def test_sweep_does_not_affect_distant_positions():
-    """With recombination, the sweep affects a region around x_sel but
-    positions far away should have T_MRCA >> t_sweep."""
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 200.0
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep,
-                  target_class='P', sweep_window=500.0)
-
-    sim = HullSimulator(
-        samples=10,
-        population_size=Ne, sequence_length=L,
-        recombination_rate=1e-8,
-        sweeps=[sweep], seed=42,
-    )
-    ts = sim.simulate()
-    # Tree at x=1000 (far from x_sel=50000) should NOT be the sweep MRCA.
-    far_tree = ts.at(1000.0)
-    samples = list(ts.samples())
-    far_tmrca = far_tree.time(far_tree.mrca(*samples))
-    assert far_tmrca > t_sweep * 5, (
-        f"Distant position T_MRCA = {far_tmrca}; expected >> sweep "
-        f"t_event = {t_sweep}.")
-
-
-# ---------------------------------------------------------------------------
-# Sweep validation
-# ---------------------------------------------------------------------------
-
-def test_sweep_dataclass_construction():
-    s = Sweep(x_sel=50.0, t_event=100.0, target_class='S')
-    assert s.x_sel == 50.0
-    assert s.t_event == 100.0
-    assert s.target_class == 'S'
-    assert s.population is None
-    assert s.sweep_window == 0.0
-    assert s.selection_coefficient == 0.0
-
-
-def test_sweep_with_no_target_lineages_is_noop():
-    """If no lineages have material at x_sel of the target class, the
-    sweep should be a no-op, not crash."""
-    Ne = 1000
-    sim = HullSimulator(
-        samples=5,
-        population_size=Ne, sequence_length=100_000.0,
-        recombination_rate=1e-8,
-        sweeps=[Sweep(x_sel=50_000.0, t_event=10.0, target_class='I')],
-        # All samples are 'P' (no inversion); no 'I' class anywhere.
-        seed=42,
-    )
-    ts = sim.simulate()
-    assert ts.num_samples == 5  # ran to completion without crashing
-
-
-# ---------------------------------------------------------------------------
-# Multi-inversion sweep: target_class='S0' vs 'S1' (Bug #4)
-# ---------------------------------------------------------------------------
-
-def test_multi_inv_sweep_S0_only_hits_inv0():
-    """In a two-inversion setup, a sweep targeting 'S0' should only
-    force-coalesce S0 lineages (inv 0's standard class), not S1."""
-    Ne = 10_000
-    L = 100_000.0
-    t_inv = 20_000.0
-    t_sweep = 500.0
-    # x_sel inside inv 0 (20-50 kb), outside inv 1 (60-90 kb)
-    sweep = Sweep(x_sel=35_000.0, t_event=t_sweep, target_class='S0')
-
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=Ne, sequence_length=L,
-        inversions=[
-            InversionSpec(bp_left=20_000.0, bp_right=50_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-            InversionSpec(bp_left=60_000.0, bp_right=90_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-        ],
-        recombination_rate=1e-8,
-        sweeps=[sweep],
-        seed=42,
-    )
-    ts = sim.simulate()
-    samples = list(ts.samples())
-    S = samples[:5]; I = samples[5:]
-
-    tree = ts.at(35_000.0)
-    # S lineages at inv 0 are tagged 'S0'. Sweep should coalesce them.
-    ss_mrca = tree.time(tree.mrca(*S))
-    assert ss_mrca <= t_sweep + 1.0, (
-        f"S0 samples at x_sel should coalesce by sweep at t={t_sweep}, "
-        f"got T_MRCA={ss_mrca}")
-
-    # I lineages at inv 0 are tagged 'I0' — NOT targeted by 'S0' sweep.
-    # I-I T_MRCA should be > t_sweep (not swept).
-    ii_mrca = tree.time(tree.mrca(*I))
-    assert ii_mrca > t_sweep, (
-        f"I0 lineages should NOT be swept by 'S0' target, "
-        f"got I-I T_MRCA={ii_mrca}")
-
-
-def test_multi_inv_sweep_S1_only_hits_inv1():
-    """Sweep targeting 'S1' should only coalesce lineages that are
-    Standard at inv 1, regardless of their class at inv 0."""
-    Ne = 10_000
-    L = 100_000.0
-    t_inv = 20_000.0
-    t_sweep = 500.0
-    # x_sel inside inv 1 (60-90 kb)
-    sweep = Sweep(x_sel=75_000.0, t_event=t_sweep, target_class='S1')
-
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=Ne, sequence_length=L,
-        inversions=[
-            InversionSpec(bp_left=20_000.0, bp_right=50_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-            InversionSpec(bp_left=60_000.0, bp_right=90_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-        ],
-        recombination_rate=1e-8,
-        sweeps=[sweep],
-        seed=42,
-    )
-    ts = sim.simulate()
-    samples = list(ts.samples())
-    S = samples[:5]; I = samples[5:]
-
-    tree = ts.at(75_000.0)
-    # S samples are S0-S1 at both inversions. At inv 1, they're 'S1'.
-    # The sweep targets 'S1', so S samples should coalesce.
-    ss_mrca = tree.time(tree.mrca(*S))
-    assert ss_mrca <= t_sweep + 1.0, (
-        f"S1 samples at inv 1 should coalesce by sweep at t={t_sweep}, "
-        f"got T_MRCA={ss_mrca}")
-
-    # I samples are I0-I1 at both inversions. At inv 1, they're 'I1'.
-    # NOT targeted by 'S1' sweep.
-    ii_mrca = tree.time(tree.mrca(*I))
-    assert ii_mrca > t_sweep, (
-        f"I1 lineages should NOT be swept by 'S1' target, "
-        f"got I-I T_MRCA={ii_mrca}")
-
-
-def test_multi_inv_sweep_bare_S_matches_both_S0_S1():
-    """In a multi-inversion setup, target_class='S' (bare) matches
-    both 'S0' and 'S1' via fuzzy matching. This is intentional for
-    convenience but users should be aware it's ambiguous."""
-    Ne = 10_000
-    L = 100_000.0
-    t_inv = 20_000.0
-    t_sweep = 500.0
-    # x_sel inside inv 0
-    sweep = Sweep(x_sel=35_000.0, t_event=t_sweep, target_class='S')
-
-    sim = HullSimulator(
-        n_std=5, n_inv=5,
-        population_size=Ne, sequence_length=L,
-        inversions=[
-            InversionSpec(bp_left=20_000.0, bp_right=50_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-            InversionSpec(bp_left=60_000.0, bp_right=90_000.0,
-                          p_inv=0.5, t_inv=t_inv),
-        ],
-        recombination_rate=1e-8,
-        sweeps=[sweep],
-        seed=42,
-    )
-    ts = sim.simulate()
-    samples = list(ts.samples())
-    S = samples[:5]
-
-    tree = ts.at(35_000.0)
-    # Bare 'S' should match 'S0' at this position (inside inv 0).
-    ss_mrca = tree.time(tree.mrca(*S))
-    assert ss_mrca <= t_sweep + 1.0, (
-        f"Bare 'S' should fuzzy-match 'S0' and sweep S lineages, "
-        f"got T_MRCA={ss_mrca}")
-
-
-# ---------------------------------------------------------------------------
-# Sweep + non-overlapping lineages in apply_coalescence (Bug #7)
-# ---------------------------------------------------------------------------
-
-def test_sweep_hitchhiking_produces_valid_ts_at_moderate_rho():
-    """Hitchhiking sweep at moderate rho: the tree sequence should be
-    valid and T_MRCA at x_sel should reflect the sweep time."""
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 200.0
-    s_coef = 0.01
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep,
-                  target_class='P', selection_coefficient=s_coef)
-
-    for seed in range(5):
-        sim = HullSimulator(
-            samples=10,
-            population_size=Ne,
-            sequence_length=L,
-            recombination_rate=1e-8,  # rho=40
-            sweeps=[sweep],
-            seed=seed,
+    rust_sw = sw.to_rust()
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=10_000.0)
+    samples = rust_sw.trajectory_samples()
+    # Spot-check at 25%, 50%, 75% along the trajectory
+    for frac in [0.25, 0.5, 0.75]:
+        i = int(len(samples) * frac)
+        sample_t, freq = samples[i]
+        forward_t = sw.t_origin - sample_t
+        observed = freq[0][1]   # (S, A) class
+        expected = _logistic_pt_discrete(forward_t, sw.s, sw.f0)
+        assert abs(observed - expected) < 1e-9, (
+            f"at frac {frac}, t={sample_t}: obs={observed}, exp={expected}"
         )
-        ts = sim.simulate()
-        # ts should be internally consistent
-        assert ts.num_samples == 10
-        # T_MRCA at x_sel should be near t_sweep
-        tree = ts.at(50_000.0)
-        samples = list(ts.samples())
-        tmrca = tree.time(tree.mrca(*samples))
-        assert tmrca <= t_sweep + 1.0, (
-            f"Hitchhiking sweep: T_MRCA at x_sel should be ~{t_sweep}, "
-            f"got {tmrca} (seed={seed})")
 
 
-@pytest.mark.parametrize("seed", range(5))
-def test_sweep_window_mode_no_disjoint_corruption(seed):
-    """Window-mode sweep: verify that apply_coalescence produces a
-    valid tree at x_sel even when lineages have been fragmented by
-    recombination."""
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 200.0
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep,
-                  target_class='P', sweep_window=5_000.0)
-
-    sim = HullSimulator(
-        samples=10,
-        population_size=Ne,
-        sequence_length=L,
-        recombination_rate=1e-8,  # rho=40
-        sweeps=[sweep],
-        seed=seed,
+def test_t2_stoch_fixation_proportion():
+    """T2: Stoch, de novo. Fixation proportion approx 2s/(1+s) within MC error over 200 reps."""
+    s = 0.05
+    expected = 2 * s / (1 + s)
+    n_reps = 200
+    fixations = 0
+    for r in range(n_reps):
+        sw = Sweep(
+            x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+            mode="Stochastic", s=s, t_origin=2_000.0, f0=1.0/(2*5_000),
+            partial_sweep_final_freq=0.95, seed=r + 1,
+        )
+        rust_sw = sw.to_rust()
+        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=5_000.0)
+        if rust_sw.final_a_freq() > 0.5:
+            fixations += 1
+    observed = fixations / n_reps
+    sigma = math.sqrt(expected * (1 - expected) / n_reps)
+    # Loose 4-sigma bound; the simulator's discrete WF gives a slightly
+    # different fixation rate than the Haldane approximation 2s/(1+s),
+    # so widen if needed.
+    assert abs(observed - expected) < 4 * sigma, (
+        f"obs fix prop = {observed}, expected {expected} +/- {sigma}"
     )
-    ts = sim.simulate()
-    assert ts.num_samples == 10
-
-    tree = ts.at(50_000.0)
-    samples = list(ts.samples())
-    tmrca = tree.time(tree.mrca(*samples))
-    assert tmrca <= t_sweep + 1.0, (
-        f"Window sweep: T_MRCA at x_sel should be ~{t_sweep}, "
-        f"got {tmrca} (seed={seed})")
-
-    # Far from x_sel should NOT be affected
-    far_tree = ts.at(5_000.0)
-    far_tmrca = far_tree.time(far_tree.mrca(*samples))
-    assert far_tmrca > t_sweep * 2, (
-        f"Far position should not be swept, got T_MRCA={far_tmrca}")
 
 
-def test_sweep_hitchhiking_inside_inversion_with_recombination():
-    """Hitchhiking sweep on S class inside an inversion at moderate rho.
-
-    This exercises the sweep path where recombination fragments lineages
-    before the sweep fires. The merged lineage may accumulate disjoint
-    segments — verify the tree sequence is still valid and the sweep
-    correctly hits x_sel."""
-    Ne = 10_000
-    L = 100_000.0
-    t_inv = 20_000.0
-    t_sweep = 500.0
-    sweep = Sweep(x_sel=50_000.0, t_event=t_sweep,
-                  target_class='S', selection_coefficient=0.01)
-
-    for seed in range(5):
-        sim = HullSimulator(
-            n_std=5, n_inv=5,
-            population_size=Ne,
-            sequence_length=L,
-            p_inv=0.5, t_inv=t_inv,
-            bp_left=20_000.0, bp_right=80_000.0,
-            gene_conversion_rate=NEGLIGIBLE_GAMMA,
-            recombination_rate=1e-8,
-            sweeps=[sweep],
-            seed=seed,
-        )
-        ts = sim.simulate()
-        assert ts.num_samples == 10
-
-        samples = list(ts.samples())
-        S = samples[:5]; I = samples[5:]
-        tree = ts.at(50_000.0)
-
-        # S samples at x_sel should coalesce at t_sweep
-        ss_mrca = tree.time(tree.mrca(*S))
-        assert ss_mrca <= t_sweep + 1.0, (
-            f"S-class hitchhiking sweep: T_MRCA={ss_mrca}, "
-            f"expected ~{t_sweep} (seed={seed})")
-
-        # Cross-class barrier should still hold
-        for s in S:
-            for i in I:
-                si_mrca = tree.time(tree.mrca(s, i))
-                assert si_mrca >= t_inv - 1e-6, (
-                    f"Cross-class barrier violated: "
-                    f"S-I T_MRCA={si_mrca} < t_inv={t_inv}")
+@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
+def test_t3_hitchhiking_footprint_kim_stephan():
+    """T3: pi reduction at multiple distances matches Kim-Stephan within 25%."""
+    pass
 
 
-# ---------------------------------------------------------------------------
-# Soft sweep diversity signature
-# ---------------------------------------------------------------------------
-
-def test_soft_sweep_diversity_signature():
-    """Soft sweep (f0=0.2 → K=5 founders) should produce T_MRCA at
-    x_sel that is larger than a hard sweep.
-
-    Hard sweep:  T_MRCA at x_sel reduced (most lineages coalesce)
-    Soft sweep:  T_MRCA at x_sel larger (K founders continue at
-                 the neutral coalescent rate)
-
-    In hitchhiking mode, neither hard nor soft sweeps guarantee
-    T_MRCA == t_event (probabilistic segment inclusion). The key
-    signature is the RELATIVE difference: soft > hard.
-    """
-    import numpy as np
-
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 500.0
-    n = 20
-
-    # -- Hard sweep (f0=0 → K=1) --
-    tmrca_hard = []
-    for seed in range(20):
-        sim = HullSimulator(
-            samples=n,
-            population_size=Ne,
-            sequence_length=L,
-            recombination_rate=1e-8,
-            sweeps=[Sweep(
-                x_sel=50_000.0, t_event=t_sweep,
-                target_class='P', selection_coefficient=0.01,
-                starting_frequency=0.0,
-            )],
-            seed=seed,
-        )
-        ts = sim.simulate()
-        tree = ts.at(50_000.0)
-        samples = list(ts.samples())
-        tmrca_hard.append(tree.time(tree.mrca(*samples)))
-
-    # -- Soft sweep (f0=0.2 → K=5) --
-    tmrca_soft = []
-    for seed in range(20):
-        sim = HullSimulator(
-            samples=n,
-            population_size=Ne,
-            sequence_length=L,
-            recombination_rate=1e-8,
-            sweeps=[Sweep(
-                x_sel=50_000.0, t_event=t_sweep,
-                target_class='P', selection_coefficient=0.01,
-                starting_frequency=0.2,
-            )],
-            seed=seed,
-        )
-        ts = sim.simulate()
-        tree = ts.at(50_000.0)
-        samples = list(ts.samples())
-        tmrca_soft.append(tree.time(tree.mrca(*samples)))
-
-    mean_hard = np.mean(tmrca_hard)
-    mean_soft = np.mean(tmrca_soft)
-
-    # Soft sweep T_MRCA should be larger than hard sweep T_MRCA.
-    # K=5 founders in the soft sweep continue at the neutral rate,
-    # while the hard sweep coalesces to a single ancestor.
-    assert mean_soft > mean_hard, (
-        f"Soft sweep T_MRCA ({mean_soft:.1f}) should be larger "
-        f"than hard sweep ({mean_hard:.1f})")
-    # Soft sweep T_MRCA should be well above t_event (founders coalesce
-    # at the neutral rate: E[T_MRCA] for K=5 is ~2*Ne*(1-1/5) = 16000).
-    assert mean_soft > t_sweep * 3, (
-        f"Soft sweep T_MRCA ({mean_soft:.1f}) should be >> "
-        f"t_event={t_sweep} (multiple founders survive)")
+@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
+def test_t4_soft_sweep_partial_diversity_reduction():
+    """T4: f0=0.05, pi at x_sel approx 1 - 1/K, K = round(1/f0)."""
+    pass
 
 
-# ---------------------------------------------------------------------------
-# Simultaneous sweeps at identical t_event (regression: TSK_ERR_BAD_NODE_TIME_ORDERING)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("use_rust", [False, True])
-@pytest.mark.parametrize("seed", range(5))
-def test_two_simultaneous_window_sweeps(seed, use_rust):
-    """Two window-mode sweeps at the exact same t_event must not
-    corrupt node-time ordering. Regression for the bug where each
-    sweep restarted its eps counter at 1, so the second sweep could
-    place a parent at t+eps below a child created by the first sweep
-    at t+k*eps."""
-    if use_rust:
-        try:
-            from msinv.hull._rust_bridge import RUST_AVAILABLE
-            if not RUST_AVAILABLE:
-                pytest.skip("Rust backend unavailable")
-        except ImportError:
-            pytest.skip("Rust bridge missing")
-
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 300.0
-    sweeps = [
-        Sweep(x_sel=25_000.0, t_event=t_sweep,
-              target_class='P', sweep_window=2_000.0),
-        Sweep(x_sel=75_000.0, t_event=t_sweep,
-              target_class='P', sweep_window=2_000.0),
-    ]
-    sim = HullSimulator(
-        samples=10, population_size=Ne, sequence_length=L,
-        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
-    ts = sim.simulate(use_rust=use_rust)
-
-    samples = list(ts.samples())
-    for x_sel in (25_000.0, 75_000.0):
-        tree = ts.at(x_sel)
-        tmrca = tree.time(tree.mrca(*samples))
-        assert tmrca <= t_sweep + 10.0, (
-            f"sweep at x={x_sel}: T_MRCA={tmrca} > t_event={t_sweep}")
-
-
-@pytest.mark.parametrize("use_rust", [False, True])
-@pytest.mark.parametrize("seed", range(5))
-def test_two_simultaneous_hitchhiking_sweeps(seed, use_rust):
-    """Two hitchhiking sweeps at the exact same t_event."""
-    if use_rust:
-        try:
-            from msinv.hull._rust_bridge import RUST_AVAILABLE
-            if not RUST_AVAILABLE:
-                pytest.skip("Rust backend unavailable")
-        except ImportError:
-            pytest.skip("Rust bridge missing")
-
-    Ne = 10_000
-    L = 100_000.0
-    t_sweep = 300.0
-    sweeps = [
-        Sweep(x_sel=25_000.0, t_event=t_sweep, target_class='P',
-              selection_coefficient=0.01),
-        Sweep(x_sel=75_000.0, t_event=t_sweep, target_class='P',
-              selection_coefficient=0.01),
-    ]
-    sim = HullSimulator(
-        samples=10, population_size=Ne, sequence_length=L,
-        recombination_rate=1e-8, sweeps=sweeps, seed=seed)
-    # Must not raise TSK_ERR_BAD_NODE_TIME_ORDERING.
-    ts = sim.simulate(use_rust=use_rust)
-    assert ts.num_samples == 10
+@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
+def test_t5_partial_sweep_final_freq_assignment():
+    """T5: c=0.5 -> approx 50% of lineages assigned to swept fraction."""
+    pass

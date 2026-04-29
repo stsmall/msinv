@@ -15,6 +15,7 @@ use msinv_core::trajectory::{
 use msinv_core::rate_index::RateCache;
 use msinv_core::simulator::{HullSimulator, SampleEntry, SimResult};
 use msinv_core::sweep::Sweep;
+use msinv_core::sweep_trajectory::{JointSweepSpec, SweepMode};
 
 thread_local! {
     /// Reusable pair-rate cache. Amortises the first-call allocation
@@ -55,28 +56,108 @@ fn parse_kary(c: char) -> Option<Karyotype> {
     }
 }
 
-/// Parse a sweep `target_class` string — None or "any" → no filter,
-/// "S"/"I" → inv 0, "S<id>"/"I<id>" → that inv. "P" (panmictic-only)
-/// is rejected: Rust Sweep can't express it.
-fn parse_sweep_target(tc: Option<&str>) -> PyResult<Option<(u16, Karyotype)>> {
-    let s = match tc {
-        None | Some("any") => return Ok(None),
-        Some("P") => return Err(pyo3::exceptions::PyValueError::new_err(
-            "target_class='P' (panmictic-only sweep) is not supported by the \
-             Rust backend. Use 'any', or an 'S'/'I'/'S<id>'/'I<id>' karyotype.")),
-        Some(s) => s,
-    };
-    let mut chars = s.chars();
-    let kary = parse_kary(chars.next().unwrap())
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-            format!("unrecognised target_class {s:?}; first char must be 'S' or 'I'")))?;
-    let inv_id: u16 = if s.len() == 1 {
-        0
-    } else {
-        s[1..].parse().map_err(|_| pyo3::exceptions::PyValueError::new_err(
-            format!("invalid inv_id in target_class {s:?}")))?
-    };
-    Ok(Some((inv_id, kary)))
+// `parse_sweep_target` was removed in Task 11 of the sweep rewrite.
+// The new Sweep API uses `JointSweepSpec` directly. The PySweep
+// `#[pyclass]` below provides the Python-side wiring (Task 14).
+
+/// PyO3 wrapper for `msinv_core::sweep::Sweep`.
+///
+/// Construct from Python with all spec parameters; optionally call
+/// `build_trajectory(...)` to populate the joint forward-time WF
+/// trajectory under a constant Ne / zero-migration demography
+/// (convenience for tests). The full simulator wires the actual
+/// demography accessors at run time.
+#[pyclass]
+#[derive(Clone)]
+pub struct PySweep {
+    inner: Sweep,
+}
+
+#[pymethods]
+impl PySweep {
+    #[new]
+    #[pyo3(signature = (
+        x_sel, tau, origin_pop, origin_kary, target_inv,
+        mode, s, t_origin, f0,
+        partial_sweep_final_freq=1.0, recurrent_mutation_rate=0.0,
+        gamma_flux=0.0, mean_tract_length=0.0, seed=0u64, dt_scalar=400.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        x_sel: f64, tau: f64, origin_pop: u32, origin_kary: u32, target_inv: u16,
+        mode: &str, s: f64, t_origin: f64, f0: f64,
+        partial_sweep_final_freq: f64, recurrent_mutation_rate: f64,
+        gamma_flux: f64, mean_tract_length: f64, seed: u64, dt_scalar: f64,
+    ) -> PyResult<Self> {
+        let kary = match origin_kary {
+            0 => Karyotype::S,
+            1 => Karyotype::I,
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("origin_kary must be 0 (S) or 1 (I), got {}", other))),
+        };
+        let mode_enum = match mode {
+            "Stochastic" | "stochastic" => SweepMode::Stochastic,
+            "Deterministic" | "deterministic" => SweepMode::Deterministic,
+            "Neutral" | "neutral" => SweepMode::Neutral,
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("mode must be Stochastic, Deterministic, or Neutral; got {:?}", other))),
+        };
+        let joint = JointSweepSpec {
+            mode: mode_enum, s, t_origin, f0,
+            partial_sweep_final_freq, recurrent_mutation_rate,
+            gamma_flux, mean_tract_length, seed, dt_scalar,
+        };
+        Ok(Self {
+            inner: Sweep::new(x_sel, tau, origin_pop, kary, target_inv, joint),
+        })
+    }
+
+    /// Build the joint trajectory using a constant pop_size and zero migration.
+    /// Convenience for tests; production path uses the simulator's demography.
+    fn build_trajectory(
+        &mut self,
+        n_pops: u32,
+        p_inv_init: Vec<f64>,
+        pop_size: f64,
+    ) -> PyResult<()> {
+        if p_inv_init.len() != n_pops as usize {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("p_inv_init.len() = {} != n_pops = {}", p_inv_init.len(), n_pops)));
+        }
+        let inner = self.inner.clone().with_trajectory(
+            n_pops, &p_inv_init,
+            &|_t, _p| pop_size,
+            &|_t, _i, _j| 0.0,
+        );
+        self.inner = inner;
+        Ok(())
+    }
+
+    /// Returns Vec<(t, freq[pop])>, where freq[pop] is [(S,a), (S,A), (I,a), (I,A)].
+    fn trajectory_samples(&self) -> Vec<(f64, Vec<[f64; 4]>)> {
+        match &self.inner.trajectory {
+            Some(t) => t.samples.iter().map(|s| (s.t, s.freq.clone())).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    fn final_a_freq(&self) -> f64 {
+        match &self.inner.trajectory {
+            Some(t) => t.samples.last().map(|s| {
+                let f = &s.freq[0];
+                f[1] + f[3]   // (S, A) + (I, A)
+            }).unwrap_or(0.0),
+            None => 0.0,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PySweep(x_sel={}, tau={}, origin_pop={}, origin_kary={:?}, target_inv={}, mode={:?})",
+            self.inner.x_sel, self.inner.tau, self.inner.origin_pop,
+            self.inner.origin_kary, self.inner.target_inv, self.inner.joint.mode,
+        )
+    }
 }
 
 // ---------------------------------------------------------------
@@ -395,29 +476,17 @@ fn simulate_raw(
     }
 
     // --- Sweeps ---
+    // The Python-side `sweeps` kwarg is a list of `PySweep` objects
+    // (built via `from msinv._msinv_core import PySweep`). Each is
+    // unwrapped to the underlying `msinv_core::sweep::Sweep` and
+    // handed to the simulator. The simulator builds the joint
+    // trajectory itself using the live demography accessors, so any
+    // trajectory pre-built on the PySweep is overwritten.
     let mut sweep_specs: Vec<Sweep> = Vec::new();
     if let Some(sw_list) = sweeps {
         for item in sw_list.iter() {
-            let d: &Bound<'_, PyDict> = item.downcast()?;
-            let x_sel: f64 = d.get_item("x_sel")?.unwrap().extract()?;
-            let t_event: f64 = d.get_item("t_event")?.unwrap().extract()?;
-            let sw_win: f64 = d.get_item("sweep_window")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            let pop: Option<u32> = d.get_item("population")?
-                .and_then(|v| v.extract().ok());
-            let target: Option<(u16, Karyotype)> =
-                parse_sweep_target(d.get_item("target_class")?
-                    .and_then(|v| v.extract::<String>().ok()).as_deref())?;
-            let sel_coeff: f64 = d.get_item("selection_coefficient")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            let start_freq: f64 = d.get_item("starting_frequency")?
-                .and_then(|v| v.extract().ok()).unwrap_or(0.0);
-            sweep_specs.push(Sweep {
-                x_sel, t_event, target, population: pop,
-                sweep_window: sw_win,
-                selection_coefficient: sel_coeff,
-                starting_frequency: start_freq,
-            });
+            let py_sw: PyRef<PySweep> = item.extract()?;
+            sweep_specs.push(py_sw.inner.clone());
         }
     }
 
@@ -533,5 +602,6 @@ fn event_log_to_pylist(
 fn _msinv_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(simulate_raw, m)?)?;
+    m.add_class::<PySweep>()?;
     Ok(())
 }

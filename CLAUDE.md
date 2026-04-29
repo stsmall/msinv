@@ -97,6 +97,14 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
 - Migration matrix convention: `m_ij` = "fraction of pop i ABSORBING FROM pop j",
   matching `Demography::migration_matrix[dst][src]`. Forward-flow A→B needs
   `m(B, A) > 0`, NOT `m(A, B) > 0`.
+- `population_size` convention: msinv treats `population_size=N` as **diploid Ne**
+  (per-pair coal rate = `1/(2N)`; verified at `rust/msinv-core/src/simulator.rs:1338`
+  and `msinv/hull/simulator.py:635`). To compare against msprime, double on the
+  msprime side: `msprime.sim_ancestry(population_size=2*N, ploidy=1, record_full_arg=True)`.
+  `ploidy=1` reads N as haploid; `record_full_arg=True` is needed because msinv
+  records all recombs as tree boundaries while msprime default simplifies
+  non-ancestral ones. Migration rate is per-lineage-per-gen on both sides — do NOT
+  rescale. Spec: `docs/superpowers/specs/2026-04-29-msprime-validation-design.md`.
 - Sweep + inversion trajectories use the **discrete-time** WF logistic update
   `p_{t+1} = p_t·(1+s)/(1+s·p_t)` with closed form `f0·(1+s)^t / (1 - f0 + f0·(1+s)^t)`.
   Don't write tests against the continuous `exp(s·t)` form — they diverge at O(s²·t).

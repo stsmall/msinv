@@ -504,7 +504,8 @@ impl HullSimulator {
                 let old_i_len = active[i].cached_len;
                 let old_j_len = active[j].cached_len;
                 apply_coalescence_compound(
-                    active, i, j, t, arena, tables, next_uid);
+                    active, i, j, t, arena, tables, next_uid,
+                    Some(&mut a_tag));
                 let post_len = active.len();
                 let mut delta = -old_i_len - old_j_len;
                 for new_idx in (pre_len - 2)..post_len {
@@ -538,7 +539,8 @@ impl HullSimulator {
                     self.sequence_length);
                 let len_before = active.len();
                 apply_recombination(
-                    active, chosen_idx, x, arena, next_uid);
+                    active, chosen_idx, x, arena, next_uid,
+                    Some(&mut a_tag));
                 let len_after = active.len();
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -887,7 +889,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed);
+                        allowed, Some(&mut a_tag));
                     let post_len = active.len();
                     // Incremental total_material: remove the two merged
                     // lineages' contributions, add the new lineages'.
@@ -948,7 +950,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed);
+                        allowed, Some(&mut a_tag));
                     let post_len = active.len();
                     let mut delta = -old_i_len - old_j_len;
                     for new_idx in (pre_len - 2)..post_len {
@@ -1033,7 +1035,7 @@ impl HullSimulator {
                         let pre_len = active.len();
                         apply_coalescence(
                             active, a, b, t, arena,
-                            tables, next_uid);
+                            tables, next_uid, Some(&mut a_tag));
                         let post_len = active.len();
                         // Incremental total_material + lin_len_tree.
                         let mut delta = -old_a_len - old_b_len;
@@ -1080,7 +1082,7 @@ impl HullSimulator {
                                            arena, self.sequence_length);
                     let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
-                                         next_uid);
+                                         next_uid, Some(&mut a_tag));
                     let len_after_split = active.len();
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -2426,7 +2428,7 @@ fn coalesce_uid_group(
             if !segments_overlap(active[mi].head, active[oi].head, arena) {
                 continue;
             }
-            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid);
+            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid, None);
             merged_uid = active.last().unwrap().uid;
         }
     }

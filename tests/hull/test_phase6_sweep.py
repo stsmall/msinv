@@ -88,8 +88,13 @@ def test_t3_hitchhiking_footprint_kim_stephan():
     n_reps = 15
     r = 1e-7
 
-    # Distance points: near (mostly hitchhiked) and far (mostly escaped).
-    distances = [500.0, 5_000.0]
+    # Distance points chosen so Kim-Stephan predicts informative reductions:
+    # alpha = 2 Ne s = 1000, r = 1e-7 → reduction ~ 1 - exp(-2*alpha*r*d/s).
+    #   d=500  → ~0.86 (near-field, mostly hitchhiked)
+    #   d=1250 → ~0.50 (mid-band, where the test is most discriminating)
+    # The original d=5000 saturates at predicted=1.00, making any reasonable
+    # observation pass within the ±25% tolerance — replaced with d=1250.
+    distances = [500.0, 1_250.0]
 
     def run_pair(rep_seed, with_sweep):
         sw_kwargs = dict(

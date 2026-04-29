@@ -228,6 +228,14 @@ impl HullSimulator {
         let mut active = self.make_initial_lineages(
             &mut arena, &mut tables, &mut next_uid);
 
+        // v1 sweep API supports a single sweep per simulation. Multiple
+        // sweeps with overlapping windows would silently mis-apply
+        // ne_cell scaling because emit_coal_events_from_cache uses
+        // .find(|s| s.covers(t)). Out of v1 scope per
+        // docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md §"In scope (v1)".
+        debug_assert!(self.sweeps.len() <= 1,
+            "v1 sweep API supports a single sweep; got {}", self.sweeps.len());
+
         if self.compound_rate {
             panic!("compound_rate=True is experimental and disabled on main; \
                     the compound event loop lacks incremental flux + lineage-length \
@@ -299,6 +307,9 @@ impl HullSimulator {
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
+        // Snapshot demography state into each sweep's trajectory closures
+        // BEFORE any apply_events_at calls fire — otherwise the snapshot
+        // would capture mutated pop_sizes rather than t=0 values.
         populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
         let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);

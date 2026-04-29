@@ -53,6 +53,10 @@ Confirm pre-existing via `git stash`+rerun before chasing.
 - PyO3 bridge: `rust/msinv-py/src/lib.rs`.
 - Python reference (legacy): `msinv/hull/simulator.py` — canonical semantics for Rust to mirror.
 - Python wrapper / tskit conversion: `msinv/hull/_rust_bridge.py`.
+- Python fallback (`HullSimulator(...).simulate(use_rust=False)`) is a frozen Apr 17–22 snapshot:
+  no sweeps (raises NIE), no joint trajectory, no A-tag inheritance. Usable for reading
+  Phase 1-4b semantics, NOT as a parity/correctness oracle. Validate Rust against msprime
+  + analytical anchors, not against the Python fallback.
 
 ## Event log hook (opt-in)
 Off by default; enable to capture cmig + flux events for analysis.
@@ -105,6 +109,8 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   records all recombs as tree boundaries while msprime default simplifies
   non-ancestral ones. Migration rate is per-lineage-per-gen on both sides — do NOT
   rescale. Spec: `docs/superpowers/specs/2026-04-29-msprime-validation-design.md`.
+- `recombination_rate > 0` is required at `HullSimulator.__init__` (rejects `0.0` with
+  `ValueError`). For non-recombining smoke tests use `recombination_rate=1e-12`, not zero.
 - Sweep + inversion trajectories use the **discrete-time** WF logistic update
   `p_{t+1} = p_t·(1+s)/(1+s·p_t)` with closed form `f0·(1+s)^t / (1 - f0 + f0·(1+s)^t)`.
   Don't write tests against the continuous `exp(s·t)` form — they diverge at O(s²·t).

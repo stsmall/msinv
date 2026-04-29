@@ -117,6 +117,37 @@ impl Demography {
         n * (-g * (t - self.growth_start[p])).exp()
     }
 
+    /// Effective size of `pop` at backward-time `t`, accounting for any
+    /// scheduled `En`/`EN`/`Eg`/`EG` events between t=0 (present) and `t`.
+    ///
+    /// Walks the events list (sorted by ascending time) and applies the
+    /// state at the most recent event with time <= t. Required by the
+    /// sweep trajectory builder, which iterates forward from `t_origin`
+    /// down to `tau` and needs the pop size *as it was at that backward
+    /// time*, NOT the current size after subsequent events folded in.
+    pub fn pop_size_at(&self, pop: u32, t: f64) -> f64 {
+        let p = pop as usize;
+        if p >= self.pop_sizes.len() {
+            return 1.0;
+        }
+        let mut size = self.pop_sizes[p];
+        let mut growth = self.growth_rates[p];
+        let mut growth_start = self.growth_start[p];
+        for ev in &self.events {
+            if ev.time() > t { break; }
+            match ev {
+                DemoEvent::EN { n, .. } => { size = *n; growth = 0.0; growth_start = ev.time(); }
+                DemoEvent::En { pop: p2, n, .. } if *p2 as usize == p =>
+                    { size = *n; growth = 0.0; growth_start = ev.time(); }
+                DemoEvent::EG { alpha, .. } => { growth = *alpha; growth_start = ev.time(); }
+                DemoEvent::Eg { pop: p2, alpha, .. } if *p2 as usize == p =>
+                    { growth = *alpha; growth_start = ev.time(); }
+                _ => {}
+            }
+        }
+        if growth == 0.0 { size } else { size * (-growth * (t - growth_start)).exp() }
+    }
+
     /// Time of the next event at or after `t_now`, or +inf.
     pub fn next_event_time(&self, t_now: f64) -> f64 {
         for ev in &self.events {
@@ -282,6 +313,26 @@ mod tests {
         d.add_event(DemoEvent::Ej { t: 500.0, src: 1, dst: 0 });
         assert_eq!(d.next_event_time(0.0), 500.0);
         assert_eq!(d.next_event_time(600.0), f64::INFINITY);
+    }
+
+    #[test]
+    fn pop_size_at_walks_en_events() {
+        // Forward time: present (t=0) has Ne=1000. At backward t=500, an En
+        // event sets Ne=500 (so pre-event size, t > 500, was 500). Going back
+        // further past t=500, size should be 500. Below 500, size is 1000.
+        let mut d = Demography::new(vec![1_000.0]);
+        d.add_event(DemoEvent::En { t: 500.0, pop: 0, n: 500.0 });
+        assert!((d.pop_size_at(0, 100.0) - 1_000.0).abs() < 1e-9, "t<event uses current");
+        assert!((d.pop_size_at(0, 600.0) - 500.0).abs() < 1e-9, "t>event uses pre-event size");
+        assert!((d.pop_size_at(0, 500.0) - 500.0).abs() < 1e-9, "at event uses post-revert size");
+    }
+
+    #[test]
+    fn pop_size_at_per_pop_independent() {
+        let mut d = Demography::new(vec![1_000.0, 2_000.0]);
+        d.add_event(DemoEvent::En { t: 500.0, pop: 0, n: 100.0 });
+        assert!((d.pop_size_at(0, 600.0) - 100.0).abs() < 1e-9);
+        assert!((d.pop_size_at(1, 600.0) - 2_000.0).abs() < 1e-9, "pop 1 untouched");
     }
 
     #[test]

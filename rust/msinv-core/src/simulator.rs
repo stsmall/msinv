@@ -763,10 +763,12 @@ impl HullSimulator {
                     rate_cache.rebuild(active, arena);
                     cache_dirty = false;
                 }
+                let active_sweep: Option<&Sweep> = finalized_sweeps.iter()
+                    .find(|s| s.covers(t));
                 emit_coal_events_from_cache(
                     &rate_cache, active, &*demo, t,
                     inversions, &barrier_active,
-                    &mut all_events);
+                    &mut all_events, active_sweep);
 
                 // Recombination.
                 if total_recomb_rate > 0.0 {
@@ -1659,6 +1661,11 @@ fn gc_sole_lineages_with_removed(
 /// where k = number of distinct (pop, class) combinations, typically
 /// ≤ pops × 2^|inversions|. Dispatch samples a specific pair from
 /// iter_pairs when the aggregate fires.
+///
+/// When `active_sweep` is Some and `t` is inside the sweep window for
+/// the swept (pop, kary) cell, the denominator switches to
+/// `2 * ne_cell(t, pop, kary)` from the trajectory instead of
+/// `2 * ne * p_class`. This drives the Kim-Stephan coalescence footprint.
 fn emit_coal_events_from_cache(
     cache: &RateCache,
     _active: &[Lineage],
@@ -1667,6 +1674,7 @@ fn emit_coal_events_from_cache(
     inversions: &[InversionSpec],
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
+    active_sweep: Option<&Sweep>,
 ) {
     // Read pair counts directly from the pair_buckets — each bucket's
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
@@ -1675,7 +1683,19 @@ fn emit_coal_events_from_cache(
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
         if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
-        let rate = count / (2.0 * ne * p_class);
+        let denom = match active_sweep {
+            Some(sw) if sw.covers(t) && sw.origin_pop == pop => {
+                if let Some(kary) = cls.get_inv(sw.target_inv) {
+                    // Inside sweep window, swept (pop, kary) cell:
+                    // use trajectory's ne_cell instead of ne * p_class.
+                    2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
+                } else {
+                    2.0 * ne * p_class
+                }
+            }
+            _ => 2.0 * ne * p_class,
+        };
+        let rate = count / denom;
         events.push((rate, Event::CoalAggregate { pop, class: cls }));
     }
 }

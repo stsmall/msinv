@@ -32,7 +32,7 @@ def test_t1_det_logistic_per_gen_within_1e6():
         partial_sweep_final_freq=1.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=10_000.0)
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[10_000.0])
     samples = rust_sw.trajectory_samples()
     # Spot-check at 25%, 50%, 75% along the trajectory
     for frac in [0.25, 0.5, 0.75]:
@@ -59,7 +59,7 @@ def test_t2_stoch_fixation_proportion():
             partial_sweep_final_freq=0.95, seed=r + 1,
         )
         rust_sw = sw.to_rust()
-        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_size=5_000.0)
+        rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[5_000.0])
         if rust_sw.final_a_freq() > 0.5:
             fixations += 1
     observed = fixations / n_reps

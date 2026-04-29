@@ -17,7 +17,7 @@ def test_j1_no_flux_locks_a_to_origin_kary():
         partial_sweep_final_freq=0.99, gamma_flux=0.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_size=10_000.0)
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
     final = rust_sw.trajectory_samples()[-1][1][0]
     # final[0]=(S,a), final[1]=(S,A), final[2]=(I,a), final[3]=(I,A)
     assert final[1] < 1e-9, f"(S,A) should stay 0, got {final[1]}"
@@ -33,7 +33,7 @@ def test_j2_rdl_lifecycle_post_flux_mixing():
         gamma_flux=1e-3, mean_tract_length=1000.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_size=10_000.0)
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
     final = rust_sw.trajectory_samples()[-1][1][0]
     total_a = final[1] + final[3]
     assert total_a >= 0.90, f"total A should reach ~partial_sweep_final_freq, got {total_a}"
@@ -49,13 +49,32 @@ def test_j3_origin_symmetry():
     )
     sw_s = Sweep(origin_kary="S", **base_kwargs)
     sw_i = Sweep(origin_kary="I", **base_kwargs)
-    rs = sw_s.to_rust(); rs.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_size=10_000.0)
-    ri = sw_i.to_rust(); ri.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_size=10_000.0)
+    rs = sw_s.to_rust(); rs.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
+    ri = sw_i.to_rust(); ri.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
     fs = rs.trajectory_samples()[-1][1][0]
     fi = ri.trajectory_samples()[-1][1][0]
     # (S,A) for origin=S should equal (I,A) for origin=I (mirror via the
     # symmetric p_inv=0.5 init + symmetric class structure)
     assert abs(fs[1] - fi[3]) < 1e-3, f"S-mirror={fs[1]}, I-mirror={fi[3]}"
+
+
+def test_build_trajectory_accepts_per_pop_size_and_migration():
+    """PyO3 build_trajectory accepts pop_sizes list and migration_matrix."""
+    sw = Sweep(
+        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.001,
+        partial_sweep_final_freq=0.99,
+    )
+    rust_sw = sw.to_rust()
+    # New signature: pop_sizes is list[float]; migration_matrix is list[list[float]] (mig[dst][src]).
+    rust_sw.build_trajectory(
+        n_pops=2, p_inv_init=[0.0, 0.0],
+        pop_sizes=[10_000.0, 10_000.0],
+        migration_matrix=[[0.0, 1e-3], [0.0, 0.0]],   # mig[dst][src]; pop 0 absorbs from pop 1
+    )
+    final = rust_sw.trajectory_samples()[-1][1]
+    # Sanity: trajectory has 2-pop shape.
+    assert len(final) == 2, f"expected 2-pop freq, got {len(final)}"
 
 
 @pytest.mark.skip(reason="requires demography accessor wiring (Task 12 follow-up)")

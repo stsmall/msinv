@@ -26,6 +26,9 @@ use crate::event_log;
 pub struct SimResult {
     pub tables: TableBuilder,
     pub event_log: Option<event_log::EventLog>,
+    /// Number of sample lineages assigned to the A (swept) haplotype
+    /// at τ. Populated by `apply_sweep` tags; 0 when no sweeps fire.
+    pub sweep_a_count: u64,
 }
 
 // ---------------------------------------------------------------
@@ -233,15 +236,16 @@ impl HullSimulator {
         }
         let mut event_log: Option<event_log::EventLog> =
             if self.record_events { Some(event_log::EventLog::new()) } else { None };
-        self.run_loop(&mut active, &mut arena, &mut tables,
-                       &mut next_uid, &mut rng, &mut demo,
-                       &mut inversions, rate_cache, event_log.as_mut());
+        let sweep_a_count = self.run_loop(
+            &mut active, &mut arena, &mut tables,
+            &mut next_uid, &mut rng, &mut demo,
+            &mut inversions, rate_cache, event_log.as_mut());
 
         // Edge sort is left to the caller: the PyO3 bridge calls
         // `tables.sort_edges()` before handing columns to tskit so
         // `tc.sort()` can be skipped. Bench / test paths that just
         // read `SimResult::tables` skip the sort cost.
-        SimResult { tables, event_log }
+        SimResult { tables, event_log, sweep_a_count }
     }
 
     // ---------------------------------------------------------------
@@ -600,7 +604,7 @@ impl HullSimulator {
         inversions: &mut Vec<InversionSpec>,
         rate_cache: &mut RateCache,
         mut event_log: Option<&mut event_log::EventLog>,
-    ) {
+    ) -> u64 {
         let mut t: f64 = 0.0;
 
         // Track which inversions' barriers are still active.
@@ -617,6 +621,17 @@ impl HullSimulator {
         // sweeps fire simultaneously).
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
         let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        // Record sample UIDs before any recombination/coalescence so we can
+        // count only the *initial sample lineages* that were tagged A at τ.
+        // Using a_tag.values().count() would also count recombination children
+        // (which inherit the flag via propagate_a_flag_recomb), inflating the
+        // count above n_samples.
+        let sample_uids: Vec<LinUid> = active.iter().map(|l| l.uid).collect();
+        let count_a_samples = |map: &std::collections::HashMap<LinUid, bool>| -> u64 {
+            sample_uids.iter()
+                .filter(|uid| map.get(uid).copied().unwrap_or(false))
+                .count() as u64
+        };
 
         // Running totals for O(1) recombination rate (Phase A).
         let mut total_material: f64 = active.iter()
@@ -676,9 +691,9 @@ impl HullSimulator {
                 if n == 0 || active[0].total_length(arena)
                     >= self.sequence_length - 1e-9
                 {
-                    return;
+                    return count_a_samples(&a_tag);
                 }
-                return;
+                return count_a_samples(&a_tag);
             }
 
             if lin_tree_dirty || lin_len_tree.len() < active.len() {
@@ -823,7 +838,7 @@ impl HullSimulator {
                     flux_dirty = true;
                     continue;
                 }
-                return;
+                return count_a_samples(&a_tag);
             }
 
             // Draw waiting time.
@@ -1270,6 +1285,7 @@ impl HullSimulator {
             total_recomb_rate = total_material * self.recombination_rate;
         }
         self.warn_cap_hit(t, inversions, "bucket");
+        count_a_samples(&a_tag)
     }
 
     // ---------------------------------------------------------------

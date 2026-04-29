@@ -532,14 +532,7 @@ class HullSimulator:
         # old t_event/target_class Hudson-Kaplan sweep model; pass
         # ``sweeps=`` through the Rust path (HullSimulator via
         # msinv/hull/_rust_bridge.py) instead.
-        self.sweeps = []
-        if sweeps:
-            raise NotImplementedError(
-                "The Python fallback simulator no longer supports sweeps. "
-                "Use the Rust backend (msinv.hull._rust_bridge) for the "
-                "new Sweep API. See docs/superpowers/specs/"
-                "2026-04-28-sweep-rewrite-design.md."
-            )
+        self.sweeps = list(sweeps) if sweeps else []
         self.rng = np.random.default_rng(seed)
         self.stop_at = stop_at
         self.compound_rate = compound_rate
@@ -547,6 +540,7 @@ class HullSimulator:
         self.gc_stride = int(gc_stride)
         self._record_events = record_events
         self.event_log = None  # populated after simulate() when record_events=True
+        self.sweep_a_count = 0  # count of A-tagged sample lineages after last simulate()
         # Sanity: cross-population reachability. Without a path between
         # populations (via migration or 'ej'), lineages in disjoint pops
         # never coalesce and downstream msprime recap hangs. Warn now
@@ -1251,9 +1245,16 @@ class HullSimulator:
                 use_rust = False
         if use_rust:
             from ._rust_bridge import rust_simulate
-            ts, event_log = rust_simulate(self)
+            ts, event_log, sweep_a_count = rust_simulate(self)
             self.event_log = event_log
+            self.sweep_a_count = sweep_a_count
             return ts
+        if self.sweeps:
+            raise NotImplementedError(
+                "The Python fallback simulator does not support sweeps. "
+                "Use the Rust backend (default when available). See docs/"
+                "superpowers/specs/2026-04-28-sweep-rewrite-design.md."
+            )
         reset_uids()
         self._sweep_base_t = None
         self._sweep_merge_k = 0

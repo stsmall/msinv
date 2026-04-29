@@ -44,6 +44,7 @@ fn tables_to_pydict(py: Python<'_>, result: SimResult) -> PyResult<Py<PyDict>> {
     dict.set_item("edge_right", PyArray1::from_vec(py, t.edge_right))?;
     dict.set_item("edge_parent", PyArray1::from_vec(py, t.edge_parent))?;
     dict.set_item("edge_child", PyArray1::from_vec(py, t.edge_child))?;
+    dict.set_item("sweep_a_count", result.sweep_a_count)?;
     Ok(dict.into())
 }
 

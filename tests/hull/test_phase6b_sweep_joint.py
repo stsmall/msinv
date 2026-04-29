@@ -151,10 +151,29 @@ def test_j7_no_migration_keeps_pops_independent():
     assert pop1_A < 1e-9, f"pop1 should stay clean: {pop1_A}"
 
 
-@pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")
 def test_j8_soft_sweep_seeds_K_founders():
-    """f0=0.05 → K≈ceil(2N·p_kary·f0) origins seeded across distinct lineages."""
-    pass
+    """f0=0.05 → with c=1.0, ~all samples are A-tagged at τ."""
+    from msinv.hull import HullSimulator
+    from msinv.hull.demography import Demography
+
+    sw = Sweep(
+        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
+        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.05,
+        partial_sweep_final_freq=1.0,
+    )
+    n_samples = 400
+    sim = HullSimulator(
+        sample_config={('S', 0): n_samples},
+        demography=Demography(pop_sizes=[10_000.0]),
+        sequence_length=100_000.0,
+        recombination_rate=1e-12,
+        sweeps=[sw],
+        seed=42,
+    )
+    sim.simulate()
+    a_count = sim.sweep_a_count
+    observed = a_count / n_samples
+    assert observed > 0.95, f"with c=1.0 expected ~all A, got {observed}"
 
 
 @pytest.mark.skip(reason="requires simulator-side sweep dispatch (Task 13 follow-up)")

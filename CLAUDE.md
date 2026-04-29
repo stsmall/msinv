@@ -9,8 +9,11 @@ cd rust && cargo build --release -p msinv-py
 - Rust: `cd rust && cargo test --release` (132 lib + 17 integration + 4 sweep-anchor + 2 sweep-trajectory as of 2026-04-29).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
-  (181 passed, 3 skipped as of 2026-04-29; the 12 sweep-rewrite follow-up skips are now active
+  (183 passed, 3 skipped as of 2026-04-29; the 12 sweep-rewrite follow-up skips are now active
   after Phases A-D of `docs/superpowers/plans/2026-04-29-sweep-followups.md`).
+- msprime validation: `tests/hull/test_validation_msprime.py` (N1 panmictic + N2 two-pop migration
+  vs `msprime.sim_ancestry`; ~7 s; spec `docs/superpowers/specs/2026-04-29-msprime-validation-design.md`).
+  Use `-s` to surface the per-stat OK/FAIL summary on failure.
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
 - Single Python file: `.venv/bin/python -m pytest tests/hull/test_phase8_trajectory_selection.py -v`.

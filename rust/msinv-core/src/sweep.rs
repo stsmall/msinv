@@ -118,6 +118,33 @@ impl Sweep {
         (-recomb_rate * d_min * t_eff).exp()
     }
 
+    /// Nearest-segment distance: walks a lineage's segment chain and
+    /// returns the minimum distance from any segment to `x_sel`.
+    /// Returns `f64::INFINITY` for an empty chain (SEG_NIL head).
+    pub fn lineage_nearest_distance(
+        &self,
+        head: crate::segment::SegIdx,
+        arena: &crate::segment::SegmentArena,
+    ) -> f64 {
+        use crate::segment::SEG_NIL;
+        let mut cur = head;
+        let mut best = f64::INFINITY;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            let d = if self.x_sel >= seg.left && self.x_sel < seg.right {
+                0.0
+            } else if seg.right <= self.x_sel {
+                self.x_sel - seg.right
+            } else {
+                seg.left - self.x_sel
+            };
+            if d < best { best = d; }
+            if d == 0.0 { return 0.0; }
+            cur = seg.next;
+        }
+        best
+    }
+
     /// At sample time τ, randomly assign a lineage to the swept (A) vs
     /// unswept (a) fraction with probability equal to the trajectory's
     /// per-(pop, kary) A frequency. Returns true for A.
@@ -293,5 +320,27 @@ mod tests {
         let ne_mid = sw.ne_cell_or_fallback(50.0, 0, Karyotype::I, 10_000.0, 0.3);
         assert!((ne_mid - 10_000.0 * traj_p).abs() < 1e-6);
         assert!(ne_mid > ne_pre, "expected ne to rise during sweep; pre={ne_pre}, mid={ne_mid}");
+    }
+
+    #[test]
+    fn lineage_nearest_distance_walks_chain() {
+        use crate::segment::{SegmentArena, SEG_NIL};
+        use crate::class_tag::BranchClass;
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0, JointSweepSpec::default());
+        let mut arena = SegmentArena::new();
+        // Empty chain: infinity
+        assert_eq!(sw.lineage_nearest_distance(SEG_NIL, &arena), f64::INFINITY);
+        // Single segment far from x_sel
+        let s1 = arena.alloc(7_000.0, 8_000.0, 0, BranchClass::PANMICTIC);
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 2_000.0);
+        // Build chain: [7000,8000) -> [4500,4900) (closer to x_sel=5000)
+        let s2 = arena.alloc(4_500.0, 4_900.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 100.0);
+        // Add a segment that spans x_sel: d=0, returns immediately
+        let s3 = arena.alloc(4_950.0, 5_050.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s2).next = s3;
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 0.0);
     }
 }

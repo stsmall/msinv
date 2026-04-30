@@ -14,9 +14,11 @@ from ``os.wait4`` rusage. Pass criteria:
   wise α = 0.003 across all AFS bins in that scenario.
 """
 
+import datetime
 import json
 import math
 import os
+import pathlib
 import statistics
 import subprocess
 import sys
@@ -134,9 +136,19 @@ def _run_validation(scenario_name, n_reps=N_REPS):
             f"\n[{scenario_name}]\n  " + "\n  ".join(lines))
 
 
+def _git_short_sha():
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=False)
+        return out.stdout.strip() or "unknown"
+    except (FileNotFoundError, OSError):
+        return "unknown"
+
+
 def _print_benchmark_block(scenario_name, msinv_secs, msprime_secs,
                            msinv_peak_kb, msprime_peak_kb):
-    """Print a per-scenario benchmark line. Visible only with pytest -s."""
+    """Print + persist a per-scenario benchmark line."""
     m_mean, m_se = _mean_se(msinv_secs)
     p_mean, p_se = _mean_se(msprime_secs)
     m_total = sum(msinv_secs)
@@ -148,9 +160,22 @@ def _print_benchmark_block(scenario_name, msinv_secs, msprime_secs,
           f"total {m_total:5.1f} s, peak RSS {m_rss_mb:6.1f} MB")
     print(f"  msprime: per-rep {p_mean*1000:6.1f} ms ± {p_se*1000:.1f}, "
           f"total {p_total:5.1f} s, peak RSS {p_rss_mb:6.1f} MB")
-    if math.isfinite(p_mean) and p_mean > 0 and p_rss_mb > 0:
-        print(f"  ratio:   per-rep msinv/msprime = {m_mean/p_mean:.2f}x;  "
-              f"RAM msinv/msprime = {m_rss_mb/p_rss_mb:.2f}x")
+    print(f"  ratio:   per-rep msinv/msprime = {m_mean/p_mean:.2f}x;  "
+          f"RAM msinv/msprime = {m_rss_mb/p_rss_mb:.2f}x")
+
+    log_dir = pathlib.Path(".tmp")
+    log_dir.mkdir(exist_ok=True)
+    record = {
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "git_sha": _git_short_sha(),
+        "scenario": scenario_name,
+        "msinv": {"per_rep_s": m_mean, "per_rep_se": m_se,
+                  "total_s": m_total, "peak_rss_mb": m_rss_mb},
+        "msprime": {"per_rep_s": p_mean, "per_rep_se": p_se,
+                    "total_s": p_total, "peak_rss_mb": p_rss_mb},
+    }
+    with (log_dir / "msprime_validation_bench.jsonl").open("a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 def test_msprime_validation_n1_panmictic():

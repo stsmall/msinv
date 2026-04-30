@@ -191,3 +191,8 @@ def test_msprime_validation_n2_two_pop_migration():
 def test_msprime_validation_n3_two_pop_split():
     """Rust msinv vs msprime — two-pop merge backward at T=2000."""
     _run_validation("n3")
+
+
+def test_msprime_validation_n4_bottleneck():
+    """Rust msinv vs msprime — Ne=10000 → 1000 (1000–2000 gens) → 10000."""
+    _run_validation("n4")

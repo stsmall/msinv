@@ -174,6 +174,50 @@ SCENARIOS["n3"] = {
 }
 
 
+def _make_n4_msinv(seed: int):
+    demo = Demography(pop_sizes=[10000.0])
+    demo.add_population_size_change(
+        time=1000.0, population=0, new_size=1000.0)
+    demo.add_population_size_change(
+        time=2000.0, population=0, new_size=10000.0)
+    ts = HullSimulator(
+        samples=10,
+        demography=demo,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        seed=seed,
+    ).simulate()
+    return ts, None
+
+
+def _make_n4_msprime(seed: int):
+    demo = msprime.Demography()
+    demo.add_population(name="A", initial_size=20000.0)
+    demo.add_population_parameters_change(
+        time=1000.0, initial_size=2000.0, population="A")
+    demo.add_population_parameters_change(
+        time=2000.0, initial_size=20000.0, population="A")
+    ts = msprime.sim_ancestry(
+        samples=10,
+        demography=demo,
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        ploidy=1,
+        record_full_arg=True,
+        random_seed=seed + 1,
+    )
+    return ts, None
+
+
+SCENARIOS["n4"] = {
+    "compute_afs": True,
+    "n_pops": 1,
+    "make_msinv": _make_n4_msinv,
+    "make_msprime": _make_n4_msprime,
+}
+
+
 def _stats_from_ts(ts, sample_sets, compute_afs: bool):
     """Branch-length stats + (optional) AFS bins from a tskit TS.
 

@@ -196,3 +196,8 @@ def test_msprime_validation_n3_two_pop_split():
 def test_msprime_validation_n4_bottleneck():
     """Rust msinv vs msprime — Ne=10000 → 1000 (1000–2000 gens) → 10000."""
     _run_validation("n4")
+
+
+def test_msprime_validation_n5_exponential_growth():
+    """Rust msinv vs msprime — exponential growth, α=0.0005/gen."""
+    _run_validation("n5")

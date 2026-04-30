@@ -1,46 +1,77 @@
 """msprime validation harness — Rust msinv core vs msprime.sim_ancestry.
 
-Spec: docs/superpowers/specs/2026-04-29-msprime-validation-design.md.
+Spec: docs/superpowers/specs/2026-04-30-msprime-validation-extension-design.md
+(supersedes 2026-04-29-msprime-validation-design.md).
 
-Two scenarios:
-  N1 — single-pop panmictic, n=10, Ne=10000, L=100kb, r=1e-8 (rho=40).
-  N2 — two-pop island, n=5+5, Ne=[10000,10000], symmetric M=1e-4, L=100kb, r=1e-8.
+Each test calls ``_run_validation(scenario)`` which spawns two
+subprocesses (one per engine) running ``tests/hull/_msprime_bench_runner``.
+Per-rep stats arrive as JSON on the child's stdout; peak RSS is read
+from ``os.wait4`` rusage. Pass criteria:
 
-For each scenario, N=200 reps on each engine (rep i seeds engine with i).
-Per-stat assertion: |mean_msinv - mean_msprime| <= 3 * sqrt(SE_msinv^2 + SE_msprime^2).
+- moment stats (``pi_branch``, ``n_trees``, ``mean_tmrca``, ``dxy_branch``):
+  ``|Δ| <= 3 * sqrt(SE_a^2 + SE_b^2)``
+- AFS bin stats (``afs_*``): Bonferroni-corrected two-sided z, family-
+  wise α = 0.003 across all AFS bins in that scenario.
 """
 
+import json
 import math
+import os
+import resource
 import statistics
-
-import msprime
-
-from msinv.hull.demography import Demography
-from msinv.hull.simulator import HullSimulator
+import subprocess
+import sys
 
 
 N_REPS = 200
+ALPHA_FAMILY = 0.003  # family-wise α for both moment and AFS families
 
 
-def _stats_from_ts(ts, sample_sets=None):
-    """Branch-length stats from a tskit TreeSequence.
+def _run_one_engine(scenario_name, engine, n_reps):
+    """Spawn one child runner process; return (per_rep_stats,
+    per_rep_seconds, peak_rss_kb)."""
+    cmd = [
+        sys.executable, "-m", "tests.hull._msprime_bench_runner",
+        "--scenario", scenario_name, "--engine", engine,
+        "--n-reps", str(n_reps), "--seed-base", "0",
+    ]
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = proc.communicate()
+    try:
+        pid_unused, status, rusage = os.wait4(proc.pid, os.WNOHANG)  # drained
+    except ChildProcessError:
+        pass  # Popen.communicate already reaped the child — expected on Linux
+    # The above wait4 may return (0, 0, ...) or raise ChildProcessError if
+    # Popen.communicate already reaped the process; in that case use
+    # Popen-collected info.
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"runner failed for {scenario_name}/{engine} "
+            f"(rc={proc.returncode}):\n{stderr.decode()}")
+    payload = json.loads(stdout.decode())
+    # Resort to RUSAGE_CHILDREN incremental delta because Popen.communicate
+    # already wait()ed the child (so os.wait4 above returned 0). Read the
+    # cumulative children rusage; the caller is responsible for taking
+    # deltas across calls.
+    return payload["per_rep_stats"], payload["per_rep_seconds"]
 
-    Returns dict with keys 'pi_branch', 'n_trees', 'mean_tmrca', and
-    (when sample_sets is provided) 'dxy_branch'.
+
+def _peak_rss_after(prev_kb):
+    """Return (current_cumulative_max, delta_for_latest_child).
+
+    On Linux, RUSAGE_CHILDREN.ru_maxrss is the maximum RSS of any single
+    waited-for child since process start (NOT cumulative). After running
+    children sequentially, the latest child's peak is either:
+      - exactly current_max (if it exceeded all previous), OR
+      - bounded above by current_max (if any previous child was larger).
+
+    Returns a tuple where delta is None when we cannot disambiguate.
     """
-    out = {
-        "pi_branch": ts.diversity(mode="branch"),
-        "n_trees": float(ts.num_trees),
-    }
-    # Single-root assumption: verified empirically on both engines for
-    # these scenarios (14266 trees checked, 0 multi-root). tree.time(root)
-    # avoids the O(n·log) MRCA reduce that tree.tmrca(*samples) does.
-    weighted = sum(tree.time(tree.root) * tree.span for tree in ts.trees())
-    out["mean_tmrca"] = weighted / ts.sequence_length
-    if sample_sets is not None:
-        out["dxy_branch"] = ts.divergence(
-            sample_sets=sample_sets, mode="branch")
-    return out
+    cur = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    if cur > prev_kb:
+        return cur, cur  # this child set the new max — its peak is `cur`
+    return cur, None  # this child's peak is <= cur (we report '<= prev_kb')
 
 
 def _mean_se(values):
@@ -50,30 +81,45 @@ def _mean_se(values):
     return statistics.mean(values), statistics.stdev(values) / math.sqrt(n)
 
 
-def _run_validation(scenario_name, msinv_factory, msprime_factory,
-                    n_reps=N_REPS):
-    """Run both engines n_reps times, assert each branch-length stat
-    agrees within 3 * combined SE.
+def _bonferroni_z(k_bins, alpha=ALPHA_FAMILY):
+    """Two-sided z bound for `k_bins` AFS bins at family-wise alpha."""
+    per_bin = alpha / k_bins
+    return statistics.NormalDist().inv_cdf(1.0 - per_bin / 2.0)
 
-    Each factory returns ``(ts, sample_sets)``; pass ``sample_sets=None``
-    to skip the dxy_branch stat for that scenario.
-    """
-    engine_vals = {"msinv": {}, "msprime": {}}
 
-    for i in range(n_reps):
-        for engine, factory in (
-                ("msinv", msinv_factory), ("msprime", msprime_factory)):
-            ts, sample_sets = factory(seed=i)
-            stats = _stats_from_ts(ts, sample_sets)
-            for k, v in stats.items():
-                engine_vals[engine].setdefault(k, []).append(v)
+def _agg_engine_vals(per_rep_stats):
+    """List of per-rep stat dicts -> dict[stat_name, list[value]]."""
+    out: dict[str, list[float]] = {}
+    for rep_stats in per_rep_stats:
+        for k, v in rep_stats.items():
+            out.setdefault(k, []).append(v)
+    return out
 
-    stat_names = list(engine_vals["msinv"].keys())
-    lines = []
+
+def _run_validation(scenario_name, n_reps=N_REPS):
+    """Run both engines via subprocess; assert per-stat agreement."""
+    rss0 = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    msinv_stats, msinv_secs = _run_one_engine(scenario_name, "msinv", n_reps)
+    rss1, msinv_peak = _peak_rss_after(rss0)
+    msprime_stats, msprime_secs = _run_one_engine(
+        scenario_name, "msprime", n_reps)
+    rss2, msprime_peak = _peak_rss_after(rss1)
+
+    a = _agg_engine_vals(msinv_stats)
+    b = _agg_engine_vals(msprime_stats)
+    keys = list(a.keys())
+    assert set(keys) == set(b.keys()), (
+        f"stat key mismatch: msinv={set(keys)} vs msprime={set(b.keys())}")
+
+    afs_keys = [k for k in keys if k.startswith("afs_")]
+    moment_keys = [k for k in keys if not k.startswith("afs_")]
+    z_afs = _bonferroni_z(len(afs_keys)) if afs_keys else None
+
     failures = []
-    for k in stat_names:
-        m_a, se_a = _mean_se(engine_vals["msinv"][k])
-        m_b, se_b = _mean_se(engine_vals["msprime"][k])
+    lines = []
+    for k in moment_keys:
+        m_a, se_a = _mean_se(a[k])
+        m_b, se_b = _mean_se(b[k])
         bound = 3.0 * math.sqrt(se_a ** 2 + se_b ** 2)
         delta = abs(m_a - m_b)
         ok = delta <= bound
@@ -84,88 +130,60 @@ def _run_validation(scenario_name, msinv_factory, msprime_factory,
         lines.append(line)
         if not ok:
             failures.append(line)
+    for k in afs_keys:
+        m_a, se_a = _mean_se(a[k])
+        m_b, se_b = _mean_se(b[k])
+        bound = z_afs * math.sqrt(se_a ** 2 + se_b ** 2)
+        delta = abs(m_a - m_b)
+        ok = delta <= bound
+        line = (f"{k}: msinv={m_a:.4g} ± {se_a:.3g}, "
+                f"msprime={m_b:.4g} ± {se_b:.3g}, "
+                f"|Δ|={delta:.4g}, {z_afs:.2f}·SE={bound:.4g} "
+                f"→ {'OK' if ok else 'FAIL'}")
+        lines.append(line)
+        if not ok:
+            failures.append(line)
+
+    print(f"\n[{scenario_name}]")
+    for line in lines:
+        print(f"  {line}")
+
+    _print_benchmark_block(
+        scenario_name, msinv_secs, msprime_secs, msinv_peak, msprime_peak)
+
     if failures:
         raise AssertionError(
             f"\n[{scenario_name}]\n  " + "\n  ".join(lines))
 
 
-def _samples_by_pop(ts, n_pops):
-    """Return [pop0_samples, pop1_samples, ...] for a tskit TS."""
-    populations = ts.tables.nodes.population[ts.samples()]
-    return [
-        ts.samples()[populations == p].tolist() for p in range(n_pops)]
+def _print_benchmark_block(scenario_name, msinv_secs, msprime_secs,
+                           msinv_peak_kb, msprime_peak_kb):
+    """Print a per-scenario benchmark line. Visible only with pytest -s."""
+    m_mean, m_se = _mean_se(msinv_secs)
+    p_mean, p_se = _mean_se(msprime_secs)
+    m_total = sum(msinv_secs)
+    p_total = sum(msprime_secs)
+    m_rss_mb = (msinv_peak_kb / 1024.0
+                if msinv_peak_kb is not None else float("nan"))
+    p_rss_mb = (msprime_peak_kb / 1024.0
+                if msprime_peak_kb is not None else float("nan"))
+    print(f"[{scenario_name}] benchmarks")
+    print(f"  msinv:   per-rep {m_mean*1000:6.1f} ms ± {m_se*1000:.1f}, "
+          f"total {m_total:5.1f} s, peak RSS {m_rss_mb:6.1f} MB")
+    print(f"  msprime: per-rep {p_mean*1000:6.1f} ms ± {p_se*1000:.1f}, "
+          f"total {p_total:5.1f} s, peak RSS {p_rss_mb:6.1f} MB")
+    if math.isfinite(p_mean) and p_mean > 0:
+        print(f"  ratio:   per-rep msinv/msprime = {m_mean/p_mean:.2f}x;  "
+              f"RAM msinv/msprime = "
+              f"{m_rss_mb/p_rss_mb:.2f}x" if math.isfinite(m_rss_mb) and
+              math.isfinite(p_rss_mb) and p_rss_mb > 0 else "")
 
 
 def test_msprime_validation_n1_panmictic():
     """Rust msinv vs msprime — single-pop panmictic, n=10, ρ=40."""
-
-    def msinv_factory(seed):
-        ts = HullSimulator(
-            samples=10,
-            population_size=10000.0,
-            sequence_length=100_000.0,
-            recombination_rate=1e-8,
-            inversions=[],
-            seed=seed,
-        ).simulate()
-        return ts, None
-
-    def msprime_factory(seed):
-        # population_size doubled vs msinv: msinv N = diploid Ne (2N chrom);
-        # msprime ploidy=1 reads N as haploid Ne. record_full_arg=True so
-        # non-ancestral recombs survive into the TS (msinv's convention).
-        # See spec §"Population-size convention" and §"record_full_arg=True".
-        ts = msprime.sim_ancestry(
-            samples=10,
-            population_size=20000.0,
-            sequence_length=100_000,
-            recombination_rate=1e-8,
-            ploidy=1,
-            record_full_arg=True,
-            random_seed=seed + 1,
-        )
-        return ts, None
-
-    _run_validation("N1 panmictic", msinv_factory, msprime_factory)
+    _run_validation("n1")
 
 
 def test_msprime_validation_n2_two_pop_migration():
     """Rust msinv vs msprime — two-pop symmetric migration, M=1e-4."""
-
-    msinv_demo = Demography(
-        pop_sizes=[10000.0, 10000.0],
-        migration_matrix=[[0.0, 1e-4], [1e-4, 0.0]],
-    )
-    # population sizes doubled; migration rate NOT rescaled
-    # (per-lineage per-gen on both sides). See spec §"Population-size
-    # convention" and §"Migration convention check".
-    msprime_demo = msprime.Demography()
-    msprime_demo.add_population(name="A", initial_size=20000.0)
-    msprime_demo.add_population(name="B", initial_size=20000.0)
-    msprime_demo.set_migration_rate(source="A", dest="B", rate=1e-4)
-    msprime_demo.set_migration_rate(source="B", dest="A", rate=1e-4)
-
-    def msinv_factory(seed):
-        ts = HullSimulator(
-            sample_config={(None, 0): 5, (None, 1): 5},
-            demography=msinv_demo,
-            sequence_length=100_000.0,
-            recombination_rate=1e-8,
-            inversions=[],
-            seed=seed,
-        ).simulate()
-        return ts, _samples_by_pop(ts, n_pops=2)
-
-    def msprime_factory(seed):
-        ts = msprime.sim_ancestry(
-            samples={"A": 5, "B": 5},
-            demography=msprime_demo,
-            sequence_length=100_000,
-            recombination_rate=1e-8,
-            ploidy=1,
-            record_full_arg=True,
-            random_seed=seed + 1,
-        )
-        return ts, _samples_by_pop(ts, n_pops=2)
-
-    _run_validation("N2 two-pop migration", msinv_factory, msprime_factory)
+    _run_validation("n2")

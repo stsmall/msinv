@@ -923,11 +923,15 @@ impl HullSimulator {
                     // the (pop, cls) pair count feeding CoalAggregate.
                     let bucket = rate_cache.pair_bucket_for(pop, cls);
                     if bucket.is_empty() { continue; }
-                    // Fast path: outside the sweep window every event is
-                    // Mixed and a_tag is empty (PG-D1 clears it at sweep
-                    // end), so any pair satisfies the "untagged-involved"
-                    // predicate. Pick any pair from the bucket directly.
-                    let (i, j) = if a_tag.is_empty() && matches!(allele, AlleleTag::Mixed) {
+                    // Fast path: outside any active sweep window, every
+                    // event the emitter produced was Mixed with the
+                    // standard "any pair" rate. `a_tag` may still hold
+                    // entries from a finished sweep (used by
+                    // count_a_samples for sweep_a_count accounting), so
+                    // gate on the live sweep state instead of
+                    // a_tag.is_empty().
+                    let in_any_sweep = finalized_sweeps.iter().any(|s| s.covers(t));
+                    let (i, j) = if !in_any_sweep && matches!(allele, AlleleTag::Mixed) {
                         let target = rng.random_range(0..bucket.len());
                         crate::rate_index::unpack_ij(bucket[target])
                     } else {
@@ -2653,6 +2657,12 @@ fn apply_sweep_finalize(
     if linked_uids.len() < 2 { return; }
     // Force-coalesce all linked-segment groups at t_origin.
     coalesce_uid_group(active, &linked_uids, t, arena, tables, next_uid, sweep_cursor);
+    // Keep `a_tag` populated past `t_origin`. The map doubles as the
+    // post-sweep accounting input for `count_a_samples` (T5 / partial
+    // sweep `sweep_a_count`). The progressive-coal logic is gated on
+    // an active sweep covering `t` at emit time (PG-B1's
+    // `in_sweep_cell`) and at consume time (PG-C1 filter), so stale
+    // entries don't leak into the post-window neutral coalescent.
 }
 
 /// Walk a chain to find its tail (last segment whose `next == SEG_NIL`).

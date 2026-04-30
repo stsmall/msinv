@@ -2503,6 +2503,53 @@ fn build_lineage_from_segs(
     Lineage::new(head, tail, pop, uid, arena)
 }
 
+/// Walk a lineage's segment chain and partition each segment into
+/// "linked" or "escaped" groups based on a predicate.  Returns the
+/// (linked_head, escaped_head) pair (either may be SEG_NIL).
+///
+/// The original chain rooted at `head` is consumed: every segment is
+/// either re-linked into the linked chain, re-linked into the escaped
+/// chain, or left in place (no segments are freed here; the caller
+/// owns the resulting chains).
+///
+/// Predicate signature: `(seg_left, seg_right) -> bool` where `true`
+/// means "linked" and `false` means "escaped".
+fn partition_lineage_segments<F: FnMut(f64, f64) -> bool>(
+    head: SegIdx,
+    arena: &mut SegmentArena,
+    mut predicate: F,
+) -> (SegIdx, SegIdx) {
+    let mut linked_head = SEG_NIL;
+    let mut linked_tail = SEG_NIL;
+    let mut escaped_head = SEG_NIL;
+    let mut escaped_tail = SEG_NIL;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let next = arena.get(cur).next;
+        let (l, r) = {
+            let seg = arena.get(cur);
+            (seg.left, seg.right)
+        };
+        let target_head_tail = if predicate(l, r) {
+            (&mut linked_head, &mut linked_tail)
+        } else {
+            (&mut escaped_head, &mut escaped_tail)
+        };
+        let (group_head, group_tail) = target_head_tail;
+        // Re-link: this segment becomes the new tail of its group.
+        arena.get_mut(cur).next = SEG_NIL;
+        if *group_head == SEG_NIL {
+            *group_head = cur;
+            *group_tail = cur;
+        } else {
+            arena.get_mut(*group_tail).next = cur;
+            *group_tail = cur;
+        }
+        cur = next;
+    }
+    (linked_head, escaped_head)
+}
+
 /// Coalesce a group of lineages (identified by UID) sequentially.
 fn coalesce_uid_group(
     active: &mut Vec<Lineage>,
@@ -3398,5 +3445,44 @@ mod tests {
         let n_at_500: usize = result.tables.node_time.iter()
             .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
         assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
+    }
+
+    #[test]
+    fn partition_lineage_segments_separates_by_predicate() {
+        use crate::class_tag::BranchClass;
+        let mut arena = SegmentArena::new();
+        // Build chain: [0,100) -> [200,300) -> [400,500) -> [600,700)
+        let s4 = arena.alloc(600.0, 700.0, 0, BranchClass::PANMICTIC);
+        let s3 = arena.alloc(400.0, 500.0, 0, BranchClass::PANMICTIC);
+        let s2 = arena.alloc(200.0, 300.0, 0, BranchClass::PANMICTIC);
+        let s1 = arena.alloc(0.0,   100.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        arena.get_mut(s2).next = s3;
+        arena.get_mut(s3).next = s4;
+        // Predicate: linked iff left < 350 (so s1, s2 linked; s3, s4 escaped)
+        let (linked_head, escaped_head) =
+            partition_lineage_segments(s1, &mut arena, |l, _r| l < 350.0);
+        // Walk linked chain: should be s1 -> s2
+        assert_eq!(linked_head, s1);
+        assert_eq!(arena.get(s1).next, s2);
+        assert_eq!(arena.get(s2).next, SEG_NIL);
+        // Walk escaped chain: should be s3 -> s4
+        assert_eq!(escaped_head, s3);
+        assert_eq!(arena.get(s3).next, s4);
+        assert_eq!(arena.get(s4).next, SEG_NIL);
+    }
+
+    #[test]
+    fn partition_lineage_segments_all_one_side_returns_seg_nil_for_other() {
+        use crate::class_tag::BranchClass;
+        let mut arena = SegmentArena::new();
+        let s2 = arena.alloc(200.0, 300.0, 0, BranchClass::PANMICTIC);
+        let s1 = arena.alloc(0.0,   100.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        // Always-linked
+        let (linked_head, escaped_head) =
+            partition_lineage_segments(s1, &mut arena, |_l, _r| true);
+        assert_eq!(linked_head, s1);
+        assert_eq!(escaped_head, SEG_NIL);
     }
 }

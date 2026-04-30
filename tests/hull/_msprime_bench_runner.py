@@ -15,7 +15,9 @@ import json
 import sys
 import time
 
+import msprime
 import pytest
+from msinv.hull.simulator import HullSimulator
 
 pytestmark = pytest.mark.skip("child runner — invoked via subprocess")
 
@@ -28,6 +30,42 @@ pytestmark = pytest.mark.skip("child runner — invoked via subprocess")
 #   "make_msprime": Callable[[int], (ts, sample_sets_or_None)],
 # }
 SCENARIOS: dict[str, dict] = {}
+
+
+def _make_n1_msinv(seed: int):
+    ts = HullSimulator(
+        samples=10,
+        population_size=10000.0,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        seed=seed,
+    ).simulate()
+    return ts, None
+
+
+def _make_n1_msprime(seed: int):
+    # population_size doubled vs msinv: msinv N = diploid Ne (2N chrom);
+    # msprime ploidy=1 reads N as haploid Ne. record_full_arg=True so
+    # non-ancestral recombs survive into the TS (msinv's convention).
+    ts = msprime.sim_ancestry(
+        samples=10,
+        population_size=20000.0,
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        ploidy=1,
+        record_full_arg=True,
+        random_seed=seed + 1,
+    )
+    return ts, None
+
+
+SCENARIOS["n1"] = {
+    "compute_afs": False,
+    "n_pops": 1,
+    "make_msinv": _make_n1_msinv,
+    "make_msprime": _make_n1_msprime,
+}
 
 
 def _stats_from_ts(ts, sample_sets, compute_afs: bool):

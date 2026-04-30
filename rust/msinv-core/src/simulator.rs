@@ -1696,13 +1696,15 @@ fn emit_coal_events_from_cache(
         let ne = demo.size_at(pop, t).max(1e-9);
         let denom = match active_sweep {
             Some(sw) if sw.covers(t) && sw.origin_pop == pop => {
-                if let Some(kary) = cls.get_inv(sw.target_inv) {
-                    // Inside sweep window, swept (pop, kary) cell:
-                    // use trajectory's ne_cell instead of ne * p_class.
-                    2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
-                } else {
-                    2.0 * ne * p_class
-                }
+                // For panmictic-at-this-locus classes (no kary tag for the
+                // swept inversion), fall back to origin_kary so the trajectory
+                // ne_cell still engages.  For pure-panmictic genomes the
+                // trajectory is degenerate (p_kary=1) so ne_cell == ne, no
+                // effective change.  For with-inversion-but-outside scenarios
+                // the trajectory tracks origin_kary's frequency dynamics and
+                // produces a real Ne reduction during the sweep window.
+                let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
+                2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
             }
             _ => 2.0 * ne * p_class,
         };

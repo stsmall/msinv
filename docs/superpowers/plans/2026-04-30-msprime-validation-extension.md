@@ -792,6 +792,13 @@ def _make_n3_msprime(seed: int):
     # auto-derives growth/size resets that don't match msinv ej semantics).
     demo.add_mass_migration(
         time=2000.0, source="B", dest="A", proportion=1.0)
+    # Zero all migration at T=2000 to match msinv ej semantics.
+    # add_mass_migration leaves the migration matrix active, so without
+    # this line msprime would keep M[B][A]=1e-4 sending lineages from
+    # populated A back into empty B above T=2000 (~2x Ne inflation).
+    # Order matters — must come AFTER add_mass_migration; msprime
+    # applies simultaneous events in insertion order.
+    demo.add_migration_rate_change(time=2000.0, rate=0.0)
     ts = msprime.sim_ancestry(
         samples={"A": 5, "B": 5},
         demography=demo,
@@ -1040,6 +1047,14 @@ def _make_n6_msprime(seed: int):
         time=3000.0, source="B", dest="A", proportion=1.0)
     demo.add_mass_migration(
         time=3000.0, source="C", dest="A", proportion=1.0)
+    # Match msinv ej semantics: msprime add_mass_migration leaves the
+    # migration matrix active, so without this line A↔B and A↔C migrate
+    # above T=3000 (populated A → empty B/C), inflating Ne. Order
+    # matters — this must come AFTER both add_mass_migration calls,
+    # because msprime applies simultaneous events in insertion order.
+    # Global form (no source/dest) zeros all off-diagonal rates.
+    # See N3 spec/comment for the original derivation.
+    demo.add_migration_rate_change(time=3000.0, rate=0.0)
     ts = msprime.sim_ancestry(
         samples={"A": 4, "B": 3, "C": 3},
         demography=demo,

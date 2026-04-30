@@ -119,6 +119,58 @@ SCENARIOS["n2"] = {
 }
 
 
+def _make_n3_msinv(seed: int):
+    demo = Demography(
+        pop_sizes=[10000.0, 10000.0],
+        migration_matrix=[[0.0, 1e-4], [1e-4, 0.0]],
+    )
+    demo.add_population_split(time=2000.0, derived=[1], ancestral=0)
+    ts = HullSimulator(
+        sample_config={(None, 0): 5, (None, 1): 5},
+        demography=demo,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        seed=seed,
+    ).simulate()
+    return ts, _samples_by_pop(ts, n_pops=2)
+
+
+def _make_n3_msprime(seed: int):
+    demo = msprime.Demography()
+    demo.add_population(name="A", initial_size=20000.0)
+    demo.add_population(name="B", initial_size=20000.0)
+    demo.set_migration_rate(source="A", dest="B", rate=1e-4)
+    demo.set_migration_rate(source="B", dest="A", rate=1e-4)
+    # mass_migration with proportion=1.0, NOT add_population_split (which
+    # auto-derives growth/size resets that don't match msinv ej semantics).
+    demo.add_mass_migration(
+        time=2000.0, source="B", dest="A", proportion=1.0)
+    # Zero all migration at T=2000 to match msinv's ej semantics: the ej
+    # event zeros migration to/from the source population.  Without this,
+    # msprime keeps M[B][A]=1e-4 active above T=2000, sending lineages to
+    # the now-empty B and inflating effective Ne ~2x relative to msinv.
+    demo.add_migration_rate_change(time=2000.0, rate=0.0)
+    ts = msprime.sim_ancestry(
+        samples={"A": 5, "B": 5},
+        demography=demo,
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        ploidy=1,
+        record_full_arg=True,
+        random_seed=seed + 1,
+    )
+    return ts, _samples_by_pop(ts, n_pops=2)
+
+
+SCENARIOS["n3"] = {
+    "compute_afs": True,
+    "n_pops": 2,
+    "make_msinv": _make_n3_msinv,
+    "make_msprime": _make_n3_msprime,
+}
+
+
 def _stats_from_ts(ts, sample_sets, compute_afs: bool):
     """Branch-length stats + (optional) AFS bins from a tskit TS.
 

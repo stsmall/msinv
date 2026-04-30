@@ -186,3 +186,8 @@ def test_msprime_validation_n1_panmictic():
 def test_msprime_validation_n2_two_pop_migration():
     """Rust msinv vs msprime — two-pop symmetric migration, M=1e-4."""
     _run_validation("n2")
+
+
+def test_msprime_validation_n3_two_pop_split():
+    """Rust msinv vs msprime — two-pop merge backward at T=2000."""
+    _run_validation("n3")

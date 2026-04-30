@@ -72,6 +72,10 @@ pub struct JointSample {
 #[derive(Clone, Debug)]
 pub struct JointSweepTrajectory {
     pub t_origin: f64,
+    /// Backward time at which the standing-variation phase ends (the
+    /// de novo origin of the A allele). Equal to `t_origin` when there
+    /// is no SV phase (e.g. `f0 == 1/(2N)`); strictly greater otherwise.
+    pub t_de_novo: f64,
     pub tau: f64,
     pub n_pops: u32,
     pub samples: Vec<JointSample>,
@@ -179,6 +183,7 @@ pub fn build_joint_trajectory(
     }
     JointSweepTrajectory {
         t_origin: spec.t_origin,
+        t_de_novo: spec.t_origin,
         tau,
         n_pops,
         samples,

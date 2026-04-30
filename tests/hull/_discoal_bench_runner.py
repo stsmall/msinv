@@ -32,6 +32,7 @@ DISCOAL_BIN = "/home/adkern/discoal/discoal"
 # Scenario registry filled in by Task B2 (D1) and Phase C tasks (D2-D5).
 # Each entry: name -> {
 #   "n_pops": int (always 1 for discoal track v1),
+#   "ne_diploid": float,  # diploid Ne; used to rescale discoal's 2N-unit stats
 #   "compute_pi_windows": bool,
 #   "windows_left_to_right": list[float] | None,  # bin edges within [0, L]
 #   "make_msinv": Callable[[int], tskit.TreeSequence],   # kwarg: seed -> ts
@@ -64,13 +65,33 @@ def _stats_from_ts(ts, scenario_spec):
     """Branch-length stats from a tskit TS, optionally with windowed pi.
 
     Returns dict suitable for JSON serialization.  Single-pop only.
+
+    Cross-engine convention quirk surfaced by D1 first run: discoal v2
+    emits tree sequences with ``ts.time_units == "coalescent units (2N
+    generations)"`` while msinv emits them in generations.  Branch-mode
+    stats need to be rescaled by ``2 * ne_diploid`` on the discoal side
+    so both engines report in generations.
+
+    Stats included: ``pi_branch`` (diploid-Ne-equivalent expected pairwise
+    coal time x 2) and ``n_trees`` (recombination-driven local tree count).
+    Local-tree root time stats (``mean_tmrca``, ``tmrca_grand``) are NOT
+    cross-engine comparable: discoal's full-ARG ``-F`` output collapses
+    all local-tree roots to the grand MRCA, while msinv's full-ARG
+    records per-local-tree roots plus above-root non-ancestral edges.
+    These produce different distributional quantities under
+    ``tree.time(tree.root)`` and were dropped after D1 confirmed
+    pi_branch + n_trees alone validate the convention bridge cleanly.
     """
+    ne_diploid = scenario_spec["ne_diploid"]
+    time_scale = (
+        2.0 * ne_diploid
+        if str(ts.time_units).startswith("coalescent units")
+        else 1.0
+    )
     out: dict[str, float] = {
-        "pi_branch": ts.diversity(mode="branch"),
+        "pi_branch": ts.diversity(mode="branch") * time_scale,
         "n_trees": float(ts.num_trees),
     }
-    weighted = sum(tree.time(tree.root) * tree.span for tree in ts.trees())
-    out["mean_tmrca"] = weighted / ts.sequence_length
 
     if scenario_spec.get("compute_pi_windows", False):
         # Folded windowed pi around x_sel.  K bins at distance
@@ -120,7 +141,11 @@ def _stats_from_ts(ts, scenario_spec):
                     span = seg_hi - seg_lo
                     total_span += span
                     total_pi_span += divs[i] * span
-            windowed[k] = total_pi_span / total_span if total_span > 0 else 0.0
+            windowed[k] = (
+                (total_pi_span / total_span) * time_scale
+                if total_span > 0
+                else 0.0
+            )
         for k, val in enumerate(windowed):
             out[f"pi_window_{k}"] = float(val)
     return out
@@ -210,6 +235,46 @@ def main():
          "per_rep_seconds": per_rep_seconds},
         sys.stdout)
     sys.stdout.write("\n")
+
+
+def _make_d1_msinv(seed: int):
+    return HullSimulator(
+        samples=10,
+        population_size=10000.0,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        sweeps=None,
+        seed=seed,
+    ).simulate()
+
+
+def _make_d1_discoal_args(out_prefix: str, seed1: int, seed2: int,
+                          n_reps: int):
+    return [
+        DISCOAL_BIN,
+        "10",            # sampleSize (haploid)
+        str(n_reps),     # numReplicates
+        "100000",        # nSites
+        "-t", "40",      # theta = 4*Ne*mu*L = 4*10000*1e-8*1e5 = 40
+        "-r", "40",      # rho   = 4*Ne*r *L = 4*10000*1e-8*1e5 = 40
+        "-N", "10000",   # diploid Ne
+        "-ts", out_prefix,
+        "-F",            # full ARG mode (matches msinv record_full_arg=True)
+        "-d", str(seed1), str(seed2),
+    ]
+
+
+SCENARIOS["d1"] = {
+    "n_pops": 1,
+    "ne_diploid": 10000.0,
+    "compute_pi_windows": False,
+    "windows_left_to_right": None,
+    "make_msinv": _make_d1_msinv,
+    "make_discoal_args": _make_d1_discoal_args,
+    "L": 100_000.0,
+    "x_sel": None,
+}
 
 
 if __name__ == "__main__":

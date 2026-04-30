@@ -150,6 +150,9 @@ def _make_n3_msprime(seed: int):
     # event zeros migration to/from the source population.  Without this,
     # msprime keeps M[B][A]=1e-4 active above T=2000, sending lineages to
     # the now-empty B and inflating effective Ne ~2x relative to msinv.
+    # Order matters: msprime applies simultaneous events in insertion
+    # order, so this must come AFTER the add_mass_migration above.
+    # Global form (no source/dest) zeros all off-diagonal rates.
     demo.add_migration_rate_change(time=2000.0, rate=0.0)
     ts = msprime.sim_ancestry(
         samples={"A": 5, "B": 5},

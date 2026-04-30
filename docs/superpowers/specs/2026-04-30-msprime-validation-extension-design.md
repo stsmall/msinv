@@ -78,6 +78,10 @@ demo.set_migration_rate(source="B", dest="A", rate=1e-4)
 # we do NOT use add_population_split because it auto-derives size /
 # growth resets that don't match msinv's ej semantics).
 demo.add_mass_migration(time=2000.0, source="B", dest="A", proportion=1.0)
+# Zero all migration at T=2000 to match msinv ej semantics (see note
+# below). Order matters: simultaneous events apply in insertion order,
+# so this MUST come after add_mass_migration.
+demo.add_migration_rate_change(time=2000.0, rate=0.0)
 msprime.sim_ancestry(
     samples={"A": 5, "B": 5},
     demography=demo,
@@ -89,10 +93,16 @@ msprime.sim_ancestry(
 )
 ```
 
-The migration after the merge (i.e. backward of T_split, when only pop A
-exists) is auto-zero in msinv (`ej` puts everyone in one pop) and remains
-zero in msprime (mass migration empties B; B's outgoing rates apply to no
-lineages). No explicit `em` event is needed.
+**Important: msprime `add_mass_migration` does NOT zero post-event
+migration rates; msinv `ej` does.** msprime's `add_mass_migration`
+moves lineages but leaves the migration matrix intact. Above T_split
+the matrix `M[B][A]=1e-4` keeps sending lineages from the (now-fully
+populated) ancestral A back into the (now-empty) B, doubling the
+effective coal time relative to msinv's `ej` semantics. The
+`add_migration_rate_change(time=T_split, rate=0.0)` call zeros all
+off-diagonal rates at T_split, matching msinv. Initially missing from
+the spec; surfaced by the harness on first run with all 12 stats
+failing at 4–10·SE. **Same fix is required for N6** below.
 
 ### N4 — bottleneck (`en`)
 
@@ -219,6 +229,12 @@ for src, dst in [("A","B"),("B","A"),("A","C"),("C","A"),("B","C"),("C","B")]:
     demo.set_migration_rate(source=src, dest=dst, rate=5e-5)
 demo.add_mass_migration(time=3000.0, source="B", dest="A", proportion=1.0)
 demo.add_mass_migration(time=3000.0, source="C", dest="A", proportion=1.0)
+# Same fix as N3: msprime add_mass_migration leaves the migration
+# matrix intact. Without zeroing rates at T=3000, A↔B and A↔C remain
+# active above T=3000, sending lineages from the populated A into the
+# now-empty B and C. Order matters — must come AFTER both
+# add_mass_migration calls.
+demo.add_migration_rate_change(time=3000.0, rate=0.0)
 msprime.sim_ancestry(
     samples={"A": 4, "B": 3, "C": 3},
     demography=demo,

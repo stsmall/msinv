@@ -341,5 +341,65 @@ SCENARIOS["d2"] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# D3 — soft sweep from standing variation
+# ---------------------------------------------------------------------------
+# f0=0.05 means the beneficial allele starts at 5% frequency across the
+# population (~1000 founder copies in a 2N=20000 pool), so the stochastic
+# trajectory is no longer extinction-prone. Both engines run stochastic:
+# msinv mode='Stochastic', discoal -ws -f 0.05.
+def _make_d3_msinv(seed: int):
+    from msinv.hull.sweep import Sweep
+    sweep = Sweep(
+        x_sel=50_000.0,
+        tau=1000.0,
+        origin_pop=0,
+        origin_kary='S',
+        target_inv=0,
+        mode='Stochastic',
+        s=0.05,
+        t_origin=1500.0,
+        f0=0.05,
+        partial_sweep_final_freq=1.0,
+        seed=seed,
+    )
+    return HullSimulator(
+        samples=10,
+        population_size=10000.0,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        sweeps=[sweep],
+        seed=seed,
+    ).simulate()
+
+
+def _make_d3_discoal_args(out_prefix: str, seed1: int, seed2: int,
+                          n_reps: int):
+    return [
+        DISCOAL_BIN,
+        "10", str(n_reps), "100000",
+        "-t", "40", "-r", "40", "-N", "10000",
+        "-ws", "0.025",
+        "-a", "1000",
+        "-x", "0.5",
+        "-f", "0.05",
+        "-ts", out_prefix, "-F",
+        "-d", str(seed1), str(seed2),
+    ]
+
+
+SCENARIOS["d3"] = {
+    "n_pops": 1,
+    "ne_diploid": 10000.0,
+    "compute_pi_windows": False,
+    "windows_left_to_right": None,
+    "make_msinv": _make_d3_msinv,
+    "make_discoal_args": _make_d3_discoal_args,
+    "L": 100_000.0,
+    "x_sel": 50_000.0,
+}
+
+
 if __name__ == "__main__":
     main()

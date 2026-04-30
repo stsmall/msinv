@@ -8,6 +8,8 @@ Per-rep stats arrive as JSON on the child's stdout; peak RSS is read
 from ``os.wait4`` rusage.
 """
 
+import pytest
+
 from tests.hull._validation_common import _run_validation
 
 RUNNER = "tests.hull._discoal_bench_runner"
@@ -39,3 +41,17 @@ def test_discoal_validation_d2_hard_sweep():
     (per-segment hitchhiking spatial-profile MC) on 2026-04-30.
     """
     _run("d2")
+
+
+@pytest.mark.skip(reason=(
+    "D3 surfaces a K-founder partitioning gap in Rust apply_sweep_finalize. "
+    "Soft sweeps (f0>0) need ~K=1/f0 founders to persist past t_origin "
+    "(discoal model; implemented in the Python fallback at "
+    "msinv/hull/simulator.py:1029-1041), but the Rust path collapses all "
+    "A-tagged lineages into one founder at t_origin. "
+    "Observed (f0=0.05): msinv pi=8176 vs discoal pi=16630 (~half). "
+    "Inside-window progressive rate matches discoal exactly; the gap is "
+    "entirely at the endpoint. Activate after K-founder partitioning ships."))
+def test_discoal_validation_d3_soft_sweep():
+    """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
+    _run("d3")

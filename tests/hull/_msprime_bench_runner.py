@@ -17,6 +17,7 @@ import time
 
 import msprime
 import pytest
+from msinv.hull.demography import Demography
 from msinv.hull.simulator import HullSimulator
 
 pytestmark = pytest.mark.skip("child runner — invoked via subprocess")
@@ -65,6 +66,56 @@ SCENARIOS["n1"] = {
     "n_pops": 1,
     "make_msinv": _make_n1_msinv,
     "make_msprime": _make_n1_msprime,
+}
+
+
+def _samples_by_pop(ts, n_pops: int):
+    populations = ts.tables.nodes.population[ts.samples()]
+    return [
+        ts.samples()[populations == p].tolist() for p in range(n_pops)]
+
+
+def _make_n2_msinv(seed: int):
+    demo = Demography(
+        pop_sizes=[10000.0, 10000.0],
+        migration_matrix=[[0.0, 1e-4], [1e-4, 0.0]],
+    )
+    ts = HullSimulator(
+        sample_config={(None, 0): 5, (None, 1): 5},
+        demography=demo,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        seed=seed,
+    ).simulate()
+    return ts, _samples_by_pop(ts, n_pops=2)
+
+
+def _make_n2_msprime(seed: int):
+    # population sizes doubled; migration rate NOT rescaled
+    # (per-lineage per-gen on both sides).
+    demo = msprime.Demography()
+    demo.add_population(name="A", initial_size=20000.0)
+    demo.add_population(name="B", initial_size=20000.0)
+    demo.set_migration_rate(source="A", dest="B", rate=1e-4)
+    demo.set_migration_rate(source="B", dest="A", rate=1e-4)
+    ts = msprime.sim_ancestry(
+        samples={"A": 5, "B": 5},
+        demography=demo,
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        ploidy=1,
+        record_full_arg=True,
+        random_seed=seed + 1,
+    )
+    return ts, _samples_by_pop(ts, n_pops=2)
+
+
+SCENARIOS["n2"] = {
+    "compute_afs": False,
+    "n_pops": 2,
+    "make_msinv": _make_n2_msinv,
+    "make_msprime": _make_n2_msprime,
 }
 
 

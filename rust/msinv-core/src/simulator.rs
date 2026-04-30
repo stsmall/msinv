@@ -795,9 +795,9 @@ impl HullSimulator {
                 let active_sweep: Option<&Sweep> = finalized_sweeps.iter()
                     .find(|s| s.covers(t));
                 emit_coal_events_from_cache(
-                    &rate_cache, active, &*demo, t,
+                    &rate_cache, active, arena, &*demo, t,
                     inversions, &barrier_active,
-                    &mut all_events, active_sweep);
+                    &mut all_events, active_sweep, &a_tag);
 
                 // Recombination.
                 if total_recomb_rate > 0.0 {
@@ -1698,14 +1698,20 @@ fn gc_sole_lineages_with_removed(
 /// `2 * ne * p_class`. This drives the Kim-Stephan coalescence footprint.
 fn emit_coal_events_from_cache(
     cache: &RateCache,
-    _active: &[Lineage],
+    active: &[Lineage],
+    arena: &SegmentArena,
     demo: &Demography,
     t: f64,
     inversions: &[InversionSpec],
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
     active_sweep: Option<&Sweep>,
+    a_tag: &std::collections::HashMap<LinUid, bool>,
 ) {
+    // Phase A2: `active`, `arena`, and `a_tag` are added to the
+    // signature for Phase B per-allele bucketization. Currently
+    // unused — touch them to silence unused-variable warnings.
+    let _ = (active, arena, a_tag);
     // Read pair counts directly from the pair_buckets — each bucket's
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {

@@ -2394,7 +2394,7 @@ fn apply_sweep(
     _seq_len: f64,
     rng: &mut Xoshiro256PlusPlus,
     _ne: f64,
-    _recomb_rate: f64,
+    recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
@@ -2410,16 +2410,31 @@ fn apply_sweep(
         return;
     }
     for lin in active.iter() {
-        // Only tag lineages that overlap x_sel — others can't carry A
-        // since they don't cover the selected site.
-        if !lineage_overlaps_position(lin.head, sweep.x_sel, arena) {
-            continue;
+        let overlaps = lineage_overlaps_position(lin.head, sweep.x_sel, arena);
+        if !overlaps {
+            // Piece 3: distant lineages can still be on the A background
+            // with probability decaying via exp(-r·d_nearest·T_eff).
+            // Sample whether to enter the A-eligible pool.
+            let d_nearest = sweep.lineage_nearest_distance(lin.head, arena);
+            if d_nearest.is_infinite() {
+                continue;  // empty lineage
+            }
+            let t_eff = sweep.joint.t_origin - sweep.tau;
+            let p_link = (-recomb_rate * d_nearest * t_eff).exp();
+            if rng.random::<f64>() >= p_link {
+                continue;  // not eligible
+            }
         }
         let pop = lin.population;
-        // Determine kary at the inversion's range, defaulting to
-        // origin_kary if the lineage is panmictic at this site.
-        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
-            .unwrap_or(sweep.origin_kary);
+        // For overlapping lineages, get the inv-class at x_sel; for
+        // distant lineages, fall back to origin_kary directly (we used
+        // the nearest segment's distance, not the inversion membership).
+        let kary = if overlaps {
+            lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+                .unwrap_or(sweep.origin_kary)
+        } else {
+            sweep.origin_kary
+        };
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
     }
@@ -3479,12 +3494,17 @@ mod tests {
         let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
         let mut sweep_cursor = (0.0, 0u64);
 
+        // Use a high recomb_rate so p_link = exp(-r*d*T_eff) ≈ 0 for lineage B
+        // (d_nearest ≈ 2000, T_eff = 200 → r=1.0 → p_link ≈ 0).
+        // With D1, non-overlapping lineages are gated by p_link; at r=1.0 they
+        // are excluded with overwhelming probability. Lineage A still overlaps
+        // x_sel and is tagged deterministically.
         apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
-                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1.0,
                     &mut sweep_cursor, &mut a_tag);
 
         assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
-        assert!(!a_tag.contains_key(&1u32), "lineage B does not overlap x_sel; should NOT be tagged");
+        assert!(!a_tag.contains_key(&1u32), "lineage B: p_link≈0 at r=1.0; should NOT be tagged");
     }
 
     /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A

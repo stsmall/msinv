@@ -360,12 +360,22 @@ No changes to `msinv/`.
 
 ## Test budget
 
-Estimated wall-clock at N=200 (extrapolating from N1/N2's measured
-~5 ms/rep on each engine; multi-pop and split scenarios run ~2× slower
-because of event handling):
+Budget ceiling: **180 s** (3 min) for the full extended harness
+(`tests/hull/test_validation_msprime.py`, all six scenarios).
+This is a deliberate change from the predecessor spec's tight ~5 s
+budget — short fast sims like these finish in seconds each, and the
+real value of the harness is sharp drift detection. The budget gives
+headroom to scale `N_REPS` upward (per-bin SE shrinks as `1/√N`) when
+small-magnitude drift becomes the regression class to catch.
+
+Estimated wall-clock at the current `N_REPS=200` (extrapolating from
+N1/N2's measured ~5 ms/rep; multi-pop and split scenarios run ~2×
+slower because of event handling):
 
 | Scenario | per-rep avg | 200 reps × 2 engines | + subprocess overhead |
 |---|---|---|---|
+| N1 (panmictic) | 5 ms | 2.0 s | +0.7 s |
+| N2 (two-pop migration) | 11 ms | 4.4 s | +0.7 s |
 | N3 (two-pop split) | 12 ms | 4.8 s | +0.7 s |
 | N4 (bottleneck) | 8 ms | 3.2 s | +0.7 s |
 | N5 (growth) | 8 ms | 3.2 s | +0.7 s |
@@ -373,13 +383,16 @@ because of event handling):
 
 Subprocess overhead is two `python -m` boots per scenario (one per
 engine), each ≈ 300–400 ms cold-start (msprime + numpy + tskit + msinv
-imports dominate). Total per scenario ~0.7 s. Across 4 new scenarios
-that's ~21 s additional → harness total ≈ 26 s. Stays inside the
-default `pytest tests/hull/` budget; no `slow` mark.
+imports dominate). Across 6 scenarios that's ~30 s of
+compute + ~5 s of overhead → harness total ~35 s at `N_REPS=200`.
+Comfortably inside the 180 s ceiling, with ~5× headroom.
 
-If wall-clock turns out to be over 30 s on the implementation pass, the
-fall-back is to drop N=200 → N=150 (still gives `SE/mean ≈ 8%`, still
-catches the regressions of interest).
+`N_REPS` is exposed as a top-of-file constant (`N_REPS = 200`) in
+`tests/hull/test_validation_msprime.py`. To sharpen drift detection
+without changing scenarios, raise it (e.g. `N_REPS=1000` ≈ 175 s,
+SE shrinks 2.24×). Larger sequence lengths or larger sample sizes —
+intended for finding rare-corner regressions — get their own future
+spec rather than overflowing this one's budget.
 
 ## Benchmarks
 

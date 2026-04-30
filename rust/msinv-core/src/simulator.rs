@@ -1696,13 +1696,15 @@ fn emit_coal_events_from_cache(
         let ne = demo.size_at(pop, t).max(1e-9);
         let denom = match active_sweep {
             Some(sw) if sw.covers(t) && sw.origin_pop == pop => {
-                if let Some(kary) = cls.get_inv(sw.target_inv) {
-                    // Inside sweep window, swept (pop, kary) cell:
-                    // use trajectory's ne_cell instead of ne * p_class.
-                    2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
-                } else {
-                    2.0 * ne * p_class
-                }
+                // For panmictic-at-this-locus classes (no kary tag for the
+                // swept inversion), fall back to origin_kary so the trajectory
+                // ne_cell still engages.  For pure-panmictic genomes the
+                // trajectory is degenerate (p_kary=1) so ne_cell == ne, no
+                // effective change.  For with-inversion-but-outside scenarios
+                // the trajectory tracks origin_kary's frequency dynamics and
+                // produces a real Ne reduction during the sweep window.
+                let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
+                2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
             }
             _ => 2.0 * ne * p_class,
         };
@@ -2392,7 +2394,7 @@ fn apply_sweep(
     _seq_len: f64,
     rng: &mut Xoshiro256PlusPlus,
     _ne: f64,
-    _recomb_rate: f64,
+    recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
@@ -2408,25 +2410,42 @@ fn apply_sweep(
         return;
     }
     for lin in active.iter() {
-        // Only tag lineages that overlap x_sel — others can't carry A
-        // since they don't cover the selected site.
-        if !lineage_overlaps_position(lin.head, sweep.x_sel, arena) {
-            continue;
+        let overlaps = lineage_overlaps_position(lin.head, sweep.x_sel, arena);
+        if !overlaps {
+            // Piece 3: distant lineages can still be on the A background
+            // with probability decaying via exp(-r·d_nearest·T_eff).
+            // Sample whether to enter the A-eligible pool.
+            let d_nearest = sweep.lineage_nearest_distance(lin.head, arena);
+            if d_nearest.is_infinite() {
+                continue;  // empty lineage
+            }
+            let t_eff = sweep.joint.t_origin - sweep.tau;
+            let p_link = (-recomb_rate * d_nearest * t_eff).exp();
+            if rng.random::<f64>() >= p_link {
+                continue;  // not eligible
+            }
         }
         let pop = lin.population;
-        // Determine kary at the inversion's range, defaulting to
-        // origin_kary if the lineage is panmictic at this site.
-        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
-            .unwrap_or(sweep.origin_kary);
+        // For overlapping lineages, get the inv-class at x_sel; for
+        // distant lineages, fall back to origin_kary directly (we used
+        // the nearest segment's distance, not the inversion membership).
+        let kary = if overlaps {
+            lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+                .unwrap_or(sweep.origin_kary)
+        } else {
+            sweep.origin_kary
+        };
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
     }
 }
 
 /// At `t == sweep.joint.t_origin`: for each A-bearing lineage,
-/// roll the hitchhiking-retention die. Survivors get forced into
-/// a single coalescent event at this time. Escapees drop their A
-/// flag and continue normally past the sweep window.
+/// partition segments into linked vs escaped using per-segment
+/// hitchhiking probabilities.  Linked segments stay with the
+/// lineage's UID and are force-coalesced at t_origin.  Escaped
+/// segments split off into a fresh untagged lineage that re-enters
+/// the normal coal+recomb event loop.
 fn apply_sweep_finalize(
     active: &mut Vec<Lineage>,
     sweep: &Sweep,
@@ -2439,29 +2458,108 @@ fn apply_sweep_finalize(
     sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
-    use rand::Rng;
-    // Snapshot candidate UIDs first; separates the read pass from the
-    // later mutation (coalesce_uid_group removes/adds active entries).
+    // Collect A-tagged lineage UIDs first; we partition them in a
+    // second pass to avoid borrow issues during active mutation.
     let candidates: Vec<LinUid> = active.iter()
         .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
         .map(|lin| lin.uid)
         .collect();
-    let mut a_uids: Vec<LinUid> = Vec::new();
+
+    // For each A-tagged lineage, partition segments into linked vs
+    // escaped using the per-segment hitchhiking probability.  Linked
+    // segments stay with the lineage's UID; escaped segments are
+    // detached into a fresh untagged lineage.
+    let mut linked_uids: Vec<LinUid> = Vec::new();
     for uid in candidates {
-        // Hitchhiking probability: exp(-r·d·T_eff) where d is distance
-        // to the selected site. Uses the lineage's position at x_sel
-        // (approximation: d=0 means always retained; finite d discounts).
-        let p_hh = sweep.hitchhiking_prob(sweep.x_sel, recomb_rate);
-        if rng.random::<f64>() < p_hh {
-            a_uids.push(uid);
-        } else {
-            // Escapes: drop A flag so this lineage continues normally.
+        let idx = match active.iter().position(|l| l.uid == uid) {
+            Some(i) => i,
+            None => continue,
+        };
+        let pop = active[idx].population;
+        let head = active[idx].head;
+        let p_hh_for = |l: f64, r: f64| sweep.p_hh_for_segment(l, r, recomb_rate);
+        // Partition: each segment independently rolls Bernoulli with
+        // p_hh based on its distance from x_sel.
+        let (linked_head, escaped_head) =
+            partition_lineage_segments(head, arena, |l, r| {
+                rng.random::<f64>() < p_hh_for(l, r)
+            });
+
+        if linked_head == SEG_NIL {
+            // All segments escaped — drop A flag, replace lineage's
+            // chain with the escaped chain (semantically identical
+            // since partition only re-links).
             a_tag.insert(uid, false);
+            let lin = &mut active[idx];
+            lin.head = escaped_head;
+            // Recompute tail by walking to the end of escaped_head.
+            lin.tail = chain_tail(escaped_head, arena);
+            // cached_len + cached_hull_l/r need recompute.
+            recompute_lineage_caches(lin, arena);
+            continue;
         }
+
+        if escaped_head == SEG_NIL {
+            // All segments linked — keep the lineage as-is, will be
+            // force-coalesced below.
+            let lin = &mut active[idx];
+            lin.head = linked_head;
+            lin.tail = chain_tail(linked_head, arena);
+            recompute_lineage_caches(lin, arena);
+            linked_uids.push(uid);
+            continue;
+        }
+
+        // Mixed: original UID retains linked segments + A-tag;
+        // escaped segments form a brand-new untagged lineage.
+        {
+            let lin = &mut active[idx];
+            lin.head = linked_head;
+            lin.tail = chain_tail(linked_head, arena);
+            recompute_lineage_caches(lin, arena);
+        }
+        let new_uid = *next_uid;
+        *next_uid += 1;
+        let escaped_tail = chain_tail(escaped_head, arena);
+        let escaped_lin = Lineage::new(escaped_head, escaped_tail, pop, new_uid, arena);
+        active.push(escaped_lin);
+        linked_uids.push(uid);
     }
-    if a_uids.len() < 2 { return; }
-    // Force-coalesce all survivors into a single MRCA at t.
-    coalesce_uid_group(active, &a_uids, t, arena, tables, next_uid, sweep_cursor);
+
+    if linked_uids.len() < 2 { return; }
+    // Force-coalesce all linked-segment groups at t_origin.
+    coalesce_uid_group(active, &linked_uids, t, arena, tables, next_uid, sweep_cursor);
+}
+
+/// Walk a chain to find its tail (last segment whose `next == SEG_NIL`).
+/// Returns SEG_NIL if `head == SEG_NIL`.
+fn chain_tail(head: SegIdx, arena: &SegmentArena) -> SegIdx {
+    if head == SEG_NIL { return SEG_NIL; }
+    let mut cur = head;
+    loop {
+        let n = arena.get(cur).next;
+        if n == SEG_NIL { return cur; }
+        cur = n;
+    }
+}
+
+/// Recompute `cached_len`, `cached_hull_l`, `cached_hull_r` after the
+/// segment chain has been mutated.  O(|segments|).
+fn recompute_lineage_caches(lin: &mut Lineage, arena: &SegmentArena) {
+    let mut len = 0.0;
+    let mut hl = f64::INFINITY;
+    let mut hr = f64::NEG_INFINITY;
+    let mut cur = lin.head;
+    while cur != SEG_NIL {
+        let s = arena.get(cur);
+        len += s.right - s.left;
+        if s.left < hl { hl = s.left; }
+        if s.right > hr { hr = s.right; }
+        cur = s.next;
+    }
+    lin.cached_len = len;
+    lin.cached_hull_l = hl;
+    lin.cached_hull_r = hr;
 }
 
 fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
@@ -2499,6 +2597,53 @@ fn build_lineage_from_segs(
         tail = seg;
     }
     Lineage::new(head, tail, pop, uid, arena)
+}
+
+/// Walk a lineage's segment chain and partition each segment into
+/// "linked" or "escaped" groups based on a predicate.  Returns the
+/// (linked_head, escaped_head) pair (either may be SEG_NIL).
+///
+/// The original chain rooted at `head` is consumed: every segment is
+/// either re-linked into the linked chain, re-linked into the escaped
+/// chain, or left in place (no segments are freed here; the caller
+/// owns the resulting chains).
+///
+/// Predicate signature: `(seg_left, seg_right) -> bool` where `true`
+/// means "linked" and `false` means "escaped".
+fn partition_lineage_segments<F: FnMut(f64, f64) -> bool>(
+    head: SegIdx,
+    arena: &mut SegmentArena,
+    mut predicate: F,
+) -> (SegIdx, SegIdx) {
+    let mut linked_head = SEG_NIL;
+    let mut linked_tail = SEG_NIL;
+    let mut escaped_head = SEG_NIL;
+    let mut escaped_tail = SEG_NIL;
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let next = arena.get(cur).next;
+        let (l, r) = {
+            let seg = arena.get(cur);
+            (seg.left, seg.right)
+        };
+        let target_head_tail = if predicate(l, r) {
+            (&mut linked_head, &mut linked_tail)
+        } else {
+            (&mut escaped_head, &mut escaped_tail)
+        };
+        let (group_head, group_tail) = target_head_tail;
+        // Re-link: this segment becomes the new tail of its group.
+        arena.get_mut(cur).next = SEG_NIL;
+        if *group_head == SEG_NIL {
+            *group_head = cur;
+            *group_tail = cur;
+        } else {
+            arena.get_mut(*group_tail).next = cur;
+            *group_tail = cur;
+        }
+        cur = next;
+    }
+    (linked_head, escaped_head)
 }
 
 /// Coalesce a group of lineages (identified by UID) sequentially.
@@ -3349,12 +3494,17 @@ mod tests {
         let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
         let mut sweep_cursor = (0.0, 0u64);
 
+        // Use a high recomb_rate so p_link = exp(-r*d*T_eff) ≈ 0 for lineage B
+        // (d_nearest ≈ 2000, T_eff = 200 → r=1.0 → p_link ≈ 0).
+        // With D1, non-overlapping lineages are gated by p_link; at r=1.0 they
+        // are excluded with overwhelming probability. Lineage A still overlaps
+        // x_sel and is tagged deterministically.
         apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
-                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
+                    &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1.0,
                     &mut sweep_cursor, &mut a_tag);
 
         assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
-        assert!(!a_tag.contains_key(&1u32), "lineage B does not overlap x_sel; should NOT be tagged");
+        assert!(!a_tag.contains_key(&1u32), "lineage B: p_link≈0 at r=1.0; should NOT be tagged");
     }
 
     /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A
@@ -3396,5 +3546,44 @@ mod tests {
         let n_at_500: usize = result.tables.node_time.iter()
             .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
         assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
+    }
+
+    #[test]
+    fn partition_lineage_segments_separates_by_predicate() {
+        use crate::class_tag::BranchClass;
+        let mut arena = SegmentArena::new();
+        // Build chain: [0,100) -> [200,300) -> [400,500) -> [600,700)
+        let s4 = arena.alloc(600.0, 700.0, 0, BranchClass::PANMICTIC);
+        let s3 = arena.alloc(400.0, 500.0, 0, BranchClass::PANMICTIC);
+        let s2 = arena.alloc(200.0, 300.0, 0, BranchClass::PANMICTIC);
+        let s1 = arena.alloc(0.0,   100.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        arena.get_mut(s2).next = s3;
+        arena.get_mut(s3).next = s4;
+        // Predicate: linked iff left < 350 (so s1, s2 linked; s3, s4 escaped)
+        let (linked_head, escaped_head) =
+            partition_lineage_segments(s1, &mut arena, |l, _r| l < 350.0);
+        // Walk linked chain: should be s1 -> s2
+        assert_eq!(linked_head, s1);
+        assert_eq!(arena.get(s1).next, s2);
+        assert_eq!(arena.get(s2).next, SEG_NIL);
+        // Walk escaped chain: should be s3 -> s4
+        assert_eq!(escaped_head, s3);
+        assert_eq!(arena.get(s3).next, s4);
+        assert_eq!(arena.get(s4).next, SEG_NIL);
+    }
+
+    #[test]
+    fn partition_lineage_segments_all_one_side_returns_seg_nil_for_other() {
+        use crate::class_tag::BranchClass;
+        let mut arena = SegmentArena::new();
+        let s2 = arena.alloc(200.0, 300.0, 0, BranchClass::PANMICTIC);
+        let s1 = arena.alloc(0.0,   100.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        // Always-linked
+        let (linked_head, escaped_head) =
+            partition_lineage_segments(s1, &mut arena, |_l, _r| true);
+        assert_eq!(linked_head, s1);
+        assert_eq!(escaped_head, SEG_NIL);
     }
 }

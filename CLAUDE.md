@@ -9,7 +9,7 @@ cd rust && cargo build --release -p msinv-py
 - Rust: `cd rust && cargo test --release` (132 lib + 17 integration + 4 sweep-anchor + 2 sweep-trajectory as of 2026-04-29).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
-  (189 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
+  (191 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
   after Phases A-D of `docs/superpowers/plans/2026-04-29-sweep-followups.md`).
 - msprime validation: `tests/hull/test_validation_msprime.py` (N1–N6: panmictic, two-pop migration,
   two-pop split, bottleneck, growth, three-pop split — vs `msprime.sim_ancestry`; ~15 s; spec
@@ -23,8 +23,12 @@ cd rust && cargo build --release -p msinv-py
   4=demography, 4b=class migration, 5=per-segment/multi-inv, 6=sweep, 8=trajectory selection.
 - Sweep test files: `tests/hull/test_phase6_sweep.py` (T1-T5 against joint-WF Sweep API),
   `tests/hull/test_phase6b_sweep_joint.py` (J1-J9 trajectory integration),
+  `tests/hull/test_phase6c_per_segment_hitchhiking.py` (PS2 spatial pi monotonic decay,
+  PS3 pi at x_sel anchored vs neutral 4N — spec
+  `docs/superpowers/specs/2026-04-30-sweep-per-segment-hitchhiking-design.md`),
   `rust/msinv-core/tests/sweep_kim_stephan_anchors.rs` (Tier-1 closed-form anchors),
-  `rust/msinv-core/tests/sweep_trajectory_built_from_demography.rs` (live demography wiring).
+  `rust/msinv-core/tests/sweep_trajectory_built_from_demography.rs` (live demography wiring),
+  `rust/msinv-core/tests/sweep_per_segment_hitchhiking.rs` (PS1 Rust-side smoke).
 
 ## Pytest progress visibility
 - `pytest ... 2>&1 | tail -N` BUFFERS — output appears only at exit.  For long runs:
@@ -116,6 +120,13 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
 - Sweep + inversion trajectories use the **discrete-time** WF logistic update
   `p_{t+1} = p_t·(1+s)/(1+s·p_t)` with closed form `f0·(1+s)^t / (1 - f0 + f0·(1+s)^t)`.
   Don't write tests against the continuous `exp(s·t)` form — they diverge at O(s²·t).
+- Sweep model: per-segment hitchhiking (post-2026-04-30). Each ancestral segment of an
+  A-tagged lineage rolls an independent Bernoulli with `p_hh = exp(-r·d·T_eff)` at
+  `apply_sweep_finalize`. Linked segments force-coalesce; escaped segments split off
+  into fresh untagged lineages. Single-locus stats at x_sel are unchanged
+  (d=0 → p_hh=1); spatial profile away from x_sel now shows the Kim-Stephan recovery
+  curve. Stochastic mode at f0=1/(2N) is extinction-prone for hard sweeps — use
+  Deterministic mode for spatial-profile MC tests.
 - A PostToolUse hook runs `cargo check` after each Rust Edit/Write — every individual
   edit must leave the workspace compiling. For API-rewrite tasks, bridge through a
   transitional struct that carries both old and new fields, migrate callers, then

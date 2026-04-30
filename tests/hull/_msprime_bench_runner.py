@@ -257,6 +257,68 @@ SCENARIOS["n5"] = {
 }
 
 
+def _make_n6_msinv(seed: int):
+    demo = Demography(
+        pop_sizes=[10000.0, 10000.0, 10000.0],
+        migration_matrix=[
+            [0.0,  5e-5, 5e-5],
+            [5e-5, 0.0,  5e-5],
+            [5e-5, 5e-5, 0.0 ],
+        ],
+    )
+    demo.add_population_split(time=3000.0, derived=[1, 2], ancestral=0)
+    ts = HullSimulator(
+        sample_config={(None, 0): 4, (None, 1): 3, (None, 2): 3},
+        demography=demo,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        seed=seed,
+    ).simulate()
+    return ts, _samples_by_pop(ts, n_pops=3)
+
+
+def _make_n6_msprime(seed: int):
+    demo = msprime.Demography()
+    demo.add_population(name="A", initial_size=20000.0)
+    demo.add_population(name="B", initial_size=20000.0)
+    demo.add_population(name="C", initial_size=20000.0)
+    pairs = [("A", "B"), ("B", "A"), ("A", "C"),
+             ("C", "A"), ("B", "C"), ("C", "B")]
+    for src, dst in pairs:
+        demo.set_migration_rate(source=src, dest=dst, rate=5e-5)
+    demo.add_mass_migration(
+        time=3000.0, source="B", dest="A", proportion=1.0)
+    demo.add_mass_migration(
+        time=3000.0, source="C", dest="A", proportion=1.0)
+    # Match msinv ej semantics: msprime add_mass_migration leaves the
+    # migration matrix active, so without this line A↔B and A↔C migrate
+    # above T=3000 (populated A → empty B/C), inflating Ne. Order
+    # matters — this must come AFTER both add_mass_migration calls,
+    # because msprime applies simultaneous events in insertion order.
+    # Global form (no source/dest) zeros all off-diagonal rates.
+    # See N3 spec/comment for the original derivation.
+    demo.add_migration_rate_change(time=3000.0, rate=0.0)
+    ts = msprime.sim_ancestry(
+        samples={"A": 4, "B": 3, "C": 3},
+        demography=demo,
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        ploidy=1,
+        record_full_arg=True,
+        random_seed=seed + 1,
+    )
+    return ts, _samples_by_pop(ts, n_pops=3)
+
+
+SCENARIOS["n6"] = {
+    "compute_afs": True,
+    "n_pops": 3,
+    "make_msinv": _make_n6_msinv,
+    "make_msprime": _make_n6_msprime,
+}
+
+
 def _stats_from_ts(ts, sample_sets, compute_afs: bool):
     """Branch-length stats + (optional) AFS bins from a tskit TS.
 

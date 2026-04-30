@@ -201,3 +201,8 @@ def test_msprime_validation_n4_bottleneck():
 def test_msprime_validation_n5_exponential_growth():
     """Rust msinv vs msprime — exponential growth, α=0.0005/gen."""
     _run_validation("n5")
+
+
+def test_msprime_validation_n6_three_pop_with_split():
+    """Rust msinv vs msprime — 3 pops, sym M=5e-5, merge to A at T=3000."""
+    _run_validation("n6")

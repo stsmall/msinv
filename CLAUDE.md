@@ -16,6 +16,16 @@ cd rust && cargo build --release -p msinv-py
   `docs/superpowers/specs/2026-04-30-msprime-validation-extension-design.md`).
   Each scenario also prints a benchmark block (per-rep wall-clock + peak RSS per engine);
   appended to `.tmp/msprime_validation_bench.jsonl`. Use `-s` to surface OK/FAIL + benchmarks.
+- discoal validation: `tests/hull/test_validation_discoal.py` (D1–D5 vs discoal v2.0.0-beta
+  at `/home/adkern/discoal/discoal`; spec
+  `docs/superpowers/specs/2026-04-30-discoal-validation-design.md`). D1 neutral, D2 hard
+  sweep, D4 partial sweep are active and pass at 3·SE. D3 (soft sweep, f0=0.05) and
+  D5 (focal-recurrent, uA=1e-3) are committed but `@pytest.mark.skip`-marked: D3 needs
+  K-founder partitioning ported into Rust `apply_sweep_finalize` (the Python fallback
+  has it at `msinv/hull/simulator.py:1029-1041`); D5 needs a units audit on
+  `recurrent_mutation_rate` vs discoal `-uA`. Sweep scenarios use deterministic
+  trajectories on both sides (msinv `mode='Deterministic'`, discoal `-wd`) when f0=1/(2N)
+  to avoid the extinction-prone stochastic regime.
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
 - Single Python file: `.venv/bin/python -m pytest tests/hull/test_phase8_trajectory_selection.py -v`.

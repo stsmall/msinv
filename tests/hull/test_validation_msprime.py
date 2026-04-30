@@ -17,7 +17,6 @@ from ``os.wait4`` rusage. Pass criteria:
 import json
 import math
 import os
-import resource
 import statistics
 import subprocess
 import sys
@@ -28,50 +27,31 @@ ALPHA_FAMILY = 0.003  # family-wise α for both moment and AFS families
 
 
 def _run_one_engine(scenario_name, engine, n_reps):
-    """Spawn one child runner process; return (per_rep_stats,
-    per_rep_seconds, peak_rss_kb)."""
+    """Spawn one child runner; return (per_rep_stats, per_rep_seconds,
+    peak_rss_kb). Uses Popen + os.wait4 for clean per-child rusage."""
     cmd = [
         sys.executable, "-m", "tests.hull._msprime_bench_runner",
         "--scenario", scenario_name, "--engine", engine,
         "--n-reps", str(n_reps), "--seed-base", "0",
     ]
+    # Popen does not auto-wait; we'll do it manually with os.wait4
+    # so the per-child rusage is attributable.
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = proc.communicate()
-    try:
-        pid_unused, status, rusage = os.wait4(proc.pid, os.WNOHANG)  # drained
-    except ChildProcessError:
-        pass  # Popen.communicate already reaped the child — expected on Linux
-    # The above wait4 may return (0, 0, ...) or raise ChildProcessError if
-    # Popen.communicate already reaped the process; in that case use
-    # Popen-collected info.
+    # Read all stdout / stderr without calling .wait()
+    stdout = proc.stdout.read()
+    stderr = proc.stderr.read()
+    proc.stdout.close()
+    proc.stderr.close()
+    pid, status, rusage = os.wait4(proc.pid, 0)
+    proc.returncode = os.waitstatus_to_exitcode(status)
     if proc.returncode != 0:
         raise RuntimeError(
             f"runner failed for {scenario_name}/{engine} "
             f"(rc={proc.returncode}):\n{stderr.decode()}")
     payload = json.loads(stdout.decode())
-    # Resort to RUSAGE_CHILDREN incremental delta because Popen.communicate
-    # already wait()ed the child (so os.wait4 above returned 0). Read the
-    # cumulative children rusage; the caller is responsible for taking
-    # deltas across calls.
-    return payload["per_rep_stats"], payload["per_rep_seconds"]
-
-
-def _peak_rss_after(prev_kb):
-    """Return (current_cumulative_max, delta_for_latest_child).
-
-    On Linux, RUSAGE_CHILDREN.ru_maxrss is the maximum RSS of any single
-    waited-for child since process start (NOT cumulative). After running
-    children sequentially, the latest child's peak is either:
-      - exactly current_max (if it exceeded all previous), OR
-      - bounded above by current_max (if any previous child was larger).
-
-    Returns a tuple where delta is None when we cannot disambiguate.
-    """
-    cur = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    if cur > prev_kb:
-        return cur, cur  # this child set the new max — its peak is `cur`
-    return cur, None  # this child's peak is <= cur (we report '<= prev_kb')
+    peak_kb = rusage.ru_maxrss  # Linux: KB
+    return payload["per_rep_stats"], payload["per_rep_seconds"], peak_kb
 
 
 def _mean_se(values):
@@ -98,12 +78,10 @@ def _agg_engine_vals(per_rep_stats):
 
 def _run_validation(scenario_name, n_reps=N_REPS):
     """Run both engines via subprocess; assert per-stat agreement."""
-    rss0 = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    msinv_stats, msinv_secs = _run_one_engine(scenario_name, "msinv", n_reps)
-    rss1, msinv_peak = _peak_rss_after(rss0)
-    msprime_stats, msprime_secs = _run_one_engine(
+    msinv_stats, msinv_secs, msinv_peak = _run_one_engine(
+        scenario_name, "msinv", n_reps)
+    msprime_stats, msprime_secs, msprime_peak = _run_one_engine(
         scenario_name, "msprime", n_reps)
-    rss2, msprime_peak = _peak_rss_after(rss1)
 
     a = _agg_engine_vals(msinv_stats)
     b = _agg_engine_vals(msprime_stats)
@@ -163,20 +141,16 @@ def _print_benchmark_block(scenario_name, msinv_secs, msprime_secs,
     p_mean, p_se = _mean_se(msprime_secs)
     m_total = sum(msinv_secs)
     p_total = sum(msprime_secs)
-    m_rss_mb = (msinv_peak_kb / 1024.0
-                if msinv_peak_kb is not None else float("nan"))
-    p_rss_mb = (msprime_peak_kb / 1024.0
-                if msprime_peak_kb is not None else float("nan"))
+    m_rss_mb = msinv_peak_kb / 1024.0
+    p_rss_mb = msprime_peak_kb / 1024.0
     print(f"[{scenario_name}] benchmarks")
     print(f"  msinv:   per-rep {m_mean*1000:6.1f} ms ± {m_se*1000:.1f}, "
           f"total {m_total:5.1f} s, peak RSS {m_rss_mb:6.1f} MB")
     print(f"  msprime: per-rep {p_mean*1000:6.1f} ms ± {p_se*1000:.1f}, "
           f"total {p_total:5.1f} s, peak RSS {p_rss_mb:6.1f} MB")
-    if math.isfinite(p_mean) and p_mean > 0:
+    if math.isfinite(p_mean) and p_mean > 0 and p_rss_mb > 0:
         print(f"  ratio:   per-rep msinv/msprime = {m_mean/p_mean:.2f}x;  "
-              f"RAM msinv/msprime = "
-              f"{m_rss_mb/p_rss_mb:.2f}x" if math.isfinite(m_rss_mb) and
-              math.isfinite(p_rss_mb) and p_rss_mb > 0 else "")
+              f"RAM msinv/msprime = {m_rss_mb/p_rss_mb:.2f}x")
 
 
 def test_msprime_validation_n1_panmictic():

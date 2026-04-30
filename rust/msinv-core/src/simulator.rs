@@ -914,7 +914,7 @@ impl HullSimulator {
                 Event::CoalAggregate { pop, class, allele } => {
                     let pop = *pop;
                     let cls = *class;
-                    let _ = *allele;  // Phase A: field added but consumer wired up in Phase C.
+                    let allele = *allele;
                     // Direct O(1) pick from the (pop, cls) pair bucket:
                     // maintained by every overlap mutation, indexed by
                     // packed (i, j). Replaces the iter_pairs walk that
@@ -923,8 +923,45 @@ impl HullSimulator {
                     // the (pop, cls) pair count feeding CoalAggregate.
                     let bucket = rate_cache.pair_bucket_for(pop, cls);
                     if bucket.is_empty() { continue; }
-                    let target = rng.random_range(0..bucket.len());
-                    let (i, j) = crate::rate_index::unpack_ij(bucket[target]);
+                    // Fast path: outside the sweep window every event is
+                    // Mixed and a_tag is empty (PG-D1 clears it at sweep
+                    // end), so any pair satisfies the "untagged-involved"
+                    // predicate. Pick any pair from the bucket directly.
+                    let (i, j) = if a_tag.is_empty() && matches!(allele, AlleleTag::Mixed) {
+                        let target = rng.random_range(0..bucket.len());
+                        crate::rate_index::unpack_ij(bucket[target])
+                    } else {
+                        // Inside the sweep window: filter pairs to match
+                        // the event's allele subgroup. PG-B1 emits three
+                        // events per swept cell with rates derived from
+                        // (n_A choose 2), (n_a choose 2), and the count
+                        // of untagged-involved pairs — the consumer must
+                        // honor those subgroups when sampling. Cost is
+                        // O(|bucket|) per fired event — bounded by O(n^2).
+                        let matches_pair = |packed: u64| -> bool {
+                            let (i, j) = crate::rate_index::unpack_ij(packed);
+                            let i_tag = a_tag.get(&active[i].uid).copied();
+                            let j_tag = a_tag.get(&active[j].uid).copied();
+                            match allele {
+                                AlleleTag::A => {
+                                    i_tag == Some(true) && j_tag == Some(true)
+                                }
+                                AlleleTag::ALower => {
+                                    i_tag == Some(false) && j_tag == Some(false)
+                                }
+                                AlleleTag::Mixed => {
+                                    // Untagged-involved: at least one of
+                                    // the two lineages is untagged.
+                                    i_tag.is_none() || j_tag.is_none()
+                                }
+                            }
+                        };
+                        let matching: SmallVec<[u64; 32]> = bucket.iter()
+                            .copied().filter(|&p| matches_pair(p)).collect();
+                        if matching.is_empty() { continue; }
+                        let target = rng.random_range(0..matching.len());
+                        crate::rate_index::unpack_ij(matching[target])
+                    };
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;

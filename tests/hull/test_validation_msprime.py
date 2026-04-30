@@ -12,6 +12,11 @@ from ``os.wait4`` rusage. Pass criteria:
   ``|Δ| <= 3 * sqrt(SE_a^2 + SE_b^2)``
 - AFS bin stats (``afs_*``): Bonferroni-corrected two-sided z, family-
   wise α = 0.003 across all AFS bins in that scenario.
+
+Platform note: peak RSS uses ``rusage.ru_maxrss``, which is **kilobytes
+on Linux** but **bytes on macOS/BSD**.  This harness assumes Linux; on
+other platforms the reported peak RSS will be off by 1024×.  Comparison
+stats (the actual pass/fail criteria) are platform-independent.
 """
 
 import datetime
@@ -38,6 +43,16 @@ def _run_one_engine(scenario_name, engine, n_reps):
     ]
     # Popen does not auto-wait; we'll do it manually with os.wait4
     # so the per-child rusage is attributable.
+    #
+    # Pipe-buffer note: stdout JSON is ~78 KB at N_REPS=200 (N6 scenario,
+    # 11 stats x 200 reps), exceeding the 64 KB Linux pipe buffer.  This
+    # works because proc.stdout.read() blocks and drains the pipe as the
+    # child writes.  Stderr drain happens AFTER stdout, so the child
+    # MUST stay quiet on stderr (else the child blocks writing to a full
+    # stderr pipe while the parent blocks reading stdout = deadlock).
+    # Verified: the runner module emits no stderr.  If a future scenario
+    # adds stderr output, switch to a threaded drain or merge stderr
+    # into stdout (stderr=subprocess.STDOUT).
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Read all stdout / stderr without calling .wait()

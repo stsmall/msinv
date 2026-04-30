@@ -55,3 +55,12 @@ def test_discoal_validation_d2_hard_sweep():
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")
+
+
+def test_discoal_validation_d4_partial_sweep():
+    """Rust msinv vs discoal — partial sweep, plateaus at 50% freq.
+
+    Deterministic trajectory on both sides (msinv ``mode='Deterministic'``,
+    discoal ``-wd -c 0.5``); same rationale as D2.
+    """
+    _run("d4")

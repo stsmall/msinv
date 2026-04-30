@@ -401,5 +401,63 @@ SCENARIOS["d3"] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# D4 — partial sweep (final freq 0.5)
+# ---------------------------------------------------------------------------
+# Like D2 but the trajectory plateaus at p=0.5 instead of fixing. f0=1/(2N)
+# again uses Deterministic to dodge the extinction sampling bias.
+def _make_d4_msinv(seed: int):
+    from msinv.hull.sweep import Sweep
+    sweep = Sweep(
+        x_sel=50_000.0,
+        tau=1000.0,
+        origin_pop=0,
+        origin_kary='S',
+        target_inv=0,
+        mode='Deterministic',
+        s=0.05,
+        t_origin=1500.0,
+        f0=1.0 / (2 * 10_000),
+        partial_sweep_final_freq=0.5,
+        seed=seed,
+    )
+    return HullSimulator(
+        samples=10,
+        population_size=10000.0,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        sweeps=[sweep],
+        seed=seed,
+    ).simulate()
+
+
+def _make_d4_discoal_args(out_prefix: str, seed1: int, seed2: int,
+                          n_reps: int):
+    return [
+        DISCOAL_BIN,
+        "10", str(n_reps), "100000",
+        "-t", "40", "-r", "40", "-N", "10000",
+        "-wd", "0.025",
+        "-a", "1000",
+        "-x", "0.5",
+        "-c", "0.5",
+        "-ts", out_prefix, "-F",
+        "-d", str(seed1), str(seed2),
+    ]
+
+
+SCENARIOS["d4"] = {
+    "n_pops": 1,
+    "ne_diploid": 10000.0,
+    "compute_pi_windows": False,
+    "windows_left_to_right": None,
+    "make_msinv": _make_d4_msinv,
+    "make_discoal_args": _make_d4_discoal_args,
+    "L": 100_000.0,
+    "x_sel": 50_000.0,
+}
+
+
 if __name__ == "__main__":
     main()

@@ -45,6 +45,24 @@ pub struct SampleEntry {
 // ---------------------------------------------------------------
 // Event tag for the competing-rates dispatcher
 // ---------------------------------------------------------------
+
+/// Allele subgroup for sweep-aware coalescence events. Used by
+/// `CoalAggregate` to differentiate the progressive-coalescence
+/// rates (A-tagged vs a-tagged vs untagged-involved) emitted during
+/// the sweep window. Outside the sweep window every event is `Mixed`
+/// and the consumer falls back to the standard "any pair" sampler.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AlleleTag {
+    /// No sweep-window distinction; pair selection is the standard
+    /// Hudson rule. Inside the sweep window represents the
+    /// "untagged-involved" subgroup (UU, UA, Ua pairs).
+    Mixed,
+    /// Both lineages of the picked pair must be A-tagged.
+    A,
+    /// Both lineages of the picked pair must be a-tagged.
+    ALower,
+}
+
 enum Event {
     /// Per-pair coalescence (used by the non-cache structured fallback
     /// `compute_coal_rates_structured`). Hot path uses CoalAggregate.
@@ -53,7 +71,7 @@ enum Event {
     /// lies in `class`. Firing samples the specific (i, j) pair from
     /// RateCache proportional to overlap length in that class — avoids
     /// the O(n^2) per-pair event-list entries that dominated rho≥500.
-    CoalAggregate { pop: u32, class: BranchClass },
+    CoalAggregate { pop: u32, class: BranchClass, allele: AlleleTag },
     CoalPanmicticPop { pop: u32 },
     Recombination,
     /// Aggregate gene-flux rate for all lineages interacting with
@@ -893,9 +911,10 @@ impl HullSimulator {
             };
 
             match chosen_event {
-                Event::CoalAggregate { pop, class } => {
+                Event::CoalAggregate { pop, class, allele } => {
                     let pop = *pop;
                     let cls = *class;
+                    let _ = *allele;  // Phase A: field added but consumer wired up in Phase C.
                     // Direct O(1) pick from the (pop, cls) pair bucket:
                     // maintained by every overlap mutation, indexed by
                     // packed (i, j). Replaces the iter_pairs walk that
@@ -1709,7 +1728,7 @@ fn emit_coal_events_from_cache(
             _ => 2.0 * ne * p_class,
         };
         let rate = count / denom;
-        events.push((rate, Event::CoalAggregate { pop, class: cls }));
+        events.push((rate, Event::CoalAggregate { pop, class: cls, allele: AlleleTag::Mixed }));
     }
 }
 

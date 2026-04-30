@@ -365,7 +365,7 @@ impl HullSimulator {
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
             let t_sweep_origin = finalized_sweeps.first()
-                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+                .map(|s| s.t_de_novo()).unwrap_or(f64::INFINITY);
             let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             let coal_rate = pair_rates.total();
@@ -852,7 +852,7 @@ impl HullSimulator {
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
             let t_sweep_origin = finalized_sweeps.first()
-                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+                .map(|s| s.t_de_novo()).unwrap_or(f64::INFINITY);
 
             // Next deterministic boundary.
             let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
@@ -2333,11 +2333,12 @@ fn apply_boundary(
                      sweep_cursor, a_tag);
         finalized_sweeps.push(sweep);
     }
-    // Keep finalized_sweeps sorted by t_origin so [0] is the next to fire.
-    finalized_sweeps.sort_by(|a, b| a.joint.t_origin.partial_cmp(&b.joint.t_origin).unwrap());
-    // Drain finalized sweeps whose t_origin matches the current boundary.
+    // Keep finalized_sweeps sorted by t_de_novo so [0] is the next to fire.
+    finalized_sweeps.sort_by(|a, b|
+        a.t_de_novo().partial_cmp(&b.t_de_novo()).unwrap());
+    // Drain finalized sweeps whose t_de_novo matches the current boundary.
     while !finalized_sweeps.is_empty()
-        && (finalized_sweeps[0].joint.t_origin - t).abs() < 1e-9
+        && (finalized_sweeps[0].t_de_novo() - t).abs() < 1e-9
     {
         let sweep = finalized_sweeps.remove(0);
         apply_sweep_finalize(active, &sweep, t, arena, tables,
@@ -3642,23 +3643,28 @@ mod tests {
     }
 
     /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A
-    /// assignment at τ). After the simulation reaches t_origin = 500, all
-    /// surviving A-bearing lineages collapse to a single MRCA; the deepest
-    /// internal node should be at time ≈ 500 (within sweep_cursor eps).
+    /// assignment at τ). With f0=1.0 the SV phase runs from t_origin
+    /// backward until the drift hits 1/(2N); A-tagged lineages coalesce
+    /// progressively inside that window. MRCA must therefore land at or
+    /// past t_origin (and at or before t_de_novo).
     #[test]
-    fn forced_coal_collapses_a_lineages_at_t_origin() {
+    fn forced_coal_collapses_a_lineages_in_sweep_window() {
         use crate::class_tag::Karyotype;
         use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
         use crate::demography::Demography;
         use crate::sweep::Sweep;
 
-        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
-            JointSweepSpec {
-                mode: SweepMode::Deterministic,
-                s: 0.05, t_origin: 500.0, f0: 1.0,
-                partial_sweep_final_freq: 0.99,
-                ..Default::default()
-            });
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05, t_origin: 500.0, f0: 1.0,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0, spec)
+            .with_trajectory(1, &[0.0],
+                &|_t, _p| 10_000.0,
+                &|_t, _i, _j| 0.0);
+        let t_de_novo = sweep.t_de_novo();
 
         let sim = HullSimulator {
             samples: vec![SampleEntry { karyotypes: vec![], population: 0, count: 4 }],
@@ -3670,16 +3676,13 @@ mod tests {
             gc_stride: 160, record_events: false,
         };
         let result = sim.simulate();
-        // The deepest internal node should be at time ~ t_origin = 500.
-        // Allow small slop from sweep_cursor's eps offset (1e-9 to 1e-3).
+        // The deepest internal node should fall inside the sweep window
+        // [t_origin, t_de_novo]. Loose tolerance on the upper bound to
+        // account for the de novo merge happening at exactly t_de_novo.
         let max_node_t = result.tables.node_time.iter().cloned().fold(0.0_f64, f64::max);
-        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t < 500.0 + 1e-3,
-            "MRCA at {}, expected ~500 (t_origin)", max_node_t);
-        // 4 A-tagged samples → all forced together → exactly 1 MRCA event
-        // contributes the time-500 node. Sample nodes are at time 0.
-        let n_at_500: usize = result.tables.node_time.iter()
-            .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
-        assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
+        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t <= t_de_novo + 1.0,
+            "MRCA at {}, expected in [t_origin=500, t_de_novo={}]",
+            max_node_t, t_de_novo);
     }
 
     #[test]

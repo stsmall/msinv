@@ -1708,10 +1708,6 @@ fn emit_coal_events_from_cache(
     active_sweep: Option<&Sweep>,
     a_tag: &std::collections::HashMap<LinUid, bool>,
 ) {
-    // Phase A2: `active`, `arena`, and `a_tag` are added to the
-    // signature for Phase B per-allele bucketization. Currently
-    // unused — touch them to silence unused-variable warnings.
-    let _ = (active, arena, a_tag);
     // Read pair counts directly from the pair_buckets — each bucket's
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {
@@ -1719,23 +1715,89 @@ fn emit_coal_events_from_cache(
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
         if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
-        let denom = match active_sweep {
-            Some(sw) if sw.covers(t) && sw.origin_pop == pop => {
-                // For panmictic-at-this-locus classes (no kary tag for the
-                // swept inversion), fall back to origin_kary so the trajectory
-                // ne_cell still engages.  For pure-panmictic genomes the
-                // trajectory is degenerate (p_kary=1) so ne_cell == ne, no
-                // effective change.  For with-inversion-but-outside scenarios
-                // the trajectory tracks origin_kary's frequency dynamics and
-                // produces a real Ne reduction during the sweep window.
-                let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
-                2.0 * sw.ne_cell_or_fallback(t, pop, kary, ne, p_class).max(1e-9)
-            }
-            _ => 2.0 * ne * p_class,
+
+        // Outside sweep window OR sweep is in a different population:
+        // emit a single Mixed event with the standard rate.
+        let in_sweep_cell = match active_sweep {
+            Some(sw) => sw.covers(t) && sw.origin_pop == pop,
+            None => false,
         };
-        let rate = count / denom;
-        events.push((rate, Event::CoalAggregate { pop, class: cls, allele: AlleleTag::Mixed }));
+        if !in_sweep_cell {
+            events.push((count / (2.0 * ne * p_class),
+                Event::CoalAggregate { pop, class: cls, allele: AlleleTag::Mixed }));
+            continue;
+        }
+
+        // Inside the sweep window in the swept population. Bucketize
+        // active lineages in this (pop, cls) cell by allele tag.
+        // Cost: O(|active|) per emit while a sweep is active.
+        let mut n_a_upper: usize = 0;
+        let mut n_a_lower: usize = 0;
+        let mut n_untagged: usize = 0;
+        for lin in active.iter() {
+            if lin.population != pop { continue; }
+            if !lineage_has_class(lin.head, cls, arena) { continue; }
+            match a_tag.get(&lin.uid).copied() {
+                Some(true)  => n_a_upper += 1,
+                Some(false) => n_a_lower += 1,
+                None        => n_untagged += 1,
+            }
+        }
+
+        // Determine kary for the swept inversion at this class. For
+        // panmictic-at-this-locus (no kary tag on target_inv), fall
+        // back to origin_kary so the trajectory queries still engage.
+        let sw = active_sweep.expect("in_sweep_cell implies Some(sw)");
+        let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
+        let p_kary = sw.trajectory.as_ref()
+            .map_or(p_class, |traj| traj.p_kary(t, pop, kary));
+        let p_a = sw.trajectory.as_ref()
+            .map_or(0.0, |traj| traj.p_allele_given_kary(t, pop, kary));
+        let p_kary_safe = p_kary.max(1e-9);
+
+        // AA: pairs of A-tagged lineages — rate denom 2 N p_kary p_A.
+        // Going backward, p_A drops from ~1 at τ to f0 at t_origin so
+        // this rate climbs and drives the A pool to its single founder.
+        if n_a_upper >= 2 && p_a > 1e-9 {
+            let pairs = (n_a_upper * (n_a_upper - 1)) as f64 * 0.5;
+            let denom = 2.0 * ne * p_kary_safe * p_a;
+            events.push((pairs / denom,
+                Event::CoalAggregate { pop, class: cls, allele: AlleleTag::A }));
+        }
+        // aa: pairs of a-tagged lineages — rate denom 2 N p_kary (1-p_A).
+        if n_a_lower >= 2 && (1.0 - p_a) > 1e-9 {
+            let pairs = (n_a_lower * (n_a_lower - 1)) as f64 * 0.5;
+            let denom = 2.0 * ne * p_kary_safe * (1.0 - p_a);
+            events.push((pairs / denom,
+                Event::CoalAggregate { pop, class: cls, allele: AlleleTag::ALower }));
+        }
+        // Mixed: untagged-involved pairs only (UU + UA + Ua). Cross-
+        // allele A × a pairs have rate zero during the sweep window
+        // and are excluded — the consumer must filter the bucket to
+        // honor that exclusion (handled in PG-C1).
+        let n_normal_pairs =
+            n_untagged * n_untagged.saturating_sub(1) / 2
+            + n_untagged * n_a_upper
+            + n_untagged * n_a_lower;
+        if n_normal_pairs > 0 {
+            let denom = 2.0 * ne * p_kary_safe;
+            events.push((n_normal_pairs as f64 / denom,
+                Event::CoalAggregate { pop, class: cls, allele: AlleleTag::Mixed }));
+        }
     }
+}
+
+/// Helper: true if any segment in the lineage's chain has
+/// `branch_class == cls`. Used by the per-allele rate emitter to
+/// decide which (pop, cls) cells a lineage participates in.
+fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bool {
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        if seg.branch_class == cls { return true; }
+        cur = seg.next;
+    }
+    false
 }
 
 /// Compute coal events list. Post-t_inv: Hudson per-pop buckets, O(n).

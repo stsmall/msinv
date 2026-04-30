@@ -56,9 +56,21 @@ impl Sweep {
         self
     }
 
-    /// Is `t` inside the sweep window (between tau and t_origin)?
+    /// Backward-time upper bound of the sweep window. Reads from the
+    /// trajectory's `t_de_novo` if a trajectory has been built; falls
+    /// back to `joint.t_origin` otherwise (matches the pre-SV-extension
+    /// behavior).
+    pub fn t_de_novo(&self) -> f64 {
+        self.trajectory.as_ref()
+            .map(|t| t.t_de_novo)
+            .unwrap_or(self.joint.t_origin)
+    }
+
+    /// Is `t` inside the sweep window? Spans the selection phase
+    /// (`[tau, t_origin]`) plus the standing-variation phase
+    /// (`(t_origin, t_de_novo]`) when one exists.
     pub fn covers(&self, t: f64) -> bool {
-        t >= self.tau && t <= self.joint.t_origin
+        t >= self.tau && t <= self.t_de_novo()
     }
 
     /// Sweep-aware effective Ne for a (pop, kary) cell at backward

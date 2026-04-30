@@ -96,6 +96,55 @@ impl Sweep {
         (-recomb_rate * d * t_eff).exp()
     }
 
+    /// Per-segment hitchhiking probability: for an ancestral segment
+    /// `[seg_left, seg_right)`, the probability that NO recombination
+    /// has occurred between `x_sel` and the closest edge of the segment
+    /// during the sweep window.  d_min = 0 if the segment spans `x_sel`,
+    /// else the distance from `x_sel` to the nearest edge.
+    pub fn p_hh_for_segment(
+        &self, seg_left: f64, seg_right: f64, recomb_rate: f64,
+    ) -> f64 {
+        if self.trajectory.is_none() {
+            return 1.0;
+        }
+        let d_min = if self.x_sel >= seg_left && self.x_sel < seg_right {
+            0.0
+        } else if seg_right <= self.x_sel {
+            self.x_sel - seg_right
+        } else {
+            seg_left - self.x_sel
+        };
+        let t_eff = self.joint.t_origin - self.tau;
+        (-recomb_rate * d_min * t_eff).exp()
+    }
+
+    /// Nearest-segment distance: walks a lineage's segment chain and
+    /// returns the minimum distance from any segment to `x_sel`.
+    /// Returns `f64::INFINITY` for an empty chain (SEG_NIL head).
+    pub fn lineage_nearest_distance(
+        &self,
+        head: crate::segment::SegIdx,
+        arena: &crate::segment::SegmentArena,
+    ) -> f64 {
+        use crate::segment::SEG_NIL;
+        let mut cur = head;
+        let mut best = f64::INFINITY;
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            let d = if self.x_sel >= seg.left && self.x_sel < seg.right {
+                0.0
+            } else if seg.right <= self.x_sel {
+                self.x_sel - seg.right
+            } else {
+                seg.left - self.x_sel
+            };
+            if d < best { best = d; }
+            if d == 0.0 { return 0.0; }
+            cur = seg.next;
+        }
+        best
+    }
+
     /// At sample time τ, randomly assign a lineage to the swept (A) vs
     /// unswept (a) fraction with probability equal to the trajectory's
     /// per-(pop, kary) A frequency. Returns true for A.
@@ -190,6 +239,39 @@ mod tests {
     }
 
     #[test]
+    fn p_hh_for_segment_zero_distance_at_x_sel() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0,
+            JointSweepSpec {
+                mode: SweepMode::Deterministic,
+                s: 0.05, t_origin: 500.0, f0: 0.001,
+                partial_sweep_final_freq: 0.99,
+                ..Default::default()
+            },
+        ).with_trajectory(1, &[0.0], &|_t, _p| 10_000.0, &|_, _, _| 0.0);
+        // Segment spans x_sel: d=0, p=1
+        let p_at = sw.p_hh_for_segment(4_900.0, 5_100.0, 1e-5);
+        assert!((p_at - 1.0).abs() < 1e-9);
+        // Segment to the right of x_sel
+        let p_right = sw.p_hh_for_segment(5_138.6, 5_500.0, 1e-5);
+        // d=138.6, T_eff=500, exp(-1e-5*138.6*500) = exp(-0.693) ≈ 0.5
+        assert!(p_right > 0.45 && p_right < 0.55,
+            "expected ~0.5, got {p_right}");
+        // Segment to the left of x_sel: same distance, same prob
+        let p_left = sw.p_hh_for_segment(4_500.0, 4_861.4, 1e-5);
+        assert!(p_left > 0.45 && p_left < 0.55,
+            "expected ~0.5, got {p_left}");
+    }
+
+    #[test]
+    fn p_hh_for_segment_no_trajectory_returns_one() {
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0, JointSweepSpec::default());
+        // No trajectory built ⇒ degenerate, returns 1.0
+        assert_eq!(sw.p_hh_for_segment(0.0, 100.0, 1e-3), 1.0);
+    }
+
+    #[test]
     fn assign_a_at_sample_uses_trajectory_freq() {
         let sw = Sweep::new(
             5_000.0, 0.0, 0, Karyotype::S, 0,
@@ -238,5 +320,27 @@ mod tests {
         let ne_mid = sw.ne_cell_or_fallback(50.0, 0, Karyotype::I, 10_000.0, 0.3);
         assert!((ne_mid - 10_000.0 * traj_p).abs() < 1e-6);
         assert!(ne_mid > ne_pre, "expected ne to rise during sweep; pre={ne_pre}, mid={ne_mid}");
+    }
+
+    #[test]
+    fn lineage_nearest_distance_walks_chain() {
+        use crate::segment::{SegmentArena, SEG_NIL};
+        use crate::class_tag::BranchClass;
+        let sw = Sweep::new(
+            5_000.0, 0.0, 0, Karyotype::S, 0, JointSweepSpec::default());
+        let mut arena = SegmentArena::new();
+        // Empty chain: infinity
+        assert_eq!(sw.lineage_nearest_distance(SEG_NIL, &arena), f64::INFINITY);
+        // Single segment far from x_sel
+        let s1 = arena.alloc(7_000.0, 8_000.0, 0, BranchClass::PANMICTIC);
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 2_000.0);
+        // Build chain: [7000,8000) -> [4500,4900) (closer to x_sel=5000)
+        let s2 = arena.alloc(4_500.0, 4_900.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s1).next = s2;
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 100.0);
+        // Add a segment that spans x_sel: d=0, returns immediately
+        let s3 = arena.alloc(4_950.0, 5_050.0, 0, BranchClass::PANMICTIC);
+        arena.get_mut(s2).next = s3;
+        assert_eq!(sw.lineage_nearest_distance(s1, &arena), 0.0);
     }
 }

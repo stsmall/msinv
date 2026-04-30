@@ -277,5 +277,69 @@ SCENARIOS["d1"] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# D2 — hard sweep
+# ---------------------------------------------------------------------------
+# Deviation from the plan: msinv side uses mode='Deterministic' and discoal
+# uses '-wd' instead of '-ws'. PS2 (per-segment hitchhiking spatial profile
+# study) established that Stochastic sweeps at f0=1/(2N) are extinction-prone
+# and produce high-variance / biased output for hard-fixation parameter
+# regimes. Both engines now run the deterministic logistic trajectory; this
+# matches what the moments-based comparison expects and removes the
+# extinction-rejection sampling bias.
+def _make_d2_msinv(seed: int):
+    from msinv.hull.sweep import Sweep
+    sweep = Sweep(
+        x_sel=50_000.0,
+        tau=1000.0,
+        origin_pop=0,
+        origin_kary='S',
+        target_inv=0,
+        mode='Deterministic',
+        s=0.05,
+        t_origin=1500.0,
+        f0=1.0 / (2 * 10_000),
+        partial_sweep_final_freq=1.0,
+        seed=seed,
+    )
+    return HullSimulator(
+        samples=10,
+        population_size=10000.0,
+        sequence_length=100_000.0,
+        recombination_rate=1e-8,
+        inversions=[],
+        sweeps=[sweep],
+        seed=seed,
+    ).simulate()
+
+
+def _make_d2_discoal_args(out_prefix: str, seed1: int, seed2: int,
+                          n_reps: int):
+    # tau in 4N units: 1000 gens / (4 * 10000) = 0.025
+    # alpha = 2 * Ne * s = 2 * 10000 * 0.05 = 1000
+    return [
+        DISCOAL_BIN,
+        "10", str(n_reps), "100000",
+        "-t", "40", "-r", "40", "-N", "10000",
+        "-wd", "0.025",
+        "-a", "1000",
+        "-x", "0.5",
+        "-ts", out_prefix, "-F",
+        "-d", str(seed1), str(seed2),
+    ]
+
+
+SCENARIOS["d2"] = {
+    "n_pops": 1,
+    "ne_diploid": 10000.0,
+    "compute_pi_windows": False,
+    "windows_left_to_right": None,
+    "make_msinv": _make_d2_msinv,
+    "make_discoal_args": _make_d2_discoal_args,
+    "L": 100_000.0,
+    "x_sel": 50_000.0,
+}
+
+
 if __name__ == "__main__":
     main()

@@ -27,3 +27,15 @@ def _run(scenario):
 def test_discoal_validation_d1_neutral():
     """Rust msinv vs discoal — neutral baseline, n=10, ρ=40, no sweep."""
     _run("d1")
+
+
+def test_discoal_validation_d2_hard_sweep():
+    """Rust msinv vs discoal — hard sweep, s=0.05, tau=1000 g, fix at 1.0.
+
+    Both engines run a deterministic logistic trajectory: msinv
+    ``mode='Deterministic'`` and discoal ``-wd``. Stochastic mode at
+    ``f0=1/(2N)`` is extinction-prone for hard sweeps and would produce
+    biased rep distributions on either side; this was established by PS2
+    (per-segment hitchhiking spatial-profile MC) on 2026-04-30.
+    """
+    _run("d2")

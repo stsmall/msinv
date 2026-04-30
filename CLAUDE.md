@@ -6,10 +6,10 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (132 lib + 17 integration + 4 sweep-anchor + 2 sweep-trajectory as of 2026-04-29).
+- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 2 sweep-trajectory as of 2026-04-30).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
-  (191 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
+  (192 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
   after Phases A-D of `docs/superpowers/plans/2026-04-29-sweep-followups.md`).
 - msprime validation: `tests/hull/test_validation_msprime.py` (N1–N6: panmictic, two-pop migration,
   two-pop split, bottleneck, growth, three-pop split — vs `msprime.sim_ancestry`; ~15 s; spec
@@ -26,9 +26,13 @@ cd rust && cargo build --release -p msinv-py
   `tests/hull/test_phase6c_per_segment_hitchhiking.py` (PS2 spatial pi monotonic decay,
   PS3 pi at x_sel anchored vs neutral 4N — spec
   `docs/superpowers/specs/2026-04-30-sweep-per-segment-hitchhiking-design.md`),
+  `tests/hull/test_phase6d_progressive_coalescence.py` (PG2 mean-pi-vs-neutral
+  amplitude anchor — spec
+  `docs/superpowers/specs/2026-04-30-sweep-progressive-coalescence-design.md`),
   `rust/msinv-core/tests/sweep_kim_stephan_anchors.rs` (Tier-1 closed-form anchors),
   `rust/msinv-core/tests/sweep_trajectory_built_from_demography.rs` (live demography wiring),
-  `rust/msinv-core/tests/sweep_per_segment_hitchhiking.rs` (PS1 Rust-side smoke).
+  `rust/msinv-core/tests/sweep_per_segment_hitchhiking.rs` (PS1 Rust-side smoke),
+  `rust/msinv-core/tests/sweep_progressive_coalescence.rs` (PG1 Rust-side smoke).
 
 ## Pytest progress visibility
 - `pytest ... 2>&1 | tail -N` BUFFERS — output appears only at exit.  For long runs:
@@ -127,6 +131,15 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   (d=0 → p_hh=1); spatial profile away from x_sel now shows the Kim-Stephan recovery
   curve. Stochastic mode at f0=1/(2N) is extinction-prone for hard sweeps — use
   Deterministic mode for spatial-profile MC tests.
+  Progressive coalescence (post-progressive extension, 2026-04-30): inside the
+  sweep window in the swept (origin_pop, cls) cells, `emit_coal_events_from_cache`
+  emits up to three CoalAggregate events per cell — AA pairs at
+  `1/(2N·p_kary·p_A(t))`, aa pairs at `1/(2N·p_kary·(1-p_A(t)))`, and untagged-
+  involved (UU + UA + Ua) pairs at the standard `1/(2N·p_kary)`. Cross-allele
+  A × a pairs have rate zero. The CoalAggregate consumer filters the pair bucket
+  by `allele` to honor the subgroup; outside any active sweep window the fast
+  "any pair" sampler is used. Endpoint at `t_origin` retained as A-only founder
+  convergence (idempotent for hard sweeps; required for partial sweeps).
 - A PostToolUse hook runs `cargo check` after each Rust Edit/Write — every individual
   edit must leave the workspace compiling. For API-rewrite tasks, bridge through a
   transitional struct that carries both old and new fields, migrate callers, then

@@ -101,3 +101,40 @@ def test_ps2_spatial_profile_decays_monotonically():
     assert reduction > 0.3, (
         f"Expected ≥30% pi reduction at sweep center vs edge; "
         f"got {reduction*100:.1f}%")
+
+
+def test_ps3_at_x_sel_pi_matches_kim_stephan_anchor():
+    """At x_sel itself, pi_branch should be greatly reduced relative
+    to neutral expectation (sweep force-coalesces all segments at x_sel
+    into the same MRCA at t_origin, so T_2 ≈ t_origin << 2N).
+
+    With N=10_000 and t_origin=1_500, pi_branch at x_sel ≈ 2*t_origin
+    = 3_000 while neutral pi_branch = 4*N = 40_000.  Ratio ≈ 7.5%.
+
+    The right half [50_500, 100_000] is also within the swept region
+    (x_sel is at genome centre), so we compare directly to the known
+    neutral expectation 4*N rather than to the within-sweep right half.
+
+    Tolerance: mean(pi at x_sel) / (4*N) < 0.10.
+
+    This anchors that the per-segment finalize doesn't accidentally
+    leave x_sel segments uncoalesced.
+    """
+    N = 10_000
+    neutral_pi = 4 * N  # branch-mode: E[pi] = 4N (no mutation rate)
+
+    n_reps = 30
+    pi_at_xsel = []
+    for r in range(n_reps):
+        ts = _sim_factory(seed=r)
+        # Narrow window at x_sel (1kb each side)
+        center = ts.diversity(
+            windows=[0.0, 49_500.0, 50_500.0, 100_000.0], mode="branch")
+        c_pi = center[1]   # middle bin = [49_500, 50_500) near x_sel
+        pi_at_xsel.append(c_pi)
+    mean_x = statistics.mean(pi_at_xsel)
+    print(f"PS3 mean pi at x_sel: {mean_x:.1f}, neutral expectation: {neutral_pi}")
+    ratio = mean_x / neutral_pi
+    assert ratio < 0.10, (
+        f"pi at x_sel should be <10% of neutral (4N={neutral_pi}); "
+        f"got pi={mean_x:.1f}, ratio={ratio*100:.1f}%")

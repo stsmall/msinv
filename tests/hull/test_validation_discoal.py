@@ -44,17 +44,21 @@ def test_discoal_validation_d2_hard_sweep():
 
 
 @pytest.mark.skip(reason=(
-    "D3 (soft sweep, f0=0.05) — close to passing but just outside the "
-    "rigorous 3·SE bound. Current state (post merged-tag-inheritance "
-    "fix in events.rs): msinv pi=14100 ± 449 vs discoal pi=16630 ± 549 "
-    "(|Δ|=2535, 3·SE=2128). msinv is at 85% of discoal vs 49% pre-fix. "
-    "Tag swap is gated to SV phase only (firing during selection still "
-    "overshoots D2 even with the merged-tag fix; the divergence in "
-    "selection-phase mechanics isn't fully identified). Remaining D3 "
-    "gap is ~15% — likely model bias from the SV-only gate plus "
-    "residual mechanics differences. Investigation deferred; for "
-    "biology-grade use the soft-sweep amplitude (TR2: ratio 31% of 4N) "
-    "is now in the right ballpark."))
+    "D3 (soft sweep, f0=0.05) — current state after fresh-take "
+    "investigation (2026-05-01): msinv pi=11480 vs discoal pi=16600 "
+    "(|Δ|≈5125, 3·SE≈2104). The apply_sweep fix on main resolved "
+    "the D2 hard-sweep overshoot by removing spurious untagged-to-A "
+    "promotions during the sweep. The remaining D3 gap appears tied "
+    "to non-overlapping pair coalescences: discoal's "
+    "coalesceAtTimePopnSweep (discoalFunctions.c:2914-2950) merges "
+    "any two B-tagged nodes into a parent with disjoint material, "
+    "reducing n_active by 1 regardless of overlap; msinv's pair-bucket "
+    "consumer only picks overlapping pairs, so non-overlap 'phantom "
+    "merges' don't fire. A bucket-walk rate emit (respecting consumer "
+    "semantics) passes D3 but fails D2; lineage-count rate (current) "
+    "passes D2 but undershoots D3. Resolving both requires implementing "
+    "discoal-style non-overlap merges in msinv's coalesce path — "
+    "deferred as a substantial refactor."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

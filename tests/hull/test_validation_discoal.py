@@ -44,19 +44,17 @@ def test_discoal_validation_d2_hard_sweep():
 
 
 @pytest.mark.skip(reason=(
-    "D3 (soft sweep, f0=0.05) is closer to discoal after the full sweep-"
-    "rewrite stack but still fails 3·SE. Current state: msinv pi=12750 ± "
-    "404 vs discoal pi=16630 ± 549 (|Δ|=3878, 3·SE=2045). Big improvement "
-    "from pre-fix pi=8176 (initial), but the residual ~23%-of-discoal gap "
-    "isn't closed. The tag-aware-recombination swap is currently gated to "
-    "fire only during the standing-variation phase (not during the "
-    "selection phase) because firing during selection broke D2 hard sweep "
-    "(msinv pi 3918 → 5826, overshooting discoal's 4616). Closing the D3 "
-    "gap likely requires restructuring how msinv's per-segment partition "
-    "interacts with the swap during the selection phase, or finding the "
-    "specific divergence between msinv's apply_recombination tag-flow and "
-    "discoal's recombineAtTimePopnSweep that's causing the D2 overshoot. "
-    "Investigation deferred."))
+    "D3 (soft sweep, f0=0.05) — close to passing but just outside the "
+    "rigorous 3·SE bound. Current state (post merged-tag-inheritance "
+    "fix in events.rs): msinv pi=14100 ± 449 vs discoal pi=16630 ± 549 "
+    "(|Δ|=2535, 3·SE=2128). msinv is at 85% of discoal vs 49% pre-fix. "
+    "Tag swap is gated to SV phase only (firing during selection still "
+    "overshoots D2 even with the merged-tag fix; the divergence in "
+    "selection-phase mechanics isn't fully identified). Remaining D3 "
+    "gap is ~15% — likely model bias from the SV-only gate plus "
+    "residual mechanics differences. Investigation deferred; for "
+    "biology-grade use the soft-sweep amplitude (TR2: ratio 31% of 4N) "
+    "is now in the right ballpark."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

@@ -913,8 +913,8 @@ impl HullSimulator {
             let in_hard_sweep = finalized_sweeps.iter().any(|s| {
                 s.covers(t) && s.t_de_novo() <= s.joint.t_origin + 1e-9
             });
-            if in_hard_sweep && dt > 1.0 {
-                t += 1.0;
+            if in_hard_sweep && dt > 0.7 {
+                t += 0.7;
                 engine_dirty = true;
                 cache_dirty = true;
                 continue;

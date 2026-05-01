@@ -2723,17 +2723,27 @@ fn apply_sweep_finalize(
         }
     }
 
-    // Edge case (always runs): any A-tagged lineages still in `active`
-    // get collapsed among themselves. For hard sweeps without an SV
-    // phase, this is the original endpoint behavior. With an SV
-    // phase, this catches stragglers when no eligible non-A target
-    // existed in the lineage's pop.
-    let still_a: Vec<LinUid> = active.iter()
-        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
-        .map(|lin| lin.uid)
-        .collect();
-    if still_a.len() >= 2 {
-        coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+    // Hard-sweep endpoint collapse: when there is no SV phase
+    // (`f0 = 1/(2N)`, so `t_de_novo == t_origin`), all surviving
+    // A-tagged lineages must trace to the single de-novo founder at
+    // `t_origin`. Force-coalesce them here.
+    //
+    // For SV-phase sweeps (soft / partial), do NOT force-coalesce.
+    // discoal's `sweepPhaseEventsConditionalTrajectory` exits when
+    // `currentFreq <= 1/(2N)` and lets the surviving sweep-pop
+    // lineages flow into the outer neutral coalescent on the regular
+    // `1/(2N)` clock — which produces the deeper T_2 distributions
+    // that match the soft-sweep π expectation. Force-coalescing them
+    // at `t_de_novo` collapses T_2 → 0 and under-estimates π
+    // (the D3 failure mode).
+    if !has_sv_phase {
+        let still_a: Vec<LinUid> = active.iter()
+            .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+            .map(|lin| lin.uid)
+            .collect();
+        if still_a.len() >= 2 {
+            coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+        }
     }
     // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial

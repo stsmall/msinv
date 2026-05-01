@@ -44,21 +44,19 @@ def test_discoal_validation_d2_hard_sweep():
 
 
 @pytest.mark.skip(reason=(
-    "D3 (soft sweep, f0=0.05) — current state after fresh-take "
-    "investigation (2026-05-01): msinv pi=11480 vs discoal pi=16600 "
-    "(|Δ|≈5125, 3·SE≈2104). The apply_sweep fix on main resolved "
-    "the D2 hard-sweep overshoot by removing spurious untagged-to-A "
-    "promotions during the sweep. The remaining D3 gap appears tied "
-    "to non-overlapping pair coalescences: discoal's "
-    "coalesceAtTimePopnSweep (discoalFunctions.c:2914-2950) merges "
-    "any two B-tagged nodes into a parent with disjoint material, "
-    "reducing n_active by 1 regardless of overlap; msinv's pair-bucket "
-    "consumer only picks overlapping pairs, so non-overlap 'phantom "
-    "merges' don't fire. A bucket-walk rate emit (respecting consumer "
-    "semantics) passes D3 but fails D2; lineage-count rate (current) "
-    "passes D2 but undershoots D3. Resolving both requires implementing "
-    "discoal-style non-overlap merges in msinv's coalesce path — "
-    "deferred as a substantial refactor."))
+    "D3 (soft sweep, f0=0.05) — after gating still_a force-coalesce "
+    "on !has_sv_phase (2026-05-01): msinv pi=12180 vs discoal "
+    "pi=16600 (|Δ|=4420, 3·SE=2158); n_trees msinv=39.3 vs "
+    "discoal=50.1 (|Δ|=10.7, 3·SE=5.9). Removing the apply_sweep_finalize "
+    "endpoint force-coalesce (and a separate test of the SV-phase "
+    "de novo merge) accounts for at most ~9% of the gap; the remaining "
+    "~24% is therefore inside the sweep window itself, not at "
+    "t_de_novo. Both metrics low and recombination-derived n_trees "
+    "low together indicate over-coalescence during the sweep window. "
+    "Recommended next step: side-by-side event-stream trace at "
+    "seed=0, n=4 samples (per resume-memory tooling note), or a "
+    "rate-scaling audit on emit_coal_events_from_cache vs discoal "
+    "pCoalB ∝ (n_B(n_B-1)/2)/x scaling."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

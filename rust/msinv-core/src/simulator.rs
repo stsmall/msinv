@@ -586,7 +586,7 @@ impl HullSimulator {
                     }
                     apply_sweep_recomb_tag_swap(
                         active, &swap_indices, &finalized_sweeps,
-                        t, arena, rng, &mut a_tag);
+                        t, arena, rng, &mut a_tag, x);
                 }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -1276,7 +1276,7 @@ impl HullSimulator {
                         }
                         apply_sweep_recomb_tag_swap(
                             active, &swap_indices, &finalized_sweeps,
-                            t, arena, rng, &mut a_tag);
+                            t, arena, rng, &mut a_tag, x);
                     }
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -2902,9 +2902,10 @@ fn apply_sweep_recomb_tag_swap(
     new_indices: &[usize],
     sweeps: &[Sweep],
     t: f64,
-    arena: &SegmentArena,
+    _arena: &SegmentArena,
     rng: &mut Xoshiro256PlusPlus,
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    breakpoint_x: f64,
 ) {
     let sweep = match sweeps.iter().find(|s| s.covers(t)) {
         Some(s) => s,
@@ -2915,27 +2916,41 @@ fn apply_sweep_recomb_tag_swap(
         None => return,
     };
     let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
-    for &idx in new_indices {
+    // Position-based carrier rule (discoal `recombineAtTimePopnSweep`
+    // at `discoalFunctions.c:2735-2746`): the recomb breakpoint
+    // `breakpoint_x` partitions the chromosome at `x`. The child
+    // whose RANGE includes `x_sel` keeps its tag (the sweep mutation
+    // rides with that side); the OTHER child rejection-samples.
+    //
+    // - If `x_sel < breakpoint_x`: x_sel is on the LEFT side of the
+    //   recomb → left child (`new_indices[0]` per simulator.rs main
+    //   loop) carries; right swaps.
+    // - If `x_sel >= breakpoint_x`: x_sel on the RIGHT side → right
+    //   carries; left swaps.
+    //
+    // Critically this applies even when neither child has actual
+    // ancestral material at `x_sel` (e.g. fragmented lineages
+    // produced by pre-sweep recombs whose segments don't span x_sel).
+    // The previous "skip if segments overlap x_sel" rule swapped
+    // BOTH children for off-x_sel lineages, over-flipping → more
+    // untagged stragglers in post-sweep neutral → D2 π +16% at n=10.
+    let left_carries = sweep.x_sel < breakpoint_x;
+    for (i, &idx) in new_indices.iter().enumerate() {
         if idx >= active.len() { continue; }
         if active[idx].population != sweep.origin_pop { continue; }
         if active[idx].head == SEG_NIL { continue; }
-        // Children that contain x_sel keep their tag (the sweep
-        // mutation rides with them).
-        if lineage_overlaps_position(active[idx].head, sweep.x_sel, arena) {
+        // Caller passes [left, right] in that order.
+        let is_left = i == 0;
+        let carries = (is_left && left_carries) || (!is_left && !left_carries);
+        if carries {
             continue;
         }
         let uid = active[idx].uid;
         let was_a = a_tag.get(&uid).copied().unwrap_or(false);
-        // discoal: stays in current group with prob popnFreq, where
-        // popnFreq is x for the A-group and (1 - x) for the a-group.
         let stay_prob = if was_a { p_a } else { 1.0 - p_a };
         if rng.random::<f64>() < stay_prob {
-            // Keep current tag. Ensure entry exists (untagged-but-
-            // considered-a is represented as a_tag = false) so future
-            // swaps can flip it correctly.
             a_tag.entry(uid).or_insert(was_a);
         } else {
-            // Switch.
             a_tag.insert(uid, !was_a);
         }
     }
@@ -3024,19 +3039,36 @@ fn coalesce_uid_group(
     sweep_cursor: &mut (f64, u64),
 ) {
     if uids.len() < 2 { return; }
+    // Cascade-merge with retry: a uid that's disjoint from the
+    // current `merged_uid` may overlap with later merges that absorb
+    // a uid covering the gap. Without retry, those uids leak past
+    // `still_a` and survive into the post-sweep neutral coalescent
+    // at deep times. Iterate until no merge happens in a full pass.
+    let mut pending: Vec<LinUid> = uids[1..].to_vec();
     let mut merged_uid = uids[0];
-    for &other_uid in uids[1..].iter() {
-        let t_merge = next_sweep_merge_t(sweep_cursor, t);
-        let mi = active.iter().position(|l| l.uid == merged_uid);
-        let oi = active.iter().position(|l| l.uid == other_uid);
-        if let (Some(mi), Some(oi)) = (mi, oi) {
-            // Skip disjoint pairs — forcing a merge would manufacture
-            // ancestry correlation (orphan node + fictitious lineage).
-            if !segments_overlap(active[mi].head, active[oi].head, arena) {
-                continue;
+    loop {
+        let mut progress = false;
+        let mut next_pending: Vec<LinUid> = Vec::new();
+        for &other_uid in pending.iter() {
+            let t_merge = next_sweep_merge_t(sweep_cursor, t);
+            let mi = active.iter().position(|l| l.uid == merged_uid);
+            let oi = active.iter().position(|l| l.uid == other_uid);
+            if let (Some(mi), Some(oi)) = (mi, oi) {
+                // Skip disjoint pairs — forcing a merge would
+                // manufacture ancestry correlation (orphan node +
+                // fictitious lineage).
+                if !segments_overlap(active[mi].head, active[oi].head, arena) {
+                    next_pending.push(other_uid);
+                    continue;
+                }
+                apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid, None);
+                merged_uid = active.last().unwrap().uid;
+                progress = true;
             }
-            apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid, None);
-            merged_uid = active.last().unwrap().uid;
+        }
+        pending = next_pending;
+        if !progress || pending.is_empty() {
+            break;
         }
     }
 }

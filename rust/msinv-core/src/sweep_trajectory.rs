@@ -72,6 +72,10 @@ pub struct JointSample {
 #[derive(Clone, Debug)]
 pub struct JointSweepTrajectory {
     pub t_origin: f64,
+    /// Backward time at which the standing-variation phase ends (the
+    /// de novo origin of the A allele). Equal to `t_origin` when there
+    /// is no SV phase (e.g. `f0 == 1/(2N)`); strictly greater otherwise.
+    pub t_de_novo: f64,
     pub tau: f64,
     pub n_pops: u32,
     pub samples: Vec<JointSample>,
@@ -177,8 +181,67 @@ pub fn build_joint_trajectory(
     if samples.last().map(|s| s.t).unwrap_or(f64::INFINITY) > tau {
         samples.push(JointSample { t: tau, freq: state.clone() });
     }
+
+    // Standing-variation phase: backward-time stochastic neutral WF
+    // drift on the origin pop's A subgroup, starting at f0 and running
+    // until A frequency hits the extinction threshold 1/(2N). Other
+    // pops are held at their t_origin boundary value (multi-pop SV is
+    // out of scope for v1).
+    //
+    // The trajectory data structure is oldest-first (samples[0].t is
+    // the largest). We build the SV samples with t increasing past
+    // t_origin (i.e., each step is further into the past), then
+    // reverse + prepend so the combined `samples` stays oldest-first.
+    let n_at_origin = pop_size_at(spec.t_origin, origin_pop);
+    let extinction = 1.0 / (2.0 * n_at_origin);
+    let mut t_de_novo = spec.t_origin;
+    if spec.f0 > extinction + 1e-12 {
+        // Start from the t_origin freq (samples[0] is the t_origin sample).
+        let mut sv_state: Vec<[f64; 4]> = samples[0].freq.clone();
+        let mut t_sv = spec.t_origin + 1.0;
+        let mut sv_samples: Vec<JointSample> = Vec::new();
+        // Hard cap so a runaway drift can't loop forever on a
+        // pathological seed. ~5N steps is well past the ~4N expected
+        // extinction time for typical f0; pathological reps that
+        // wander up cap out here at ~50k steps for N=10k.
+        let max_steps = (5.0 * n_at_origin) as usize + 1024;
+        let mut steps = 0usize;
+        loop {
+            let n = pop_size_at(t_sv, origin_pop);
+            wf_resample(&mut sv_state[origin_pop as usize], 2.0 * n, &mut rng);
+            renormalize_inplace(&mut sv_state[origin_pop as usize]);
+
+            let p_a_origin = sv_state[origin_pop as usize][CLASS_S_A_BENEF]
+                + sv_state[origin_pop as usize][CLASS_I_A_BENEF];
+
+            if p_a_origin <= extinction {
+                t_de_novo = t_sv;
+                break;
+            }
+
+            sv_samples.push(JointSample { t: t_sv, freq: sv_state.clone() });
+
+            steps += 1;
+            if steps >= max_steps {
+                t_de_novo = t_sv;
+                break;
+            }
+            t_sv += 1.0;
+        }
+        if !sv_samples.is_empty() {
+            // Prepend in oldest-first order: reverse so the largest t
+            // (deepest in the past) is at the front, then chain with
+            // the existing samples.
+            sv_samples.reverse();
+            let mut combined = sv_samples;
+            combined.extend(samples);
+            samples = combined;
+        }
+    }
+
     JointSweepTrajectory {
         t_origin: spec.t_origin,
+        t_de_novo,
         tau,
         n_pops,
         samples,
@@ -454,8 +517,13 @@ mod tests {
             /* migration_at = */ &|_t: f64, _i: u32, _j: u32| 0.0,
             /* tau = */ 0.0,
         );
-        // Final sample should be at tau=0; first should be at t_origin
-        assert_eq!(traj.samples.first().unwrap().t, spec.t_origin);
+        // Selection-phase entry should be at t_origin; final at tau=0.
+        // (For f0 > 1/(2N) the first sample may be deeper in the SV
+        // phase, so search for the t_origin sample by value.)
+        let sel_entry = traj.samples.iter()
+            .find(|s| (s.t - spec.t_origin).abs() < 1e-9)
+            .expect("expected a sample at t_origin");
+        assert_eq!(sel_entry.t, spec.t_origin);
         assert_eq!(traj.samples.last().unwrap().t, 0.0);
         let final_freq = traj.samples.last().unwrap().freq[0];
         let total_a = final_freq[CLASS_S_A_BENEF] + final_freq[CLASS_I_A_BENEF];
@@ -489,8 +557,15 @@ mod tests {
             &|_t, _i, _j| 0.0,
             0.0,
         );
-        // Pick mid-sweep sample, compute closed form forward time = (t_origin - t)
-        let mid = &traj.samples[traj.samples.len() / 2];
+        // Pick a mid-selection-phase sample by t-value (the selection
+        // phase spans [tau, t_origin]; SV-phase samples sit deeper).
+        let t_mid_sel = (spec.t_origin + 0.0) / 2.0;
+        let mid = traj.samples.iter()
+            .min_by(|a, b| {
+                (a.t - t_mid_sel).abs()
+                    .partial_cmp(&(b.t - t_mid_sel).abs()).unwrap()
+            })
+            .expect("trajectory must have samples");
         let forward_t = spec.t_origin - mid.t;
         let f0 = spec.f0;
         let growth = (1.0 + spec.s).powf(forward_t);
@@ -520,29 +595,30 @@ mod tests {
             1, 0, Karyotype::S, &[0.0],
             &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
         );
+        // Sample at three times within the selection phase [tau,
+        // t_origin]; align stochastic reps to the same wall-clock
+        // times via p_allele_overall queries (the trajectories may
+        // have different SV-phase lengths so direct index alignment
+        // doesn't work).
+        let t_origin = mk_spec(0, SweepMode::Deterministic).t_origin;
         let n_reps = 100;
-        let mut means = vec![0.0_f64; det.samples.len()];
-        for r in 0..n_reps {
-            let st = build_joint_trajectory(
-                &mk_spec(r as u64 + 1, SweepMode::Stochastic),
-                1, 0, Karyotype::S, &[0.0],
-                &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
-            );
-            for (i, s) in st.samples.iter().enumerate().take(means.len()) {
-                means[i] += s.freq[0][CLASS_S_A_BENEF];
-            }
-        }
-        for m in means.iter_mut() {
-            *m /= n_reps as f64;
-        }
         for frac in [0.25, 0.5, 0.75] {
-            let i = (means.len() as f64 * frac) as usize;
-            let observed = means[i];
-            let expected = det.samples[i].freq[0][CLASS_S_A_BENEF];
+            let t_query = t_origin * (1.0 - frac);
+            let det_p = det.p_allele_given_kary(t_query, 0, Karyotype::S);
+            let mut stoch_sum = 0.0;
+            for r in 0..n_reps {
+                let st = build_joint_trajectory(
+                    &mk_spec(r as u64 + 1, SweepMode::Stochastic),
+                    1, 0, Karyotype::S, &[0.0],
+                    &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+                );
+                stoch_sum += st.p_allele_given_kary(t_query, 0, Karyotype::S);
+            }
+            let stoch_mean = stoch_sum / n_reps as f64;
             assert!(
-                (observed - expected).abs() < 0.05,
+                (stoch_mean - det_p).abs() < 0.05,
                 "at frac {}: stoch mean={}, det={}",
-                frac, observed, expected
+                frac, stoch_mean, det_p
             );
         }
     }

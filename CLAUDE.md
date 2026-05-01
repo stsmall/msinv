@@ -6,7 +6,7 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 2 sweep-trajectory as of 2026-04-30).
+- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 sweep-trajectory as of 2026-04-30).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
   (192 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
@@ -42,7 +42,10 @@ cd rust && cargo build --release -p msinv-py
   `rust/msinv-core/tests/sweep_kim_stephan_anchors.rs` (Tier-1 closed-form anchors),
   `rust/msinv-core/tests/sweep_trajectory_built_from_demography.rs` (live demography wiring),
   `rust/msinv-core/tests/sweep_per_segment_hitchhiking.rs` (PS1 Rust-side smoke),
-  `rust/msinv-core/tests/sweep_progressive_coalescence.rs` (PG1 Rust-side smoke).
+  `rust/msinv-core/tests/sweep_progressive_coalescence.rs` (PG1 Rust-side smoke),
+  `rust/msinv-core/tests/sweep_standing_variation.rs` (SV1+SV2 trajectory + simulator
+  smoke for the standing-variation phase — spec
+  `docs/superpowers/specs/2026-04-30-sweep-standing-variation-phase-design.md`).
 
 ## Pytest progress visibility
 - `pytest ... 2>&1 | tail -N` BUFFERS — output appears only at exit.  For long runs:
@@ -150,6 +153,16 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   by `allele` to honor the subgroup; outside any active sweep window the fast
   "any pair" sampler is used. Endpoint at `t_origin` retained as A-only founder
   convergence (idempotent for hard sweeps; required for partial sweeps).
+  Standing-variation phase (post-SV extension, 2026-04-30): when `f0 > 1/(2N)`,
+  the joint trajectory is appended with a backward-time stochastic neutral WF
+  drift on the origin pop's A subgroup, running until A frequency hits 1/(2N).
+  The drift end becomes `Sweep::t_de_novo()` and replaces `joint.t_origin` as
+  the boundary scheduler's sweep-end time. Per-allele rates from the progressive
+  extension stay engaged through the SV phase. At `t_de_novo`, surviving
+  A-tagged lineages merge with random non-A targets in-pop (the de novo
+  origin); for hard sweeps with `f0=1/(2N)` no SV phase fires and the prior
+  single-founder collapse runs unchanged. Drift is hard-capped at `5·N` steps
+  to bound pathological seeds.
 - A PostToolUse hook runs `cargo check` after each Rust Edit/Write — every individual
   edit must leave the workspace compiling. For API-rewrite tasks, bridge through a
   transitional struct that carries both old and new fields, migrate callers, then

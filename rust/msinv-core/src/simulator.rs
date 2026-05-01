@@ -2827,15 +2827,14 @@ fn apply_sweep_recomb_tag_swap(
         None => return,
     };
     // Pragmatic gate: only fire the swap when an SV phase is active
-    // (f0 > 1/(2N)). For hard sweeps (f0 = 1/(2N)), the existing
-    // per-segment partition at apply_sweep_finalize already produces
-    // discoal-matching D2/D4 numbers; firing the swap during the
-    // selection phase as well doubles the shedding and overshoots
-    // discoal. This is a documented divergence from discoal which
-    // applies the swap during selection too — the per-segment partition
-    // approximates the integrated effect for hard sweeps adequately.
-    // For soft sweeps (f0 > 1/(2N)) the SV phase is long enough that
-    // the swap during it dominates and is needed for D3 amplitude.
+    // (f0 > 1/(2N)). For hard sweeps (f0 = 1/(2N)) firing the swap
+    // during the selection phase overshoots discoal even with the
+    // merged-tag inheritance fix in events.rs (msinv pi 3918 → 5826
+    // vs discoal target 4616). The mechanism mismatch in this regime
+    // is not yet identified — apply_recombination's split semantics,
+    // recomb-event firing rate, and trajectory-time query all match
+    // discoal at the surface level. Documented as a known divergence;
+    // soft sweeps still get the swap during the SV phase as designed.
     if sweep.t_de_novo() <= sweep.joint.t_origin + 1e-9 {
         return;
     }

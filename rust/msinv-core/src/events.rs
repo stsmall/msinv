@@ -56,11 +56,13 @@ pub fn apply_coalescence_partial(
     // Capture parent UIDs and flags before any mutation.
     let parent_a_uid = active[idx_a].uid;
     let parent_b_uid = active[idx_b].uid;
-    let (fa, fb) = if let Some(ref map) = a_tag {
+    let (fa, fb, pa_present, pb_present) = if let Some(ref map) = a_tag {
         (map.get(&parent_a_uid).copied().unwrap_or(false),
-         map.get(&parent_b_uid).copied().unwrap_or(false))
+         map.get(&parent_b_uid).copied().unwrap_or(false),
+         map.contains_key(&parent_a_uid),
+         map.contains_key(&parent_b_uid))
     } else {
-        (false, false)
+        (false, false, false, false)
     };
 
     let mut sa = active[idx_a].head;
@@ -204,25 +206,38 @@ pub fn apply_coalescence_partial(
     }
 
     // Add output lineages, propagating A-flag to each new UID.
+    // Merged child: if either parent had a tag, the merged child
+    // inherits one too with value `fa || fb` (A dominates). This
+    // matches discoal's coalesceAtTimePopnSweep:
+    //   AA event: both A → merged A.
+    //   aa event: both present with false → merged a (NOT untagged —
+    //     untagged would let the merged lineage drop out of
+    //     n_a_lower in PG-B1's bucketization and break the rate
+    //     model).
+    //   Cross-allele (rate 0 in window; defensive): merged A.
+    // Remnants: each remnant inherits its parent's flag verbatim,
+    // including the present-or-not bit.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fa || fb { map.insert(uid, true); }
+            if pa_present || pb_present {
+                map.insert(uid, fa || fb);
+            }
         }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fa { map.insert(uid, true); }
+            if pa_present { map.insert(uid, fa); }
         }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fb { map.insert(uid, true); }
+            if pb_present { map.insert(uid, fb); }
         }
     }
 
@@ -257,11 +272,13 @@ pub fn apply_coalescence_compound(
     // Capture parent UIDs and flags before any mutation.
     let parent_a_uid = active[idx_a].uid;
     let parent_b_uid = active[idx_b].uid;
-    let (fa, fb) = if let Some(ref map) = a_tag {
+    let (fa, fb, pa_present, pb_present) = if let Some(ref map) = a_tag {
         (map.get(&parent_a_uid).copied().unwrap_or(false),
-         map.get(&parent_b_uid).copied().unwrap_or(false))
+         map.get(&parent_b_uid).copied().unwrap_or(false),
+         map.contains_key(&parent_a_uid),
+         map.contains_key(&parent_b_uid))
     } else {
-        (false, false)
+        (false, false, false, false)
     };
 
     let mut sa = active[idx_a].head;
@@ -368,25 +385,38 @@ pub fn apply_coalescence_compound(
     }
 
     // Add output lineages, propagating A-flag to each new UID.
+    // Merged child: if either parent had a tag, the merged child
+    // inherits one too with value `fa || fb` (A dominates). This
+    // matches discoal's coalesceAtTimePopnSweep:
+    //   AA event: both A → merged A.
+    //   aa event: both present with false → merged a (NOT untagged —
+    //     untagged would let the merged lineage drop out of
+    //     n_a_lower in PG-B1's bucketization and break the rate
+    //     model).
+    //   Cross-allele (rate 0 in window; defensive): merged A.
+    // Remnants: each remnant inherits its parent's flag verbatim,
+    // including the present-or-not bit.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fa || fb { map.insert(uid, true); }
+            if pa_present || pb_present {
+                map.insert(uid, fa || fb);
+            }
         }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fa { map.insert(uid, true); }
+            if pa_present { map.insert(uid, fa); }
         }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if fb { map.insert(uid, true); }
+            if pb_present { map.insert(uid, fb); }
         }
     }
 

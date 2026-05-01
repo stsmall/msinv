@@ -96,15 +96,16 @@ impl Sweep {
 
     /// Probability that a lineage at position `x` is linked to the
     /// sweep MRCA, given recombination rate `r`. Approximation:
-    /// `exp(-r·d·T_eff)` where `T_eff = t_origin - tau` (full sweep
-    /// duration). The proper integral over the trajectory shape is
-    /// a TODO refinement.
+    /// `exp(-r·d·T_eff)` where `T_eff = t_de_novo - tau` covers both
+    /// the selection phase and (when present) the standing-variation
+    /// phase. The proper integral over the trajectory shape is a TODO
+    /// refinement.
     pub fn hitchhiking_prob(&self, x: f64, recomb_rate: f64) -> f64 {
         if self.trajectory.is_none() {
             return 1.0;
         }
         let d = (x - self.x_sel).abs();
-        let t_eff = self.joint.t_origin - self.tau;
+        let t_eff = self.t_de_novo() - self.tau;
         (-recomb_rate * d * t_eff).exp()
     }
 
@@ -126,7 +127,7 @@ impl Sweep {
         } else {
             seg_left - self.x_sel
         };
-        let t_eff = self.joint.t_origin - self.tau;
+        let t_eff = self.t_de_novo() - self.tau;
         (-recomb_rate * d_min * t_eff).exp()
     }
 

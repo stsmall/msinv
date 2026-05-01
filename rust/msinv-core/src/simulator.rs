@@ -2548,7 +2548,7 @@ fn apply_sweep(
             if d_nearest.is_infinite() {
                 continue;  // empty lineage
             }
-            let t_eff = sweep.joint.t_origin - sweep.tau;
+            let t_eff = sweep.t_de_novo() - sweep.tau;
             let p_link = (-recomb_rate * d_nearest * t_eff).exp();
             if rng.random::<f64>() >= p_link {
                 continue;  // not eligible

@@ -57,16 +57,6 @@ def test_discoal_validation_d4_partial_sweep():
     _run("d4")
 
 
-@pytest.mark.skip(reason=(
-    "D5 surfaces a likely units mismatch on the recurrent adaptive "
-    "mutation rate. discoal -uA appears to be per-2N-per-gen-scaled "
-    "(discoal D5 pi tracks D2 hard-sweep pi closely at uA=1e-3) while "
-    "msinv recurrent_mutation_rate=1e-3 produces visible softening — "
-    "more A founders, broader A-subpop diversity, ~56% higher pi than "
-    "discoal. Plan flagged this as the most likely failure mode. Resolve "
-    "by determining the discoal -uA convention from source and rescaling "
-    "the msinv side; or by switching both engines to a normalized rate "
-    "(e.g. per-2N-per-gen)."))
 def test_discoal_validation_d5_focal_recurrent():
     """Rust msinv vs discoal — focal-site recurrent sweep, uA=1e-3."""
     _run("d5")

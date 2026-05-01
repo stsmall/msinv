@@ -11,7 +11,9 @@ from typing import Literal
 import msinv._msinv_core as _core
 
 
-SweepModeStr = Literal["Stochastic", "Deterministic", "Neutral"]
+SweepModeStr = Literal[
+    "Stochastic", "StochasticConditioned", "Deterministic", "Neutral",
+]
 
 
 @dataclass

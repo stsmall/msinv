@@ -98,10 +98,13 @@ impl PySweep {
         };
         let mode_enum = match mode {
             "Stochastic" | "stochastic" => SweepMode::Stochastic,
+            "StochasticConditioned" | "stochastic_conditioned" =>
+                SweepMode::StochasticConditioned,
             "Deterministic" | "deterministic" => SweepMode::Deterministic,
             "Neutral" | "neutral" => SweepMode::Neutral,
             other => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("mode must be Stochastic, Deterministic, or Neutral; got {:?}", other))),
+                format!("mode must be Stochastic, StochasticConditioned, \
+                         Deterministic, or Neutral; got {:?}", other))),
         };
         let joint = JointSweepSpec {
             mode: mode_enum, s, t_origin, f0,

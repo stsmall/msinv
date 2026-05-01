@@ -200,9 +200,11 @@ pub fn build_joint_trajectory(
         let mut sv_state: Vec<[f64; 4]> = samples[0].freq.clone();
         let mut t_sv = spec.t_origin + 1.0;
         let mut sv_samples: Vec<JointSample> = Vec::new();
-        // Hard cap so a runaway drift can't loop forever in pathological
-        // demographies.
-        let max_steps = (400.0 * n_at_origin) as usize + 1024;
+        // Hard cap so a runaway drift can't loop forever on a
+        // pathological seed. ~5N steps is well past the ~4N expected
+        // extinction time for typical f0; pathological reps that
+        // wander up cap out here at ~50k steps for N=10k.
+        let max_steps = (5.0 * n_at_origin) as usize + 1024;
         let mut steps = 0usize;
         loop {
             let n = pop_size_at(t_sv, origin_pop);

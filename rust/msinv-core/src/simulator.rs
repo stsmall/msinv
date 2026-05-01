@@ -2655,10 +2655,72 @@ fn apply_sweep_finalize(
         linked_uids.push(uid);
     }
 
-    if linked_uids.len() < 2 { return; }
-    // Force-coalesce all linked-segment groups at t_origin.
-    coalesce_uid_group(active, &linked_uids, t, arena, tables, next_uid, sweep_cursor);
-    // Keep `a_tag` populated past `t_origin`. The map doubles as the
+    // De novo merge gate: the per-lineage merge only fires when the
+    // trajectory actually has a standing-variation phase (t_de_novo
+    // strictly past t_origin). For hard sweeps with f0=1/(2N), there
+    // is no SV phase — we collapse A-tagged into a single founder at
+    // t_origin as before, preserving the per-segment hitchhiking
+    // signature (PS2/PS3) and the prior single-MRCA semantics.
+    let has_sv_phase = sweep.t_de_novo() > sweep.joint.t_origin + 1e-9;
+
+    if has_sv_phase {
+        // At t_de_novo (the trajectory's extinction time), the A
+        // allele arose by mutation on a single chromosome that is
+        // otherwise indistinguishable from the rest of the
+        // population. Each surviving A-tagged lineage merges with a
+        // random non-A target in its own population — that's the de
+        // novo origin.
+        //
+        // NOTE: candidates exclude not just A-tagged but anything
+        // currently tagged in a_tag (i.e. just-escaped lineages
+        // tagged false by the per-segment partition). The escaped
+        // lineages came from the same A-tagged founders and re-
+        // merging with them would undo the per-segment hitchhiking.
+        for &a_uid in linked_uids.iter() {
+            let a_idx = match active.iter().position(|l| l.uid == a_uid) {
+                Some(i) => i,
+                None => continue,
+            };
+            let a_pop = active[a_idx].population;
+            let candidates: Vec<usize> = active.iter().enumerate()
+                .filter(|(j, lin)| {
+                    *j != a_idx
+                        && lin.population == a_pop
+                        && !a_tag.contains_key(&lin.uid)
+                })
+                .map(|(j, _)| j)
+                .collect();
+            if candidates.is_empty() { continue; }
+            let pick = rng.random_range(0..candidates.len());
+            let target_idx = candidates[pick];
+            if !segments_overlap(active[a_idx].head, active[target_idx].head, arena) {
+                continue;
+            }
+            let (lo, hi) = if a_idx < target_idx {
+                (a_idx, target_idx)
+            } else {
+                (target_idx, a_idx)
+            };
+            let t_merge = next_sweep_merge_t(sweep_cursor, t);
+            apply_coalescence_partial(
+                active, lo, hi, t_merge, arena, tables, next_uid,
+                None, Some(a_tag));
+        }
+    }
+
+    // Edge case (always runs): any A-tagged lineages still in `active`
+    // get collapsed among themselves. For hard sweeps without an SV
+    // phase, this is the original endpoint behavior. With an SV
+    // phase, this catches stragglers when no eligible non-A target
+    // existed in the lineage's pop.
+    let still_a: Vec<LinUid> = active.iter()
+        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+        .map(|lin| lin.uid)
+        .collect();
+    if still_a.len() >= 2 {
+        coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+    }
+    // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial
     // sweep `sweep_a_count`). The progressive-coal logic is gated on
     // an active sweep covering `t` at emit time (PG-B1's

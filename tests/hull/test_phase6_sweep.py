@@ -34,10 +34,16 @@ def test_t1_det_logistic_per_gen_within_1e6():
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[10_000.0])
     samples = rust_sw.trajectory_samples()
-    # Spot-check at 25%, 50%, 75% along the trajectory
+    # Restrict to the selection phase [tau, t_origin]; the SV phase
+    # (samples with t > t_origin, populated when f0 > 1/(2N)) holds
+    # post-window stochastic neutral drift values that don't match
+    # the deterministic-logistic closed form.
+    sel_samples = [(t, f) for (t, f) in samples
+                   if sw.tau <= t <= sw.t_origin + 1e-9]
+    # Spot-check at 25%, 50%, 75% along the selection phase
     for frac in [0.25, 0.5, 0.75]:
-        i = int(len(samples) * frac)
-        sample_t, freq = samples[i]
+        i = int(len(sel_samples) * frac)
+        sample_t, freq = sel_samples[i]
         forward_t = sw.t_origin - sample_t
         observed = freq[0][1]   # (S, A) class
         expected = _logistic_pt_discrete(forward_t, sw.s, sw.f0)

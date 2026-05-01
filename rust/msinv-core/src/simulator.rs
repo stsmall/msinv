@@ -578,6 +578,16 @@ impl HullSimulator {
                     active, chosen_idx, x, arena, next_uid,
                     Some(&mut a_tag));
                 let len_after = active.len();
+                {
+                    let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
+                    swap_indices.push(chosen_idx);
+                    if len_after > len_before {
+                        swap_indices.push(len_after - 1);
+                    }
+                    apply_sweep_recomb_tag_swap(
+                        active, &swap_indices, &finalized_sweeps,
+                        t, arena, rng, &mut a_tag);
+                }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
                     &barrier_active, demo, t, self.sequence_length);
@@ -1178,6 +1188,20 @@ impl HullSimulator {
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid, Some(&mut a_tag));
                     let len_after_split = active.len();
+                    // Discoal-style tag rejection-sampling for in-window
+                    // recombs. `chosen_idx` is the [head, x) child; if a
+                    // split actually happened, `len_after_split - 1` is
+                    // the [x, tail) child.
+                    {
+                        let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
+                        swap_indices.push(chosen_idx);
+                        if len_after_split > len_before_split {
+                            swap_indices.push(len_after_split - 1);
+                        }
+                        apply_sweep_recomb_tag_swap(
+                            active, &swap_indices, &finalized_sweeps,
+                            t, arena, rng, &mut a_tag);
+                    }
                     // Recombination preserves total material.
                     engine_dirty = true;
                     // Update lin_len_tree: chosen_idx's cached_len shrank;
@@ -2769,6 +2793,64 @@ fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool
         s = seg.next;
     }
     false
+}
+
+/// Discoal-style per-recombination tag rejection-sampling. Called
+/// from each Event::Recombination consumer after `apply_recombination`
+/// returns. For each new child lineage that does NOT contain `x_sel`,
+/// rejection-samples its sweep-group tag against the trajectory's
+/// current `p_A(t)`:
+///
+/// - A-tagged child stays A with prob `p_A(t)`, else becomes a-tagged.
+/// - a-tagged (or untagged, treated as a) child stays a with prob
+///   `1 - p_A(t)`, else becomes A-tagged.
+///
+/// Mirrors discoal `recombineAtTimePopnSweep`
+/// (`/home/adkern/discoal/src/core/discoalFunctions.c:2569-2583`):
+/// the parent containing `x_sel` keeps its sweep-group, the other
+/// parent rejection-samples against the group's bgkd freq.
+fn apply_sweep_recomb_tag_swap(
+    active: &[Lineage],
+    new_indices: &[usize],
+    sweeps: &[Sweep],
+    t: f64,
+    arena: &SegmentArena,
+    rng: &mut Xoshiro256PlusPlus,
+    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+) {
+    let sweep = match sweeps.iter().find(|s| s.covers(t)) {
+        Some(s) => s,
+        None => return,
+    };
+    let traj = match sweep.trajectory.as_ref() {
+        Some(t) => t,
+        None => return,
+    };
+    let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
+    for &idx in new_indices {
+        if idx >= active.len() { continue; }
+        if active[idx].population != sweep.origin_pop { continue; }
+        if active[idx].head == SEG_NIL { continue; }
+        // Children that contain x_sel keep their tag (the sweep
+        // mutation rides with them).
+        if lineage_overlaps_position(active[idx].head, sweep.x_sel, arena) {
+            continue;
+        }
+        let uid = active[idx].uid;
+        let was_a = a_tag.get(&uid).copied().unwrap_or(false);
+        // discoal: stays in current group with prob popnFreq, where
+        // popnFreq is x for the A-group and (1 - x) for the a-group.
+        let stay_prob = if was_a { p_a } else { 1.0 - p_a };
+        if rng.random::<f64>() < stay_prob {
+            // Keep current tag. Ensure entry exists (untagged-but-
+            // considered-a is represented as a_tag = false) so future
+            // swaps can flip it correctly.
+            a_tag.entry(uid).or_insert(was_a);
+        } else {
+            // Switch.
+            a_tag.insert(uid, !was_a);
+        }
+    }
 }
 
 /// Build a Lineage from a vector of (left, right, node_id, branch_class) tuples.

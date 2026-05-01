@@ -6,10 +6,10 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 sweep-trajectory as of 2026-04-30).
+- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory as of 2026-04-30).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
-  (192 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
+  (193 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
   after Phases A-D of `docs/superpowers/plans/2026-04-29-sweep-followups.md`).
 - msprime validation: `tests/hull/test_validation_msprime.py` (N1–N6: panmictic, two-pop migration,
   two-pop split, bottleneck, growth, three-pop split — vs `msprime.sim_ancestry`; ~15 s; spec
@@ -35,7 +35,10 @@ cd rust && cargo build --release -p msinv-py
   `rust/msinv-core/tests/sweep_progressive_coalescence.rs` (PG1 Rust-side smoke),
   `rust/msinv-core/tests/sweep_standing_variation.rs` (SV1+SV2 trajectory + simulator
   smoke for the standing-variation phase — spec
-  `docs/superpowers/specs/2026-04-30-sweep-standing-variation-phase-design.md`).
+  `docs/superpowers/specs/2026-04-30-sweep-standing-variation-phase-design.md`),
+  `rust/msinv-core/tests/sweep_tag_aware_recomb.rs` (TR1 tag-swap smoke — spec
+  `docs/superpowers/specs/2026-04-30-sweep-tag-aware-recombination-design.md`),
+  `tests/hull/test_phase6e_tag_aware_recomb.py` (TR2 soft-sweep amplitude anchor).
 
 ## Pytest progress visibility
 - `pytest ... 2>&1 | tail -N` BUFFERS — output appears only at exit.  For long runs:
@@ -151,8 +154,17 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   extension stay engaged through the SV phase. At `t_de_novo`, surviving
   A-tagged lineages merge with random non-A targets in-pop (the de novo
   origin); for hard sweeps with `f0=1/(2N)` no SV phase fires and the prior
-  single-founder collapse runs unchanged. Drift is hard-capped at `5·N` steps
-  to bound pathological seeds.
+  single-founder collapse runs unchanged. Drift uses the conditional-toward-
+  loss SDE (discoal `alleleTraj.c::neutralStochastic`) and is hard-capped at
+  `50·N` steps to bound pathological seeds.
+  Tag-aware recombination (post-TR extension, 2026-04-30): every recombination
+  during the sweep window (selection + SV phases) rejection-samples the non-
+  `x_sel` child's sweep-group tag against the trajectory's current `p_A(t)`.
+  Mirrors discoal `recombineAtTimePopnSweep`
+  (`discoalFunctions.c:2569-2583`). Continuous shedding throughout the SV
+  phase preserves the K-founder structure of soft sweeps — TR2 measures
+  mean π for a `f0=0.05` soft sweep at ~31% of neutral 4N (vs 15% before
+  this extension; discoal target ≈42%).
 - A PostToolUse hook runs `cargo check` after each Rust Edit/Write — every individual
   edit must leave the workspace compiling. For API-rewrite tasks, bridge through a
   transitional struct that carries both old and new fields, migrate callers, then

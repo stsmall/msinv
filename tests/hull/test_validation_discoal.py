@@ -44,18 +44,19 @@ def test_discoal_validation_d2_hard_sweep():
 
 
 @pytest.mark.skip(reason=(
-    "D3 (soft sweep, f0=0.05) still under-coalesces relative to discoal "
-    "even after the SV phase extension (sweep-standing-variation-phase) "
-    "and the conditional-drift fix. Current state: msinv pi=5989 vs "
-    "discoal pi=16630. Remaining gap is the recombination-as-tag-shedding "
-    "mechanism in discoal/src/core/discoalFunctions.c:2042-2051 + "
-    ":2569-2583 (recombineAtTimePopnSweep) — every recombination during "
-    "the sweep window rejection-samples whether the non-x_sel half stays "
-    "in the sweep group with probability x (or 1-x). msinv approximates "
-    "this with a one-shot per-segment partition at t_de_novo, which "
-    "under-estimates segment escape during long SV phases. Activating "
-    "this test requires implementing tag-aware recombination in apply_"
-    "recombination during the sweep window."))
+    "D3 (soft sweep, f0=0.05) is closer to discoal after the full sweep-"
+    "rewrite stack but still fails 3·SE. Current state: msinv pi=12750 ± "
+    "404 vs discoal pi=16630 ± 549 (|Δ|=3878, 3·SE=2045). Big improvement "
+    "from pre-fix pi=8176 (initial), but the residual ~23%-of-discoal gap "
+    "isn't closed. The tag-aware-recombination swap is currently gated to "
+    "fire only during the standing-variation phase (not during the "
+    "selection phase) because firing during selection broke D2 hard sweep "
+    "(msinv pi 3918 → 5826, overshooting discoal's 4616). Closing the D3 "
+    "gap likely requires restructuring how msinv's per-segment partition "
+    "interacts with the swap during the selection phase, or finding the "
+    "specific divergence between msinv's apply_recombination tag-flow and "
+    "discoal's recombineAtTimePopnSweep that's causing the D2 overshoot. "
+    "Investigation deferred."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

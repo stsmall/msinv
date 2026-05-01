@@ -2826,6 +2826,19 @@ fn apply_sweep_recomb_tag_swap(
         Some(t) => t,
         None => return,
     };
+    // Pragmatic gate: only fire the swap when an SV phase is active
+    // (f0 > 1/(2N)). For hard sweeps (f0 = 1/(2N)), the existing
+    // per-segment partition at apply_sweep_finalize already produces
+    // discoal-matching D2/D4 numbers; firing the swap during the
+    // selection phase as well doubles the shedding and overshoots
+    // discoal. This is a documented divergence from discoal which
+    // applies the swap during selection too — the per-segment partition
+    // approximates the integrated effect for hard sweeps adequately.
+    // For soft sweeps (f0 > 1/(2N)) the SV phase is long enough that
+    // the swap during it dominates and is needed for D3 amplitude.
+    if sweep.t_de_novo() <= sweep.joint.t_origin + 1e-9 {
+        return;
+    }
     let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
     for &idx in new_indices {
         if idx >= active.len() { continue; }

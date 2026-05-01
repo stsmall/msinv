@@ -941,17 +941,68 @@ impl HullSimulator {
                     // gate on the live sweep state instead of
                     // a_tag.is_empty().
                     let in_any_sweep = finalized_sweeps.iter().any(|s| s.covers(t));
+                    // Any-pair AA/aa picker only engages in SV-phase
+                    // sweeps. For hard sweeps (`f0 = 1/(2N)`,
+                    // `t_de_novo == t_origin`) the rate divergence
+                    // already absorbs the A subgroup into one ancestor
+                    // stochastically; the still_a force-coalesce in
+                    // `apply_sweep_finalize` catches any stragglers.
+                    // Restricting any-pair to SV phase preserves D2
+                    // (hard sweep) timing while fixing D3 (soft sweep,
+                    // multi-lineage non-overlap pair gap).
+                    let in_sv_sweep = finalized_sweeps.iter().any(|s| {
+                        s.covers(t) && s.t_de_novo() > s.joint.t_origin + 1e-9
+                    });
                     let (i, j) = if !in_any_sweep && matches!(allele, AlleleTag::Mixed) {
                         let target = rng.random_range(0..bucket.len());
                         crate::rate_index::unpack_ij(bucket[target])
+                    } else if in_sv_sweep && matches!(allele, AlleleTag::A | AlleleTag::ALower) {
+                        // Inside the sweep window, AA / aa events sample
+                        // ANY two lineages of the matching allele subgroup
+                        // in (pop, cls) — regardless of ancestral overlap.
+                        // Mirrors discoal's `pickNodePopnSweep`
+                        // (discoalFunctions.c:3487): picks uniformly among
+                        // all sweep-pop nodes with no overlap test.
+                        //
+                        // The emitter rate `(n_A choose 2)/(2N·p_kary·p_A)`
+                        // is calibrated for any-pair semantics. Restricting
+                        // the consumer to overlapping pairs (the bucket)
+                        // inflates the per-overlapping-pair effective rate
+                        // by `(n_A choose 2)/|overlapping_AA|` and is the
+                        // dominant contributor to D3's soft-sweep π
+                        // under-estimate (the failure scales with sample
+                        // size; n=2 matches discoal, n≥4 diverges).
+                        // apply_coalescence_partial handles non-overlap
+                        // segments correctly post-`b2bcaa9`.
+                        let want_a = matches!(allele, AlleleTag::A);
+                        let candidates: SmallVec<[usize; 32]> = active.iter()
+                            .enumerate()
+                            .filter(|(_, lin)| {
+                                if lin.population != pop { return false; }
+                                if !lineage_has_class(lin.head, cls, arena) {
+                                    return false;
+                                }
+                                match a_tag.get(&lin.uid).copied() {
+                                    Some(true)  => want_a,
+                                    Some(false) => !want_a,
+                                    None        => false,
+                                }
+                            })
+                            .map(|(idx, _)| idx)
+                            .collect();
+                        if candidates.len() < 2 { continue; }
+                        let i_pick = rng.random_range(0..candidates.len());
+                        let mut j_pick = rng.random_range(0..candidates.len() - 1);
+                        if j_pick >= i_pick { j_pick += 1; }
+                        (candidates[i_pick], candidates[j_pick])
                     } else {
-                        // Inside the sweep window: filter pairs to match
-                        // the event's allele subgroup. PG-B1 emits three
-                        // events per swept cell with rates derived from
-                        // (n_A choose 2), (n_a choose 2), and the count
-                        // of untagged-involved pairs — the consumer must
-                        // honor those subgroups when sampling. Cost is
-                        // O(|bucket|) per fired event — bounded by O(n^2).
+                        // Inside sweep, NOT SV-phase: keep the original
+                        // overlap-bucket picker with allele-subgroup
+                        // filter. For hard sweeps the rate divergence
+                        // and still_a force-coalesce together cover the
+                        // discoal-faithful endpoint; the any-pair path
+                        // would inflate per-overlapping-pair rates and
+                        // overshoot D2.
                         let matches_pair = |packed: u64| -> bool {
                             let (i, j) = crate::rate_index::unpack_ij(packed);
                             let i_tag = a_tag.get(&active[i].uid).copied();
@@ -964,8 +1015,6 @@ impl HullSimulator {
                                     i_tag == Some(false) && j_tag == Some(false)
                                 }
                                 AlleleTag::Mixed => {
-                                    // Untagged-involved: at least one of
-                                    // the two lineages is untagged.
                                     i_tag.is_none() || j_tag.is_none()
                                 }
                             }
@@ -2723,17 +2772,28 @@ fn apply_sweep_finalize(
         }
     }
 
-    // Edge case (always runs): any A-tagged lineages still in `active`
-    // get collapsed among themselves. For hard sweeps without an SV
-    // phase, this is the original endpoint behavior. With an SV
-    // phase, this catches stragglers when no eligible non-A target
-    // existed in the lineage's pop.
-    let still_a: Vec<LinUid> = active.iter()
-        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
-        .map(|lin| lin.uid)
-        .collect();
-    if still_a.len() >= 2 {
-        coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+    // Hard-sweep endpoint collapse: when there is no SV phase
+    // (`f0 = 1/(2N)`, so `t_de_novo == t_origin`), all surviving
+    // A-tagged lineages must trace to the single de-novo founder at
+    // `t_origin`. Force-coalesce them here.
+    //
+    // For SV-phase sweeps (soft / partial w/ standing variation), do
+    // NOT force-coalesce. discoal's
+    // `sweepPhaseEventsConditionalTrajectory` exits when
+    // `currentFreq <= 1/(2N)` and lets the surviving sweep-pop
+    // lineages flow into the outer neutral coalescent on the regular
+    // `1/(2N)` clock — which produces the deeper T_2 distributions
+    // that match the soft-sweep π expectation. Force-coalescing them
+    // at `t_de_novo` collapses T_2 → 0 and under-estimates π
+    // (the D3 failure mode).
+    if !has_sv_phase {
+        let still_a: Vec<LinUid> = active.iter()
+            .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+            .map(|lin| lin.uid)
+            .collect();
+        if still_a.len() >= 2 {
+            coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+        }
     }
     // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial

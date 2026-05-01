@@ -1,8 +1,8 @@
-"""Unit tests for the small math helpers in test_validation_msprime."""
+"""Unit tests for the small math helpers in _validation_common."""
 
 import pytest
 
-from tests.hull.test_validation_msprime import _bonferroni_z
+from tests.hull._validation_common import _bonferroni_z
 
 
 def test_bonferroni_z_matches_spec_table():

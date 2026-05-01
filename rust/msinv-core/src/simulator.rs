@@ -1178,6 +1178,20 @@ impl HullSimulator {
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid, Some(&mut a_tag));
                     let len_after_split = active.len();
+                    // Discoal-style tag rejection-sampling for in-window
+                    // recombs. `chosen_idx` is the [head, x) child; if a
+                    // split actually happened, `len_after_split - 1` is
+                    // the [x, tail) child.
+                    {
+                        let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
+                        swap_indices.push(chosen_idx);
+                        if len_after_split > len_before_split {
+                            swap_indices.push(len_after_split - 1);
+                        }
+                        apply_sweep_recomb_tag_swap(
+                            active, &swap_indices, &finalized_sweeps,
+                            t, arena, rng, &mut a_tag);
+                    }
                     // Recombination preserves total material.
                     engine_dirty = true;
                     // Update lin_len_tree: chosen_idx's cached_len shrank;

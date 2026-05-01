@@ -101,8 +101,15 @@ pub fn apply_coalescence_partial(
                 chain_append!(a_rem_head, a_rem_tail, arena,
                                a_left, a_right, a_node, a_bc);
             } else {
+                // Non-overlap with the other lineage's first remaining
+                // segment, but in panmictic mode (allowed_class=None)
+                // we still record an edge from a_node to new_node so
+                // the merged lineage's tskit ancestry actually flows
+                // through new_node for this region (matches discoal /
+                // msprime Hudson semantics).
+                tables.add_edge(a_left, a_right, new_node, a_node);
                 chain_append!(merged_head, merged_tail, arena,
-                               a_left, a_right, a_node, a_bc);
+                               a_left, a_right, new_node, a_bc);
             }
             arena.free(sa);
             sa = a_next;
@@ -111,8 +118,9 @@ pub fn apply_coalescence_partial(
                 chain_append!(b_rem_head, b_rem_tail, arena,
                                b_left, b_right, b_node, b_bc);
             } else {
+                tables.add_edge(b_left, b_right, new_node, b_node);
                 chain_append!(merged_head, merged_tail, arena,
-                               b_left, b_right, b_node, b_bc);
+                               b_left, b_right, new_node, b_bc);
             }
             arena.free(sb);
             sb = b_next;
@@ -125,8 +133,9 @@ pub fn apply_coalescence_partial(
                     chain_append!(a_rem_head, a_rem_tail, arena,
                                    a_left, l, a_node, a_bc);
                 } else {
+                    tables.add_edge(a_left, l, new_node, a_node);
                     chain_append!(merged_head, merged_tail, arena,
-                                   a_left, l, a_node, a_bc);
+                                   a_left, l, new_node, a_bc);
                 }
             }
             if b_left < l {
@@ -134,8 +143,9 @@ pub fn apply_coalescence_partial(
                     chain_append!(b_rem_head, b_rem_tail, arena,
                                    b_left, l, b_node, b_bc);
                 } else {
+                    tables.add_edge(b_left, l, new_node, b_node);
                     chain_append!(merged_head, merged_tail, arena,
-                                   b_left, l, b_node, b_bc);
+                                   b_left, l, new_node, b_bc);
                 }
             }
 
@@ -177,8 +187,9 @@ pub fn apply_coalescence_partial(
             chain_append!(a_rem_head, a_rem_tail, arena,
                            a_left, a_right, a_node, a_bc);
         } else {
+            tables.add_edge(a_left, a_right, new_node, a_node);
             chain_append!(merged_head, merged_tail, arena,
-                           a_left, a_right, a_node, a_bc);
+                           a_left, a_right, new_node, a_bc);
         }
         arena.free(sa);
         sa = a_next;
@@ -191,8 +202,9 @@ pub fn apply_coalescence_partial(
             chain_append!(b_rem_head, b_rem_tail, arena,
                            b_left, b_right, b_node, b_bc);
         } else {
+            tables.add_edge(b_left, b_right, new_node, b_node);
             chain_append!(merged_head, merged_tail, arena,
-                           b_left, b_right, b_node, b_bc);
+                           b_left, b_right, new_node, b_bc);
         }
         arena.free(sb);
         sb = b_next;
@@ -642,9 +654,14 @@ mod tests {
         let new_node = apply_coalescence(
             &mut active, 0, 1, 3.0, &mut arena, &mut tables, &mut next_uid, None);
 
-        // Overlap is [40, 60) — 2 edges
-        assert_eq!(tables.num_edges(), 2);
-        // Merged lineage: [0, 40) from s0, [40, 60) from new_node, [60, 100) from s1
+        // Edges (post 2026-05-01 non-overlap-edges fix to match
+        // discoal/msprime Hudson semantics):
+        //   - [0, 40) non-overlap of a: 1 edge (a -> new_node).
+        //   - [40, 60) overlap: 2 edges (a, b -> new_node).
+        //   - [60, 100) non-overlap of b: 1 edge (b -> new_node).
+        // Total: 4 edges.
+        assert_eq!(tables.num_edges(), 4);
+        // Merged lineage covers [0, 100) all routed through new_node.
         assert_eq!(active.len(), 1);
         assert!((active[0].total_length(&arena) - 100.0).abs() < 1e-12);
         let _ = new_node;

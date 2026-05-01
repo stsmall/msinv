@@ -365,7 +365,7 @@ impl HullSimulator {
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
             let t_sweep_origin = finalized_sweeps.first()
-                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+                .map(|s| s.t_de_novo()).unwrap_or(f64::INFINITY);
             let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
 
             let coal_rate = pair_rates.total();
@@ -852,7 +852,7 @@ impl HullSimulator {
             let t_sweep = pending_sweeps.first()
                 .map(|s| s.tau).unwrap_or(f64::INFINITY);
             let t_sweep_origin = finalized_sweeps.first()
-                .map(|s| s.joint.t_origin).unwrap_or(f64::INFINITY);
+                .map(|s| s.t_de_novo()).unwrap_or(f64::INFINITY);
 
             // Next deterministic boundary.
             let next_boundary = earliest_barrier.min(t_demo).min(t_sweep).min(t_sweep_origin);
@@ -2333,11 +2333,12 @@ fn apply_boundary(
                      sweep_cursor, a_tag);
         finalized_sweeps.push(sweep);
     }
-    // Keep finalized_sweeps sorted by t_origin so [0] is the next to fire.
-    finalized_sweeps.sort_by(|a, b| a.joint.t_origin.partial_cmp(&b.joint.t_origin).unwrap());
-    // Drain finalized sweeps whose t_origin matches the current boundary.
+    // Keep finalized_sweeps sorted by t_de_novo so [0] is the next to fire.
+    finalized_sweeps.sort_by(|a, b|
+        a.t_de_novo().partial_cmp(&b.t_de_novo()).unwrap());
+    // Drain finalized sweeps whose t_de_novo matches the current boundary.
     while !finalized_sweeps.is_empty()
-        && (finalized_sweeps[0].joint.t_origin - t).abs() < 1e-9
+        && (finalized_sweeps[0].t_de_novo() - t).abs() < 1e-9
     {
         let sweep = finalized_sweeps.remove(0);
         apply_sweep_finalize(active, &sweep, t, arena, tables,
@@ -2654,10 +2655,72 @@ fn apply_sweep_finalize(
         linked_uids.push(uid);
     }
 
-    if linked_uids.len() < 2 { return; }
-    // Force-coalesce all linked-segment groups at t_origin.
-    coalesce_uid_group(active, &linked_uids, t, arena, tables, next_uid, sweep_cursor);
-    // Keep `a_tag` populated past `t_origin`. The map doubles as the
+    // De novo merge gate: the per-lineage merge only fires when the
+    // trajectory actually has a standing-variation phase (t_de_novo
+    // strictly past t_origin). For hard sweeps with f0=1/(2N), there
+    // is no SV phase — we collapse A-tagged into a single founder at
+    // t_origin as before, preserving the per-segment hitchhiking
+    // signature (PS2/PS3) and the prior single-MRCA semantics.
+    let has_sv_phase = sweep.t_de_novo() > sweep.joint.t_origin + 1e-9;
+
+    if has_sv_phase {
+        // At t_de_novo (the trajectory's extinction time), the A
+        // allele arose by mutation on a single chromosome that is
+        // otherwise indistinguishable from the rest of the
+        // population. Each surviving A-tagged lineage merges with a
+        // random non-A target in its own population — that's the de
+        // novo origin.
+        //
+        // NOTE: candidates exclude not just A-tagged but anything
+        // currently tagged in a_tag (i.e. just-escaped lineages
+        // tagged false by the per-segment partition). The escaped
+        // lineages came from the same A-tagged founders and re-
+        // merging with them would undo the per-segment hitchhiking.
+        for &a_uid in linked_uids.iter() {
+            let a_idx = match active.iter().position(|l| l.uid == a_uid) {
+                Some(i) => i,
+                None => continue,
+            };
+            let a_pop = active[a_idx].population;
+            let candidates: Vec<usize> = active.iter().enumerate()
+                .filter(|(j, lin)| {
+                    *j != a_idx
+                        && lin.population == a_pop
+                        && !a_tag.contains_key(&lin.uid)
+                })
+                .map(|(j, _)| j)
+                .collect();
+            if candidates.is_empty() { continue; }
+            let pick = rng.random_range(0..candidates.len());
+            let target_idx = candidates[pick];
+            if !segments_overlap(active[a_idx].head, active[target_idx].head, arena) {
+                continue;
+            }
+            let (lo, hi) = if a_idx < target_idx {
+                (a_idx, target_idx)
+            } else {
+                (target_idx, a_idx)
+            };
+            let t_merge = next_sweep_merge_t(sweep_cursor, t);
+            apply_coalescence_partial(
+                active, lo, hi, t_merge, arena, tables, next_uid,
+                None, Some(a_tag));
+        }
+    }
+
+    // Edge case (always runs): any A-tagged lineages still in `active`
+    // get collapsed among themselves. For hard sweeps without an SV
+    // phase, this is the original endpoint behavior. With an SV
+    // phase, this catches stragglers when no eligible non-A target
+    // existed in the lineage's pop.
+    let still_a: Vec<LinUid> = active.iter()
+        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+        .map(|lin| lin.uid)
+        .collect();
+    if still_a.len() >= 2 {
+        coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+    }
+    // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial
     // sweep `sweep_a_count`). The progressive-coal logic is gated on
     // an active sweep covering `t` at emit time (PG-B1's
@@ -3642,23 +3705,28 @@ mod tests {
     }
 
     /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A
-    /// assignment at τ). After the simulation reaches t_origin = 500, all
-    /// surviving A-bearing lineages collapse to a single MRCA; the deepest
-    /// internal node should be at time ≈ 500 (within sweep_cursor eps).
+    /// assignment at τ). With f0=1.0 the SV phase runs from t_origin
+    /// backward until the drift hits 1/(2N); A-tagged lineages coalesce
+    /// progressively inside that window. MRCA must therefore land at or
+    /// past t_origin (and at or before t_de_novo).
     #[test]
-    fn forced_coal_collapses_a_lineages_at_t_origin() {
+    fn forced_coal_collapses_a_lineages_in_sweep_window() {
         use crate::class_tag::Karyotype;
         use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
         use crate::demography::Demography;
         use crate::sweep::Sweep;
 
-        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0,
-            JointSweepSpec {
-                mode: SweepMode::Deterministic,
-                s: 0.05, t_origin: 500.0, f0: 1.0,
-                partial_sweep_final_freq: 0.99,
-                ..Default::default()
-            });
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.05, t_origin: 500.0, f0: 1.0,
+            partial_sweep_final_freq: 0.99,
+            ..Default::default()
+        };
+        let sweep = Sweep::new(5_000.0, 0.0, 0, Karyotype::S, 0, spec)
+            .with_trajectory(1, &[0.0],
+                &|_t, _p| 10_000.0,
+                &|_t, _i, _j| 0.0);
+        let t_de_novo = sweep.t_de_novo();
 
         let sim = HullSimulator {
             samples: vec![SampleEntry { karyotypes: vec![], population: 0, count: 4 }],
@@ -3670,16 +3738,13 @@ mod tests {
             gc_stride: 160, record_events: false,
         };
         let result = sim.simulate();
-        // The deepest internal node should be at time ~ t_origin = 500.
-        // Allow small slop from sweep_cursor's eps offset (1e-9 to 1e-3).
+        // The deepest internal node should fall inside the sweep window
+        // [t_origin, t_de_novo]. Loose tolerance on the upper bound to
+        // account for the de novo merge happening at exactly t_de_novo.
         let max_node_t = result.tables.node_time.iter().cloned().fold(0.0_f64, f64::max);
-        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t < 500.0 + 1e-3,
-            "MRCA at {}, expected ~500 (t_origin)", max_node_t);
-        // 4 A-tagged samples → all forced together → exactly 1 MRCA event
-        // contributes the time-500 node. Sample nodes are at time 0.
-        let n_at_500: usize = result.tables.node_time.iter()
-            .filter(|&&t| (t - 500.0).abs() < 1e-3).count();
-        assert!(n_at_500 >= 1, "expected at least 1 node at t_origin=500, got {n_at_500}");
+        assert!(max_node_t >= 500.0 - 1e-3 && max_node_t <= t_de_novo + 1.0,
+            "MRCA at {}, expected in [t_origin=500, t_de_novo={}]",
+            max_node_t, t_de_novo);
     }
 
     #[test]

@@ -44,14 +44,18 @@ def test_discoal_validation_d2_hard_sweep():
 
 
 @pytest.mark.skip(reason=(
-    "D3 surfaces a K-founder partitioning gap in Rust apply_sweep_finalize. "
-    "Soft sweeps (f0>0) need ~K=1/f0 founders to persist past t_origin "
-    "(discoal model; implemented in the Python fallback at "
-    "msinv/hull/simulator.py:1029-1041), but the Rust path collapses all "
-    "A-tagged lineages into one founder at t_origin. "
-    "Observed (f0=0.05): msinv pi=8176 vs discoal pi=16630 (~half). "
-    "Inside-window progressive rate matches discoal exactly; the gap is "
-    "entirely at the endpoint. Activate after K-founder partitioning ships."))
+    "D3 (soft sweep, f0=0.05) still under-coalesces relative to discoal "
+    "even after the SV phase extension (sweep-standing-variation-phase) "
+    "and the conditional-drift fix. Current state: msinv pi=5989 vs "
+    "discoal pi=16630. Remaining gap is the recombination-as-tag-shedding "
+    "mechanism in discoal/src/core/discoalFunctions.c:2042-2051 + "
+    ":2569-2583 (recombineAtTimePopnSweep) — every recombination during "
+    "the sweep window rejection-samples whether the non-x_sel half stays "
+    "in the sweep group with probability x (or 1-x). msinv approximates "
+    "this with a one-shot per-segment partition at t_de_novo, which "
+    "under-estimates segment escape during long SV phases. Activating "
+    "this test requires implementing tag-aware recombination in apply_"
+    "recombination during the sweep window."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

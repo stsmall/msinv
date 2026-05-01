@@ -2651,18 +2651,31 @@ fn apply_sweep_finalize(
     sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
 ) {
-    // Collect A-tagged lineage UIDs first; we partition them in a
-    // second pass to avoid borrow issues during active mutation.
-    let candidates: Vec<LinUid> = active.iter()
-        .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
-        .map(|lin| lin.uid)
-        .collect();
-
-    // For each A-tagged lineage, partition segments into linked vs
-    // escaped using the per-segment hitchhiking probability.  Linked
-    // segments stay with the lineage's UID; escaped segments are
-    // detached into a fresh untagged lineage.
+    // For SV-phase sweeps only: per-segment partition into linked
+    // vs escaped using `p_hh = exp(-r·d·T_eff)`. Hard sweeps
+    // (`t_de_novo == t_origin`) skip the partition — the spatial
+    // hitchhiking signature is already produced by in-window
+    // recombination plus tag-aware tag-swap, and adding the
+    // deterministic partition on top double-counts the shedding,
+    // inflating D2 π by ~17% (and D5 by similar). discoal models
+    // hitchhiking only via in-window recomb (the tag-swap rejection
+    // sample inside `recombineAtTimePopnSweep`), and msinv now
+    // matches that for hard sweeps.
+    //
+    // The partition stays for SV-phase sweeps because PG2 / PS2 /
+    // PS3 anchors were tuned with it active and the SV-phase de
+    // novo merge below depends on `linked_uids`.
+    let has_sv_phase = sweep.t_de_novo() > sweep.joint.t_origin + 1e-9;
     let mut linked_uids: Vec<LinUid> = Vec::new();
+    let candidates: Vec<LinUid> = if has_sv_phase {
+        active.iter()
+            .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+            .map(|lin| lin.uid)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     for uid in candidates {
         let idx = match active.iter().position(|l| l.uid == uid) {
             Some(i) => i,
@@ -2723,10 +2736,7 @@ fn apply_sweep_finalize(
     // trajectory actually has a standing-variation phase (t_de_novo
     // strictly past t_origin). For hard sweeps with f0=1/(2N), there
     // is no SV phase — we collapse A-tagged into a single founder at
-    // t_origin as before, preserving the per-segment hitchhiking
-    // signature (PS2/PS3) and the prior single-MRCA semantics.
-    let has_sv_phase = sweep.t_de_novo() > sweep.joint.t_origin + 1e-9;
-
+    // t_origin via the still_a force-coalesce below.
     if has_sv_phase {
         // At t_de_novo (the trajectory's extinction time), the A
         // allele arose by mutation on a single chromosome that is

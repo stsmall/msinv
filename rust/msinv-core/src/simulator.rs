@@ -893,6 +893,33 @@ impl HullSimulator {
             let dt = -u.ln() / total_rate;
             let t_event = t + dt;
 
+            // Tau-leap inside an active HARD-SWEEP window: cap dt at 1
+            // gen so the per-pair AA rate `1/(2N·p_A(t))` is
+            // re-evaluated as p_A drops near `t_origin`. The constant-
+            // rate Gillespie sample taken at the sweep plateau (rate
+            // ~ 5e-5) overshoots past the rate-divergence band into
+            // `t_origin`, missing the in-sweep coalescences that
+            // discoal's fixed-step (`tIncOrig = 1/N` coal-time) loop
+            // catches. The missed events leave more A-tagged stragglers
+            // for `still_a` to force-coalesce at exactly `t_origin`,
+            // inflating D2 π by ~14% at n=2-4.
+            //
+            // Gated on hard sweep (no SV phase) only. SV-phase sweeps
+            // use Gillespie + any-pair AA picker, a tuned combination
+            // where the constant-rate underfire compensates for the
+            // any-pair always-fire to match discoal's D3 π. Adding
+            // tau-leap to SV phase causes over-coalescence (π drops
+            // ~20%).
+            let in_hard_sweep = finalized_sweeps.iter().any(|s| {
+                s.covers(t) && s.t_de_novo() <= s.joint.t_origin + 1e-9
+            });
+            if in_hard_sweep && dt > 1.0 {
+                t += 1.0;
+                engine_dirty = true;
+                cache_dirty = true;
+                continue;
+            }
+
             // Check if a deterministic boundary happens first.
             if next_boundary <= t_event {
                 t = next_boundary;

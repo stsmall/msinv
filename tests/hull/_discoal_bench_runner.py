@@ -467,18 +467,33 @@ SCENARIOS["d4"] = {
 # trajectory because the recurrence itself is a stochastic process.
 def _make_d5_msinv(seed: int):
     from msinv.hull.sweep import Sweep
+    # Calibration: msinv `recurrent_mutation_rate` is per-individual-
+    # per-gen (discoal-validation-design.md). discoal `-uA` is in 4N·μ
+    # units inside `pRecurMut = (uA·n_B/2)·tIncOrig/x`, so for the
+    # low-recurrence regime msinv_ua ≈ discoal_uA / (2N). For
+    # discoal -uA=1e-3 and 2N=20000 → msinv ua=5e-8 — well below the
+    # threshold where forward-trajectory mutation pressure visibly
+    # softens the sweep, matching discoal's effectively-zero
+    # recurrence behavior at the same numeric -uA. Calibration
+    # diverges at higher uA where the forward (msinv) and backward
+    # (discoal) recurrence semantics produce different effects;
+    # quantitative D5 anchored at this low-rate regime.
+    #
+    # Deterministic trajectory on both sides for the same reason as
+    # D2: stochastic at f0=1/(2N) is extinction-prone and would
+    # require StochasticConditioned to behave well.
     sweep = Sweep(
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
         origin_kary='S',
         target_inv=0,
-        mode='Stochastic',
+        mode='Deterministic',
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10_000),
         partial_sweep_final_freq=1.0,
-        recurrent_mutation_rate=1e-3,
+        recurrent_mutation_rate=1e-3 / (2.0 * 10_000),
         seed=seed,
     )
     return HullSimulator(

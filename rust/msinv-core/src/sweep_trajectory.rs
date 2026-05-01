@@ -20,7 +20,16 @@ pub const CLASS_I_A_BENEF: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SweepMode {
+    /// Unconditional Wright-Fisher drift. Trajectories that go
+    /// extinct stay extinct; used by T2 (stochastic fixation
+    /// probability ≈ 2s) and J4 (bottleneck drift variance).
     Stochastic,
+    /// Wright-Fisher drift conditioned on the trajectory reaching
+    /// `partial_sweep_final_freq` by `tau` — extinct trajectories
+    /// are rejected and re-sampled. Mirrors discoal's `-ws` mode.
+    /// Use for D5 (focal recurrent) and any cross-engine validation
+    /// where discoal's `-ws` is the reference.
+    StochasticConditioned,
     Deterministic,
     Neutral,
 }
@@ -133,10 +142,27 @@ pub fn build_joint_trajectory(
 
     // Walk forward in time from t_origin (oldest) to tau (most recent).
     // We log samples at integer-generation intervals.
-    let mut samples = Vec::new();
-    samples.push(JointSample { t: spec.t_origin, freq: state.clone() });
+    //
+    // `StochasticConditioned` rejects extinct trajectories: if
+    // `final_a < 0.95 · partial_sweep_final_freq` after the forward
+    // walk, the rng has advanced and the next attempt produces an
+    // independent trajectory. Mirrors discoal's `-ws` mode (always
+    // conditional on fixation). Plain `Stochastic` keeps unconditional
+    // semantics (used by T2 fixation-probability and J4 bottleneck
+    // drift-variance tests).
+    let needs_conditioning = matches!(spec.mode, SweepMode::StochasticConditioned)
+        && spec.partial_sweep_final_freq > spec.f0 + 1e-9;
+    let initial_state = state.clone();
+    let max_attempts: usize = if needs_conditioning { 10_000 } else { 1 };
 
     let mut rng = Xoshiro256PlusPlus::seed_from_u64(spec.seed);
+    let mut samples = Vec::new();
+
+    for _attempt in 0..max_attempts {
+    state = initial_state.clone();
+    samples.clear();
+    samples.push(JointSample { t: spec.t_origin, freq: state.clone() });
+
     let mut t = spec.t_origin;
     while t > tau {
         // For DetOnly we step in 1-gen units; for Stoch we use dt_scalar
@@ -147,7 +173,7 @@ pub fn build_joint_trajectory(
             apply_selection_inplace(f, spec.s);
             let n = pop_size_at(t, p_idx as u32);
             apply_recurrent_inplace(f, spec.recurrent_mutation_rate, 2.0 * n, &mut rng);
-            if matches!(spec.mode, SweepMode::Stochastic) {
+            if matches!(spec.mode, SweepMode::Stochastic | SweepMode::StochasticConditioned) {
                 wf_resample(f, 2.0 * n, &mut rng);
             }
             apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
@@ -182,6 +208,28 @@ pub fn build_joint_trajectory(
     if samples.last().map(|s| s.t).unwrap_or(f64::INFINITY) > tau {
         samples.push(JointSample { t: tau, freq: state.clone() });
     }
+
+    // Conditional-fixation gate (StochasticConditioned only). Accept
+    // this attempt if the final A frequency reached the target. Use
+    // a small absolute slack (`max(0.5/(2N_at_origin), 1e-6)`) to
+    // tolerate floating drift and the partial-sweep plateau, but
+    // otherwise require full target attainment — discoal's `-ws`
+    // would reject trajectories that ended below the partial-sweep
+    // target.
+    if !needs_conditioning {
+        break;
+    }
+    let final_a: f64 = state
+        .iter()
+        .map(|f| f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF])
+        .sum::<f64>()
+        / n_pops as f64;
+    let n_at_origin_local = pop_size_at(spec.t_origin, origin_pop);
+    let slack: f64 = (0.5_f64 / (2.0 * n_at_origin_local)).max(1e-6_f64);
+    if final_a + slack >= spec.partial_sweep_final_freq {
+        break;
+    }
+    } // end attempt loop
 
     // Standing-variation phase: backward-time stochastic drift on the
     // origin pop's A allele frequency, starting at f0 and running

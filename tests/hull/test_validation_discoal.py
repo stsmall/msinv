@@ -43,20 +43,6 @@ def test_discoal_validation_d2_hard_sweep():
     _run("d2")
 
 
-@pytest.mark.skip(reason=(
-    "D3 (soft sweep, f0=0.05) — after gating still_a force-coalesce "
-    "on !has_sv_phase (2026-05-01): msinv pi=12180 vs discoal "
-    "pi=16600 (|Δ|=4420, 3·SE=2158); n_trees msinv=39.3 vs "
-    "discoal=50.1 (|Δ|=10.7, 3·SE=5.9). Removing the apply_sweep_finalize "
-    "endpoint force-coalesce (and a separate test of the SV-phase "
-    "de novo merge) accounts for at most ~9% of the gap; the remaining "
-    "~24% is therefore inside the sweep window itself, not at "
-    "t_de_novo. Both metrics low and recombination-derived n_trees "
-    "low together indicate over-coalescence during the sweep window. "
-    "Recommended next step: side-by-side event-stream trace at "
-    "seed=0, n=4 samples (per resume-memory tooling note), or a "
-    "rate-scaling audit on emit_coal_events_from_cache vs discoal "
-    "pCoalB ∝ (n_B(n_B-1)/2)/x scaling."))
 def test_discoal_validation_d3_soft_sweep():
     """Rust msinv vs discoal — soft sweep from standing variation, f0=0.05."""
     _run("d3")

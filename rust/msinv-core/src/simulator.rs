@@ -578,6 +578,16 @@ impl HullSimulator {
                     active, chosen_idx, x, arena, next_uid,
                     Some(&mut a_tag));
                 let len_after = active.len();
+                {
+                    let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
+                    swap_indices.push(chosen_idx);
+                    if len_after > len_before {
+                        swap_indices.push(len_after - 1);
+                    }
+                    apply_sweep_recomb_tag_swap(
+                        active, &swap_indices, &finalized_sweeps,
+                        t, arena, rng, &mut a_tag);
+                }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
                     &barrier_active, demo, t, self.sequence_length);

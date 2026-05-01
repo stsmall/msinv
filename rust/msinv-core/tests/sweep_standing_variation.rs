@@ -5,6 +5,8 @@
 //! Spec: `docs/superpowers/specs/2026-04-30-sweep-standing-variation-phase-design.md`.
 
 use msinv_core::class_tag::Karyotype;
+use msinv_core::demography::Demography;
+use msinv_core::simulator::{HullSimulator, SampleEntry};
 use msinv_core::sweep::Sweep;
 use msinv_core::sweep_trajectory::{JointSweepSpec, SweepMode};
 
@@ -78,5 +80,37 @@ fn sv1_p_allele_query_past_t_origin_is_below_or_near_f0() {
     assert!(
         (p_a_at_origin - 0.05).abs() < 1e-9,
         "Expected p_A at t_origin == f0=0.05; got {p_a_at_origin}"
+    );
+}
+
+#[test]
+fn sv2_simulator_completes_with_sv_phase() {
+    // Full simulation with f0=0.05; the simulator must reach MRCA
+    // through the selection + SV + post-window neutral phases without
+    // panic. Equivalent to PG1 but with f0 > 1/(2N).
+    let sw = build_sweep(0.05, SweepMode::Stochastic, 42);
+    let sim = HullSimulator {
+        samples: vec![SampleEntry {
+            karyotypes: vec![],
+            population: 0,
+            count: 10,
+        }],
+        demography: Demography::single_pop(10_000.0),
+        sequence_length: 100_000.0,
+        recombination_rate: 1e-8,
+        inversions: vec![],
+        sweeps: vec![sw],
+        seed: 42,
+        stop_at: f64::INFINITY,
+        compound_rate: false,
+        iters_max: 100_000_000,
+        gc_stride: 160,
+        record_events: false,
+    };
+    let result = sim.simulate();
+    assert!(
+        result.tables.num_nodes() >= 19,
+        "Expected ≥19 nodes for n=10 sweep with SV phase; got {}",
+        result.tables.num_nodes()
     );
 }

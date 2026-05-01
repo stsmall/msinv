@@ -1820,33 +1820,35 @@ fn emit_coal_events_from_cache(
             .map_or(0.0, |traj| traj.p_allele_given_kary(t, pop, kary));
         let p_kary_safe = p_kary.max(1e-9);
 
-        // AA: pairs of A-tagged lineages — rate denom 2 N p_kary p_A.
-        // Going backward, p_A drops from ~1 at τ to f0 at t_origin so
-        // this rate climbs and drives the A pool to its single founder.
+        // Lineage-count rate (matches discoal `(n_B choose 2)/(2N x)`
+        // and the corresponding pCoalb formula). This INCLUDES pairs
+        // that may not have genomic overlap; the consumer's bucket
+        // walk filters to overlapping pairs only, so the effective
+        // per-overlapping-pair rate is slightly elevated. We accept
+        // that approximation rather than under-emitting on bucket-
+        // resolved counts (which under-coalesces D3 because non-
+        // overlapping pairs would still be merged in discoal,
+        // dropping n_active).
         if n_a_upper >= 2 && p_a > 1e-9 {
             let pairs = (n_a_upper * (n_a_upper - 1)) as f64 * 0.5;
             let denom = 2.0 * ne * p_kary_safe * p_a;
             events.push((pairs / denom,
                 Event::CoalAggregate { pop, class: cls, allele: AlleleTag::A }));
         }
-        // aa: pairs of a-tagged lineages — rate denom 2 N p_kary (1-p_A).
         if n_a_lower >= 2 && (1.0 - p_a) > 1e-9 {
             let pairs = (n_a_lower * (n_a_lower - 1)) as f64 * 0.5;
             let denom = 2.0 * ne * p_kary_safe * (1.0 - p_a);
             events.push((pairs / denom,
                 Event::CoalAggregate { pop, class: cls, allele: AlleleTag::ALower }));
         }
-        // Mixed: untagged-involved pairs only (UU + UA + Ua). Cross-
-        // allele A × a pairs have rate zero during the sweep window
-        // and are excluded — the consumer must filter the bucket to
-        // honor that exclusion (handled in PG-C1).
         let n_normal_pairs =
             n_untagged * n_untagged.saturating_sub(1) / 2
             + n_untagged * n_a_upper
             + n_untagged * n_a_lower;
         if n_normal_pairs > 0 {
             let denom = 2.0 * ne * p_kary_safe;
-            events.push((n_normal_pairs as f64 / denom,
+            let rate = n_normal_pairs as f64 / denom;
+            events.push((rate,
                 Event::CoalAggregate { pop, class: cls, allele: AlleleTag::Mixed }));
         }
     }
@@ -2562,32 +2564,21 @@ fn apply_sweep(
     if sweep.trajectory.is_none() {
         return;
     }
+    // Tag EVERY lineage in the swept population at sweep onset, matching
+    // discoal sweepPhaseEventsConditionalTrajectory:2173-2191. discoal
+    // assigns every pop-0 lineage `sweepPopn = 1` (B) with probability
+    // `partialSweepFinalFreq` (else 0/b). For lineages whose segments
+    // don't span x_sel, the tag still applies — they participate in the
+    // per-allele rate model and can shed via tag-aware recombination.
+    let _ = recomb_rate;  // formerly read by the distant-lineage gate.
     for lin in active.iter() {
-        let overlaps = lineage_overlaps_position(lin.head, sweep.x_sel, arena);
-        if !overlaps {
-            // Piece 3: distant lineages can still be on the A background
-            // with probability decaying via exp(-r·d_nearest·T_eff).
-            // Sample whether to enter the A-eligible pool.
-            let d_nearest = sweep.lineage_nearest_distance(lin.head, arena);
-            if d_nearest.is_infinite() {
-                continue;  // empty lineage
-            }
-            let t_eff = sweep.t_de_novo() - sweep.tau;
-            let p_link = (-recomb_rate * d_nearest * t_eff).exp();
-            if rng.random::<f64>() >= p_link {
-                continue;  // not eligible
-            }
-        }
+        if lin.population != sweep.origin_pop { continue; }
+        if lin.head == crate::segment::SEG_NIL { continue; }
+        // Determine kary for the trajectory query: use the inv-class at
+        // x_sel if available, else origin_kary.
+        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+            .unwrap_or(sweep.origin_kary);
         let pop = lin.population;
-        // For overlapping lineages, get the inv-class at x_sel; for
-        // distant lineages, fall back to origin_kary directly (we used
-        // the nearest segment's distance, not the inversion membership).
-        let kary = if overlaps {
-            lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
-                .unwrap_or(sweep.origin_kary)
-        } else {
-            sweep.origin_kary
-        };
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
     }
@@ -2826,18 +2817,6 @@ fn apply_sweep_recomb_tag_swap(
         Some(t) => t,
         None => return,
     };
-    // Pragmatic gate: only fire the swap when an SV phase is active
-    // (f0 > 1/(2N)). For hard sweeps (f0 = 1/(2N)) firing the swap
-    // during the selection phase overshoots discoal even with the
-    // merged-tag inheritance fix in events.rs (msinv pi 3918 → 5826
-    // vs discoal target 4616). The mechanism mismatch in this regime
-    // is not yet identified — apply_recombination's split semantics,
-    // recomb-event firing rate, and trajectory-time query all match
-    // discoal at the surface level. Documented as a known divergence;
-    // soft sweeps still get the swap during the SV phase as designed.
-    if sweep.t_de_novo() <= sweep.joint.t_origin + 1e-9 {
-        return;
-    }
     let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
     for &idx in new_indices {
         if idx >= active.len() { continue; }
@@ -3756,13 +3735,17 @@ mod tests {
     }
 
     #[test]
-    fn apply_sweep_skips_lineages_outside_x_sel_window() {
+    fn apply_sweep_tags_every_pop_lineage_at_onset() {
         use crate::class_tag::{BranchClass, Karyotype};
         use crate::sweep_trajectory::{JointSweepSpec, SweepMode};
         use std::collections::HashMap;
 
         let mut arena = SegmentArena::new();
-        // Lineage A spans x_sel=5000; lineage B is to the right of x_sel and doesn't overlap.
+        // Lineage A spans x_sel=5000; lineage B is to the right of x_sel
+        // (no overlap with x_sel). Both are in pop 0; after the
+        // 2026-05-01 fresh-take fix both must be tagged at sweep onset
+        // (matches discoal sweepPhaseEventsConditionalTrajectory:
+        // 2173-2191).
         let head_a = arena.alloc(0.0, 6_000.0, 0, BranchClass::PANMICTIC);
         let head_b = arena.alloc(7_000.0, 10_000.0, 1, BranchClass::PANMICTIC);
         let mut active = vec![
@@ -3785,17 +3768,14 @@ mod tests {
         let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
         let mut sweep_cursor = (0.0, 0u64);
 
-        // Use a high recomb_rate so p_link = exp(-r*d*T_eff) ≈ 0 for lineage B
-        // (d_nearest ≈ 2000, T_eff = 200 → r=1.0 → p_link ≈ 0).
-        // With D1, non-overlapping lineages are gated by p_link; at r=1.0 they
-        // are excluded with overwhelming probability. Lineage A still overlaps
-        // x_sel and is tagged deterministically.
         apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
                     &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1.0,
                     &mut sweep_cursor, &mut a_tag);
 
-        assert!(a_tag.contains_key(&0u32), "lineage A overlaps x_sel; should be tagged");
-        assert!(!a_tag.contains_key(&1u32), "lineage B: p_link≈0 at r=1.0; should NOT be tagged");
+        assert!(a_tag.contains_key(&0u32),
+            "lineage A in pop 0; should be tagged");
+        assert!(a_tag.contains_key(&1u32),
+            "lineage B in pop 0; must also be tagged regardless of x_sel overlap");
     }
 
     /// 4 sample lineages, all with A=true via f0=1.0 (probability 1 of A

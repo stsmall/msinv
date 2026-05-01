@@ -127,7 +127,16 @@ impl Sweep {
         } else {
             seg_left - self.x_sel
         };
-        let t_eff = self.t_de_novo() - self.tau;
+        // Spec convention (2026-04-30-sweep-per-segment-hitchhiking-design.md
+        // line 257): T_eff = t_origin - tau, selection phase only. The
+        // SV phase doesn't contribute to hitchhiking-style escape because
+        // during SV the per-allele rate divergence dominates: recombs
+        // during SV almost always flip via tag-swap (p_A small ⇒
+        // 1-p_A → 1), so the "no recomb" probability over the SV phase
+        // tracks the in-window mechanism, not an additional deterministic
+        // escape. Including SV in T_eff overcounts shedding for soft
+        // sweeps and was driving D3 ratio 0.96 (msinv 4% low).
+        let t_eff = self.joint.t_origin - self.tau;
         (-recomb_rate * d_min * t_eff).exp()
     }
 

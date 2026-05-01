@@ -6,6 +6,7 @@
 //! inversion frequency module) — same math, separate evolution paths.
 
 use crate::class_tag::Karyotype;
+use rand::Rng;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -182,38 +183,83 @@ pub fn build_joint_trajectory(
         samples.push(JointSample { t: tau, freq: state.clone() });
     }
 
-    // Standing-variation phase: backward-time stochastic neutral WF
-    // drift on the origin pop's A subgroup, starting at f0 and running
-    // until A frequency hits the extinction threshold 1/(2N). Other
-    // pops are held at their t_origin boundary value (multi-pop SV is
-    // out of scope for v1).
+    // Standing-variation phase: backward-time stochastic drift on the
+    // origin pop's A allele frequency, starting at f0 and running
+    // until A frequency hits the extinction threshold 1/(2N).
+    //
+    // We use discoal's *conditioned* diffusion-toward-loss SDE
+    // (`alleleTraj.c::neutralStochastic`):
+    //
+    //     dp = -p · dt + sqrt(p · (1 - p) · dt) · sign,  sign ∈ {-1, +1}
+    //
+    // The conditioning models the fact that the A allele eventually
+    // arose from a single de novo mutation event. The deterministic
+    // `-p · dt` drift carries the trajectory toward extinction in
+    // expectation. Without this drift (i.e. unconditional WF
+    // resampling), the trajectory wanders symmetrically around f0 and
+    // takes on the order of 4N · (1-f0)/f0 · (-ln(1-f0)) generations
+    // to extinction — about 10× longer than the conditioned process —
+    // which produces over-coalescence relative to discoal.
+    //
+    // Time unit: the SDE is in 2N-generation coalescent units. For
+    // 1-generation real-time steps we use `dt = 1/(2N)`.
+    //
+    // Other pops are held at their t_origin boundary value (multi-pop
+    // SV is out of scope for v1). The drift acts on the global A
+    // frequency in the origin pop; the corresponding decrease is
+    // absorbed by the a-allele classes proportionally to their
+    // current distribution.
     //
     // The trajectory data structure is oldest-first (samples[0].t is
     // the largest). We build the SV samples with t increasing past
-    // t_origin (i.e., each step is further into the past), then
-    // reverse + prepend so the combined `samples` stays oldest-first.
+    // t_origin (each step is further into the past), then reverse +
+    // prepend so the combined `samples` stays oldest-first.
     let n_at_origin = pop_size_at(spec.t_origin, origin_pop);
     let extinction = 1.0 / (2.0 * n_at_origin);
     let mut t_de_novo = spec.t_origin;
     if spec.f0 > extinction + 1e-12 {
-        // Start from the t_origin freq (samples[0] is the t_origin sample).
         let mut sv_state: Vec<[f64; 4]> = samples[0].freq.clone();
         let mut t_sv = spec.t_origin + 1.0;
         let mut sv_samples: Vec<JointSample> = Vec::new();
-        // Hard cap so a runaway drift can't loop forever on a
-        // pathological seed. ~5N steps is well past the ~4N expected
-        // extinction time for typical f0; pathological reps that
-        // wander up cap out here at ~50k steps for N=10k.
-        let max_steps = (5.0 * n_at_origin) as usize + 1024;
+        // Defensive cap. The conditioned process E[T_extinction] is
+        // O(2N · ln(2N · f0)) ≈ a few × 10N for typical f0 — 50N is
+        // generous headroom against pathological reps that linger.
+        let max_steps = (50.0 * n_at_origin) as usize + 1024;
         let mut steps = 0usize;
         loop {
             let n = pop_size_at(t_sv, origin_pop);
-            wf_resample(&mut sv_state[origin_pop as usize], 2.0 * n, &mut rng);
-            renormalize_inplace(&mut sv_state[origin_pop as usize]);
+            let dt = 1.0 / (2.0 * n);
+            let f = &mut sv_state[origin_pop as usize];
 
-            let p_a_origin = sv_state[origin_pop as usize][CLASS_S_A_BENEF]
-                + sv_state[origin_pop as usize][CLASS_I_A_BENEF];
+            // Current A frequency (sum across both karyotypes).
+            let p_a = (f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF])
+                .clamp(0.0, 1.0);
+            let p_q = p_a * (1.0 - p_a);
+            // discoal::neutralStochastic update.
+            let drift = -p_a * dt;
+            let diffusion = if p_q > 0.0 { (p_q * dt).sqrt() } else { 0.0 };
+            let sign = if rng.random::<f64>() < 0.5 { -1.0 } else { 1.0 };
+            let p_a_new = (p_a + drift + sign * diffusion).clamp(0.0, 1.0);
+            let delta = p_a_new - p_a;
 
+            // Distribute the change proportionally between (S,A) and
+            // (I,A) on the A-allele side, and between (S,a) and (I,a)
+            // on the a-allele side. For the panmictic case (all mass
+            // in S), this collapses to the simple two-class update.
+            if p_a > 1e-15 {
+                let frac_s_in_a = f[CLASS_S_A_BENEF] / p_a;
+                f[CLASS_S_A_BENEF] = (f[CLASS_S_A_BENEF] + frac_s_in_a * delta).max(0.0);
+                f[CLASS_I_A_BENEF] = (p_a_new - f[CLASS_S_A_BENEF]).max(0.0);
+            }
+            let p_a_total = 1.0 - p_a;
+            if p_a_total > 1e-15 {
+                let frac_s_in_a_anc = f[CLASS_S_A] / p_a_total;
+                f[CLASS_S_A] = (f[CLASS_S_A] - frac_s_in_a_anc * delta).max(0.0);
+                f[CLASS_I_A] = ((1.0 - p_a_new) - f[CLASS_S_A]).max(0.0);
+            }
+            renormalize_inplace(f);
+
+            let p_a_origin = f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF];
             if p_a_origin <= extinction {
                 t_de_novo = t_sv;
                 break;
@@ -229,9 +275,6 @@ pub fn build_joint_trajectory(
             t_sv += 1.0;
         }
         if !sv_samples.is_empty() {
-            // Prepend in oldest-first order: reverse so the largest t
-            // (deepest in the past) is at the front, then chain with
-            // the existing samples.
             sv_samples.reverse();
             let mut combined = sv_samples;
             combined.extend(samples);

@@ -23,9 +23,13 @@ cd rust && cargo build --release -p msinv-py
   at `/home/adkern/discoal/build/discoal`; spec
   `docs/superpowers/specs/2026-04-30-discoal-validation-design.md`). All five tests
   active and passing at 3·SE as of 2026-05-01:
-    D1 neutral (ratio 0.98), D2 hard sweep (1.03), D3 soft sweep f0=0.05 (0.97),
-    D4 partial sweep (1.02), D5 focal-recurrent uA=1e-3 (1.02).
-  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:944-997`);
+    D1 neutral (ratio 0.98), D2 hard sweep (1.05), D3 soft sweep f0=0.05 (0.97),
+    D4 partial sweep (1.02), D5 focal-recurrent uA=1e-3 (1.04).
+  D2/D5 ratios shifted up modestly from 1.03/1.02 to 1.05/1.04 after
+  `e0c51e3` (perf: tau-leap rate_cache rebuild skip) — different
+  deterministic realization at fixed seed but statistically equivalent
+  (D=0.56% vs baseline at PS2 n_reps=100, well within MC noise).
+  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:997-1041`);
   D5 was closed via the new `SweepMode::StochasticConditioned` mode and
   the calibration `msinv recurrent_mutation_rate = discoal_uA / (2N)` —
   msinv's rate is per-individual-per-gen while discoal's `-uA` is in
@@ -143,8 +147,8 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   matching `Demography::migration_matrix[dst][src]`. Forward-flow A→B needs
   `m(B, A) > 0`, NOT `m(A, B) > 0`.
 - `population_size` convention: msinv treats `population_size=N` as **diploid Ne**
-  (per-pair coal rate = `1/(2N)`; verified at `rust/msinv-core/src/simulator.rs:1338`
-  and `msinv/hull/simulator.py:635`). To compare against msprime, double on the
+  (per-pair coal rate = `1/(2N)`; verified at `rust/msinv-core/src/simulator.rs:1898`
+  inside `emit_coal_events_from_cache`, and `msinv/hull/simulator.py:635`). To compare against msprime, double on the
   msprime side: `msprime.sim_ancestry(population_size=2*N, ploidy=1, record_full_arg=True)`.
   `ploidy=1` reads N as haploid; `record_full_arg=True` is needed because msinv
   records all recombs as tree boundaries while msprime default simplifies

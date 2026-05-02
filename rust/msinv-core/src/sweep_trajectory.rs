@@ -141,15 +141,12 @@ pub fn build_joint_trajectory(
         .collect();
 
     // Walk forward in time from t_origin (oldest) to tau (most recent).
-    // We log samples at integer-generation intervals.
-    //
     // `StochasticConditioned` rejects extinct trajectories: if
-    // `final_a < 0.95 · partial_sweep_final_freq` after the forward
-    // walk, the rng has advanced and the next attempt produces an
-    // independent trajectory. Mirrors discoal's `-ws` mode (always
-    // conditional on fixation). Plain `Stochastic` keeps unconditional
-    // semantics (used by T2 fixation-probability and J4 bottleneck
-    // drift-variance tests).
+    // `final_a + 1-chromosome-slack < partial_sweep_final_freq`, the
+    // rng has advanced and the next attempt produces an independent
+    // trajectory. Mirrors discoal's `-ws` (always conditional on
+    // fixation). Plain `Stochastic` keeps unconditional semantics
+    // (used by T2 fixation-probability and J4 drift-variance tests).
     let needs_conditioning = matches!(spec.mode, SweepMode::StochasticConditioned)
         && spec.partial_sweep_final_freq > spec.f0 + 1e-9;
     let initial_state = state.clone();
@@ -159,77 +156,66 @@ pub fn build_joint_trajectory(
     let mut samples = Vec::new();
 
     for _attempt in 0..max_attempts {
-    state = initial_state.clone();
-    samples.clear();
-    samples.push(JointSample { t: spec.t_origin, freq: state.clone() });
+        state = initial_state.clone();
+        samples.clear();
+        samples.push(JointSample { t: spec.t_origin, freq: state.clone() });
 
-    let mut t = spec.t_origin;
-    while t > tau {
-        // For DetOnly we step in 1-gen units; for Stoch we use dt_scalar
-        // relative to the smallest 2N. (Refined in Task 4.)
-        let dt = 1.0;
-        // Selection + drift + flux step (per pop)
-        for (p_idx, f) in state.iter_mut().enumerate() {
-            apply_selection_inplace(f, spec.s);
-            let n = pop_size_at(t, p_idx as u32);
-            apply_recurrent_inplace(f, spec.recurrent_mutation_rate, 2.0 * n, &mut rng);
-            if matches!(spec.mode, SweepMode::Stochastic | SweepMode::StochasticConditioned) {
-                wf_resample(f, 2.0 * n, &mut rng);
+        let mut t = spec.t_origin;
+        while t > tau {
+            let dt = 1.0;
+            for (p_idx, f) in state.iter_mut().enumerate() {
+                apply_selection_inplace(f, spec.s);
+                let n = pop_size_at(t, p_idx as u32);
+                apply_recurrent_inplace(f, spec.recurrent_mutation_rate, 2.0 * n, &mut rng);
+                if matches!(spec.mode, SweepMode::Stochastic | SweepMode::StochasticConditioned) {
+                    wf_resample(f, 2.0 * n, &mut rng);
+                }
+                apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
             }
-            apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
+            apply_migration_inplace(&mut state, t, migration_at);
+            t -= dt;
+            for f in state.iter_mut() {
+                renormalize_inplace(f);
+            }
+            // Deterministic mode stops once the global A frequency
+            // reaches the target; the loop fills the remaining samples
+            // at the saturated state.
+            let mean_a: f64 = state
+                .iter()
+                .map(|f| f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF])
+                .sum::<f64>()
+                / n_pops as f64;
+            if matches!(spec.mode, SweepMode::Deterministic)
+                && mean_a >= spec.partial_sweep_final_freq
+            {
+                while t > tau {
+                    samples.push(JointSample { t, freq: state.clone() });
+                    t -= dt;
+                }
+                break;
+            }
+            samples.push(JointSample { t, freq: state.clone() });
         }
-        // Migration step (across pops)
-        apply_migration_inplace(&mut state, t, migration_at);
-        t -= dt;
-        // Renormalize to guard against floating drift
-        for f in state.iter_mut() {
-            renormalize_inplace(f);
+        if samples.last().map(|s| s.t).unwrap_or(f64::INFINITY) > tau {
+            samples.push(JointSample { t: tau, freq: state.clone() });
         }
-        // Stop if global A frequency reached partial_sweep_final_freq
-        // (only applies in non-Stochastic modes; refined in later tasks).
-        let mean_a: f64 = state
+
+        if !needs_conditioning {
+            break;
+        }
+        // Accept this attempt if final A frequency reached the target,
+        // within a 1/(2N)-scale slack for floating drift.
+        let final_a: f64 = state
             .iter()
             .map(|f| f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF])
             .sum::<f64>()
             / n_pops as f64;
-        if matches!(spec.mode, SweepMode::Deterministic)
-            && mean_a >= spec.partial_sweep_final_freq
-        {
-            // Fill remaining samples at the final state
-            while t > tau {
-                samples.push(JointSample { t, freq: state.clone() });
-                t -= dt;
-            }
+        let n_at_origin_local = pop_size_at(spec.t_origin, origin_pop);
+        let slack: f64 = (0.5_f64 / (2.0 * n_at_origin_local)).max(1e-6_f64);
+        if final_a + slack >= spec.partial_sweep_final_freq {
             break;
         }
-        samples.push(JointSample { t, freq: state.clone() });
     }
-    // Ensure final sample is at tau
-    if samples.last().map(|s| s.t).unwrap_or(f64::INFINITY) > tau {
-        samples.push(JointSample { t: tau, freq: state.clone() });
-    }
-
-    // Conditional-fixation gate (StochasticConditioned only). Accept
-    // this attempt if the final A frequency reached the target. Use
-    // a small absolute slack (`max(0.5/(2N_at_origin), 1e-6)`) to
-    // tolerate floating drift and the partial-sweep plateau, but
-    // otherwise require full target attainment — discoal's `-ws`
-    // would reject trajectories that ended below the partial-sweep
-    // target.
-    if !needs_conditioning {
-        break;
-    }
-    let final_a: f64 = state
-        .iter()
-        .map(|f| f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF])
-        .sum::<f64>()
-        / n_pops as f64;
-    let n_at_origin_local = pop_size_at(spec.t_origin, origin_pop);
-    let slack: f64 = (0.5_f64 / (2.0 * n_at_origin_local)).max(1e-6_f64);
-    if final_a + slack >= spec.partial_sweep_final_freq {
-        break;
-    }
-    } // end attempt loop
 
     // Standing-variation phase: backward-time stochastic drift on the
     // origin pop's A allele frequency, starting at f0 and running

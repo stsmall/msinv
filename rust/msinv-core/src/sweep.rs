@@ -73,6 +73,12 @@ impl Sweep {
         t >= self.tau && t <= self.t_de_novo()
     }
 
+    /// Does this sweep have a standing-variation phase
+    /// (`f0 > 1/(2N)`, i.e. `t_de_novo` strictly past `t_origin`)?
+    pub fn has_sv_phase(&self) -> bool {
+        self.t_de_novo() > self.joint.t_origin + 1e-9
+    }
+
     /// Sweep-aware effective Ne for a (pop, kary) cell at backward
     /// time `t`. If `t` is inside the sweep window AND the trajectory
     /// is built, returns `n_pop_t * trajectory.p_kary(t, pop, kary)`.
@@ -95,17 +101,14 @@ impl Sweep {
     }
 
     /// Probability that a lineage at position `x` is linked to the
-    /// sweep MRCA, given recombination rate `r`. Approximation:
-    /// `exp(-r·d·T_eff)` where `T_eff = t_de_novo - tau` covers both
-    /// the selection phase and (when present) the standing-variation
-    /// phase. The proper integral over the trajectory shape is a TODO
-    /// refinement.
+    /// sweep MRCA, given recombination rate `r`. Uses the same
+    /// `T_eff = t_origin - tau` convention as `p_hh_for_segment`.
     pub fn hitchhiking_prob(&self, x: f64, recomb_rate: f64) -> f64 {
         if self.trajectory.is_none() {
             return 1.0;
         }
         let d = (x - self.x_sel).abs();
-        let t_eff = self.t_de_novo() - self.tau;
+        let t_eff = self.joint.t_origin - self.tau;
         (-recomb_rate * d * t_eff).exp()
     }
 
@@ -127,15 +130,11 @@ impl Sweep {
         } else {
             seg_left - self.x_sel
         };
-        // Spec convention (2026-04-30-sweep-per-segment-hitchhiking-design.md
-        // line 257): T_eff = t_origin - tau, selection phase only. The
-        // SV phase doesn't contribute to hitchhiking-style escape because
-        // during SV the per-allele rate divergence dominates: recombs
-        // during SV almost always flip via tag-swap (p_A small ⇒
-        // 1-p_A → 1), so the "no recomb" probability over the SV phase
-        // tracks the in-window mechanism, not an additional deterministic
-        // escape. Including SV in T_eff overcounts shedding for soft
-        // sweeps and was driving D3 ratio 0.96 (msinv 4% low).
+        // T_eff = selection phase only (spec
+        // `2026-04-30-sweep-per-segment-hitchhiking-design.md`). The
+        // SV phase shedding is handled by the in-window per-allele
+        // rate divergence, not by this deterministic partition;
+        // adding it here double-counts.
         let t_eff = self.joint.t_origin - self.tau;
         (-recomb_rate * d_min * t_eff).exp()
     }

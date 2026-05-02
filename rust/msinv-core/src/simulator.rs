@@ -20,6 +20,12 @@ use crate::sweep::Sweep;
 use crate::tables::TableBuilder;
 use crate::event_log;
 
+/// Tau-leap dt cap (in generations) inside hard-sweep windows.
+/// Empirically tuned to balance D2/D4/D5 against discoal at 200
+/// reps; smaller caps over-fragment D4's plateau dynamics, larger
+/// miss the rate-divergence band near `t_origin`.
+const HARD_SWEEP_DT_CAP_GENS: f64 = 0.7;
+
 // ---------------------------------------------------------------
 // Simulation result
 // ---------------------------------------------------------------
@@ -320,7 +326,6 @@ impl HullSimulator {
     ) {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
-        use crate::class_tag::Karyotype;
 
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
@@ -578,15 +583,11 @@ impl HullSimulator {
                     active, chosen_idx, x, arena, next_uid,
                     Some(&mut a_tag));
                 let len_after = active.len();
-                {
-                    let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
-                    swap_indices.push(chosen_idx);
-                    if len_after > len_before {
-                        swap_indices.push(len_after - 1);
-                    }
+                if len_after > len_before {
+                    let swap_indices: [usize; 2] = [chosen_idx, len_after - 1];
                     apply_sweep_recomb_tag_swap(
                         active, &swap_indices, &finalized_sweeps,
-                        t, arena, rng, &mut a_tag, x);
+                        t, rng, &mut a_tag, x);
                 }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -893,28 +894,20 @@ impl HullSimulator {
             let dt = -u.ln() / total_rate;
             let t_event = t + dt;
 
-            // Tau-leap inside an active HARD-SWEEP window: cap dt at 1
-            // gen so the per-pair AA rate `1/(2N·p_A(t))` is
-            // re-evaluated as p_A drops near `t_origin`. The constant-
-            // rate Gillespie sample taken at the sweep plateau (rate
-            // ~ 5e-5) overshoots past the rate-divergence band into
-            // `t_origin`, missing the in-sweep coalescences that
-            // discoal's fixed-step (`tIncOrig = 1/N` coal-time) loop
-            // catches. The missed events leave more A-tagged stragglers
-            // for `still_a` to force-coalesce at exactly `t_origin`,
-            // inflating D2 π by ~14% at n=2-4.
-            //
-            // Gated on hard sweep (no SV phase) only. SV-phase sweeps
-            // use Gillespie + any-pair AA picker, a tuned combination
-            // where the constant-rate underfire compensates for the
-            // any-pair always-fire to match discoal's D3 π. Adding
-            // tau-leap to SV phase causes over-coalescence (π drops
-            // ~20%).
+            // Tau-leap inside a hard-sweep window: cap dt at
+            // `HARD_SWEEP_DT_CAP_GENS` so the per-pair AA rate
+            // `1/(2N·p_A(t))` is re-evaluated as p_A drops near
+            // `t_origin`. Constant-rate Gillespie sampled at the sweep
+            // plateau overshoots past the rate-divergence band, missing
+            // the in-sweep coalescences that discoal's fixed-step
+            // (`tIncOrig = 1/N` coal-time) loop catches. Hard sweeps
+            // only; SV-phase sweeps use Gillespie + any-pair AA picker,
+            // and adding tau-leap there over-coalesces.
             let in_hard_sweep = finalized_sweeps.iter().any(|s| {
-                s.covers(t) && s.t_de_novo() <= s.joint.t_origin + 1e-9
+                s.covers(t) && !s.has_sv_phase()
             });
-            if in_hard_sweep && dt > 0.7 {
-                t += 0.7;
+            if in_hard_sweep && dt > HARD_SWEEP_DT_CAP_GENS {
+                t += HARD_SWEEP_DT_CAP_GENS;
                 engine_dirty = true;
                 cache_dirty = true;
                 continue;
@@ -978,7 +971,7 @@ impl HullSimulator {
                     // (hard sweep) timing while fixing D3 (soft sweep,
                     // multi-lineage non-overlap pair gap).
                     let in_sv_sweep = finalized_sweeps.iter().any(|s| {
-                        s.covers(t) && s.t_de_novo() > s.joint.t_origin + 1e-9
+                        s.covers(t) && s.has_sv_phase()
                     });
                     let (i, j) = if !in_any_sweep && matches!(allele, AlleleTag::Mixed) {
                         let target = rng.random_range(0..bucket.len());
@@ -1265,18 +1258,15 @@ impl HullSimulator {
                                          next_uid, Some(&mut a_tag));
                     let len_after_split = active.len();
                     // Discoal-style tag rejection-sampling for in-window
-                    // recombs. `chosen_idx` is the [head, x) child; if a
-                    // split actually happened, `len_after_split - 1` is
-                    // the [x, tail) child.
-                    {
-                        let mut swap_indices: SmallVec<[usize; 2]> = SmallVec::new();
-                        swap_indices.push(chosen_idx);
-                        if len_after_split > len_before_split {
-                            swap_indices.push(len_after_split - 1);
-                        }
+                    // recombs. Only fires when an actual split happened —
+                    // if `apply_recombination` was a no-op (x at first-
+                    // segment-left edge case) the lineage is unchanged
+                    // and there's nothing to retag.
+                    if len_after_split > len_before_split {
+                        let swap_indices: [usize; 2] = [chosen_idx, len_after_split - 1];
                         apply_sweep_recomb_tag_swap(
                             active, &swap_indices, &finalized_sweeps,
-                            t, arena, rng, &mut a_tag, x);
+                            t, rng, &mut a_tag, x);
                     }
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -2692,7 +2682,7 @@ fn apply_sweep_finalize(
     // The partition stays for SV-phase sweeps because PG2 / PS2 /
     // PS3 anchors were tuned with it active and the SV-phase de
     // novo merge below depends on `linked_uids`.
-    let has_sv_phase = sweep.t_de_novo() > sweep.joint.t_origin + 1e-9;
+    let has_sv_phase = sweep.has_sv_phase();
     let mut linked_uids: Vec<LinUid> = Vec::new();
     let candidates: Vec<LinUid> = if has_sv_phase {
         active.iter()
@@ -2871,18 +2861,6 @@ fn recompute_lineage_caches(lin: &mut Lineage, arena: &SegmentArena) {
     lin.cached_hull_r = hr;
 }
 
-fn lineage_overlaps_position(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
-    let mut s = head;
-    while s != SEG_NIL {
-        let seg = arena.get(s);
-        if seg.left <= x && x < seg.right {
-            return true;
-        }
-        s = seg.next;
-    }
-    false
-}
-
 /// Discoal-style per-recombination tag rejection-sampling. Called
 /// from each Event::Recombination consumer after `apply_recombination`
 /// returns. For each new child lineage that does NOT contain `x_sel`,
@@ -2902,7 +2880,6 @@ fn apply_sweep_recomb_tag_swap(
     new_indices: &[usize],
     sweeps: &[Sweep],
     t: f64,
-    _arena: &SegmentArena,
     rng: &mut Xoshiro256PlusPlus,
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
     breakpoint_x: f64,
@@ -2916,33 +2893,23 @@ fn apply_sweep_recomb_tag_swap(
         None => return,
     };
     let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
-    // Position-based carrier rule (discoal `recombineAtTimePopnSweep`
-    // at `discoalFunctions.c:2735-2746`): the recomb breakpoint
-    // `breakpoint_x` partitions the chromosome at `x`. The child
-    // whose RANGE includes `x_sel` keeps its tag (the sweep mutation
-    // rides with that side); the OTHER child rejection-samples.
+    // Position-based carrier rule mirrors discoal
+    // `recombineAtTimePopnSweep` (`discoalFunctions.c:2735-2746`):
+    // the child whose chromosomal range includes `x_sel` keeps its
+    // tag; the other rejection-samples against `p_A(t)`. Applies
+    // even when neither child actually carries ancestral material at
+    // `x_sel` (fragmented pre-sweep lineages) — the carrier is
+    // determined purely by breakpoint position.
     //
-    // - If `x_sel < breakpoint_x`: x_sel is on the LEFT side of the
-    //   recomb → left child (`new_indices[0]` per simulator.rs main
-    //   loop) carries; right swaps.
-    // - If `x_sel >= breakpoint_x`: x_sel on the RIGHT side → right
-    //   carries; left swaps.
-    //
-    // Critically this applies even when neither child has actual
-    // ancestral material at `x_sel` (e.g. fragmented lineages
-    // produced by pre-sweep recombs whose segments don't span x_sel).
-    // The previous "skip if segments overlap x_sel" rule swapped
-    // BOTH children for off-x_sel lineages, over-flipping → more
-    // untagged stragglers in post-sweep neutral → D2 π +16% at n=10.
+    // Caller contract: `new_indices = [left, right]` after a real
+    // recomb split.
     let left_carries = sweep.x_sel < breakpoint_x;
     for (i, &idx) in new_indices.iter().enumerate() {
         if idx >= active.len() { continue; }
         if active[idx].population != sweep.origin_pop { continue; }
         if active[idx].head == SEG_NIL { continue; }
-        // Caller passes [left, right] in that order.
         let is_left = i == 0;
-        let carries = (is_left && left_carries) || (!is_left && !left_carries);
-        if carries {
+        if is_left == left_carries {
             continue;
         }
         let uid = active[idx].uid;

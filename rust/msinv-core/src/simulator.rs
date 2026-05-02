@@ -720,6 +720,12 @@ impl HullSimulator {
         let mut flux_dirty = true;
         let mut engine_dirty = true;  // force full rebuild of event list
         let mut cache_dirty = true;   // force full rebuild of rate_cache
+        // Set when only `t` advanced (e.g. hard-sweep tau-leap): events
+        // need re-emission because coal rates depend on `t` (per-allele
+        // AA/aa rates use `p_A(t)`), but `rate_cache` and `pop_buckets`
+        // are still valid because `active` was not mutated. Cheaper than
+        // `engine_dirty` by O(n²) on the rate_cache rebuild.
+        let mut coal_rates_dirty = false;
         // Counter throttling gc_sole_lineages — run every GC_STRIDE
         // recombs. Sole-carrier lineages contribute no coalescence rate
         // so a few rounds of delay has no correctness impact.
@@ -778,14 +784,19 @@ impl HullSimulator {
             let t_demo = demo.next_event_time(t);
 
             // --- Build or reuse event rates ---
-            if engine_dirty {
+            // Fires on either `engine_dirty` (full structural rebuild)
+            // or `coal_rates_dirty` (only `t` advanced; structures still
+            // valid). Sub-blocks gate on the more specific flag so a
+            // pure t-advance skips the O(n²) rate_cache rebuild and the
+            // O(n) pop_buckets rebuild.
+            if engine_dirty || coal_rates_dirty {
                 all_events.clear();
 
                 // Rebuild per-pop index buckets so coal and migration
                 // emission can consume them. Only built when n_pops
                 // >= 2. Pre-reserve capacities to avoid Vec::push
                 // capacity-growth branches in the hot fill loop.
-                if demo.n_pops >= 2 {
+                if engine_dirty && demo.n_pops >= 2 {
                     while pop_buckets.len() < demo.n_pops as usize {
                         pop_buckets.push(Vec::new());
                     }
@@ -855,6 +866,7 @@ impl HullSimulator {
                 rate_buf.extend(all_events.iter().map(|(r, _)| *r));
                 event_tree.build_from(&rate_buf);
                 engine_dirty = false;
+                coal_rates_dirty = false;
             }
 
             let total_rate = event_tree.total();
@@ -908,8 +920,14 @@ impl HullSimulator {
             });
             if in_hard_sweep && dt > HARD_SWEEP_DT_CAP_GENS {
                 t += HARD_SWEEP_DT_CAP_GENS;
-                engine_dirty = true;
-                cache_dirty = true;
+                // Only `t` advanced — `active` was not mutated, so
+                // `rate_cache` and `pop_buckets` (which depend only on
+                // `active`+`arena`) are still valid. Mark only the
+                // t-dependent caches dirty: events (per-allele AA/aa
+                // rates use `p_A(t)`) and flux (rate uses `t` via
+                // `flux_lineage_rate_segs`, no-op without barriers).
+                coal_rates_dirty = true;
+                flux_dirty = true;
                 continue;
             }
 
@@ -995,7 +1013,12 @@ impl HullSimulator {
                         // apply_coalescence_partial handles non-overlap
                         // segments correctly post-`b2bcaa9`.
                         let want_a = matches!(allele, AlleleTag::A);
-                        let candidates: SmallVec<[usize; 32]> = active.iter()
+                        // Inline 128 (vs 32) so the SV-phase any-pair
+                        // scan stays on-stack at production-scale n_A.
+                        // Bench-quality fix is (pop, cls)-keyed a_tag
+                        // buckets updated incrementally; deferred until
+                        // a profiler signal at n ≥ several hundred.
+                        let candidates: SmallVec<[usize; 128]> = active.iter()
                             .enumerate()
                             .filter(|(_, lin)| {
                                 if lin.population != pop { return false; }
@@ -1039,9 +1062,27 @@ impl HullSimulator {
                                 }
                             }
                         };
-                        let matching: SmallVec<[u64; 32]> = bucket.iter()
+                        let mut matching: SmallVec<[u64; 32]> = bucket.iter()
                             .copied().filter(|&p| matches_pair(p)).collect();
                         if matching.is_empty() { continue; }
+                        // Sort by (i, j) lex tuple so the picker's
+                        // selection is independent of `bucket` insertion
+                        // order. Without this, the tau-leap optimization
+                        // (skipping `rate_cache.rebuild`) preserves
+                        // incremental-maintenance order across the
+                        // sweep window instead of resetting to rebuild's
+                        // i-major lex order, shifting the deterministic
+                        // realization by ~5% in D2/D5. Naive
+                        // `sort_unstable()` on the packed `u64` would
+                        // sort by `j` (upper 32 bits) first; we want
+                        // `i` first to match rebuild's
+                        // `for i { for j>i { ... } }` iteration order.
+                        // Cost: O(m log m) per CoalAggregate event in
+                        // the sweep window, negligible vs the O(n²)
+                        // rebuild it replaces.
+                        matching.sort_unstable_by_key(|&p| {
+                            crate::rate_index::unpack_ij(p)
+                        });
                         let target = rng.random_range(0..matching.len());
                         crate::rate_index::unpack_ij(matching[target])
                     };

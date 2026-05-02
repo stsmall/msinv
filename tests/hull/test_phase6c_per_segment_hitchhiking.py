@@ -75,14 +75,20 @@ def _windowed_pi(ts, x_sel, L, n_bins=10):
 
 
 def test_ps2_spatial_profile_decays_monotonically():
-    """Mean folded pi over 30 reps should rise monotonically from
+    """Mean folded pi over 100 reps should rise monotonically from
     bin 0 (nearest x_sel) to bin 9 (farthest).
 
     The strict "monotone" test is sensitive to MC noise; we relax to
     'pi at bin 0 strictly less than pi at bin 9' which is the headline
     Kim-Stephan signature.
+
+    n_reps was 30; bumped to 100 so the ≥30% sanity threshold is robust
+    against small-sample variance — at 30 reps the realization can
+    straddle the threshold under simulator implementations that are
+    statistically equivalent in expectation but produce different
+    deterministic samples (e.g. tau-leap rebuild-skip optimization).
     """
-    n_reps = 30
+    n_reps = 100
     bin_means = [0.0] * 10
     for r in range(n_reps):
         ts = _sim_factory(seed=r)

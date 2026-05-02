@@ -6,11 +6,12 @@ cd rust && cargo build --release -p msinv-py
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory as of 2026-04-30).
+- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory as of 2026-05-01; 168 total).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
-  (193 passed, 3 skipped as of 2026-04-30; the 12 sweep-rewrite follow-up skips are now active
-  after Phases A-D of `docs/superpowers/plans/2026-04-29-sweep-followups.md`).
+  (198 passed, 3 skipped as of 2026-05-01; D1-D5 all active in
+  `test_validation_discoal.py`, 3 remaining skips are unrelated stress/mark
+  cases).
 - msprime validation: `tests/hull/test_validation_msprime.py` (N1–N6: panmictic, two-pop migration,
   two-pop split, bottleneck, growth, three-pop split — vs `msprime.sim_ancestry`; ~15 s; spec
   `docs/superpowers/specs/2026-04-30-msprime-validation-extension-design.md`).
@@ -18,14 +19,21 @@ cd rust && cargo build --release -p msinv-py
   appended to `.tmp/msprime_validation_bench.jsonl`. Use `-s` to surface OK/FAIL + benchmarks.
 - discoal validation: `tests/hull/test_validation_discoal.py` (D1–D5 vs discoal v2.0.0-beta
   at `/home/adkern/discoal/discoal`; spec
-  `docs/superpowers/specs/2026-04-30-discoal-validation-design.md`). D1 neutral, D2 hard
-  sweep, D4 partial sweep are active and pass at 3·SE. D3 (soft sweep, f0=0.05) and
-  D5 (focal-recurrent, uA=1e-3) are committed but `@pytest.mark.skip`-marked: D3 needs
-  K-founder partitioning ported into Rust `apply_sweep_finalize` (the Python fallback
-  has it at `msinv/hull/simulator.py:1029-1041`); D5 needs a units audit on
-  `recurrent_mutation_rate` vs discoal `-uA`. Sweep scenarios use deterministic
-  trajectories on both sides (msinv `mode='Deterministic'`, discoal `-wd`) when f0=1/(2N)
-  to avoid the extinction-prone stochastic regime.
+  `docs/superpowers/specs/2026-04-30-discoal-validation-design.md`). All five tests
+  active and passing at 3·SE as of 2026-05-01:
+    D1 neutral (ratio 0.98), D2 hard sweep (1.03), D3 soft sweep f0=0.05 (0.97),
+    D4 partial sweep (1.02), D5 focal-recurrent uA=1e-3 (1.02).
+  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:944-997`);
+  D5 was closed via the new `SweepMode::StochasticConditioned` mode and
+  the calibration `msinv recurrent_mutation_rate = discoal_uA / (2N)` —
+  msinv's rate is per-individual-per-gen while discoal's `-uA` is in
+  scaled units inside `pRecurMut`. The calibration is only valid in the
+  low-recurrence regime; at high uA the forward (msinv) and backward
+  (discoal) recurrence semantics produce different effects. Sweep
+  scenarios use deterministic trajectories on both sides
+  (msinv `mode='Deterministic'`, discoal `-wd`) when f0=1/(2N) to
+  avoid the extinction-prone stochastic regime; D3 uses
+  `mode='Stochastic'` with f0=0.05 on both sides.
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
 - Single Python file: `.venv/bin/python -m pytest tests/hull/test_phase8_trajectory_selection.py -v`.

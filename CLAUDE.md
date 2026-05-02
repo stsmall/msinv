@@ -4,6 +4,8 @@
 cd rust && cargo build --release -p msinv-py
 /bin/cp -f target/release/lib_msinv_core.so ../msinv/_msinv_core.cpython-312-x86_64-linux-gnu.so
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
+- The PreToolUse hook blocks the cp if ANY `python.*(pytest|msinv)` process is running
+  (even unrelated projects). Wait for it to finish or `kill` deliberately.
 
 ## Tests
 - Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory as of 2026-05-01; 168 total).
@@ -18,7 +20,7 @@ cd rust && cargo build --release -p msinv-py
   Each scenario also prints a benchmark block (per-rep wall-clock + peak RSS per engine);
   appended to `.tmp/msprime_validation_bench.jsonl`. Use `-s` to surface OK/FAIL + benchmarks.
 - discoal validation: `tests/hull/test_validation_discoal.py` (D1–D5 vs discoal v2.0.0-beta
-  at `/home/adkern/discoal/discoal`; spec
+  at `/home/adkern/discoal/build/discoal`; spec
   `docs/superpowers/specs/2026-04-30-discoal-validation-design.md`). All five tests
   active and passing at 3·SE as of 2026-05-01:
     D1 neutral (ratio 0.98), D2 hard sweep (1.03), D3 soft sweep f0=0.05 (0.97),
@@ -34,6 +36,11 @@ cd rust && cargo build --release -p msinv-py
   (msinv `mode='Deterministic'`, discoal `-wd`) when f0=1/(2N) to
   avoid the extinction-prone stochastic regime; D3 uses
   `mode='Stochastic'` with f0=0.05 on both sides.
+- Sweep cross-engine debugging: bisect by sample size n=2/n=4/n=10 against discoal.
+  `|Δ|` constant across n → trajectory or single-pair rate bug.
+  `|Δ|` shrinks with n → discoal-style multi-lineage interaction missing (D3 pattern: any-pair AA picker).
+  `|Δ|` grows with n → Gillespie rate-divergence miss (D2 pattern: tau-leap inside hard-sweep window).
+  Spatial pi decomposition (windowed `ts.diversity`) catches L/R asymmetric biases (D2 tag-swap pattern).
 - ALWAYS `.venv/bin/python`, not system.
 - Targeted Rust subset: `cargo test --release --lib <substring>` (e.g. `class_mig`, `trajectory`).
 - Single Python file: `.venv/bin/python -m pytest tests/hull/test_phase8_trajectory_selection.py -v`.
@@ -148,6 +155,18 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
 - Sweep + inversion trajectories use the **discrete-time** WF logistic update
   `p_{t+1} = p_t·(1+s)/(1+s·p_t)` with closed form `f0·(1+s)^t / (1 - f0 + f0·(1+s)^t)`.
   Don't write tests against the continuous `exp(s·t)` form — they diverge at O(s²·t).
+- Sweep stack mechanisms gate on `Sweep::has_sv_phase()` (true ⟺ `t_de_novo > t_origin`):
+  per-segment partition fires for SV only; `still_a` force-coalesce fires for hard only;
+  any-pair AA/aa picker fires for SV only; tau-leap dt cap fires for hard only. Changing
+  one without checking the gate breaks the others' calibration.
+- discoal source cross-reference (frequent lookups during validation work):
+  - `discoalFunctions.c:2306+` `sweepPhaseEventsConditionalTrajectory` (sweep main loop, no endpoint force-coalesce)
+  - `discoalFunctions.c:2735-2746` `recombineAtTimePopnSweep` (position-based tag-swap carrier rule)
+  - `discoalFunctions.c:2914-2937` `coalesceAtTimePopnSweep` (any-pair via `pickNodePopnSweep`)
+  - `discoalFunctions.c:3487+` `pickNodePopnSweep` (NO overlap test — picks any sweep-pop node)
+  - `discoalFunctions.c:1865+` `proposeTrajectory` (forward conditional drift; case 's' → `genicSelectionStochasticForwards`)
+  - `discoalFunctions.c:595+` `recurrentMutAtTime` (-uA event: flip a sample lineage's sweepPopn)
+  - `alleleTraj.c:39-55` `neutralStochastic` (conditioned-toward-loss SDE; matches msinv SV-phase drift)
 - Sweep model: per-segment hitchhiking (post-2026-04-30). Each ancestral segment of an
   A-tagged lineage rolls an independent Bernoulli with `p_hh = exp(-r·d·T_eff)` at
   `apply_sweep_finalize`. Linked segments force-coalesce; escaped segments split off

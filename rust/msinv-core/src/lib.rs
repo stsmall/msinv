@@ -11,6 +11,7 @@ pub mod rate_index;
 pub mod rate_engine;
 pub mod demography;
 pub mod sweep;
+pub mod sweep_buckets;
 pub mod sweep_trajectory;
 pub mod sweep_kim_stephan;
 pub mod trajectory;

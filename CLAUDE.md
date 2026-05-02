@@ -118,6 +118,17 @@ Off-path is zero-overhead; production sims should leave the flag off.
 Project memory: `/home/ssmall/.claude/projects/-home-ssmall-inversion-sims-files/memory/`
 Read `MEMORY.md` there first — index of what's known about the code + biology.
 
+## Known production-perf concern (queued for 2026-05-02)
+- **SV-phase any-pair scan** at `simulator.rs:1021`. During soft
+  sweeps (`f0 > 1/(2N)`), every AA/aa CoalAggregate event walks all
+  of `active` to build a candidate list — O(|active|) per event.
+  The 32→128 SmallVec hedge in `e0c51e3` only addresses heap spill,
+  not the walk cost. Trips at high ρ + soft sweeps; e.g. Kir/Fol
+  3Ra soft sweep at chrom-arm scale (ρ≈4000, n=500) → |active|≈10⁴
+  during SV phase, ~10⁷-10⁸ filter ops per rep. Hard-sweep / neutral
+  runs never fire this path. Full fix design + risk plan in
+  `project_validation_tracks_resume` deferred-perf section.
+
 ## Known scale limits
 - Realistic anopheles Ne_anc ≥ 1e6 + old inversions (≥100k gen) hits the remnant-ratchet:
   partial-coal on class-mismatched pairs grows active-n unboundedly.

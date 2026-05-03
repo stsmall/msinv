@@ -17,6 +17,7 @@ use crate::phi::{phi, phi_integral};
 use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::Sweep;
+use crate::sweep_buckets::SweepBuckets;
 use crate::tables::TableBuilder;
 use crate::event_log;
 
@@ -337,6 +338,10 @@ impl HullSimulator {
         let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
         let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        // Mirror of `a_tag` indexed by `(pop, allele)` for O(n_A) picker
+        // reads at the SV-phase any-pair scan. Stage 2: maintained
+        // alongside `a_tag` + `active`; Stage 3 flips the picker read.
+        let mut buckets = SweepBuckets::new(demo.n_pops as u32);
 
         let mut t: f64 = 0.0;
         let max_lins = (active.len() * 40).max(2048);
@@ -417,7 +422,7 @@ impl HullSimulator {
             // Without this, recomb-on-fragments loop unboundedly at
             // boundaries where all remaining material is non-shared.
             if coal_rate <= 0.0 && recomb_rate > 0.0 && active.len() > 1 {
-                let removed = gc_sole_lineages_with_removed(active, arena);
+                let removed = gc_sole_lineages_with_removed(active, arena, Some(&mut buckets));
                 if !removed.is_empty() {
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
@@ -434,7 +439,7 @@ impl HullSimulator {
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
-                        &mut sweep_cursor, None, &mut a_tag);
+                        &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
                     total_material = active.iter().map(|l| l.cached_len).sum();
@@ -453,7 +458,7 @@ impl HullSimulator {
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
-                    &mut sweep_cursor, None, &mut a_tag);
+                    &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
                 total_material = active.iter().map(|l| l.cached_len).sum();
@@ -529,6 +534,7 @@ impl HullSimulator {
                     }
                 }
                 active[chosen_idx].population = dst;
+                buckets.on_pop_change(active[chosen_idx].uid, dst, chosen_idx as u32);
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
                     &barrier_active, demo, t, self.sequence_length);
@@ -546,7 +552,7 @@ impl HullSimulator {
                 let old_j_len = active[j].cached_len;
                 apply_coalescence_compound(
                     active, i, j, t, arena, tables, next_uid,
-                    Some(&mut a_tag));
+                    Some(&mut a_tag), Some(&mut buckets));
                 let post_len = active.len();
                 let mut delta = -old_i_len - old_j_len;
                 for new_idx in (pre_len - 2)..post_len {
@@ -581,13 +587,13 @@ impl HullSimulator {
                 let len_before = active.len();
                 apply_recombination(
                     active, chosen_idx, x, arena, next_uid,
-                    Some(&mut a_tag));
+                    Some(&mut a_tag), Some(&mut buckets));
                 let len_after = active.len();
                 if len_after > len_before {
                     let swap_indices: [usize; 2] = [chosen_idx, len_after - 1];
                     apply_sweep_recomb_tag_swap(
                         active, &swap_indices, &finalized_sweeps,
-                        t, rng, &mut a_tag, x);
+                        t, rng, &mut a_tag, &mut buckets, x);
                 }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -600,7 +606,7 @@ impl HullSimulator {
                 gc_counter += 1;
                 if gc_counter >= gc_stride {
                     gc_counter = 0;
-                    let removed = gc_sole_lineages_with_removed(active, arena);
+                    let removed = gc_sole_lineages_with_removed(active, arena, Some(&mut buckets));
                     if !removed.is_empty() {
                         pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                             demo, t, self.sequence_length);
@@ -665,6 +671,10 @@ impl HullSimulator {
         // sweeps fire simultaneously).
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
         let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        // Mirror of `a_tag` indexed by `(pop, allele)` for O(n_A) picker
+        // reads at the SV-phase any-pair scan. Stage 2: maintained
+        // alongside `a_tag` + `active`; Stage 3 flips the picker read.
+        let mut buckets = SweepBuckets::new(demo.n_pops as u32);
         // Record sample UIDs before any recombination/coalescence so we can
         // count only the *initial sample lineages* that were tagged A at τ.
         // Using a_tag.values().count() would also count recombination children
@@ -888,7 +898,7 @@ impl HullSimulator {
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                         self.sequence_length, rng, self.recombination_rate,
                         &mut sweep_cursor,
-                        event_log.as_deref_mut(), &mut a_tag);
+                        event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                     total_material = active.iter()
                         .map(|l| l.cached_len).sum();
                     total_recomb_rate = total_material * self.recombination_rate;
@@ -939,7 +949,7 @@ impl HullSimulator {
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
                     self.sequence_length, rng, self.recombination_rate,
                     &mut sweep_cursor,
-                    event_log.as_deref_mut(), &mut a_tag);
+                    event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                 total_material = active.iter()
                     .map(|l| l.cached_len).sum();
                 total_recomb_rate = total_material * self.recombination_rate;
@@ -1013,6 +1023,19 @@ impl HullSimulator {
                         // apply_coalescence_partial handles non-overlap
                         // segments correctly post-`b2bcaa9`.
                         let want_a = matches!(allele, AlleleTag::A);
+                        // Stage 2 SweepBuckets bookkeeping invariant: the
+                        // (pop, allele) bucket index must mirror the
+                        // canonical `a_tag` HashMap + active idxs at
+                        // every picker hit. Stage 3 will replace the
+                        // O(|active|) walk below with a bucket read; if
+                        // any maintenance site was missed, this assert
+                        // fires before the divergence is laundered into
+                        // a deterministic-realization shift downstream.
+                        // Gate fires under `cargo test` (debug + release)
+                        // and `cargo build` debug; production release
+                        // builds skip it for zero overhead.
+                        #[cfg(any(test, debug_assertions))]
+                        buckets.assert_invariants();
                         // Inline 128 (vs 32) so the SV-phase any-pair
                         // scan stays on-stack at production-scale n_A.
                         // Bench-quality fix is (pop, cls)-keyed a_tag
@@ -1103,7 +1126,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed, Some(&mut a_tag));
+                        allowed, Some(&mut a_tag), Some(&mut buckets));
                     let post_len = active.len();
                     // Incremental total_material: remove the two merged
                     // lineages' contributions, add the new lineages'.
@@ -1164,7 +1187,7 @@ impl HullSimulator {
                     };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
-                        allowed, Some(&mut a_tag));
+                        allowed, Some(&mut a_tag), Some(&mut buckets));
                     let post_len = active.len();
                     let mut delta = -old_i_len - old_j_len;
                     for new_idx in (pre_len - 2)..post_len {
@@ -1249,7 +1272,7 @@ impl HullSimulator {
                         let pre_len = active.len();
                         apply_coalescence(
                             active, a, b, t, arena,
-                            tables, next_uid, Some(&mut a_tag));
+                            tables, next_uid, Some(&mut a_tag), Some(&mut buckets));
                         let post_len = active.len();
                         // Incremental total_material + lin_len_tree.
                         let mut delta = -old_a_len - old_b_len;
@@ -1296,7 +1319,7 @@ impl HullSimulator {
                                            arena, self.sequence_length);
                     let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
-                                         next_uid, Some(&mut a_tag));
+                                         next_uid, Some(&mut a_tag), Some(&mut buckets));
                     let len_after_split = active.len();
                     // Discoal-style tag rejection-sampling for in-window
                     // recombs. Only fires when an actual split happened —
@@ -1307,7 +1330,7 @@ impl HullSimulator {
                         let swap_indices: [usize; 2] = [chosen_idx, len_after_split - 1];
                         apply_sweep_recomb_tag_swap(
                             active, &swap_indices, &finalized_sweeps,
-                            t, rng, &mut a_tag, x);
+                            t, rng, &mut a_tag, &mut buckets, x);
                     }
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -1370,7 +1393,7 @@ impl HullSimulator {
                     if gc_counter >= gc_stride {
                         gc_counter = 0;
                         let n_before_gc = active.len();
-                        let removed = gc_sole_lineages_with_removed(active, arena);
+                        let removed = gc_sole_lineages_with_removed(active, arena, Some(&mut buckets));
                         if !removed.is_empty() {
                             total_material = active.iter()
                                 .map(|l| l.cached_len).sum();
@@ -1474,6 +1497,7 @@ impl HullSimulator {
                     let pick = rng.random_range(0..bucket.len());
                     let idx = bucket[pick] as usize;
                     active[idx].population = dst;
+                    buckets.on_pop_change(active[idx].uid, dst, idx as u32);
                     engine_dirty = true;
                     if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
                         if cache_dirty {
@@ -1818,6 +1842,7 @@ fn tree_swap_remove(
 fn gc_sole_lineages_with_removed(
     active: &mut Vec<Lineage>,
     arena: &SegmentArena,
+    mut buckets: Option<&mut SweepBuckets>,
 ) -> Vec<usize> {
     let n = active.len();
     if n <= 1 { return Vec::new(); }
@@ -1851,7 +1876,15 @@ fn gc_sole_lineages_with_removed(
     let mut removed = Vec::new();
     for i in (0..n).rev() {
         if !has_overlap[i] {
+            // Mirror the swap_remove on `buckets` so the index stays
+            // consistent when sole-carrier GC removes a tagged lineage.
+            let removed_uid = active[i].uid;
+            let last = active.len() - 1;
+            let moved_uid = if i < last { Some(active[last].uid) } else { None };
             active.swap_remove(i);
+            if let Some(b) = buckets.as_deref_mut() {
+                b.on_active_swap_remove(removed_uid, moved_uid, i as u32);
+            }
             removed.push(i);
         }
     }
@@ -2447,6 +2480,7 @@ fn apply_boundary(
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    buckets: &mut SweepBuckets,
 ) {
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
@@ -2463,7 +2497,7 @@ fn apply_boundary(
         let ne_sweep = demo.size_at(sweep.origin_pop, t).max(1.0);
         apply_sweep(active, &sweep, t, arena, tables,
                      next_uid, seq_len, rng, ne_sweep, recomb_rate,
-                     sweep_cursor, a_tag);
+                     sweep_cursor, a_tag, buckets);
         finalized_sweeps.push(sweep);
     }
     // Keep finalized_sweeps sorted by t_de_novo so [0] is the next to fire.
@@ -2475,7 +2509,7 @@ fn apply_boundary(
     {
         let sweep = finalized_sweeps.remove(0);
         apply_sweep_finalize(active, &sweep, t, arena, tables,
-                              next_uid, rng, recomb_rate, sweep_cursor, a_tag);
+                              next_uid, rng, recomb_rate, sweep_cursor, a_tag, buckets);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2489,7 +2523,7 @@ fn apply_boundary(
     let mut log_ref = event_log;
     for spec in class_mig {
         apply_class_mig(active, arena, &spec, rng, inversions,
-                         log_ref.as_deref_mut(), t);
+                         log_ref.as_deref_mut(), t, Some(buckets));
     }
 }
 
@@ -2504,6 +2538,7 @@ fn apply_class_mig(
     inversions: &[InversionSpec],
     log: Option<&mut event_log::EventLog>,
     t: f64,
+    mut buckets: Option<&mut SweepBuckets>,
 ) {
     use rand::Rng;
     // Locate the InversionSpec for the requested inv_id (just for any
@@ -2512,13 +2547,16 @@ fn apply_class_mig(
     let _ = inversions;
     let mut n_eligible: u32 = 0;
     let mut n_moved: u32 = 0;
-    for lin in active.iter_mut() {
+    for (idx, lin) in active.iter_mut().enumerate() {
         if lin.population != spec.src { continue; }
         let kary = lineage_class_for_inv_id_arena(lin.head, spec.inv_id, arena);
         if kary != Some(spec.kary) { continue; }
         n_eligible += 1;
         if spec.proportion >= 1.0 - 1e-12 || rng.random::<f64>() < spec.proportion {
             lin.population = spec.dst;
+            if let Some(b) = buckets.as_deref_mut() {
+                b.on_pop_change(lin.uid, spec.dst, idx as u32);
+            }
             n_moved += 1;
         }
     }
@@ -2659,6 +2697,7 @@ fn apply_sweep(
     recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    buckets: &mut SweepBuckets,
 ) {
     // Phase B: at τ (entry into the sweep window going backward), tag every
     // lineage overlapping x_sel in the sweep's (origin_pop, origin_kary) cell
@@ -2678,7 +2717,7 @@ fn apply_sweep(
     // don't span x_sel, the tag still applies — they participate in the
     // per-allele rate model and can shed via tag-aware recombination.
     let _ = recomb_rate;  // formerly read by the distant-lineage gate.
-    for lin in active.iter() {
+    for (idx, lin) in active.iter().enumerate() {
         if lin.population != sweep.origin_pop { continue; }
         if lin.head == crate::segment::SEG_NIL { continue; }
         // Determine kary for the trajectory query: use the inv-class at
@@ -2688,6 +2727,7 @@ fn apply_sweep(
         let pop = lin.population;
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
+        buckets.set_tag(lin.uid, idx as u32, pop, is_a);
     }
 }
 
@@ -2708,6 +2748,7 @@ fn apply_sweep_finalize(
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    buckets: &mut SweepBuckets,
 ) {
     // For SV-phase sweeps only: per-segment partition into linked
     // vs escaped using `p_hh = exp(-r·d·T_eff)`. Hard sweeps
@@ -2754,6 +2795,7 @@ fn apply_sweep_finalize(
             // chain with the escaped chain (semantically identical
             // since partition only re-links).
             a_tag.insert(uid, false);
+            buckets.set_tag(uid, idx as u32, pop, false);
             let lin = &mut active[idx];
             lin.head = escaped_head;
             // Recompute tail by walking to the end of escaped_head.
@@ -2836,7 +2878,7 @@ fn apply_sweep_finalize(
             let t_merge = next_sweep_merge_t(sweep_cursor, t);
             apply_coalescence_partial(
                 active, lo, hi, t_merge, arena, tables, next_uid,
-                None, Some(a_tag));
+                None, Some(a_tag), Some(&mut *buckets));
         }
     }
 
@@ -2860,7 +2902,8 @@ fn apply_sweep_finalize(
             .map(|lin| lin.uid)
             .collect();
         if still_a.len() >= 2 {
-            coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor);
+            coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor,
+                                Some(buckets));
         }
     }
     // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
@@ -2923,6 +2966,7 @@ fn apply_sweep_recomb_tag_swap(
     t: f64,
     rng: &mut Xoshiro256PlusPlus,
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    buckets: &mut SweepBuckets,
     breakpoint_x: f64,
 ) {
     let sweep = match sweeps.iter().find(|s| s.covers(t)) {
@@ -2954,12 +2998,22 @@ fn apply_sweep_recomb_tag_swap(
             continue;
         }
         let uid = active[idx].uid;
+        let pop = active[idx].population;
+        let was_present = a_tag.contains_key(&uid);
         let was_a = a_tag.get(&uid).copied().unwrap_or(false);
         let stay_prob = if was_a { p_a } else { 1.0 - p_a };
         if rng.random::<f64>() < stay_prob {
             a_tag.entry(uid).or_insert(was_a);
+            // entry().or_insert(was_a) tags the lineage if it wasn't
+            // already present (untagged → tagged with `was_a == false`,
+            // i.e. allele=ALower). Mirror that into buckets only when
+            // a_tag actually transitioned untagged → tagged.
+            if !was_present {
+                buckets.set_tag(uid, idx as u32, pop, was_a);
+            }
         } else {
             a_tag.insert(uid, !was_a);
+            buckets.set_tag(uid, idx as u32, pop, !was_a);
         }
     }
 }
@@ -3045,6 +3099,7 @@ fn coalesce_uid_group(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     sweep_cursor: &mut (f64, u64),
+    mut buckets: Option<&mut SweepBuckets>,
 ) {
     if uids.len() < 2 { return; }
     // Cascade-merge with retry: a uid that's disjoint from the
@@ -3069,7 +3124,8 @@ fn coalesce_uid_group(
                     next_pending.push(other_uid);
                     continue;
                 }
-                apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid, None);
+                apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid,
+                                   None, buckets.as_deref_mut());
                 merged_uid = active.last().unwrap().uid;
                 progress = true;
             }
@@ -3363,7 +3419,7 @@ mod tests {
         let n_edges_before = tables.num_edges();
         coalesce_uid_group(&mut active, &[0, 1], 100.0,
                             &mut arena, &mut tables, &mut next_uid,
-                            &mut cursor);
+                            &mut cursor, None);
 
         assert_eq!(tables.num_edges(), n_edges_before,
             "added edges for non-overlapping pair");
@@ -3633,7 +3689,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0, None);
 
         // Both S-class lineages should now be in pop 0.
         // Both I-class lineages should still be in pop 1.
@@ -3657,7 +3713,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::I, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0, None);
 
         assert_eq!(active[0].population, 1, "S lineage wrongly moved");
         assert_eq!(active[1].population, 0, "I lineage 1 not moved");
@@ -3677,7 +3733,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0, None);
 
         assert_eq!(active[0].population, 0, "pop-0 S lineage moved (shouldn't)");
         assert_eq!(active[1].population, 0, "pop-1 S lineage not moved");
@@ -3696,7 +3752,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 1.0,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0, None);
         // PAN lineage has no class tag for inv 0 → skipped, stays in pop 1.
         assert_eq!(active[0].population, 1,
             "PAN lineage incorrectly migrated by cmig");
@@ -3716,7 +3772,7 @@ mod tests {
             src: 1, dst: 0, kary: Karyotype::S, inv_id: 0, proportion: 0.5,
         };
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
-        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0);
+        apply_class_mig(&mut active, &arena, &spec, &mut rng, &[], None, 0.0, None);
         let moved = active.iter().filter(|l| l.population == 0).count();
         // 200 * 0.5 = 100, ±3*sqrt(200*0.5*0.5) ≈ ±21
         assert!((moved as i64 - 100).abs() < 25,
@@ -3860,10 +3916,11 @@ mod tests {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
         let mut sweep_cursor = (0.0, 0u64);
+        let mut buckets = SweepBuckets::new(1);
 
         apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
                     &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1e-12,
-                    &mut sweep_cursor, &mut a_tag);
+                    &mut sweep_cursor, &mut a_tag, &mut buckets);
 
         // f0=0.99 with high A frequency on origin_kary=S → expect both lineages tagged.
         assert_eq!(a_tag.len(), 2, "expected both lineages tagged");
@@ -3904,10 +3961,11 @@ mod tests {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
         let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
         let mut sweep_cursor = (0.0, 0u64);
+        let mut buckets = SweepBuckets::new(1);
 
         apply_sweep(&mut active, &sweep, 0.0, &mut arena, &mut tables,
                     &mut next_uid, 10_000.0, &mut rng, 10_000.0, 1.0,
-                    &mut sweep_cursor, &mut a_tag);
+                    &mut sweep_cursor, &mut a_tag, &mut buckets);
 
         assert!(a_tag.contains_key(&0u32),
             "lineage A in pop 0; should be tagged");

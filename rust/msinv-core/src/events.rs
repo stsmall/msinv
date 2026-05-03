@@ -6,6 +6,7 @@
 use crate::class_tag::BranchClass;
 use crate::lineage::{LinUid, Lineage};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
+use crate::sweep_buckets::SweepBuckets;
 use crate::tables::TableBuilder;
 
 /// Coalesce two lineages (indices into `active`) at time `t`.
@@ -30,9 +31,10 @@ pub fn apply_coalescence(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     apply_coalescence_partial(active, idx_a, idx_b, t, arena, tables,
-                               next_uid, None, a_tag)
+                               next_uid, None, a_tag, buckets)
 }
 
 /// Coalesce two lineages. `allowed_class = Some(cls)` restricts the
@@ -49,6 +51,7 @@ pub fn apply_coalescence_partial(
     next_uid: &mut LinUid,
     allowed_class: Option<BranchClass>,
     mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    mut buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
@@ -212,9 +215,9 @@ pub fn apply_coalescence_partial(
 
     // Remove both originals.
     let (lo, hi) = if idx_a < idx_b { (idx_a, idx_b) } else { (idx_b, idx_a) };
-    active.swap_remove(hi);
+    swap_remove_with_buckets(active, hi, buckets.as_deref_mut());
     if lo < active.len() {
-        active.swap_remove(lo);
+        swap_remove_with_buckets(active, lo, buckets.as_deref_mut());
     }
 
     // Add output lineages, propagating A-flag to each new UID.
@@ -231,29 +234,64 @@ pub fn apply_coalescence_partial(
     // including the present-or-not bit.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
             if pa_present || pb_present {
-                map.insert(uid, fa || fb);
+                let is_a = fa || fb;
+                map.insert(uid, is_a);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, is_a);
+                }
             }
         }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if pa_present { map.insert(uid, fa); }
+            if pa_present {
+                map.insert(uid, fa);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, fa);
+                }
+            }
         }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if pb_present { map.insert(uid, fb); }
+            if pb_present {
+                map.insert(uid, fb);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, fb);
+                }
+            }
         }
     }
 
     new_node
+}
+
+/// Helper: `active.swap_remove(idx)` while keeping `SweepBuckets`
+/// in sync. Captures the `removed_uid` and `moved_uid` (if a move
+/// happens) before the swap so the bucket index can be patched up
+/// against the new layout.
+pub(crate) fn swap_remove_with_buckets(
+    active: &mut Vec<Lineage>,
+    idx: usize,
+    buckets: Option<&mut SweepBuckets>,
+) {
+    let removed_uid = active[idx].uid;
+    let last = active.len() - 1;
+    let moved_uid = if idx < last { Some(active[last].uid) } else { None };
+    active.swap_remove(idx);
+    if let Some(b) = buckets {
+        b.on_active_swap_remove(removed_uid, moved_uid, idx as u32);
+    }
 }
 
 /// Compound coalescence — Path 2 merge semantics.
@@ -278,6 +316,7 @@ pub fn apply_coalescence_compound(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    mut buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     let pop = active[idx_a].population;
     let new_node = tables.add_internal(t, pop as i32);
@@ -391,9 +430,9 @@ pub fn apply_coalescence_compound(
     }
 
     let (lo, hi) = if idx_a < idx_b { (idx_a, idx_b) } else { (idx_b, idx_a) };
-    active.swap_remove(hi);
+    swap_remove_with_buckets(active, hi, buckets.as_deref_mut());
     if lo < active.len() {
-        active.swap_remove(lo);
+        swap_remove_with_buckets(active, lo, buckets.as_deref_mut());
     }
 
     // Add output lineages, propagating A-flag to each new UID.
@@ -410,25 +449,42 @@ pub fn apply_coalescence_compound(
     // including the present-or-not bit.
     if merged_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(merged_head, merged_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
             if pa_present || pb_present {
-                map.insert(uid, fa || fb);
+                let is_a = fa || fb;
+                map.insert(uid, is_a);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, is_a);
+                }
             }
         }
     }
     if a_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(a_rem_head, a_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if pa_present { map.insert(uid, fa); }
+            if pa_present {
+                map.insert(uid, fa);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, fa);
+                }
+            }
         }
     }
     if b_rem_head != SEG_NIL {
         let uid = *next_uid; *next_uid += 1;
+        let new_idx = active.len() as u32;
         active.push(Lineage::new(b_rem_head, b_rem_tail, pop, uid, arena));
         if let Some(ref mut map) = a_tag {
-            if pb_present { map.insert(uid, fb); }
+            if pb_present {
+                map.insert(uid, fb);
+                if let Some(ref mut b) = buckets {
+                    b.set_tag(uid, new_idx, pop, fb);
+                }
+            }
         }
     }
 
@@ -446,19 +502,22 @@ pub fn apply_recombination(
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
     a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    buckets: Option<&mut SweepBuckets>,
 ) {
     let head = active[idx].head;
     if head == SEG_NIL { return; }
     // x at first_seg.left would empty active[idx] — treat as no-op.
     if x <= arena.get(head).left { return; }
     let parent_uid = active[idx].uid;
+    let pop = active[idx].population;
     let uid = *next_uid;
     *next_uid += 1;
     let right = active[idx].split_at(x, arena, uid);
     if let Some(right_lin) = right {
+        let new_idx = active.len() as u32;
         active.push(right_lin);
         if let Some(map) = a_tag {
-            propagate_a_flag_recomb(map, parent_uid, uid);
+            propagate_a_flag_recomb(map, parent_uid, uid, pop, new_idx, buckets);
         }
     }
 }
@@ -467,9 +526,15 @@ fn propagate_a_flag_recomb(
     a_tag: &mut std::collections::HashMap<LinUid, bool>,
     parent: LinUid,
     child: LinUid,
+    pop: u32,
+    child_idx: u32,
+    buckets: Option<&mut SweepBuckets>,
 ) {
     if let Some(&flag) = a_tag.get(&parent) {
         a_tag.insert(child, flag);
+        if let Some(b) = buckets {
+            b.set_tag(child, child_idx, pop, flag);
+        }
     }
 }
 
@@ -527,7 +592,7 @@ mod tests {
         };
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None, None);
         assert_eq!(active.len(), 1, "expected 1 merged output");
         assert_eq!(tables.num_edges(), 2);
     }
@@ -550,7 +615,7 @@ mod tests {
             &[(0.0, 50.0, pan), (50.0, 100.0, s)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None, None);
         assert_eq!(active.len(), 1,
             "ratchet: expected 1 output (no remnants)");
         // Edges: one pair per overlap interval ([0,50) + [50,100)) ×
@@ -572,7 +637,7 @@ mod tests {
         let lin_b = build_lineage_cls(&mut arena, &[(0.0, 100.0, i)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None, None);
         assert_eq!(active.len(), 2,
             "barrier: both remain separate");
         assert_eq!(tables.num_edges(), 0);
@@ -596,7 +661,7 @@ mod tests {
             &[(0.0, 50.0, pan), (50.0, 100.0, i)], 1);
         let mut active = vec![lin_a, lin_b];
         apply_coalescence_compound(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None, None);
         // Expected: merged (pan part) + a_rem (S at [50,100)) + b_rem (I).
         assert_eq!(active.len(), 3);
         // Edges: only pan overlap [0, 50) × 2 edges = 2.
@@ -623,7 +688,7 @@ mod tests {
         let mut active = vec![lin_a, lin_b];
 
         let new_node = apply_coalescence(
-            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 5.0, &mut arena, &mut tables, &mut next_uid, None, None);
 
         assert_eq!(active.len(), 1);
         assert_eq!(tables.node_time[new_node as usize], 5.0);
@@ -652,7 +717,7 @@ mod tests {
         let mut active = vec![lin_a, lin_b];
 
         let new_node = apply_coalescence(
-            &mut active, 0, 1, 3.0, &mut arena, &mut tables, &mut next_uid, None);
+            &mut active, 0, 1, 3.0, &mut arena, &mut tables, &mut next_uid, None, None);
 
         // Edges (post 2026-05-01 non-overlap-edges fix to match
         // discoal/msprime Hudson semantics):
@@ -677,7 +742,7 @@ mod tests {
         let lin = build_lineage(&mut arena, &[(100.0, 200.0)], 0);
         let mut active = vec![lin];
 
-        apply_recombination(&mut active, 0, 100.0, &mut arena, &mut next_uid, None);
+        apply_recombination(&mut active, 0, 100.0, &mut arena, &mut next_uid, None, None);
 
         assert_eq!(active.len(), 1, "no zombie, no spurious split");
         assert_ne!(active[0].head, SEG_NIL);
@@ -691,7 +756,7 @@ mod tests {
         let lin = build_lineage(&mut arena, &[(0.0, 100.0)], 0);
         let mut active = vec![lin];
 
-        apply_recombination(&mut active, 0, 30.0, &mut arena, &mut next_uid, None);
+        apply_recombination(&mut active, 0, 30.0, &mut arena, &mut next_uid, None, None);
 
         assert_eq!(active.len(), 2);
         let total: f64 = active.iter().map(|l| l.total_length(&arena)).sum();
@@ -710,7 +775,7 @@ mod tests {
         a_tag.insert(0u32, true);
 
         apply_recombination(&mut active, 0, 50.0, &mut arena, &mut next_uid,
-                             Some(&mut a_tag));
+                             Some(&mut a_tag), None);
 
         // Parent UID (0) should still be in the map (its left half kept that UID).
         // The new right-half UID (1) should also be tagged A.
@@ -742,7 +807,7 @@ mod tests {
         a_tag.insert(1u32, false);
 
         apply_coalescence(&mut active, 0, 1, 1.0, &mut arena, &mut tables,
-                          &mut next_uid, Some(&mut a_tag));
+                          &mut next_uid, Some(&mut a_tag), None);
 
         // Single output at active[0] with new UID. Should be tagged A (OR of inputs).
         assert_eq!(active.len(), 1);
@@ -783,7 +848,7 @@ mod tests {
         let mut next_uid2 = next_uid;
 
         apply_coalescence_partial(&mut active, 0, 1, 1.0, &mut arena, &mut tables,
-                                   &mut next_uid2, Some(s_class), Some(&mut a_tag));
+                                   &mut next_uid2, Some(s_class), Some(&mut a_tag), None);
 
         // At least one A-tagged output should exist (the merged lineage inherits OR=true).
         let tagged_count = active.iter()

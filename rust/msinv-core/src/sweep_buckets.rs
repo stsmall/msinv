@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::lineage::{LinUid, Lineage};
+use crate::lineage::{ATagMap, LinUid, Lineage};
 
 /// Allele subgroup. Mirrors the picker's `want_a` axis: `A` for tag=true,
 /// `ALower` for tag=false. Untagged lineages are not bucketed.
@@ -231,7 +231,7 @@ impl SweepBuckets {
     pub fn assert_consistent_with(
         &self,
         active: &[Lineage],
-        a_tag: &HashMap<LinUid, bool>,
+        a_tag: &ATagMap,
     ) {
         self.assert_invariants();
         for (pop_idx, slot) in self.buckets.iter().enumerate() {

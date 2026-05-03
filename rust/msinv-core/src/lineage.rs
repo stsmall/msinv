@@ -13,6 +13,18 @@ use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 /// Unique lineage identifier (monotonically increasing per simulation).
 pub type LinUid = u32;
 
+/// Sweep-allele tag map: `lin.uid → bool` (true = `A`, false = `ALower`).
+/// Backed by `rustc_hash::FxHashMap` so the per-iteration lookup inside
+/// `emit_coal_events_from_cache`'s per-cell active walk doesn't pay
+/// SipHash13's ~600 ns/lookup overhead. Flamegraph (Phase F L=100kb,
+/// 2026-05-03) showed ~13% of total wall in `BuildHasher::hash_one` on
+/// this exact map; FxHash on a 4-byte LinUid is ~5× faster.
+///
+/// Switching the backing hasher is byte-equivalent semantically: the
+/// map's only callers do `.get/.insert/.contains_key` keyed on uid;
+/// no caller iterates in a particular order.
+pub type ATagMap = rustc_hash::FxHashMap<LinUid, bool>;
+
 pub struct Lineage {
     pub head: SegIdx,
     pub tail: SegIdx,

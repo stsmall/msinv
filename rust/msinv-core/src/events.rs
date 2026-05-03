@@ -4,7 +4,7 @@
 /// and the table builder.
 
 use crate::class_tag::BranchClass;
-use crate::lineage::{LinUid, Lineage};
+use crate::lineage::{ATagMap, LinUid, Lineage};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep_buckets::SweepBuckets;
 use crate::tables::TableBuilder;
@@ -30,7 +30,7 @@ pub fn apply_coalescence(
     arena: &mut SegmentArena,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
-    a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    a_tag: Option<&mut ATagMap>,
     buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     apply_coalescence_partial(active, idx_a, idx_b, t, arena, tables,
@@ -50,7 +50,7 @@ pub fn apply_coalescence_partial(
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
     allowed_class: Option<BranchClass>,
-    mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    mut a_tag: Option<&mut ATagMap>,
     mut buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     let pop = active[idx_a].population;
@@ -315,7 +315,7 @@ pub fn apply_coalescence_compound(
     arena: &mut SegmentArena,
     tables: &mut TableBuilder,
     next_uid: &mut LinUid,
-    mut a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    mut a_tag: Option<&mut ATagMap>,
     mut buckets: Option<&mut SweepBuckets>,
 ) -> i32 {
     let pop = active[idx_a].population;
@@ -501,7 +501,7 @@ pub fn apply_recombination(
     x: f64,
     arena: &mut SegmentArena,
     next_uid: &mut LinUid,
-    a_tag: Option<&mut std::collections::HashMap<LinUid, bool>>,
+    a_tag: Option<&mut ATagMap>,
     buckets: Option<&mut SweepBuckets>,
 ) {
     let head = active[idx].head;
@@ -523,7 +523,7 @@ pub fn apply_recombination(
 }
 
 fn propagate_a_flag_recomb(
-    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    a_tag: &mut ATagMap,
     parent: LinUid,
     child: LinUid,
     pop: u32,
@@ -771,7 +771,7 @@ mod tests {
         // Single lineage spanning [0, 100]; UID 0 tagged A.
         let lin = build_lineage(&mut arena, &[(0.0, 100.0)], 0u32);
         let mut active = vec![lin];
-        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         a_tag.insert(0u32, true);
 
         apply_recombination(&mut active, 0, 50.0, &mut arena, &mut next_uid,
@@ -802,7 +802,7 @@ mod tests {
             Lineage::new(idx, idx, 0, 1u32, &arena)
         };
         let mut active = vec![lin_a, lin_b];
-        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         a_tag.insert(0u32, true);
         a_tag.insert(1u32, false);
 
@@ -842,7 +842,7 @@ mod tests {
             Lineage::new(i0, i0, 0, 1u32, &arena)
         };
         let mut active = vec![lin_a, lin_b];
-        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         a_tag.insert(0u32, true);
         a_tag.insert(1u32, false);
         let mut next_uid2 = next_uid;

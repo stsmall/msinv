@@ -12,7 +12,7 @@ use crate::class_tag::{BranchClass, Karyotype};
 use crate::demography::Demography;
 use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
-use crate::lineage::{LinUid, Lineage};
+use crate::lineage::{ATagMap, LinUid, Lineage};
 use crate::phi::{phi, phi_integral};
 use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
@@ -337,7 +337,7 @@ impl HullSimulator {
         populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
         let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
-        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         // Mirror of `a_tag` indexed by `(pop, allele)` for O(n_A) picker
         // reads at the SV-phase any-pair scan. Stage 2: maintained
         // alongside `a_tag` + `active`; Stage 3 flips the picker read.
@@ -674,7 +674,7 @@ impl HullSimulator {
         // same base t (prevents TSK_ERR_BAD_NODE_TIME_ORDERING when two
         // sweeps fire simultaneously).
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
-        let mut a_tag: std::collections::HashMap<LinUid, bool> = std::collections::HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         // Mirror of `a_tag` indexed by `(pop, allele)` for O(n_A) picker
         // reads at the SV-phase any-pair scan. Stage 2: maintained
         // alongside `a_tag` + `active`; Stage 3 flips the picker read.
@@ -685,7 +685,7 @@ impl HullSimulator {
         // (which inherit the flag via propagate_a_flag_recomb), inflating the
         // count above n_samples.
         let sample_uids: Vec<LinUid> = active.iter().map(|l| l.uid).collect();
-        let count_a_samples = |map: &std::collections::HashMap<LinUid, bool>| -> u64 {
+        let count_a_samples = |map: &ATagMap| -> u64 {
             sample_uids.iter()
                 .filter(|uid| map.get(uid).copied().unwrap_or(false))
                 .count() as u64
@@ -1944,7 +1944,7 @@ fn emit_coal_events_from_cache(
     barrier_active: &[bool],
     events: &mut Vec<(f64, Event)>,
     active_sweep: Option<&Sweep>,
-    a_tag: &std::collections::HashMap<LinUid, bool>,
+    a_tag: &ATagMap,
 ) {
     // Read pair counts directly from the pair_buckets — each bucket's
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
@@ -2512,7 +2512,7 @@ fn apply_boundary(
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
-    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
@@ -2729,7 +2729,7 @@ fn apply_sweep(
     _ne: f64,
     recomb_rate: f64,
     _sweep_cursor: &mut (f64, u64),
-    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
     // Phase B: at τ (entry into the sweep window going backward), tag every
@@ -2793,7 +2793,7 @@ fn apply_sweep_finalize(
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
     sweep_cursor: &mut (f64, u64),
-    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
     // For SV-phase sweeps only: per-segment partition into linked
@@ -3046,7 +3046,7 @@ fn apply_sweep_recomb_tag_swap(
     sweeps: &[Sweep],
     t: f64,
     rng: &mut Xoshiro256PlusPlus,
-    a_tag: &mut std::collections::HashMap<LinUid, bool>,
+    a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
     breakpoint_x: f64,
 ) {
@@ -3995,7 +3995,7 @@ mod tests {
         let mut tables = TableBuilder::new(10_000.0, 1);
         let mut next_uid: LinUid = 2;
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
-        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         let mut sweep_cursor = (0.0, 0u64);
         let mut buckets = SweepBuckets::new(1);
 
@@ -4040,7 +4040,7 @@ mod tests {
         let mut tables = TableBuilder::new(10_000.0, 1);
         let mut next_uid: LinUid = 2;
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
-        let mut a_tag: HashMap<LinUid, bool> = HashMap::new();
+        let mut a_tag: ATagMap = ATagMap::default();
         let mut sweep_cursor = (0.0, 0u64);
         let mut buckets = SweepBuckets::new(1);
 

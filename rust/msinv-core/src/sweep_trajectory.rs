@@ -493,23 +493,33 @@ fn sample_binomial(n: u64, p: f64, rng: &mut Xoshiro256PlusPlus) -> u64 {
 impl JointSweepTrajectory {
     /// Find the sample index nearest to `t`. Samples are stored in
     /// order from oldest (first) to most recent (last), so `t` decreases
-    /// as the index increases.
+    /// as the index increases — i.e. `samples[i].t` is monotone non-
+    /// increasing in `i`. Returns the largest `i` with
+    /// `samples[i].t >= t`, or `0` for empty / all-less-than-`t` cases.
+    ///
+    /// Binary search via `partition_point` is O(log n). Replaces the
+    /// previous O(n) linear scan whose comment claimed "sample count is
+    /// bounded by t_origin generations" — that held only for hard
+    /// sweeps. For SV-phase soft sweeps the trajectory extends to
+    /// `t_de_novo`, which can run to hundreds of thousands of
+    /// generations. Flamegraph on Phase F (L=50kb soft sweep f0=0.05)
+    /// showed `emit_coal_events_from_cache` calling
+    /// `p_allele_given_kary` + `p_kary` accounted for ~62% of total
+    /// wall-clock, ~all of it inside this scan.
+    /// Regression test: `idx_at_matches_linear_scan_across_boundary_cases`.
     fn idx_at(&self, t: f64) -> usize {
         if self.samples.is_empty() {
             return 0;
         }
-        // Find the index where samples[i].t <= t < samples[i-1].t.
-        // Since t is decreasing, we look for the largest i with samples[i].t >= t.
-        // Linear scan is fine — sample count is bounded by t_origin generations.
-        let mut best = 0usize;
-        for (i, s) in self.samples.iter().enumerate() {
-            if s.t >= t {
-                best = i;
-            } else {
-                break;
-            }
-        }
-        best
+        // `partition_point` returns the first index where the predicate
+        // is FALSE. Since `t` is decreasing in `i`, the predicate
+        // `s.t >= t` is true for a prefix and false for the suffix.
+        // We want the last TRUE index → `cut - 1`. `saturating_sub(1)`
+        // collapses both edge cases (cut=0 → return 0; cut=N → return N-1)
+        // to the same behaviour as the prior linear scan.
+        self.samples
+            .partition_point(|s| s.t >= t)
+            .saturating_sub(1)
     }
 
     pub fn p_kary(&self, t: f64, pop: u32, kary: Karyotype) -> f64 {
@@ -896,5 +906,67 @@ mod tests {
         let ne_s = traj.ne_cell(50.0, 0, Karyotype::S, 10_000.0);
         let p_s = traj.p_kary(50.0, 0, Karyotype::S);
         assert!((ne_s - 10_000.0 * p_s).abs() < 1e-6);
+    }
+
+    /// `idx_at` semantics regression: the binary-search replacement
+    /// must match the original linear-scan output bit-for-bit across
+    /// all boundary cases (query before first sample, exactly on a
+    /// sample, between samples, exactly on the last sample, past the
+    /// last sample, empty trajectory).
+    ///
+    /// Pinned because the original linear scan is the contract that
+    /// downstream coalescence rates depend on for replicate
+    /// determinism: any drift in idx_at output shifts D2/D5 results
+    /// and the sweep MC anchor pi values.
+    #[test]
+    fn idx_at_matches_linear_scan_across_boundary_cases() {
+        // Reference: same code as the original `idx_at` linear scan.
+        fn linear_scan(samples: &[JointSample], t: f64) -> usize {
+            if samples.is_empty() { return 0; }
+            let mut best = 0usize;
+            for (i, s) in samples.iter().enumerate() {
+                if s.t >= t { best = i; } else { break; }
+            }
+            best
+        }
+
+        let ts = [100.0_f64, 80.0, 50.0, 30.0, 10.0, 5.0, 1.0];
+        let samples: Vec<JointSample> = ts.iter().map(|&t| JointSample {
+            t,
+            freq: vec![[0.0; 4]],
+        }).collect();
+        let traj = JointSweepTrajectory {
+            t_origin: 100.0,
+            t_de_novo: 100.0,
+            tau: 0.0,
+            n_pops: 1,
+            samples: samples.clone(),
+        };
+
+        let queries = [
+            200.0_f64, 100.0, 90.0, 80.0, 65.0, 50.0, 40.0, 30.0,
+            20.0, 10.0, 7.0, 5.0, 3.0, 1.0, 0.5, 0.0, -1.0,
+        ];
+        for &q in &queries {
+            let want = linear_scan(&samples, q);
+            let got = traj.idx_at(q);
+            assert_eq!(got, want, "idx_at({q}) = {got}, want {want}");
+        }
+
+        // Empty trajectory: must return 0.
+        let empty = JointSweepTrajectory {
+            t_origin: 0.0, t_de_novo: 0.0, tau: 0.0, n_pops: 1,
+            samples: vec![],
+        };
+        assert_eq!(empty.idx_at(50.0), 0);
+
+        // Single-element trajectory: any query should map to index 0.
+        let one = JointSweepTrajectory {
+            t_origin: 0.0, t_de_novo: 0.0, tau: 0.0, n_pops: 1,
+            samples: vec![JointSample { t: 50.0, freq: vec![[0.0; 4]] }],
+        };
+        assert_eq!(one.idx_at(100.0), 0);
+        assert_eq!(one.idx_at(50.0), 0);
+        assert_eq!(one.idx_at(10.0), 0);
     }
 }

@@ -1023,39 +1023,41 @@ impl HullSimulator {
                         // apply_coalescence_partial handles non-overlap
                         // segments correctly post-`b2bcaa9`.
                         let want_a = matches!(allele, AlleleTag::A);
-                        // Stage 2 SweepBuckets bookkeeping invariant: the
-                        // (pop, allele) bucket index must mirror the
-                        // canonical `a_tag` HashMap + active idxs at
-                        // every picker hit. Stage 3 will replace the
-                        // O(|active|) walk below with a bucket read; if
-                        // any maintenance site was missed, this assert
-                        // fires before the divergence is laundered into
-                        // a deterministic-realization shift downstream.
+                        // Stage 3: read candidates from the (pop, allele)
+                        // bucket index — O(n_A) instead of the O(|active|)
+                        // walk this replaces. Bucket maintenance is
+                        // distributed across every `a_tag.insert/entry`,
+                        // every `active.swap_remove/push` of a tagged
+                        // lineage, and every `lineage.population = ...`
+                        // (Stage 2 wiring); `assert_consistent_with` is
+                        // the cross-check that catches stale-idx drift
+                        // before this read deserializes it into a wrong
+                        // candidate.
                         // Gate fires under `cargo test` (debug + release)
                         // and `cargo build` debug; production release
                         // builds skip it for zero overhead.
                         #[cfg(any(test, debug_assertions))]
-                        buckets.assert_invariants();
-                        // Inline 128 (vs 32) so the SV-phase any-pair
-                        // scan stays on-stack at production-scale n_A.
-                        // Bench-quality fix is (pop, cls)-keyed a_tag
-                        // buckets updated incrementally; deferred until
-                        // a profiler signal at n ≥ several hundred.
-                        let candidates: SmallVec<[usize; 128]> = active.iter()
-                            .enumerate()
-                            .filter(|(_, lin)| {
-                                if lin.population != pop { return false; }
-                                if !lineage_has_class(lin.head, cls, arena) {
-                                    return false;
-                                }
-                                match a_tag.get(&lin.uid).copied() {
-                                    Some(true)  => want_a,
-                                    Some(false) => !want_a,
-                                    None        => false,
-                                }
-                            })
-                            .map(|(idx, _)| idx)
-                            .collect();
+                        buckets.assert_consistent_with(active, &a_tag);
+                        let bucket_allele = if want_a {
+                            crate::sweep_buckets::Allele::A
+                        } else {
+                            crate::sweep_buckets::Allele::ALower
+                        };
+                        // Class filter still required: buckets key on
+                        // (pop, allele) only. Same SmallVec-128 inline
+                        // hedge as the prior walk for stack-resident
+                        // realisation at production-scale n_A.
+                        let candidates: SmallVec<[usize; 128]> =
+                            buckets.entries(pop, bucket_allele)
+                                .iter()
+                                .filter_map(|&(_uid, idx)| {
+                                    let i = idx as usize;
+                                    if !lineage_has_class(active[i].head, cls, arena) {
+                                        return None;
+                                    }
+                                    Some(i)
+                                })
+                                .collect();
                         if candidates.len() < 2 { continue; }
                         let i_pick = rng.random_range(0..candidates.len());
                         let mut j_pick = rng.random_range(0..candidates.len() - 1);

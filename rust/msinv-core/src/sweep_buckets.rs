@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::lineage::LinUid;
+use crate::lineage::{LinUid, Lineage};
 
 /// Allele subgroup. Mirrors the picker's `want_a` axis: `A` for tag=true,
 /// `ALower` for tag=false. Untagged lineages are not bucketed.
@@ -220,6 +220,52 @@ impl SweepBuckets {
     /// pointing back to that bucket position. Every uid in `pos_of` is
     /// in exactly one bucket. Used by tests + Stage 2's
     /// `#[cfg(debug_assertions)]` invariant at the picker site.
+    /// Stronger cross-check: walks every bucket entry and verifies the
+    /// stored `(uid, idx)` pair still points to a live lineage in
+    /// `active` whose `(uid, pop)` matches the bucket key, and whose
+    /// `a_tag` value matches the bucket's allele. Catches stale-idx
+    /// drift that `assert_invariants` (bucket ↔ pos_of only) cannot
+    /// see — required by the Stage 3 picker which reads bucket idxs
+    /// directly without re-checking against `active`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn assert_consistent_with(
+        &self,
+        active: &[Lineage],
+        a_tag: &HashMap<LinUid, bool>,
+    ) {
+        self.assert_invariants();
+        for (pop_idx, slot) in self.buckets.iter().enumerate() {
+            for (a_idx, bucket) in slot.iter().enumerate() {
+                let allele = if a_idx == 0 { Allele::A } else { Allele::ALower };
+                let expected_a = matches!(allele, Allele::A);
+                for &(uid, idx) in bucket.iter() {
+                    let i = idx as usize;
+                    assert!(
+                        i < active.len(),
+                        "bucket entry uid={} idx={} out of bounds for active.len()={}",
+                        uid, idx, active.len()
+                    );
+                    assert_eq!(
+                        active[i].uid, uid,
+                        "bucket idx {} points to active uid {} but bucket carries uid {}",
+                        idx, active[i].uid, uid
+                    );
+                    assert_eq!(
+                        active[i].population as usize, pop_idx,
+                        "bucket pop {} but active[{}].population={}",
+                        pop_idx, idx, active[i].population
+                    );
+                    let actual_a = a_tag.get(&uid).copied();
+                    assert_eq!(
+                        actual_a, Some(expected_a),
+                        "bucket allele {:?} for uid {} but a_tag[{}]={:?}",
+                        allele, uid, uid, actual_a
+                    );
+                }
+            }
+        }
+    }
+
     #[cfg(any(test, debug_assertions))]
     pub fn assert_invariants(&self) {
         let mut seen: HashMap<LinUid, Pos> = HashMap::new();

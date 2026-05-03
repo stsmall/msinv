@@ -126,6 +126,18 @@ Off-path is zero-overhead; production sims should leave the flag off.
 Project memory: `/home/ssmall/.claude/projects/-home-ssmall-inversion-sims-files/memory/`
 Read `MEMORY.md` there first — index of what's known about the code + biology.
 
+## Perf attempts that DID NOT work — read before retrying
+Canonical do-not-retry list: `project_perf_rejected_attempts.md` in
+project memory. Covers spatial hull index v1/v2/v3, recap-via-msprime,
+arena compaction, single-pass emit walk, hoist-`a_tag.get`, and what
+worked. Each entry has the failure mode + a "retry gate" describing
+what would need to change for a re-attempt to make sense. **Read
+before scoping perf work in `simulator.rs` / `rate_index.rs`.**
+
+Recap-via-msprime is HARD REJECTED: see `feedback_recap_rejected.md`.
+Don't suggest it; let msinv complete on its own (raise `iters_max`
+when needed).
+
 ## Known production-perf concern (Item 2; partially closed 2026-05-03)
 - **Per-event work** during long sweep windows. Phase F (KirFol soft
   sweep, n=60+30+30, L=500kb, f0=0.05, SV phase) timed out at 60min

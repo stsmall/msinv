@@ -8,7 +8,7 @@ cd rust && cargo build --release -p msinv-py
   (even unrelated projects). Wait for it to finish or `kill` deliberately.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (155 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory + 1 panic regression as of 2026-05-03; 187 total).
+- Rust: `cd rust && cargo test --release` (156 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory + 1 panic regression as of 2026-05-03; 188 total).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
   (198 passed, 3 skipped as of 2026-05-01; D1-D5 all active in
@@ -29,7 +29,7 @@ cd rust && cargo build --release -p msinv-py
   `e0c51e3` (perf: tau-leap rate_cache rebuild skip) — different
   deterministic realization at fixed seed but statistically equivalent
   (D=0.56% vs baseline at PS2 n_reps=100, well within MC noise).
-  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:1007-1071`);
+  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:1033-1115`);
   D5 was closed via the new `SweepMode::StochasticConditioned` mode and
   the calibration `msinv recurrent_mutation_rate = discoal_uA / (2N)` —
   msinv's rate is per-individual-per-gen while discoal's `-uA` is in
@@ -90,7 +90,15 @@ Confirm pre-existing via `git stash`+rerun before chasing.
 ## Perf + debugging
 - Bench: `cd rust && cargo run --release --example bench_rho -- <rho> <reps> [n_pops]`
 - Event-loop trace: `MSINV_TRACE=1 <python cmd>` (requires instrumentation commit).
+- Per-iter |active| trace (Item-2 instrument, `1a735fa`):
+  `MSINV_TRACE_ACTIVE=path/to/trace.tsv .venv/bin/python <cmd>` records one
+  `ITER` row per main-loop iteration (`t  |active|  |a_tag|  phase  last_event`)
+  plus `MARK` rows on `apply_sweep` (sweep_onset) and `apply_sweep_finalize`
+  (partition + de-novo-merge counts). `OnceLock`-gated; zero overhead when
+  unset. Phase chars: `N` neutral, `S` selection (tau ≤ t < t_origin), `V`
+  standing-variation (t ≥ t_origin).
 - Flamegraph: `debug = 1` already set in `rust/Cargo.toml` release profile.
+  `flamegraph -o .tmp/flame.svg --deterministic -- .venv/bin/python <cmd>`.
 - Timebox long sims with OS-level `timeout <s>`; Python `signal.alarm` does NOT interrupt a PyO3 call holding the GIL.
 
 ## Layout
@@ -118,24 +126,39 @@ Off-path is zero-overhead; production sims should leave the flag off.
 Project memory: `/home/ssmall/.claude/projects/-home-ssmall-inversion-sims-files/memory/`
 Read `MEMORY.md` there first — index of what's known about the code + biology.
 
-## Known production-perf concern (Item 2; queued for 2026-05-04)
-- **Per-event work / rate_cache rebuild cost** during long sweep
-  windows. Phase F (KirFol soft sweep, n=60+30+30, L=500kb,
-  f0=0.05, SV phase) timed out at 60min before 2026-05-03 and is
-  still slow after Item 1 shipped — the picker no longer dominates
-  but sweep-test wall-clock is still ~quadratic in |active|·t_sweep
-  for the rate_cache rebuild and per-iter event sampling.
-  Investigation queued.
+## Known production-perf concern (Item 2; partially closed 2026-05-03)
+- **Per-event work** during long sweep windows. Phase F (KirFol soft
+  sweep, n=60+30+30, L=500kb, f0=0.05, SV phase) timed out at 60min
+  before this session. Two sub-items closed; one still open at
+  L ≥ 100kb scale.
 
   (Item 1 — SV-phase any-pair scan O(|active|) per event — closed
   2026-05-03 via the `SweepBuckets` (pop, allele) index.
   Stage 1 `d95b66f` shipped the data structure; Stage 2 `d26e8b2`
   threaded it through the simulator hot path; Stage 3 `1f5f23f`
-  flipped the picker at `simulator.rs:1031` from
+  flipped the picker at `simulator.rs:1077` from
   `active.iter().filter` to `buckets.entries(pop, allele)` —
   O(n_A) instead of O(|active|). Sweep-test wall-clock dropped
-  37% on the sweep MC subset; 198 Python tests + D1-D5 + 19/19
-  sweep MC anchors all green.)
+  37% on the sweep MC subset.)
+
+  (Item 2a — `JointSweepTrajectory::idx_at` O(N_samples) linear scan —
+  closed 2026-05-03 via `5e2a626` `partition_point` binary search.
+  Flamegraph on Phase F scaled (L=50kb) showed
+  `emit_coal_events_from_cache → p_kary` + `p_allele_given_kary`
+  spending **~62% of total wall-clock** in `idx_at`'s linear scan
+  over the trajectory samples. Hard sweeps weren't bitten because
+  N_samples ≈ t_origin ≤ a few thousand; SV-phase soft sweeps run
+  the trajectory out to t_de_novo ≈ hundreds of thousands of
+  generations. Phase F scaled L=50kb n=60 dropped 43.45 → 12.92s
+  (3.4×); L=100kb n=60 dropped 179 → 86s (2.1×). Same RNG output
+  byte-for-byte; D1-D5 + 14/14 sweep MC + 198 Python all green.)
+
+  Item 2b — remaining sweep-test wall-clock at L ≥ 100kb. Post-
+  binary-search the per-iter cost is now dominated by the
+  `emit_coal_events_from_cache` per-cell active walk + `recompute_for`
+  in the rate cache. See `.tmp/item2_path_a_scoping_v2.md` for the
+  current attack surfaces. Production Phase F at L=500kb is still
+  pending — will re-time after Item 2b lands.
 
 ## Known scale limits
 - Realistic anopheles Ne_anc ≥ 1e6 + old inversions (≥100k gen) hits the remnant-ratchet:
@@ -166,7 +189,7 @@ Read `MEMORY.md` there first — index of what's known about the code + biology.
   matching `Demography::migration_matrix[dst][src]`. Forward-flow A→B needs
   `m(B, A) > 0`, NOT `m(A, B) > 0`.
 - `population_size` convention: msinv treats `population_size=N` as **diploid Ne**
-  (per-pair coal rate = `1/(2N)`; verified at `rust/msinv-core/src/simulator.rs:1898`
+  (per-pair coal rate = `1/(2N)`; verified at `rust/msinv-core/src/simulator.rs:2007`
   inside `emit_coal_events_from_cache`, and `msinv/hull/simulator.py:635`). To compare against msprime, double on the
   msprime side: `msprime.sim_ancestry(population_size=2*N, ploidy=1, record_full_arg=True)`.
   `ploidy=1` reads N as haploid; `record_full_arg=True` is needed because msinv

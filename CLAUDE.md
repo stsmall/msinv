@@ -8,7 +8,7 @@ cd rust && cargo build --release -p msinv-py
   (even unrelated projects). Wait for it to finish or `kill` deliberately.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (137 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory as of 2026-05-01; 168 total).
+- Rust: `cd rust && cargo test --release` (155 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory + 1 panic regression as of 2026-05-03; 187 total).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
   (198 passed, 3 skipped as of 2026-05-01; D1-D5 all active in
@@ -29,7 +29,7 @@ cd rust && cargo build --release -p msinv-py
   `e0c51e3` (perf: tau-leap rate_cache rebuild skip) — different
   deterministic realization at fixed seed but statistically equivalent
   (D=0.56% vs baseline at PS2 n_reps=100, well within MC noise).
-  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:997-1041`);
+  D3 was closed via SV-phase any-pair AA/aa picker (`simulator.rs:1007-1071`);
   D5 was closed via the new `SweepMode::StochasticConditioned` mode and
   the calibration `msinv recurrent_mutation_rate = discoal_uA / (2N)` —
   msinv's rate is per-individual-per-gen while discoal's `-uA` is in
@@ -118,16 +118,24 @@ Off-path is zero-overhead; production sims should leave the flag off.
 Project memory: `/home/ssmall/.claude/projects/-home-ssmall-inversion-sims-files/memory/`
 Read `MEMORY.md` there first — index of what's known about the code + biology.
 
-## Known production-perf concern (queued for 2026-05-02)
-- **SV-phase any-pair scan** at `simulator.rs:1021`. During soft
-  sweeps (`f0 > 1/(2N)`), every AA/aa CoalAggregate event walks all
-  of `active` to build a candidate list — O(|active|) per event.
-  The 32→128 SmallVec hedge in `e0c51e3` only addresses heap spill,
-  not the walk cost. Trips at high ρ + soft sweeps; e.g. Kir/Fol
-  3Ra soft sweep at chrom-arm scale (ρ≈4000, n=500) → |active|≈10⁴
-  during SV phase, ~10⁷-10⁸ filter ops per rep. Hard-sweep / neutral
-  runs never fire this path. Full fix design + risk plan in
-  `project_validation_tracks_resume` deferred-perf section.
+## Known production-perf concern (Item 2; queued for 2026-05-04)
+- **Per-event work / rate_cache rebuild cost** during long sweep
+  windows. Phase F (KirFol soft sweep, n=60+30+30, L=500kb,
+  f0=0.05, SV phase) timed out at 60min before 2026-05-03 and is
+  still slow after Item 1 shipped — the picker no longer dominates
+  but sweep-test wall-clock is still ~quadratic in |active|·t_sweep
+  for the rate_cache rebuild and per-iter event sampling.
+  Investigation queued.
+
+  (Item 1 — SV-phase any-pair scan O(|active|) per event — closed
+  2026-05-03 via the `SweepBuckets` (pop, allele) index.
+  Stage 1 `d95b66f` shipped the data structure; Stage 2 `d26e8b2`
+  threaded it through the simulator hot path; Stage 3 `1f5f23f`
+  flipped the picker at `simulator.rs:1031` from
+  `active.iter().filter` to `buckets.entries(pop, allele)` —
+  O(n_A) instead of O(|active|). Sweep-test wall-clock dropped
+  37% on the sweep MC subset; 198 Python tests + D1-D5 + 19/19
+  sweep MC anchors all green.)
 
 ## Known scale limits
 - Realistic anopheles Ne_anc ≥ 1e6 + old inversions (≥100k gen) hits the remnant-ratchet:

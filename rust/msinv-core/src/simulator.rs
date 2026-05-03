@@ -655,6 +655,10 @@ impl HullSimulator {
         mut event_log: Option<&mut event_log::EventLog>,
     ) -> u64 {
         let mut t: f64 = 0.0;
+        // Item-2 perf trace: records the last event-kind so the per-iter
+        // trace row can attribute the |active| change. Cost is one branch
+        // when MSINV_TRACE_ACTIVE is unset.
+        let mut last_event: &str = "init";
 
         // Track which inversions' barriers are still active.
         let mut barrier_active: Vec<bool> = inversions.iter()
@@ -754,6 +758,19 @@ impl HullSimulator {
                     return count_a_samples(&a_tag);
                 }
                 return count_a_samples(&a_tag);
+            }
+
+            // Item-2 perf trace (env-gated): records pre-iteration state.
+            // Phase classification:
+            //   N — neutral (no active sweep covers t)
+            //   S — selection phase (tau <= t < sweep.t_origin going backward)
+            //   V — standing-variation phase (t >= sweep.t_origin)
+            if crate::trace::enabled() {
+                let trace_phase = match finalized_sweeps.iter().find(|s| s.covers(t)) {
+                    Some(s) => if t < s.joint.t_origin { 'S' } else { 'V' },
+                    None => 'N',
+                };
+                crate::trace::iter(t, active.len(), a_tag.len(), trace_phase, last_event);
             }
 
             if lin_tree_dirty || lin_len_tree.len() < active.len() {
@@ -906,6 +923,7 @@ impl HullSimulator {
                     cache_dirty = true;
                     lin_tree_dirty = true;
                     flux_dirty = true;
+                    last_event = "boundary";
                     continue;
                 }
                 return count_a_samples(&a_tag);
@@ -938,6 +956,7 @@ impl HullSimulator {
                 // `flux_lineage_rate_segs`, no-op without barriers).
                 coal_rates_dirty = true;
                 flux_dirty = true;
+                last_event = "tau_leap";
                 continue;
             }
 
@@ -955,6 +974,7 @@ impl HullSimulator {
                 total_recomb_rate = total_material * self.recombination_rate;
                 engine_dirty = true;
                 cache_dirty = true;
+                last_event = "boundary";
                 continue;
             }
             t = t_event;
@@ -965,6 +985,7 @@ impl HullSimulator {
             let chosen_event = if leaf < all_events.len() {
                 &all_events[leaf].1
             } else {
+                last_event = "skip_precision";
                 continue;  // numerical precision miss
             };
 
@@ -973,6 +994,11 @@ impl HullSimulator {
                     let pop = *pop;
                     let cls = *class;
                     let allele = *allele;
+                    last_event = match allele {
+                        AlleleTag::A => "coal_AA",
+                        AlleleTag::ALower => "coal_aa",
+                        AlleleTag::Mixed => "coal_mixed",
+                    };
                     // Direct O(1) pick from the (pop, cls) pair bucket:
                     // maintained by every overlap mutation, indexed by
                     // packed (i, j). Replaces the iter_pairs walk that
@@ -1176,6 +1202,7 @@ impl HullSimulator {
                 Event::CoalPair { i, j, class } => {
                     let (i, j) = (*i, *j);
                     let cls = *class;
+                    last_event = "coal_pair";
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
@@ -1230,6 +1257,7 @@ impl HullSimulator {
                 }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
+                    last_event = "coal_pan";
                     // Single-pop fast path: every lineage matches, so
                     // skip the filter walk over active entirely.
                     // Multi-pop path: read the count from `pop_counts`
@@ -1305,6 +1333,7 @@ impl HullSimulator {
                     }
                 }
                 Event::Recombination => {
+                    last_event = "recomb";
                     let u_lin: f64 = rng.random::<f64>();
                     let target = u_lin * total_material;
                     // O(log n) proportional selection via the length
@@ -1421,6 +1450,7 @@ impl HullSimulator {
                     }
                 }
                 Event::FluxAggregate { inv_idx } => {
+                    last_event = "flux";
                     let ii = *inv_idx;
                     if ii >= flux_total.len() { continue; }
                     let total = flux_total[ii];
@@ -1492,6 +1522,7 @@ impl HullSimulator {
                     }
                 }
                 Event::MigrationAggregate { src_pop, dst_pop } => {
+                    last_event = "mig";
                     let src = *src_pop;
                     let dst = *dst_pop;
                     let bucket = &pop_buckets[src as usize];
@@ -2719,6 +2750,8 @@ fn apply_sweep(
     // don't span x_sel, the tag still applies — they participate in the
     // per-allele rate model and can shed via tag-aware recombination.
     let _ = recomb_rate;  // formerly read by the distant-lineage gate.
+    let mut n_tagged_a: u32 = 0;
+    let mut n_tagged_total: u32 = 0;
     for (idx, lin) in active.iter().enumerate() {
         if lin.population != sweep.origin_pop { continue; }
         if lin.head == crate::segment::SEG_NIL { continue; }
@@ -2730,6 +2763,17 @@ fn apply_sweep(
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
         buckets.set_tag(lin.uid, idx as u32, pop, is_a);
+        n_tagged_total += 1;
+        if is_a { n_tagged_a += 1; }
+    }
+    if crate::trace::enabled() {
+        crate::trace::mark(t, "sweep_onset", &[
+            ("n_active", &active.len().to_string()),
+            ("n_tagged_total", &n_tagged_total.to_string()),
+            ("n_tagged_a", &n_tagged_a.to_string()),
+            ("origin_pop", &sweep.origin_pop.to_string()),
+            ("has_sv_phase", if sweep.has_sv_phase() { "1" } else { "0" }),
+        ]);
     }
 }
 
@@ -2767,6 +2811,7 @@ fn apply_sweep_finalize(
     // PS3 anchors were tuned with it active and the SV-phase de
     // novo merge below depends on `linked_uids`.
     let has_sv_phase = sweep.has_sv_phase();
+    let n_active_pre = active.len();
     let mut linked_uids: Vec<LinUid> = Vec::new();
     let candidates: Vec<LinUid> = if has_sv_phase {
         active.iter()
@@ -2776,6 +2821,13 @@ fn apply_sweep_finalize(
     } else {
         Vec::new()
     };
+    // Item-2 trace counters: how the per-segment partition splits the
+    // A-tagged candidates (drop_all, keep_all, mixed) and how many fresh
+    // escaped lineages get pushed onto `active`.
+    let n_candidates = candidates.len();
+    let mut n_drop_all: u32 = 0;
+    let mut n_keep_all: u32 = 0;
+    let mut n_mixed_split: u32 = 0;
 
     for uid in candidates {
         let idx = match active.iter().position(|l| l.uid == uid) {
@@ -2804,6 +2856,7 @@ fn apply_sweep_finalize(
             lin.tail = chain_tail(escaped_head, arena);
             // cached_len + cached_hull_l/r need recompute.
             recompute_lineage_caches(lin, arena);
+            n_drop_all += 1;
             continue;
         }
 
@@ -2815,6 +2868,7 @@ fn apply_sweep_finalize(
             lin.tail = chain_tail(linked_head, arena);
             recompute_lineage_caches(lin, arena);
             linked_uids.push(uid);
+            n_keep_all += 1;
             continue;
         }
 
@@ -2832,13 +2886,18 @@ fn apply_sweep_finalize(
         let escaped_lin = Lineage::new(escaped_head, escaped_tail, pop, new_uid, arena);
         active.push(escaped_lin);
         linked_uids.push(uid);
+        n_mixed_split += 1;
     }
+    let n_active_post_partition = active.len();
 
     // De novo merge gate: the per-lineage merge only fires when the
     // trajectory actually has a standing-variation phase (t_de_novo
     // strictly past t_origin). For hard sweeps with f0=1/(2N), there
     // is no SV phase — we collapse A-tagged into a single founder at
     // t_origin via the still_a force-coalesce below.
+    let mut n_de_novo_merge: u32 = 0;
+    let mut n_de_novo_skip_no_target: u32 = 0;
+    let mut n_de_novo_skip_no_overlap: u32 = 0;
     if has_sv_phase {
         // At t_de_novo (the trajectory's extinction time), the A
         // allele arose by mutation on a single chromosome that is
@@ -2866,10 +2925,14 @@ fn apply_sweep_finalize(
                 })
                 .map(|(j, _)| j)
                 .collect();
-            if candidates.is_empty() { continue; }
+            if candidates.is_empty() {
+                n_de_novo_skip_no_target += 1;
+                continue;
+            }
             let pick = rng.random_range(0..candidates.len());
             let target_idx = candidates[pick];
             if !segments_overlap(active[a_idx].head, active[target_idx].head, arena) {
+                n_de_novo_skip_no_overlap += 1;
                 continue;
             }
             let (lo, hi) = if a_idx < target_idx {
@@ -2881,6 +2944,7 @@ fn apply_sweep_finalize(
             apply_coalescence_partial(
                 active, lo, hi, t_merge, arena, tables, next_uid,
                 None, Some(a_tag), Some(&mut *buckets));
+            n_de_novo_merge += 1;
         }
     }
 
@@ -2914,6 +2978,21 @@ fn apply_sweep_finalize(
     // an active sweep covering `t` at emit time (PG-B1's
     // `in_sweep_cell`) and at consume time (PG-C1 filter), so stale
     // entries don't leak into the post-window neutral coalescent.
+    if crate::trace::enabled() {
+        crate::trace::mark(t, "sweep_finalize", &[
+            ("has_sv_phase", if has_sv_phase { "1" } else { "0" }),
+            ("n_active_pre", &n_active_pre.to_string()),
+            ("n_active_post_partition", &n_active_post_partition.to_string()),
+            ("n_active_post_merge", &active.len().to_string()),
+            ("n_candidates", &n_candidates.to_string()),
+            ("n_drop_all", &n_drop_all.to_string()),
+            ("n_keep_all", &n_keep_all.to_string()),
+            ("n_mixed_split", &n_mixed_split.to_string()),
+            ("n_de_novo_merge", &n_de_novo_merge.to_string()),
+            ("n_de_novo_skip_no_target", &n_de_novo_skip_no_target.to_string()),
+            ("n_de_novo_skip_no_overlap", &n_de_novo_skip_no_overlap.to_string()),
+        ]);
+    }
 }
 
 /// Walk a chain to find its tail (last segment whose `next == SEG_NIL`).

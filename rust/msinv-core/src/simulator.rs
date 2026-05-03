@@ -1969,13 +1969,21 @@ fn emit_coal_events_from_cache(
         // Inside the sweep window in the swept population. Bucketize
         // active lineages in this (pop, cls) cell by allele tag.
         // Cost: O(|active|) per emit while a sweep is active.
+        // Reads `lin.a_tag` direct (Item 2b-clean) instead of hashing
+        // into `a_tag` — the post-FxHash flamegraph showed
+        // `HashMap::get` was still ~32% of emit (≈14% of total wall)
+        // because the per-cell short-circuit only filters by pop, not
+        // by class, so every (cell, in-pop lineage) pair still hashed.
         let mut n_a_upper: usize = 0;
         let mut n_a_lower: usize = 0;
         let mut n_untagged: usize = 0;
+        let _ = a_tag;  // kept on the function signature; future readers
+                       // may use it for `count_a_samples`-style historical
+                       // queries that the per-Lineage field can't answer.
         for lin in active.iter() {
             if lin.population != pop { continue; }
             if !lineage_has_class(lin.head, cls, arena) { continue; }
-            match a_tag.get(&lin.uid).copied() {
+            match lin.a_tag {
                 Some(true)  => n_a_upper += 1,
                 Some(false) => n_a_lower += 1,
                 None        => n_untagged += 1,
@@ -2752,7 +2760,7 @@ fn apply_sweep(
     let _ = recomb_rate;  // formerly read by the distant-lineage gate.
     let mut n_tagged_a: u32 = 0;
     let mut n_tagged_total: u32 = 0;
-    for (idx, lin) in active.iter().enumerate() {
+    for (idx, lin) in active.iter_mut().enumerate() {
         if lin.population != sweep.origin_pop { continue; }
         if lin.head == crate::segment::SEG_NIL { continue; }
         // Determine kary for the trajectory query: use the inv-class at
@@ -2762,6 +2770,9 @@ fn apply_sweep(
         let pop = lin.population;
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
+        // Mirror onto the Lineage struct so the per-emit walk reads
+        // direct from `lin.a_tag` (no hashbrown probe per cell).
+        lin.a_tag = Some(is_a);
         buckets.set_tag(lin.uid, idx as u32, pop, is_a);
         n_tagged_total += 1;
         if is_a { n_tagged_a += 1; }
@@ -2851,6 +2862,7 @@ fn apply_sweep_finalize(
             a_tag.insert(uid, false);
             buckets.set_tag(uid, idx as u32, pop, false);
             let lin = &mut active[idx];
+            lin.a_tag = Some(false);
             lin.head = escaped_head;
             // Recompute tail by walking to the end of escaped_head.
             lin.tail = chain_tail(escaped_head, arena);
@@ -3041,7 +3053,7 @@ fn recompute_lineage_caches(lin: &mut Lineage, arena: &SegmentArena) {
 /// the parent containing `x_sel` keeps its sweep-group, the other
 /// parent rejection-samples against the group's bgkd freq.
 fn apply_sweep_recomb_tag_swap(
-    active: &[Lineage],
+    active: &mut [Lineage],
     new_indices: &[usize],
     sweeps: &[Sweep],
     t: f64,
@@ -3091,9 +3103,11 @@ fn apply_sweep_recomb_tag_swap(
             // a_tag actually transitioned untagged → tagged.
             if !was_present {
                 buckets.set_tag(uid, idx as u32, pop, was_a);
+                active[idx].a_tag = Some(was_a);
             }
         } else {
             a_tag.insert(uid, !was_a);
+            active[idx].a_tag = Some(!was_a);
             buckets.set_tag(uid, idx as u32, pop, !was_a);
         }
     }

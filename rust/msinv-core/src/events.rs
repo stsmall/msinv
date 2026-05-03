@@ -240,6 +240,9 @@ pub fn apply_coalescence_partial(
             if pa_present || pb_present {
                 let is_a = fa || fb;
                 map.insert(uid, is_a);
+                // Mirror onto the Lineage struct so the per-emit walk
+                // reads from `lin.a_tag` instead of hashing into the map.
+                active[new_idx as usize].a_tag = Some(is_a);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, is_a);
                 }
@@ -253,6 +256,7 @@ pub fn apply_coalescence_partial(
         if let Some(ref mut map) = a_tag {
             if pa_present {
                 map.insert(uid, fa);
+                active[new_idx as usize].a_tag = Some(fa);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, fa);
                 }
@@ -266,6 +270,7 @@ pub fn apply_coalescence_partial(
         if let Some(ref mut map) = a_tag {
             if pb_present {
                 map.insert(uid, fb);
+                active[new_idx as usize].a_tag = Some(fb);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, fb);
                 }
@@ -455,6 +460,9 @@ pub fn apply_coalescence_compound(
             if pa_present || pb_present {
                 let is_a = fa || fb;
                 map.insert(uid, is_a);
+                // Mirror onto the Lineage struct so the per-emit walk
+                // reads from `lin.a_tag` instead of hashing into the map.
+                active[new_idx as usize].a_tag = Some(is_a);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, is_a);
                 }
@@ -468,6 +476,7 @@ pub fn apply_coalescence_compound(
         if let Some(ref mut map) = a_tag {
             if pa_present {
                 map.insert(uid, fa);
+                active[new_idx as usize].a_tag = Some(fa);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, fa);
                 }
@@ -481,6 +490,7 @@ pub fn apply_coalescence_compound(
         if let Some(ref mut map) = a_tag {
             if pb_present {
                 map.insert(uid, fb);
+                active[new_idx as usize].a_tag = Some(fb);
                 if let Some(ref mut b) = buckets {
                     b.set_tag(uid, new_idx, pop, fb);
                 }
@@ -516,24 +526,17 @@ pub fn apply_recombination(
     if let Some(right_lin) = right {
         let new_idx = active.len() as u32;
         active.push(right_lin);
+        // Propagate the A-flag from parent to child if the parent had
+        // one. Mirror onto the child Lineage's `a_tag` field so the
+        // per-emit walk reads it without hashing.
         if let Some(map) = a_tag {
-            propagate_a_flag_recomb(map, parent_uid, uid, pop, new_idx, buckets);
-        }
-    }
-}
-
-fn propagate_a_flag_recomb(
-    a_tag: &mut ATagMap,
-    parent: LinUid,
-    child: LinUid,
-    pop: u32,
-    child_idx: u32,
-    buckets: Option<&mut SweepBuckets>,
-) {
-    if let Some(&flag) = a_tag.get(&parent) {
-        a_tag.insert(child, flag);
-        if let Some(b) = buckets {
-            b.set_tag(child, child_idx, pop, flag);
+            if let Some(&flag) = map.get(&parent_uid) {
+                map.insert(uid, flag);
+                active[new_idx as usize].a_tag = Some(flag);
+                if let Some(b) = buckets {
+                    b.set_tag(uid, new_idx, pop, flag);
+                }
+            }
         }
     }
 }

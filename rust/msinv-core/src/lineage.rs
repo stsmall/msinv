@@ -41,6 +41,17 @@ pub struct Lineage {
     /// lookup) and `split_at` (lookup after arena mutation).
     pub cached_hull_l: f64,
     pub cached_hull_r: f64,
+    /// Sweep-allele tag mirrored from the `ATagMap` so the per-emit
+    /// active walk doesn't pay a hashbrown probe per (cell, lineage)
+    /// pair. `None` = untagged, `Some(true)` = `A`, `Some(false)` =
+    /// `ALower`. Kept in lockstep with `ATagMap` mutations: every
+    /// `a_tag.insert(uid, val)` sites also writes `lin.a_tag =
+    /// Some(val)`. The HashMap is retained for `count_a_samples`
+    /// (post-sim accounting which queries by historical sample uid;
+    /// includes coalesced lineages that are no longer in `active`).
+    /// Niche-fills to 1 byte (Option<bool> is 256 valid states out of
+    /// 256, but Rust still picks the byte representation).
+    pub a_tag: Option<bool>,
 }
 
 impl Lineage {
@@ -50,7 +61,7 @@ impl Lineage {
         let cached_len = arena.total_length(head);
         let (cached_hull_l, cached_hull_r) = Self::hull_from_arena(head, tail, arena);
         Self { head, tail, population, uid, cached_len,
-               cached_hull_l, cached_hull_r }
+               cached_hull_l, cached_hull_r, a_tag: None }
     }
 
     /// Create a lineage with a pre-computed length (avoids the walk
@@ -60,7 +71,7 @@ impl Lineage {
                          arena: &SegmentArena) -> Self {
         let (cached_hull_l, cached_hull_r) = Self::hull_from_arena(head, tail, arena);
         Self { head, tail, population, uid, cached_len,
-               cached_hull_l, cached_hull_r }
+               cached_hull_l, cached_hull_r, a_tag: None }
     }
 
     #[inline]

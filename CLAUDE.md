@@ -99,6 +99,12 @@ Confirm pre-existing via `git stash`+rerun before chasing.
   standing-variation (t ≥ t_origin).
 - Flamegraph: `debug = 1` already set in `rust/Cargo.toml` release profile.
   `flamegraph -o .tmp/flame.svg --deterministic -- .venv/bin/python <cmd>`.
+- Long sims (>10 min): use `flamegraph -F 99 ...` (10× lower sample rate)
+  — perf.data ~3 GB at L=200kb 5min, ~30 GB at L=500kb 1h. Default -F 999
+  is fine for short runs but explodes file size on production scale.
+- Flat self-time profile (top symbols, post-flamegraph):
+  `perf report --no-children --no-inline -i perf.data --stdio | grep -E "^ +[0-9]+\.[0-9]+%"`.
+  Drop `--no-inline` to see inlined callee tree under each symbol.
 - Timebox long sims with OS-level `timeout <s>`; Python `signal.alarm` does NOT interrupt a PyO3 call holding the GIL.
 
 ## Layout
@@ -207,6 +213,12 @@ when needed).
 - Bug fixes → regression test in cargo before commit.
 - Rust ↔ Python divergence is a common bug vector — diff both when in doubt.
 - Adding a field to a public Rust struct: audit `Self { ... }` literals in `src/`, `tests/`, `examples/`, `benches/` and the PyO3 bridge — `cargo build -p <crate>` catches `src/` only.
+- Perf changes that re-order peer / pair-bucket iteration (BST walk vs
+  `0..n`, hash vs Vec, sorted vs insertion order) shift bucket fill
+  order → simulator's random "kth pair" pick lands on different pairs
+  at the same RNG seed → output is NOT byte-identical. Verify via
+  D-tests + sweep MC + Python suite within 3·SE bounds, not byte
+  equivalence. (Item 2f: 0.5% node-count drift at L=500kb, all green.)
 - `Karyotype` enum (`rust/msinv-core/src/class_tag.rs`) has variants `S` and `I` only.
   No `Colinear`/`Inverted`/`Pan` — panmictic is a `BranchClass` state, not a `Karyotype`.
 - Rust RNG: this crate is on rand 0.9 — use `rng.random::<f64>()`, NOT `rng.gen::<f64>()`.

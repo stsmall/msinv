@@ -8,7 +8,7 @@ cd rust && cargo build --release -p msinv-py
   (even unrelated projects). Wait for it to finish or `kill` deliberately.
 
 ## Tests
-- Rust: `cd rust && cargo test --release` (156 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory + 1 panic regression as of 2026-05-03; 188 total).
+- Rust: `cd rust && cargo test --release` (168 lib + 17 integration + 4 sweep-anchor + 1 PS1 + 1 PG1 + 4 SV + 2 TR + 2 sweep-trajectory + 1 panic regression as of 2026-05-04; 200 total — +12 hull_index unit tests).
   `--lib` skips `tests/` and `examples/`; use plain `cargo test --release` to catch missed struct-field updates in those.
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
   (198 passed, 3 skipped as of 2026-05-01; D1-D5 all active in
@@ -138,11 +138,11 @@ Recap-via-msprime is HARD REJECTED: see `feedback_recap_rejected.md`.
 Don't suggest it; let msinv complete on its own (raise `iters_max`
 when needed).
 
-## Known production-perf concern (Item 2; partially closed 2026-05-03)
+## Known production-perf concern (Item 2; sub-items 1, 2a, 2f closed; 2b in progress)
 - **Per-event work** during long sweep windows. Phase F (KirFol soft
   sweep, n=60+30+30, L=500kb, f0=0.05, SV phase) timed out at 60min
-  before this session. Two sub-items closed; one still open at
-  L ≥ 100kb scale.
+  pre-session-2026-05-03. After Items 1+2a+2f: L=500kb finishes in
+  **57.1 min** (was 78 min after Items 1+2a, was timeout pre-2f).
 
   (Item 1 — SV-phase any-pair scan O(|active|) per event — closed
   2026-05-03 via the `SweepBuckets` (pop, allele) index.
@@ -165,12 +165,26 @@ when needed).
   (3.4×); L=100kb n=60 dropped 179 → 86s (2.1×). Same RNG output
   byte-for-byte; D1-D5 + 14/14 sweep MC + 198 Python all green.)
 
-  Item 2b — remaining sweep-test wall-clock at L ≥ 100kb. Post-
-  binary-search the per-iter cost is now dominated by the
-  `emit_coal_events_from_cache` per-cell active walk + `recompute_for`
-  in the rate cache. See `.tmp/item2_path_a_scoping_v2.md` for the
-  current attack surfaces. Production Phase F at L=500kb is still
-  pending — will re-time after Item 2b lands.
+  (Item 2f — spatial hull index, default-on — closed 2026-05-04
+  via the arena-AVL `hull_index.rs` module
+  (`rust/msinv-core/src/hull_index.rs`).
+  v3 retry gate satisfied: O(log n) maintenance via balanced-tree
+  rotations + `max_end` subtree pruning + `idx_to_node` reverse map
+  for O(1) idx-to-tree-node lookup. Replaces the n-scan in
+  `RateCache::recompute_for` step 2 with `iter_overlaps`. Per-pop
+  trees keyed by `(hull_l, lineage_idx)`. Bench wins:
+  L=50kb 7.34→5.55s (1.32×), L=100kb 40.25→27.76s (1.45×),
+  L=200kb 373.93→295.11s (1.27×), L=500kb 78→57.1min (1.36×).
+  ORDER DIVERGENCE caveat: peers visited in BST order vs `0..n` so
+  same RNG seed lands on different "kth pair" picks → 0.5%
+  node-count drift at L=500kb; D-tests + Python suite pass within
+  3·SE bounds.)
+
+  Item 2b — remaining sweep-test wall-clock at L ≥ 100kb. After
+  Item 2f the recompute_for n-scan is closed; remaining cost at
+  L ≥ 100kb is dominated by `emit_coal_events_from_cache` per-cell
+  active walk + the rate-cache maintenance. Re-profile to identify
+  the next attack surface.
 
 ## Known scale limits
 - Realistic anopheles Ne_anc ≥ 1e6 + old inversions (≥100k gen) hits the remnant-ratchet:

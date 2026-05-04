@@ -11,6 +11,7 @@
 /// entries referencing the old last index are patched.
 
 use crate::class_tag::BranchClass;
+use crate::hull_index::HullIndex;
 use crate::lineage::Lineage;
 use crate::segment::SegmentArena;
 
@@ -158,6 +159,16 @@ pub struct RateCache {
     /// counts can exceed any sane inline SmallVec size (n~4000 lineages,
     /// same-pop peers 10²-10³).
     peers_scratch: Vec<usize>,
+    /// Per-population hull-overlap index (one tree per pop). Empty
+    /// unless `MSINV_HULL_INDEX` is set; populated lazily as new pop
+    /// indices arrive. Replaces the O(n) scan in `recompute_for` with
+    /// O(log n + k) overlap query when enabled. v3 retry gate
+    /// (project_perf_rejected_attempts.md): O(log n) maintenance is
+    /// what was missing from the v3 sorted-Vec attempt.
+    hull_indexes: Vec<HullIndex>,
+    /// Reusable scratch for HullIndex query output. Owning the Vec
+    /// avoids fresh allocation per query.
+    hull_query_scratch: Vec<u32>,
     /// Current number of active lineages.
     n: usize,
     /// Max capacity (determines pair_idx mapping).
@@ -214,8 +225,82 @@ impl RateCache {
             peer_bits: vec![0u64; cap * peer_stride],
             peer_word_stride: peer_stride,
             peers_scratch: Vec::new(),
+            hull_indexes: Vec::new(),
+            hull_query_scratch: Vec::new(),
             n: 0,
             capacity: cap,
+        }
+    }
+
+    /// Drop every entry from every per-pop hull tree. Cheap when the
+    /// index is disabled (trees stay empty).
+    fn hull_indexes_clear(&mut self) {
+        for tree in self.hull_indexes.iter_mut() {
+            tree.clear();
+        }
+    }
+
+    /// Ensure `self.hull_indexes` covers population indices up to
+    /// `pop` inclusive.
+    #[inline]
+    fn hull_index_ensure_pop(&mut self, pop: u32) {
+        let need = pop as usize + 1;
+        while self.hull_indexes.len() < need {
+            self.hull_indexes.push(HullIndex::new());
+        }
+    }
+
+    /// Place / refresh `(idx, hull_l, hull_r)` in the tree for `new_pop`,
+    /// removing it from `old_pop`'s tree first if it was there.
+    /// Idempotent. No-op when the index is disabled.
+    fn hull_index_install(
+        &mut self,
+        idx: u32,
+        old_pop: Option<u32>,
+        new_pop: u32,
+        hull_l: f64,
+        hull_r: f64,
+    ) {
+        // Skip degenerate / sentinel hulls (empty lineage).
+        if !hull_l.is_finite() || !hull_r.is_finite() || hull_l > hull_r {
+            self.hull_index_remove(idx, old_pop);
+            return;
+        }
+        if let Some(op) = old_pop {
+            if op != new_pop {
+                let opi = op as usize;
+                if opi < self.hull_indexes.len()
+                    && self.hull_indexes[opi].contains(idx)
+                {
+                    self.hull_indexes[opi].remove(idx);
+                }
+            }
+        }
+        self.hull_index_ensure_pop(new_pop);
+        let pi = new_pop as usize;
+        if self.hull_indexes[pi].contains(idx) {
+            self.hull_indexes[pi].update(idx, hull_l, hull_r);
+        } else {
+            self.hull_indexes[pi].insert(idx, hull_l, hull_r);
+        }
+    }
+
+    /// Drop `idx` from whichever pop's tree it currently sits in (if
+    /// any). No-op when `idx` is absent.
+    fn hull_index_remove(&mut self, idx: u32, pop: Option<u32>) {
+        if let Some(p) = pop {
+            let pi = p as usize;
+            if pi < self.hull_indexes.len() && self.hull_indexes[pi].contains(idx) {
+                self.hull_indexes[pi].remove(idx);
+            }
+            return;
+        }
+        // Pop not known to the caller (rare): scan trees.
+        for tree in self.hull_indexes.iter_mut() {
+            if tree.contains(idx) {
+                tree.remove(idx);
+                return;
+            }
         }
     }
 
@@ -235,6 +320,7 @@ impl RateCache {
         self.lineage_segs.clear();
         self.lineage_pos_bits.clear();
         self.lineage_hulls.clear();
+        self.hull_indexes_clear();
         // Shrink capacity when the new cap would be far below the
         // current one. Prior `reset` only grew, so peak active-n from
         // any earlier rep stuck as the permanent high-water mark for
@@ -710,6 +796,13 @@ impl RateCache {
         for i in 0..self.n {
             self.rebuild_lineage_segs(i, active, arena);
         }
+        // Populate per-pop hull trees from the freshly-rebuilt hulls.
+        self.hull_indexes_clear();
+        for i in 0..self.n {
+            let pop = self.lineage_pop[i];
+            let (l, r) = self.lineage_hulls[i];
+            self.hull_index_install(i as u32, None, pop, l, r);
+        }
         for i in 0..self.n {
             for j in (i + 1)..self.n {
                 if active[i].population != active[j].population {
@@ -751,6 +844,16 @@ impl RateCache {
             self.lineage_hulls.resize(self.n,
                 (f64::INFINITY, f64::NEG_INFINITY));
         }
+        // Capture pre-update pop so we can move the index entry
+        // across pop trees if the lineage migrated.
+        let old_pop = if idx < self.lineage_pop.len() && self.hull_indexes
+            .get(self.lineage_pop[idx] as usize)
+            .map_or(false, |t| t.contains(idx as u32))
+        {
+            Some(self.lineage_pop[idx])
+        } else {
+            None
+        };
         self.lineage_pop[idx] = active[idx].population;
         // Refresh the flat segment view for `idx`. Callers invoke
         // recompute_for after any mutation to `idx`'s chain.
@@ -759,7 +862,11 @@ impl RateCache {
 
         let changed_pop = active[idx].population;
         let changed_bits = self.lineage_pos_bits[idx];
-        let n = self.n;
+        // Hull-index maintenance: install / refresh entry for `idx`.
+        self.hull_index_install(
+            idx as u32, old_pop, changed_pop,
+            changed_hull_l, changed_hull_r,
+        );
         // Step 1: walk peer_bits[idx] directly — every set bit is a
         // peer that currently has a nonempty pair with `idx`. Replaces
         // the old bitmap row + column walks; single O(peers) loop.
@@ -770,17 +877,22 @@ impl RateCache {
             self.clear_pair(i, j);
         }
         self.peers_scratch.clear();
-        // Step 2: compute new (idx, other) pairs. Prescreens read from
-        // direct-indexed side tables (lineage_pop / lineage_hulls /
-        // lineage_pos_bits) so the hot filter is three sequential
-        // Vec-index loads with no SmallVec header chase.
-        for other in 0..n {
+        // Step 2: compute new (idx, other) pairs via the per-pop hull
+        // index (O(log n + k)). Population is encoded in the tree
+        // partition, so the only remaining filters are the position
+        // bitmap test + the actual segment overlap.
+        self.hull_query_scratch.clear();
+        let pi = changed_pop as usize;
+        if pi < self.hull_indexes.len() {
+            self.hull_indexes[pi].iter_overlaps(
+                changed_hull_l, changed_hull_r,
+                &mut self.hull_query_scratch,
+            );
+        }
+        for k in 0..self.hull_query_scratch.len() {
+            let other = self.hull_query_scratch[k] as usize;
             if other == idx { continue; }
-            if self.lineage_pop[other] != changed_pop { continue; }
-            let (other_l, other_r) = self.lineage_hulls[other];
-            if !(other_r > changed_hull_l && changed_hull_r > other_l) {
-                continue;
-            }
+            debug_assert_eq!(self.lineage_pop[other], changed_pop);
             if changed_bits & self.lineage_pos_bits[other] == 0 { continue; }
             let i = other.min(idx);
             let j = other.max(idx);
@@ -822,14 +934,37 @@ impl RateCache {
         if self.lineage_pop.len() < self.n {
             self.lineage_pop.resize(self.n, 0);
         }
+        // Capture pre-update pops so the index can move entries
+        // across pop trees on (rare) migration in apply_recomb_split.
+        let old_pop_idx = if idx < self.lineage_pop.len() && self.hull_indexes
+            .get(self.lineage_pop[idx] as usize)
+            .map_or(false, |t| t.contains(idx as u32))
+        {
+            Some(self.lineage_pop[idx])
+        } else {
+            None
+        };
+        // `new_idx` is freshly pushed onto active in the recomb caller,
+        // so it is not yet in any tree — pre-pop is None.
         self.lineage_pop[idx] = active[idx].population;
         self.lineage_pop[new_idx] = active[new_idx].population;
         let changed_pop = active[idx].population;
+        let new_pop = active[new_idx].population;
         // Refresh both halves' flat segment views before any compute_overlap.
         self.rebuild_lineage_segs(idx, active, arena);
         self.rebuild_lineage_segs(new_idx, active, arena);
         let (left_hull_l, left_hull_r) = self.lineage_hulls[idx];
         let (right_hull_l, right_hull_r) = self.lineage_hulls[new_idx];
+        // Hull-index maintenance: update `idx` (shrunk left half),
+        // insert `new_idx` (right half).
+        self.hull_index_install(
+            idx as u32, old_pop_idx, changed_pop,
+            left_hull_l, left_hull_r,
+        );
+        self.hull_index_install(
+            new_idx as u32, None, new_pop,
+            right_hull_l, right_hull_r,
+        );
 
         // Split can only shrink idx's hull (left/right halves are
         // subsets); empty old pairs stay empty. Walk peer_bits[idx]
@@ -837,7 +972,6 @@ impl RateCache {
         // the old bitmap row walk + column walk. new_pidx slot is
         // empty by invariant (new_idx was just pushed), so no
         // defensive scrub needed.
-        let _ = changed_pop;
         self.collect_peers(idx);
         for k in 0..self.peers_scratch.len() {
             let other = self.peers_scratch[k];
@@ -934,6 +1068,11 @@ impl RateCache {
     /// Patch cache entries: old references to `last` become `idx`.
     pub fn swap_update(&mut self, removed_idx: usize, old_last: usize) {
         if removed_idx == old_last {
+            // Hull-index: drop the entry for the popped tail.
+            if removed_idx < self.lineage_pop.len() {
+                let pop = self.lineage_pop[removed_idx];
+                self.hull_index_remove(removed_idx as u32, Some(pop));
+            }
             if !self.lineage_pop.is_empty() {
                 self.lineage_pop.pop();
             }
@@ -953,6 +1092,26 @@ impl RateCache {
             for w in 0..stride { self.peer_bits[start + w] = 0; }
             self.n -= 1;
             return;
+        }
+        // Hull-index relabel: drop `removed_idx`'s old entry, drop
+        // `old_last`'s entry, then reinsert `old_last`'s data under
+        // index `removed_idx` (matching the swap_remove on `active`).
+        // Done before the lineage_pop / lineage_hulls swap below so we
+        // can read both pops + hulls as they currently sit.
+        if removed_idx < self.lineage_pop.len() {
+            let rp = self.lineage_pop[removed_idx];
+            self.hull_index_remove(removed_idx as u32, Some(rp));
+        }
+        if old_last < self.lineage_pop.len() {
+            let lp = self.lineage_pop[old_last];
+            let lh = self.lineage_hulls.get(old_last)
+                .copied().unwrap_or((f64::INFINITY, f64::NEG_INFINITY));
+            self.hull_index_remove(old_last as u32, Some(lp));
+            // Reinsert `old_last`'s payload under the new lineage
+            // idx `removed_idx`, in the same pop tree.
+            self.hull_index_install(
+                removed_idx as u32, None, lp, lh.0, lh.1,
+            );
         }
         // Callers must have invoked `remove_lineage(removed_idx)` first,
         // so every (removed_idx, *) slot is already empty with bit = 0.

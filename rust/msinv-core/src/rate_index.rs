@@ -287,6 +287,7 @@ impl RateCache {
     /// Pop index of the tree currently holding `idx`, or `None` if
     /// `idx` is not yet indexed. Read before mutating `lineage_pop[idx]`
     /// so a migrating lineage can be moved between pop trees.
+    #[inline]
     fn current_tree_pop(&self, idx: usize) -> Option<u32> {
         if idx >= self.lineage_pop.len() {
             return None;
@@ -871,9 +872,8 @@ impl RateCache {
             idx as u32, old_pop, changed_pop,
             changed_hull_l, changed_hull_r,
         );
-        // Step 1: walk peer_bits[idx] directly — every set bit is a
-        // peer that currently has a nonempty pair with `idx`. Replaces
-        // the old bitmap row + column walks; single O(peers) loop.
+        // Step 1: clear every cached pair involving `idx` before
+        // step 2 recomputes them from the new hull.
         self.collect_peers(idx);
         for k in 0..self.peers_scratch.len() {
             let peer = self.peers_scratch[k];
@@ -944,20 +944,17 @@ impl RateCache {
         self.lineage_pop[idx] = active[idx].population;
         self.lineage_pop[new_idx] = active[new_idx].population;
         let changed_pop = active[idx].population;
-        let new_pop = active[new_idx].population;
         // Refresh both halves' flat segment views before any compute_overlap.
         self.rebuild_lineage_segs(idx, active, arena);
         self.rebuild_lineage_segs(new_idx, active, arena);
         let (left_hull_l, left_hull_r) = self.lineage_hulls[idx];
         let (right_hull_l, right_hull_r) = self.lineage_hulls[new_idx];
-        // Hull-index maintenance: update `idx` (shrunk left half),
-        // insert `new_idx` (right half).
         self.hull_index_install(
             idx as u32, old_pop_idx, changed_pop,
             left_hull_l, left_hull_r,
         );
         self.hull_index_install(
-            new_idx as u32, None, new_pop,
+            new_idx as u32, None, active[new_idx].population,
             right_hull_l, right_hull_r,
         );
 

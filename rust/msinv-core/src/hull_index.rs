@@ -139,7 +139,6 @@ impl HullIndex {
             return;
         }
 
-        // BST descent + attach as leaf, recording parent.
         let mut cur = self.root;
         loop {
             let cmp = Self::key_cmp(
@@ -168,7 +167,6 @@ impl HullIndex {
                 }
             }
         }
-        // Walk up: refresh height + max_end + rebalance.
         self.rebalance_up(self.nodes[new_id as usize].parent);
     }
 

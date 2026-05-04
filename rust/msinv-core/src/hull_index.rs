@@ -29,17 +29,12 @@
 //! This struct stores ONE population's worth of lineages. The
 //! simulator owns a `Vec<HullIndex>` indexed by population so each
 //! tree stays small (typical demography is 2-3 pops).
-//!
-//! ## Stage 1: data structure + tests, no simulator wiring.
-//! Stages 2-3 will thread maintenance through the main loop + flip
-//! the `recompute_for` query call site. See
-//! `project_validation_tracks_resume.md` for the full sequence.
 
 use std::cmp::Ordering;
 
 /// Arena slot id. `NULL` is the sentinel for "no node here".
-pub type NodeId = u32;
-pub const NULL: NodeId = u32::MAX;
+pub(crate) type NodeId = u32;
+pub(crate) const NULL: NodeId = u32::MAX;
 
 #[derive(Clone, Debug)]
 struct Node {
@@ -544,7 +539,7 @@ impl HullIndex {
 mod tests {
     use super::*;
     use rand::prelude::*;
-    use rand_xoshiro::Xoshiro256Plus;
+    use rand_xoshiro::Xoshiro256PlusPlus;
 
     fn sorted(mut v: Vec<u32>) -> Vec<u32> {
         v.sort_unstable();
@@ -625,7 +620,7 @@ mod tests {
 
     #[test]
     fn random_insert_remove_query() {
-        let mut rng = Xoshiro256Plus::seed_from_u64(0xc0ffee);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(0xc0ffee);
         let mut h = HullIndex::new();
         let n = 500;
         // Insert random hulls.
@@ -700,7 +695,7 @@ mod tests {
         assert!(h.is_empty());
         // Reinsert the same idx range; reverse map should be reusable.
         for i in 0u32..50 {
-            h.insert(i, (50.0 - i as f64), (50.0 - i as f64) + 1.0);
+            h.insert(i, 50.0 - i as f64, 50.0 - i as f64 + 1.0);
         }
         h.validate();
         let mut out = Vec::new();
@@ -786,7 +781,7 @@ mod tests {
     #[test]
     fn stress_height_bound() {
         // n=10000 worst-case AVL height ≤ 1.44 log₂(10002) ≈ 19.1 ≤ 20.
-        let mut rng = Xoshiro256Plus::seed_from_u64(0x12345);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x12345);
         let mut h = HullIndex::new();
         let n = 10000u32;
         for i in 0..n {

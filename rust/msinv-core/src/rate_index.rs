@@ -159,12 +159,11 @@ pub struct RateCache {
     /// counts can exceed any sane inline SmallVec size (n~4000 lineages,
     /// same-pop peers 10²-10³).
     peers_scratch: Vec<usize>,
-    /// Per-population hull-overlap index (one tree per pop). Empty
-    /// unless `MSINV_HULL_INDEX` is set; populated lazily as new pop
-    /// indices arrive. Replaces the O(n) scan in `recompute_for` with
-    /// O(log n + k) overlap query when enabled. v3 retry gate
-    /// (project_perf_rejected_attempts.md): O(log n) maintenance is
-    /// what was missing from the v3 sorted-Vec attempt.
+    /// Per-population hull-overlap index (one tree per pop), populated
+    /// lazily as new pop indices arrive. Replaces the O(n) scan in
+    /// `recompute_for`'s step 2 with an O(log n + k) overlap query.
+    /// v3 retry gate (`project_perf_rejected_attempts.md`): O(log n)
+    /// maintenance is what was missing from the prior sorted-Vec attempt.
     hull_indexes: Vec<HullIndex>,
     /// Reusable scratch for HullIndex query output. Owning the Vec
     /// avoids fresh allocation per query.
@@ -282,6 +281,20 @@ impl RateCache {
             self.hull_indexes[pi].update(idx, hull_l, hull_r);
         } else {
             self.hull_indexes[pi].insert(idx, hull_l, hull_r);
+        }
+    }
+
+    /// Pop index of the tree currently holding `idx`, or `None` if
+    /// `idx` is not yet indexed. Read before mutating `lineage_pop[idx]`
+    /// so a migrating lineage can be moved between pop trees.
+    fn current_tree_pop(&self, idx: usize) -> Option<u32> {
+        if idx >= self.lineage_pop.len() {
+            return None;
+        }
+        let pop = self.lineage_pop[idx];
+        match self.hull_indexes.get(pop as usize) {
+            Some(t) if t.contains(idx as u32) => Some(pop),
+            _ => None,
         }
     }
 
@@ -844,16 +857,7 @@ impl RateCache {
             self.lineage_hulls.resize(self.n,
                 (f64::INFINITY, f64::NEG_INFINITY));
         }
-        // Capture pre-update pop so we can move the index entry
-        // across pop trees if the lineage migrated.
-        let old_pop = if idx < self.lineage_pop.len() && self.hull_indexes
-            .get(self.lineage_pop[idx] as usize)
-            .map_or(false, |t| t.contains(idx as u32))
-        {
-            Some(self.lineage_pop[idx])
-        } else {
-            None
-        };
+        let old_pop = self.current_tree_pop(idx);
         self.lineage_pop[idx] = active[idx].population;
         // Refresh the flat segment view for `idx`. Callers invoke
         // recompute_for after any mutation to `idx`'s chain.
@@ -934,18 +938,9 @@ impl RateCache {
         if self.lineage_pop.len() < self.n {
             self.lineage_pop.resize(self.n, 0);
         }
-        // Capture pre-update pops so the index can move entries
-        // across pop trees on (rare) migration in apply_recomb_split.
-        let old_pop_idx = if idx < self.lineage_pop.len() && self.hull_indexes
-            .get(self.lineage_pop[idx] as usize)
-            .map_or(false, |t| t.contains(idx as u32))
-        {
-            Some(self.lineage_pop[idx])
-        } else {
-            None
-        };
-        // `new_idx` is freshly pushed onto active in the recomb caller,
-        // so it is not yet in any tree — pre-pop is None.
+        // `new_idx` is freshly pushed; only `idx` could already be in
+        // a tree from prior events.
+        let old_pop_idx = self.current_tree_pop(idx);
         self.lineage_pop[idx] = active[idx].population;
         self.lineage_pop[new_idx] = active[new_idx].population;
         let changed_pop = active[idx].population;

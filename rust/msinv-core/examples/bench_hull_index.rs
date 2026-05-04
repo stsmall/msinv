@@ -22,12 +22,12 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use rand::prelude::*;
-use rand_xoshiro::Xoshiro256Plus;
+use rand_xoshiro::Xoshiro256PlusPlus;
 
 use msinv_core::hull_index::HullIndex;
 
 fn gen_hulls(n: usize, seed: u64) -> Vec<(f64, f64)> {
-    let mut rng = Xoshiro256Plus::seed_from_u64(seed);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     (0..n)
         .map(|_| {
             let l = rng.random::<f64>() * 1.0;
@@ -38,7 +38,7 @@ fn gen_hulls(n: usize, seed: u64) -> Vec<(f64, f64)> {
 }
 
 fn gen_queries(q: usize, seed: u64) -> Vec<(f64, f64)> {
-    let mut rng = Xoshiro256Plus::seed_from_u64(seed);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
     (0..q)
         .map(|_| {
             let l = rng.random::<f64>();
@@ -149,7 +149,7 @@ fn main() {
 
     // ---- HullIndex remove ----
     let mut order: Vec<u32> = (0..n as u32).collect();
-    let mut rng = Xoshiro256Plus::seed_from_u64(0x12345);
+    let mut rng = Xoshiro256PlusPlus::seed_from_u64(0x12345);
     order.shuffle(&mut rng);
     let t0 = Instant::now();
     for &idx in &order {

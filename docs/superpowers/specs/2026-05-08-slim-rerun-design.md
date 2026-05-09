@@ -43,13 +43,23 @@ sweep stack rewrite. The April call site at `run_comparison.py:119-
 | April field | HEAD field | Notes |
 |---|---|---|
 | `x_sel` | `x_sel` | unchanged |
-| `t_event` | `tau` | sweep onset (forward time) |
+| `t_event` | `t_origin` | sweep onset (gen ago, backward time) |
+| — | `tau=0.0` | sweep fixation time (gen ago) — set to 0 = present |
 | `target_class="S"` | `origin_kary="S"` | renamed |
 | `selection_coefficient` | `s` | renamed |
 | `starting_frequency` | `f0` | renamed |
 | — | `origin_pop=0` | new required |
 | — | `target_inv=0` | new required, anchored to first inversion |
 | — | `mode='Stochastic'` | new required choice |
+
+Time-direction convention (per `rust/msinv-core/src/sweep.rs:126,136`):
+`tau` = "gen ago when sample is taken", `t_origin` = "gen ago; A first
+appears". Invariant `t_origin > tau`, validated at construction. The
+April `t_event=0.2*Ne` represents the sweep onset (further in the past),
+so it maps to `t_origin`, and `tau=0` (sweep already fixed at sampling
+time) is the appropriate default. **Note:** an earlier draft of this
+spec mapped `t_event → tau`, which is wrong and would have triggered a
+runtime panic. Corrected after T2 implementation surfaced the issue.
 
 Mode rationale: the SLiM `scenario3` script introduces 20 sweep
 copies onto random S-karyotype genomes, giving `f0=20/(2·Ne)=0.01`

@@ -116,12 +116,27 @@ def run_msinv(scenario, rep, out_trees):
 
     sweeps = []
     if scenario == 3:
+        # HEAD Sweep API (post-2026-04-28 rewrite). Field mapping from
+        # the April call site:
+        #   t_event              -> t_origin  (sweep onset, backward time)
+        #   target_class="S"     -> origin_kary="S"
+        #   selection_coefficient -> s
+        #   starting_frequency    -> f0  (triggers SV phase since f0 > 1/(2N))
+        # tau=0.0: sweep fixes at present (standard coalescent convention).
+        # New required: origin_pop=0, target_inv=0, mode='Stochastic'.
+        # Stochastic mirrors discoal D3 soft-sweep calibration, matching
+        # SLiM's 20-genome S-karyotype introduction.
         sweeps = [Sweep(
             x_sel=float(params["x_sel"]),
-            t_event=float(params["t_sweep_factor"] * Ne),
-            target_class="S",
-            selection_coefficient=float(params["s_coef"]),
-            starting_frequency=float(params.get("starting_frequency", 0.0)))]
+            tau=0.0,
+            t_origin=float(params["t_sweep_factor"] * Ne),
+            origin_pop=0,
+            origin_kary="S",
+            target_inv=0,
+            mode="Stochastic",
+            s=float(params["s_coef"]),
+            f0=float(params.get("starting_frequency", 0.0)),
+            seed=2000 + rep)]
 
     # Match 10 S + 10 I haploid samples.
     sim = HullSimulator(

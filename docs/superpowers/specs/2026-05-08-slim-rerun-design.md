@@ -1,7 +1,15 @@
 # SLiM cross-engine rerun against HEAD msinv (Track B option 1a)
 
+**SUPERSEDED 2026-05-09** by `2026-05-09-msinv-validation-suite-design.md`.
+
+This spec was scoped wrong: 3 reps at Ne=1000 cannot answer the
+publication-grade equivalence question. n=3 reps with msinv per-rep
+CV of 14–71% leaves SE on the mean at 8–41% — a ±5% pass criterion
+was unachievable. Old spec retained for git-history record only;
+the validation suite spec replaces it. Do not implement against this.
+
 Date: 2026-05-08
-Status: brainstorm-approved, pending writing-plans
+Status: superseded
 
 ## Goal
 

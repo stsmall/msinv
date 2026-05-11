@@ -17,6 +17,7 @@ def test_track4_smoke_hard_2_reps(tmp_path):
         n_reps=2,
         L=100_000,
         n_samples=10,
+        max_workers=1,  # serial for smoke; avoids pool startup cost
     )
     assert (out_root / "msinv").exists()
     assert (out_root / "discoal").exists()

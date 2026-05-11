@@ -133,6 +133,63 @@ def _compute_and_save_stats(ts, out_dir, seed, x_sel):
     io.save_rep_stats(out_dir / "stats.npz", **flat)
 
 
+def _run_one_rep(rep, subscenario, msinv_dir, discoal_dir, L, n_samples,
+                 mu, r, x_sel):
+    """One full (msinv + discoal) rep for a subscenario. Picklable for
+    ProcessPoolExecutor. Returns rep index on success; raises on failure."""
+    seed_a = seed_for(
+        track="track4", scenario=subscenario, engine="msinv", rep=rep,
+    )
+    seed_b1 = seed_for(
+        track="track4", scenario=subscenario, engine="discoal_s1", rep=rep,
+    )
+    seed_b2 = seed_for(
+        track="track4", scenario=subscenario, engine="discoal_s2", rep=rep,
+    )
+    # msinv side
+    sweep = _msinv_sweep_for(subscenario, seed=seed_a)
+    sweep.x_sel = float(x_sel)
+    ts_a = msinv_run(
+        demography=v12_msinv(),
+        sample_config={("S", 0): 0, ("S", 1): n_samples},
+        L=L, r=r, mu=mu, seed=seed_a,
+        inversions=None, sweeps=[sweep],
+    )
+    _compute_and_save_stats(
+        ts_a, msinv_dir / f"rep_{rep:03d}", seed=seed_a, x_sel=x_sel,
+    )
+    # discoal side
+    discoal_demog = v12_discoal_events()
+    discoal_sweep = _discoal_sweep_args_for(subscenario, L=L)
+    discoal_sweep_fixed = []
+    i = 0
+    while i < len(discoal_sweep):
+        if discoal_sweep[i] == "-x":
+            discoal_sweep_fixed.extend(["-x", str(0.5)])
+            i += 2
+        else:
+            discoal_sweep_fixed.append(discoal_sweep[i])
+            i += 1
+    all_args = (
+        ["-p", "2", "0", str(n_samples)]
+        + discoal_demog
+        + discoal_sweep_fixed
+    )
+    tmp_dir = discoal_dir / f"rep_{rep:03d}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ts_b = discoal_run(
+        n_samples=n_samples,
+        L=L, r=r, mu=mu,
+        seed=(seed_b1, seed_b2),
+        ne_diploid=V12_DISCOAL_N0,
+        demography_args=all_args,
+        sweep_args=None,
+        tmp_dir=tmp_dir,
+    )
+    _compute_and_save_stats(ts_b, tmp_dir, seed=seed_b1, x_sel=x_sel)
+    return rep
+
+
 def run_track4_subscenario(
     *,
     out_root: str | Path,
@@ -142,8 +199,14 @@ def run_track4_subscenario(
     n_samples: int = 100,
     mu: float = 1.0e-8,
     r: float = 1.0e-8,
+    max_workers: int = 50,
 ) -> dict:
-    """Run one Track 4 subscenario end-to-end."""
+    """Run one Track 4 subscenario end-to-end with parallel reps.
+
+    Uses ProcessPoolExecutor(max_workers) per the spec's ≤50 cpu local
+    target. Each rep is independent so the pool just dispatches and
+    collects.
+    """
     if subscenario not in {"hard", "soft", "recurrent"}:
         raise ValueError(subscenario)
     out_root = Path(out_root)
@@ -151,63 +214,38 @@ def run_track4_subscenario(
     discoal_dir = out_root / "discoal"
     msinv_dir.mkdir(parents=True, exist_ok=True)
     discoal_dir.mkdir(parents=True, exist_ok=True)
-    x_sel = L * 0.5  # midpoint at any L (smoke + production)
+    x_sel = L * 0.5
 
-    for rep in range(n_reps):
-        seed_a = seed_for(
-            track="track4", scenario=subscenario, engine="msinv", rep=rep,
-        )
-        seed_b1 = seed_for(
-            track="track4", scenario=subscenario, engine="discoal_s1", rep=rep,
-        )
-        seed_b2 = seed_for(
-            track="track4", scenario=subscenario, engine="discoal_s2", rep=rep,
-        )
-        # msinv: build sweep w/ L-adjusted x_sel
-        sweep = _msinv_sweep_for(subscenario, seed=seed_a)
-        sweep.x_sel = float(x_sel)  # override for any L (smoke uses smaller L)
-        ts_a = msinv_run(
-            demography=v12_msinv(),
-            sample_config={("S", 0): 0, ("S", 1): n_samples},
-            L=L, r=r, mu=mu, seed=seed_a,
-            inversions=None, sweeps=[sweep],
-        )
-        _compute_and_save_stats(
-            ts_a, msinv_dir / f"rep_{rep:03d}", seed=seed_a, x_sel=x_sel,
-        )
-        # discoal: build CLI args; sampleSize spec via `-p 2 0 n_samples`
-        # to mirror msinv's K=0 + F=n_samples sample config.
-        discoal_demog = v12_discoal_events()
-        discoal_sweep = _discoal_sweep_args_for(subscenario, L=L)
-        # Override -x for any L (smoke uses smaller L)
-        discoal_sweep_fixed = []
-        i = 0
-        while i < len(discoal_sweep):
-            if discoal_sweep[i] == "-x":
-                discoal_sweep_fixed.extend(["-x", str(0.5)])
-                i += 2
-            else:
-                discoal_sweep_fixed.append(discoal_sweep[i])
-                i += 1
-        all_args = (
-            ["-p", "2", "0", str(n_samples)]
-            + discoal_demog
-            + discoal_sweep_fixed
-        )
-        tmp_dir = discoal_dir / f"rep_{rep:03d}"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        ts_b = discoal_run(
-            n_samples=n_samples,
-            L=L, r=r, mu=mu,
-            seed=(seed_b1, seed_b2),
-            ne_diploid=V12_DISCOAL_N0,
-            demography_args=all_args,
-            sweep_args=None,  # already in all_args
-            tmp_dir=tmp_dir,
-        )
-        _compute_and_save_stats(
-            ts_b, tmp_dir, seed=seed_b1, x_sel=x_sel,
-        )
+    # Single-worker fast path keeps the smoke test simple + lets the
+    # CLI run sequentially when --max-workers=1 is passed for debugging.
+    if max_workers <= 1:
+        for rep in range(n_reps):
+            _run_one_rep(rep, subscenario, msinv_dir, discoal_dir,
+                          L, n_samples, mu, r, x_sel)
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(
+                    _run_one_rep, rep, subscenario, msinv_dir, discoal_dir,
+                    L, n_samples, mu, r, x_sel,
+                ): rep
+                for rep in range(n_reps)
+            }
+            n_done = 0
+            for fut in as_completed(futures):
+                rep_idx = futures[fut]
+                try:
+                    fut.result()
+                except Exception as exc:
+                    print(f"  rep {rep_idx} FAILED: {exc!r}", flush=True)
+                    continue
+                n_done += 1
+                if n_done % 10 == 0 or n_done == n_reps:
+                    print(
+                        f"  {subscenario}: {n_done}/{n_reps} reps done",
+                        flush=True,
+                    )
 
     table = track_equivalence_table(msinv_dir, discoal_dir)
     return {"equivalence_table": table}

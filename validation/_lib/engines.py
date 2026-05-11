@@ -45,3 +45,32 @@ def msinv_run(
         ts_raw, rate=float(mu), random_seed=int(seed) + 1, keep=True,
     )
     return ts
+
+
+def msprime_run(
+    *,
+    demography: msprime.Demography,
+    samples_by_pop: dict[str, int],
+    L: float,
+    r: float,
+    mu: float,
+    seed: int,
+) -> tskit.TreeSequence:
+    """Run msprime at the given config and overlay neutral mutations.
+
+    `samples_by_pop` keys must match the v12 population names ("K", "F").
+    msprime is called with ploidy=1 (haploid) to match msinv's sample
+    convention (per CLAUDE.md `population_size` / sample convention).
+    """
+    ts_raw = msprime.sim_ancestry(
+        samples=samples_by_pop,
+        demography=demography,
+        sequence_length=float(L),
+        recombination_rate=float(r),
+        random_seed=int(seed),
+        ploidy=1,
+    )
+    ts = msprime.sim_mutations(
+        ts_raw, rate=float(mu), random_seed=int(seed) + 1, keep=True,
+    )
+    return ts

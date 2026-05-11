@@ -146,6 +146,10 @@ def v12_msprime():
     # ---- KF -> Anc deep change ----
     d.add_population_parameters_change(
         time=T_ANC_RENAME, population="KF", initial_size=NE_ANC_DEEP)
+    # add_population_split internally appends activation/deactivation events
+    # that can land out of time-sorted order relative to the manually added
+    # stair-steps.  sort_events() is the msprime-documented fix.
+    d.sort_events()
     return d
 
 

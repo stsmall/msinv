@@ -1,0 +1,11 @@
+{
+  "wall_seconds": 147.23521399497986,
+  "peak_rss_bytes": 2742218752,
+  "iters_consumed": -1,
+  "num_trees": 66083,
+  "num_sites": 60569,
+  "rep": 0,
+  "L": 1000000.0,
+  "seed": 1605447791,
+  "n_samples": 100
+}

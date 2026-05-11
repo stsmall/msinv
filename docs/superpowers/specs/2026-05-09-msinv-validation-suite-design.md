@@ -81,18 +81,15 @@ whether a sweep is applied.
 | 1 | msinv ↔ SLiM | 100 from F (~27 F_S + ~73 F_I per p_inv=0.73) | 3Ra | — | HPC SLURM |
 | 2 | msinv ↔ SLiM | 50 K + 50 F (~14 F_S + ~36 F_I) | 3Ra | — | HPC SLURM |
 | 3 | msinv ↔ msprime | 100 from F | — | — | Local (≤50 cpu) |
-| 4 | msinv ↔ discoal | 100 from F (panmictic) | — | f=0 / f>0 / recurrent | Local (≤50 cpu) |
+| 4 | msinv ↔ discoal | 100 from F | — | f=0 / f>0 / recurrent | Local (≤50 cpu) |
 | 5 | msinv ↔ SLiM | 100 from F | 3Ra | hard inside inversion | HPC SLURM |
 
-**Track 4 + discoal caveat:** discoal supports `-en` for single-pop
-Ne(t) changes; it can replay the F → KF → Anc Ne(t) trajectory as a
-panmictic series of size changes. The K-F split event has no discoal
-analogue — for Track 4 we collapse the demography to "the F trajectory
-backward to the split, then continue with the KF and Anc trajectories
-as if F's lineages experienced them directly." This is the standard
-collapsed-history representation used in single-pop comparisons. msinv
-runs the full v12 (with K samples = 0); both engines see the same
-effective Ne(t) on the F-lineage side.
+discoal 2.0.0-beta supports the full ms event set (`-p` for multi-pop
+samples, `-ed`/`-ej` for population joins, `-en` for per-population
+size changes, `-eg` for growth, `-em`/`-eM` for migration matrix, `-A`
+for ancient samples, and `-D` for a demes-format YAML). Track 4 runs
+the same v12 demography as every other track. Samples come from F
+only (the polymorphic-3Ra population); K samples = 0 via `-p 2 0 100`.
 
 ## Inversion (Tracks 1, 2, 5)
 

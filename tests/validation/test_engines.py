@@ -55,3 +55,26 @@ def test_msprime_run_two_pops():
         seed=43,
     )
     assert ts.num_samples == 10
+
+
+def test_discoal_run_neutral_returns_ts(tmp_path):
+    """Smoke: small discoal run without sweep returns a tskit ts."""
+    from validation._lib.engines import discoal_run
+    from validation._lib.demography import v12_discoal_events
+
+    ts = discoal_run(
+        n_samples=10,
+        L=10_000,
+        r=1.0e-8,
+        mu=1.0e-8,
+        seed=(42, 43),
+        ne_diploid=126_772,
+        demography_args=v12_discoal_events(),
+        sweep_args=None,
+        tmp_dir=tmp_path,
+    )
+    assert isinstance(ts, tskit.TreeSequence)
+    assert ts.num_samples == 10
+    # discoal emits in coalescent (2N) units; the runner should have
+    # rescaled to generations on load. ts.time_units check is OK to skip.
+    assert ts.sequence_length == 10_000

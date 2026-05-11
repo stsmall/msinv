@@ -80,3 +80,121 @@ def v12_msinv() -> Demography:
     d.add_event(("en", float(T_ANC_RENAME), 0, NE_ANC_DEEP))
 
     return d
+
+
+# --- v12 reference Ne for discoal CLI scaling ---------------------
+# discoal (and ms) use 4*N0-scaled times and N0-ratio sizes.
+# N0 = present-day Kiribina, matching the convention used in
+# kir_fol_demography.py and the existing _discoal_bench_runner.
+V12_DISCOAL_N0 = NE_K_PRESENT  # 126,772
+
+
+def v12_msprime():
+    """Build the v12 demography as an msprime.Demography object.
+
+    Same events as v12_msinv() but expressed using msprime's API: named
+    populations, population_parameters_change events, and a population
+    split (msprime's natural representation of a backward-time join).
+    """
+    import msprime
+    d = msprime.Demography()
+    d.add_population(name="K", initial_size=NE_K_PRESENT)
+    d.add_population(name="F", initial_size=NE_F_PRESENT)
+    d.add_population(name="KF", initial_size=NE_KF_AT_MERGE)
+    # ---- K Ne(t) stair-step ----
+    d.add_population_parameters_change(
+        time=400, population="K", initial_size=161_546)
+    d.add_population_parameters_change(
+        time=600, population="K", initial_size=152_453)
+    d.add_population_parameters_change(
+        time=1_400, population="K", initial_size=174_800)
+    d.add_population_parameters_change(
+        time=3_000, population="K", initial_size=182_180)
+    d.add_population_parameters_change(
+        time=6_200, population="K", initial_size=159_861)
+    # ---- F Ne(t) stair-step ----
+    d.add_population_parameters_change(
+        time=400, population="F", initial_size=1_157_768)
+    d.add_population_parameters_change(
+        time=600, population="F", initial_size=205_260)
+    d.add_population_parameters_change(
+        time=1_000, population="F", initial_size=1_374_810)
+    d.add_population_parameters_change(
+        time=1_400, population="F", initial_size=674_766)
+    d.add_population_parameters_change(
+        time=3_000, population="F", initial_size=340_074)
+    d.add_population_parameters_change(
+        time=6_200, population="F", initial_size=NE_F_AT_SPLIT)
+    # ---- K-F split: K and F merge backward into KF ----
+    d.add_population_split(
+        time=T_KF_SPLIT, derived=["K", "F"], ancestral="KF")
+    # ---- KF Ne(t) trajectory ----
+    d.add_population_parameters_change(
+        time=13_000, population="KF", initial_size=81_072)
+    d.add_population_parameters_change(
+        time=20_000, population="KF", initial_size=95_546)
+    d.add_population_parameters_change(
+        time=30_000, population="KF", initial_size=73_250)
+    d.add_population_parameters_change(
+        time=40_000, population="KF", initial_size=50_000)
+    d.add_population_parameters_change(
+        time=50_000, population="KF", initial_size=50_000)
+    d.add_population_parameters_change(
+        time=60_000, population="KF", initial_size=50_000)
+    d.add_population_parameters_change(
+        time=70_000, population="KF", initial_size=50_000)
+    # ---- KF -> Anc deep change ----
+    d.add_population_parameters_change(
+        time=T_ANC_RENAME, population="KF", initial_size=NE_ANC_DEEP)
+    return d
+
+
+def v12_discoal_events():
+    """Build the v12 demography as discoal CLI argument tokens.
+
+    Returns the list of ms-style argument tokens for the v12 events.
+    Caller is responsible for prepending `sampleSize numReplicates nSites`
+    and any sweep / rate arguments.
+
+    Scaling: times divided by 4*N0, sizes divided by N0, where
+    N0 = V12_DISCOAL_N0 = NE_K_PRESENT.
+    """
+    N0 = V12_DISCOAL_N0
+
+    def t(gens):
+        return f"{gens / (4.0 * N0):.10g}"
+
+    def sz(ne):
+        return f"{ne / N0:.10g}"
+
+    # discoal uses 0-indexed pop IDs (same as msinv); -ed maps to ms -ej.
+    args: list[str] = [
+        # K Ne stair-step (population 0)
+        "-en", t(400.0),   "0", sz(161_546),
+        "-en", t(600.0),   "0", sz(152_453),
+        "-en", t(1_400.0), "0", sz(174_800),
+        "-en", t(3_000.0), "0", sz(182_180),
+        "-en", t(6_200.0), "0", sz(159_861),
+        # F Ne stair-step (population 1)
+        "-en", t(400.0),   "1", sz(1_157_768),
+        "-en", t(600.0),   "1", sz(205_260),
+        "-en", t(1_000.0), "1", sz(1_374_810),
+        "-en", t(1_400.0), "1", sz(674_766),
+        "-en", t(3_000.0), "1", sz(340_074),
+        "-en", t(6_200.0), "1", sz(NE_F_AT_SPLIT),
+        # K-F split: -ed merges pop 1 into pop 0 (backward)
+        "-ed", t(T_KF_SPLIT), "1", "0",
+        # KF starts at NE_KF_AT_MERGE
+        "-en", t(T_KF_SPLIT), "0", sz(NE_KF_AT_MERGE),
+        # KF stair-step
+        "-en", t(13_000.0), "0", sz(81_072),
+        "-en", t(20_000.0), "0", sz(95_546),
+        "-en", t(30_000.0), "0", sz(73_250),
+        "-en", t(40_000.0), "0", sz(50_000),
+        "-en", t(50_000.0), "0", sz(50_000),
+        "-en", t(60_000.0), "0", sz(50_000),
+        "-en", t(70_000.0), "0", sz(50_000),
+        # Anc deep change
+        "-en", t(T_ANC_RENAME), "0", sz(NE_ANC_DEEP),
+    ]
+    return args

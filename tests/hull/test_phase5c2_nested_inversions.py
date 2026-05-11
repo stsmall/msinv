@@ -26,6 +26,7 @@ from msinv.hull.segment import make_initial_segments
 # Initial-segment construction with nested invs
 # ---------------------------------------------------------------------------
 
+
 def _classes_of_lineage(lin):
     out = []
     seg = lin.head
@@ -39,23 +40,25 @@ def test_nested_inv_segments_carry_frozenset_class():
     """Inversion B nested inside inversion A: positions in B carry a
     frozenset {'S0', 'S1'} (or 'I0'/'I1'). Positions in A only get
     a single tag like 'S0'."""
-    inv_outer = InversionSpec(bp_left=10.0, bp_right=90.0,
-                              p_inv=0.5, t_inv=1000.0)
-    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0,
-                              p_inv=0.5, t_inv=2000.0)
+    inv_outer = InversionSpec(bp_left=10.0, bp_right=90.0, p_inv=0.5, t_inv=1000.0)
+    inv_inner = InversionSpec(bp_left=30.0, bp_right=70.0, p_inv=0.5, t_inv=2000.0)
     sim = HullSimulator(
-        sample_config={(('S', 'I'), 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv_outer, inv_inner], seed=1, recombination_rate=1e-8)
+        sample_config={(("S", "I"), 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv_outer, inv_inner],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
     # Expect: [0,10) P, [10,30) S0, [30,70) {S0, I1}, [70,90) S0, [90,100) P
-    assert classes[0] == (0.0, 10.0, 'P')
-    assert classes[1] == (10.0, 30.0, 'S0')
-    assert classes[2] == (30.0, 70.0, frozenset({'S0', 'I1'}))
-    assert classes[3] == (70.0, 90.0, 'S0')
-    assert classes[4] == (90.0, 100.0, 'P')
+    assert classes[0] == (0.0, 10.0, "P")
+    assert classes[1] == (10.0, 30.0, "S0")
+    assert classes[2] == (30.0, 70.0, frozenset({"S0", "I1"}))
+    assert classes[3] == (70.0, 90.0, "S0")
+    assert classes[4] == (90.0, 100.0, "P")
 
 
 def test_overlapping_invs_segments_carry_frozenset():
@@ -64,21 +67,26 @@ def test_overlapping_invs_segments_carry_frozenset():
     a = InversionSpec(bp_left=0.0, bp_right=50.0, p_inv=0.5, t_inv=1000.0)
     b = InversionSpec(bp_left=40.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={(('S', 'I'), 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[a, b], seed=1, recombination_rate=1e-8)
+        sample_config={(("S", "I"), 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[a, b],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
-    assert classes[0] == (0.0, 40.0, 'S0')
-    assert classes[1] == (40.0, 50.0, frozenset({'S0', 'I1'}))
-    assert classes[2] == (50.0, 80.0, 'I1')
-    assert classes[3] == (80.0, 100.0, 'P')
+    assert classes[0] == (0.0, 40.0, "S0")
+    assert classes[1] == (40.0, 50.0, frozenset({"S0", "I1"}))
+    assert classes[2] == (50.0, 80.0, "I1")
+    assert classes[3] == (80.0, 100.0, "P")
 
 
 # ---------------------------------------------------------------------------
 # Class barrier with nested invs
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
 def test_nested_invs_each_barrier_independent(seed):
@@ -87,23 +95,25 @@ def test_nested_invs_each_barrier_independent(seed):
     to coalesce (regardless of outer karyotype agreement)."""
     Ne = 1000
     L = 10000.0
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
-                              p_inv=0.5, t_inv=1000.0)
-    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
-                              p_inv=0.5, t_inv=5000.0)
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0, p_inv=0.5, t_inv=1000.0)
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0, p_inv=0.5, t_inv=5000.0)
 
     # 4 samples: SS (S in outer + S in inner), SI (S in outer, I in inner)
     sim = HullSimulator(
         sample_config={
-            (('S', 'S'), 0): 2,
-            (('S', 'I'), 0): 2,
+            (("S", "S"), 0): 2,
+            (("S", "I"), 0): 2,
         },
-        population_size=Ne, sequence_length=L,
+        population_size=Ne,
+        sequence_length=L,
         inversions=[inv_outer, inv_inner],
-        recombination_rate=1e-8, seed=seed)
+        recombination_rate=1e-8,
+        seed=seed,
+    )
     ts = sim.simulate()
     samples = list(ts.samples())
-    SS = samples[:2]; SI = samples[2:]
+    SS = samples[:2]
+    SI = samples[2:]
 
     # Inside the inner inv (3000,7000), SS samples carry frozenset({S0, S1})
     # and SI samples carry frozenset({S0, I1}). They differ at inv 1
@@ -127,17 +137,20 @@ def test_nested_outer_only_barrier_when_inner_karyotypes_match():
     overlapping the inner), normal structured-coal applies."""
     Ne = 1000
     L = 10000.0
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
-                              p_inv=0.5, t_inv=10_000.0)  # very deep
-    inv_inner = InversionSpec(bp_left=4000.0, bp_right=6000.0,
-                              p_inv=0.5, t_inv=1000.0)
+    inv_outer = InversionSpec(
+        bp_left=0.0, bp_right=10000.0, p_inv=0.5, t_inv=10_000.0
+    )  # very deep
+    inv_inner = InversionSpec(bp_left=4000.0, bp_right=6000.0, p_inv=0.5, t_inv=1000.0)
 
     # All samples 'SS' (S in both invs)
     sim = HullSimulator(
-        sample_config={(('S', 'S'), 0): 5},
-        population_size=Ne, sequence_length=L,
+        sample_config={(("S", "S"), 0): 5},
+        population_size=Ne,
+        sequence_length=L,
         inversions=[inv_outer, inv_inner],
-        recombination_rate=1e-8, seed=42)
+        recombination_rate=1e-8,
+        seed=42,
+    )
     ts = sim.simulate()
     samples = list(ts.samples())
     # All samples can coalesce in the outer-only region (not in the
@@ -155,25 +168,26 @@ def test_nested_outer_only_barrier_when_inner_karyotypes_match():
             f"With matching inner karyotypes, outer-only positions "
             f"should follow normal structured-coal (~2·Ne·p_std), "
             f"got median T_MRCA = {median_t:.0f} vs outer t_inv "
-            f"= {inv_outer.t_inv}.")
+            f"= {inv_outer.t_inv}."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Tree sequence well-formedness
 # ---------------------------------------------------------------------------
 
+
 def test_treeseq_valid_with_nested_invs():
-    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0,
-                              p_inv=0.5, t_inv=2000.0)
-    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0,
-                              p_inv=0.5, t_inv=3000.0)
+    inv_outer = InversionSpec(bp_left=0.0, bp_right=10000.0, p_inv=0.5, t_inv=2000.0)
+    inv_inner = InversionSpec(bp_left=3000.0, bp_right=7000.0, p_inv=0.5, t_inv=3000.0)
     sim = HullSimulator(
-        sample_config={(('S', 'S'), 0): 2,
-                        (('I', 'I'), 0): 2,
-                        (('S', 'I'), 0): 2},
-        population_size=1000, sequence_length=10000.0,
+        sample_config={(("S", "S"), 0): 2, (("I", "I"), 0): 2, (("S", "I"), 0): 2},
+        population_size=1000,
+        sequence_length=10000.0,
         inversions=[inv_outer, inv_inner],
-        recombination_rate=1e-8, seed=42)
+        recombination_rate=1e-8,
+        seed=42,
+    )
     ts = sim.simulate()
     tables = ts.dump_tables()
     tables.sort()

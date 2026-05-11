@@ -84,9 +84,7 @@ def _stats_from_ts(ts, scenario_spec):
     """
     ne_diploid = scenario_spec["ne_diploid"]
     time_scale = (
-        2.0 * ne_diploid
-        if str(ts.time_units).startswith("coalescent units")
-        else 1.0
+        2.0 * ne_diploid if str(ts.time_units).startswith("coalescent units") else 1.0
     )
     out: dict[str, float] = {
         "pi_branch": ts.diversity(mode="branch") * time_scale,
@@ -135,16 +133,14 @@ def _stats_from_ts(ts, scenario_spec):
             for i in range(len(full) - 1):
                 seg_lo, seg_hi = full[i], full[i + 1]
                 # Inside left window?
-                in_left = (seg_lo >= left_lo and seg_hi <= left_hi)
-                in_right = (seg_lo >= right_lo and seg_hi <= right_hi)
+                in_left = seg_lo >= left_lo and seg_hi <= left_hi
+                in_right = seg_lo >= right_lo and seg_hi <= right_hi
                 if in_left or in_right:
                     span = seg_hi - seg_lo
                     total_span += span
                     total_pi_span += divs[i] * span
             windowed[k] = (
-                (total_pi_span / total_span) * time_scale
-                if total_span > 0
-                else 0.0
+                (total_pi_span / total_span) * time_scale if total_span > 0 else 0.0
             )
         for k, val in enumerate(windowed):
             out[f"pi_window_{k}"] = float(val)
@@ -184,18 +180,18 @@ def _run_discoal_batch(spec, n_reps, seed_base):
     seed2 = seed_base + 100001
     with tempfile.TemporaryDirectory() as tmpdir:
         out_prefix = pathlib.Path(tmpdir) / "scenario.trees"
-        argv = make_args(out_prefix=str(out_prefix), seed1=seed1, seed2=seed2,
-                         n_reps=n_reps)
+        argv = make_args(
+            out_prefix=str(out_prefix), seed1=seed1, seed2=seed2, n_reps=n_reps
+        )
         # discoal writes DEBUG to stdout; redirect to /dev/null so it
         # doesn't pollute our subprocess pipe budget.
         t0 = time.perf_counter()
         result = subprocess.run(
-            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False)
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+        )
         wall = time.perf_counter() - t0
         if result.returncode != 0:
-            raise RuntimeError(
-                f"discoal failed (rc={result.returncode}); argv={argv}")
+            raise RuntimeError(f"discoal failed (rc={result.returncode}); argv={argv}")
         # discoal writes <prefix>_rep1.trees ... _rep{n_reps}.trees
         # Strip trailing ".trees" so the actual files are
         # <prefix-without-extension>_rep{N}.trees
@@ -229,11 +225,11 @@ def main():
     ap.add_argument("--seed-base", type=int, default=0)
     args = ap.parse_args()
     per_rep_stats, per_rep_seconds = _run_one_engine_batch(
-        args.scenario, args.engine, args.n_reps, args.seed_base)
+        args.scenario, args.engine, args.n_reps, args.seed_base
+    )
     json.dump(
-        {"per_rep_stats": per_rep_stats,
-         "per_rep_seconds": per_rep_seconds},
-        sys.stdout)
+        {"per_rep_stats": per_rep_stats, "per_rep_seconds": per_rep_seconds}, sys.stdout
+    )
     sys.stdout.write("\n")
 
 
@@ -249,19 +245,24 @@ def _make_d1_msinv(seed: int):
     ).simulate()
 
 
-def _make_d1_discoal_args(out_prefix: str, seed1: int, seed2: int,
-                          n_reps: int):
+def _make_d1_discoal_args(out_prefix: str, seed1: int, seed2: int, n_reps: int):
     return [
         DISCOAL_BIN,
-        "10",            # sampleSize (haploid)
-        str(n_reps),     # numReplicates
-        "100000",        # nSites
-        "-t", "40",      # theta = 4*Ne*mu*L = 4*10000*1e-8*1e5 = 40
-        "-r", "40",      # rho   = 4*Ne*r *L = 4*10000*1e-8*1e5 = 40
-        "-N", "10000",   # diploid Ne
-        "-ts", out_prefix,
-        "-F",            # full ARG mode (matches msinv record_full_arg=True)
-        "-d", str(seed1), str(seed2),
+        "10",  # sampleSize (haploid)
+        str(n_reps),  # numReplicates
+        "100000",  # nSites
+        "-t",
+        "40",  # theta = 4*Ne*mu*L = 4*10000*1e-8*1e5 = 40
+        "-r",
+        "40",  # rho   = 4*Ne*r *L = 4*10000*1e-8*1e5 = 40
+        "-N",
+        "10000",  # diploid Ne
+        "-ts",
+        out_prefix,
+        "-F",  # full ARG mode (matches msinv record_full_arg=True)
+        "-d",
+        str(seed1),
+        str(seed2),
     ]
 
 
@@ -289,13 +290,14 @@ SCENARIOS["d1"] = {
 # extinction-rejection sampling bias.
 def _make_d2_msinv(seed: int):
     from msinv.hull.sweep import Sweep
+
     sweep = Sweep(
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Deterministic',
+        mode="Deterministic",
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10_000),
@@ -313,19 +315,32 @@ def _make_d2_msinv(seed: int):
     ).simulate()
 
 
-def _make_d2_discoal_args(out_prefix: str, seed1: int, seed2: int,
-                          n_reps: int):
+def _make_d2_discoal_args(out_prefix: str, seed1: int, seed2: int, n_reps: int):
     # tau in 4N units: 1000 gens / (4 * 10000) = 0.025
     # alpha = 2 * Ne * s = 2 * 10000 * 0.05 = 1000
     return [
         DISCOAL_BIN,
-        "10", str(n_reps), "100000",
-        "-t", "40", "-r", "40", "-N", "10000",
-        "-wd", "0.025",
-        "-a", "1000",
-        "-x", "0.5",
-        "-ts", out_prefix, "-F",
-        "-d", str(seed1), str(seed2),
+        "10",
+        str(n_reps),
+        "100000",
+        "-t",
+        "40",
+        "-r",
+        "40",
+        "-N",
+        "10000",
+        "-wd",
+        "0.025",
+        "-a",
+        "1000",
+        "-x",
+        "0.5",
+        "-ts",
+        out_prefix,
+        "-F",
+        "-d",
+        str(seed1),
+        str(seed2),
     ]
 
 
@@ -350,13 +365,14 @@ SCENARIOS["d2"] = {
 # msinv mode='Stochastic', discoal -ws -f 0.05.
 def _make_d3_msinv(seed: int):
     from msinv.hull.sweep import Sweep
+
     sweep = Sweep(
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Stochastic',
+        mode="Stochastic",
         s=0.05,
         t_origin=1500.0,
         f0=0.05,
@@ -374,18 +390,32 @@ def _make_d3_msinv(seed: int):
     ).simulate()
 
 
-def _make_d3_discoal_args(out_prefix: str, seed1: int, seed2: int,
-                          n_reps: int):
+def _make_d3_discoal_args(out_prefix: str, seed1: int, seed2: int, n_reps: int):
     return [
         DISCOAL_BIN,
-        "10", str(n_reps), "100000",
-        "-t", "40", "-r", "40", "-N", "10000",
-        "-ws", "0.025",
-        "-a", "1000",
-        "-x", "0.5",
-        "-f", "0.05",
-        "-ts", out_prefix, "-F",
-        "-d", str(seed1), str(seed2),
+        "10",
+        str(n_reps),
+        "100000",
+        "-t",
+        "40",
+        "-r",
+        "40",
+        "-N",
+        "10000",
+        "-ws",
+        "0.025",
+        "-a",
+        "1000",
+        "-x",
+        "0.5",
+        "-f",
+        "0.05",
+        "-ts",
+        out_prefix,
+        "-F",
+        "-d",
+        str(seed1),
+        str(seed2),
     ]
 
 
@@ -408,13 +438,14 @@ SCENARIOS["d3"] = {
 # again uses Deterministic to dodge the extinction sampling bias.
 def _make_d4_msinv(seed: int):
     from msinv.hull.sweep import Sweep
+
     sweep = Sweep(
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Deterministic',
+        mode="Deterministic",
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10_000),
@@ -432,18 +463,32 @@ def _make_d4_msinv(seed: int):
     ).simulate()
 
 
-def _make_d4_discoal_args(out_prefix: str, seed1: int, seed2: int,
-                          n_reps: int):
+def _make_d4_discoal_args(out_prefix: str, seed1: int, seed2: int, n_reps: int):
     return [
         DISCOAL_BIN,
-        "10", str(n_reps), "100000",
-        "-t", "40", "-r", "40", "-N", "10000",
-        "-wd", "0.025",
-        "-a", "1000",
-        "-x", "0.5",
-        "-c", "0.5",
-        "-ts", out_prefix, "-F",
-        "-d", str(seed1), str(seed2),
+        "10",
+        str(n_reps),
+        "100000",
+        "-t",
+        "40",
+        "-r",
+        "40",
+        "-N",
+        "10000",
+        "-wd",
+        "0.025",
+        "-a",
+        "1000",
+        "-x",
+        "0.5",
+        "-c",
+        "0.5",
+        "-ts",
+        out_prefix,
+        "-F",
+        "-d",
+        str(seed1),
+        str(seed2),
     ]
 
 
@@ -467,6 +512,7 @@ SCENARIOS["d4"] = {
 # trajectory because the recurrence itself is a stochastic process.
 def _make_d5_msinv(seed: int):
     from msinv.hull.sweep import Sweep
+
     # Calibration: msinv `recurrent_mutation_rate` is per-individual-
     # per-gen (discoal-validation-design.md). discoal `-uA` is in 4N·μ
     # units inside `pRecurMut = (uA·n_B/2)·tIncOrig/x`, so for the
@@ -486,9 +532,9 @@ def _make_d5_msinv(seed: int):
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Deterministic',
+        mode="Deterministic",
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10_000),
@@ -507,18 +553,32 @@ def _make_d5_msinv(seed: int):
     ).simulate()
 
 
-def _make_d5_discoal_args(out_prefix: str, seed1: int, seed2: int,
-                          n_reps: int):
+def _make_d5_discoal_args(out_prefix: str, seed1: int, seed2: int, n_reps: int):
     return [
         DISCOAL_BIN,
-        "10", str(n_reps), "100000",
-        "-t", "40", "-r", "40", "-N", "10000",
-        "-ws", "0.025",
-        "-a", "1000",
-        "-x", "0.5",
-        "-uA", "1e-3",
-        "-ts", out_prefix, "-F",
-        "-d", str(seed1), str(seed2),
+        "10",
+        str(n_reps),
+        "100000",
+        "-t",
+        "40",
+        "-r",
+        "40",
+        "-N",
+        "10000",
+        "-ws",
+        "0.025",
+        "-a",
+        "1000",
+        "-x",
+        "0.5",
+        "-uA",
+        "1e-3",
+        "-ts",
+        out_prefix,
+        "-F",
+        "-d",
+        str(seed1),
+        str(seed2),
     ]
 
 

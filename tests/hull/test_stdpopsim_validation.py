@@ -49,26 +49,26 @@ def _hull_from_stdpopsim(model, species, n_per_pop, L, r, seed):
             if pop_id is None:
                 # All pops
                 if event.initial_size is not None:
-                    demo.add_event(('eN', t, float(event.initial_size)))
+                    demo.add_event(("eN", t, float(event.initial_size)))
                 if event.growth_rate is not None:
-                    demo.add_event(('eG', t, float(event.growth_rate)))
+                    demo.add_event(("eG", t, float(event.growth_rate)))
             else:
                 if event.initial_size is not None:
-                    demo.add_event(('en', t, int(pop_id),
-                                     float(event.initial_size)))
+                    demo.add_event(("en", t, int(pop_id), float(event.initial_size)))
                 if event.growth_rate is not None:
-                    demo.add_event(('eg', t, int(pop_id),
-                                     float(event.growth_rate)))
+                    demo.add_event(("eg", t, int(pop_id), float(event.growth_rate)))
         elif isinstance(event, msprime.demography.MassMigration):
-            demo.add_event(('ej', float(event.time),
-                             int(event.source), int(event.dest)))
+            demo.add_event(
+                ("ej", float(event.time), int(event.source), int(event.dest))
+            )
         elif isinstance(event, msprime.demography.MigrationRateChange):
             t = float(event.time)
             if event.source is None and event.dest is None:
-                demo.add_event(('eM', t, float(event.rate)))
+                demo.add_event(("eM", t, float(event.rate)))
             elif event.source is not None and event.dest is not None:
-                demo.add_event(('em', t, int(event.dest),
-                                 int(event.source), float(event.rate)))
+                demo.add_event(
+                    ("em", t, int(event.dest), int(event.source), float(event.rate))
+                )
 
     # Migration matrix.
     if demog.migration_matrix is not None:
@@ -102,8 +102,7 @@ def _stdpopsim_ts(model, species, n_per_pop, L, r, mu, seed):
 
     sample_sets = []
     for pop_idx in range(min(n_pops, 2)):
-        sample_sets.append(
-            msprime.SampleSet(n_per_pop, population=pop_idx, ploidy=1))
+        sample_sets.append(msprime.SampleSet(n_per_pop, population=pop_idx, ploidy=1))
 
     ts = msprime.sim_ancestry(
         samples=sample_sets,
@@ -112,13 +111,15 @@ def _stdpopsim_ts(model, species, n_per_pop, L, r, mu, seed):
         recombination_rate=r,
         random_seed=seed,
     )
-    return msprime.sim_mutations(ts, rate=mu, random_seed=seed + 10000,
-                                  discrete_genome=False)
+    return msprime.sim_mutations(
+        ts, rate=mu, random_seed=seed + 10000, discrete_genome=False
+    )
 
 
 # ---------------------------------------------------------------
 # Test 1: Human Africa_1T12 (single pop with growth)
 # ---------------------------------------------------------------
+
 
 def test_homsap_africa_1t12():
     """Single African population with exponential growth."""
@@ -127,12 +128,14 @@ def test_homsap_africa_1t12():
     mu = 1.4e-8
     r = 1e-8  # rho = 4*N*r*L ≈ 4*14474*1e-8*50000 ≈ 29
 
-    hull_pi = []; msp_pi = []
+    hull_pi = []
+    msp_pi = []
     for seed in range(1, NREPS + 1):
         sim = _hull_from_stdpopsim(model, species, 5, L, r, seed)
         ts = sim.simulate()
-        mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed + 1000,
-                                     discrete_genome=False)
+        mts = msprime.sim_mutations(
+            ts, rate=mu, random_seed=seed + 1000, discrete_genome=False
+        )
         hull_pi.append(float(mts.diversity()))
 
         mts2 = _stdpopsim_ts(model, species, 5, L, r, mu, seed + 2000)
@@ -141,7 +144,8 @@ def test_homsap_africa_1t12():
     ratio = np.mean(hull_pi) / np.mean(msp_pi)
     assert 0.95 < ratio < 1.05, (
         f"Africa_1T12 pi ratio = {ratio:.3f} "
-        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})")
+        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})"
+    )
 
 
 def test_homsap_africa_1t12_segregating_sites():
@@ -151,12 +155,14 @@ def test_homsap_africa_1t12_segregating_sites():
     mu = 1.4e-8
     r = 1e-8
 
-    hull_s = []; msp_s = []
+    hull_s = []
+    msp_s = []
     for seed in range(1, NREPS + 1):
         sim = _hull_from_stdpopsim(model, species, 5, L, r, seed)
         ts = sim.simulate()
-        mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed + 1000,
-                                     discrete_genome=False)
+        mts = msprime.sim_mutations(
+            ts, rate=mu, random_seed=seed + 1000, discrete_genome=False
+        )
         hull_s.append(float(mts.segregating_sites(span_normalise=False)))
 
         mts2 = _stdpopsim_ts(model, species, 5, L, r, mu, seed + 2000)
@@ -165,12 +171,14 @@ def test_homsap_africa_1t12_segregating_sites():
     ratio = np.mean(hull_s) / np.mean(msp_s)
     assert 0.95 < ratio < 1.05, (
         f"Africa_1T12 S ratio = {ratio:.3f} "
-        f"(hull={np.mean(hull_s):.1f}, stdpopsim={np.mean(msp_s):.1f})")
+        f"(hull={np.mean(hull_s):.1f}, stdpopsim={np.mean(msp_s):.1f})"
+    )
 
 
 # ---------------------------------------------------------------
 # Test 2: Drosophila African3Epoch_1S16 (bottleneck + expansion)
 # ---------------------------------------------------------------
+
 
 def test_dromel_african3epoch():
     """Three-epoch bottleneck and expansion in Drosophila."""
@@ -179,12 +187,14 @@ def test_dromel_african3epoch():
     mu = 8.4e-9
     r = 8.4e-9  # rho ≈ 4*N*r*L, N varies
 
-    hull_pi = []; msp_pi = []
+    hull_pi = []
+    msp_pi = []
     for seed in range(1, NREPS + 1):
         sim = _hull_from_stdpopsim(model, species, 5, L, r, seed)
         ts = sim.simulate()
-        mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed + 1000,
-                                     discrete_genome=False)
+        mts = msprime.sim_mutations(
+            ts, rate=mu, random_seed=seed + 1000, discrete_genome=False
+        )
         hull_pi.append(float(mts.diversity()))
 
         mts2 = _stdpopsim_ts(model, species, 5, L, r, mu, seed + 2000)
@@ -193,12 +203,14 @@ def test_dromel_african3epoch():
     ratio = np.mean(hull_pi) / np.mean(msp_pi)
     assert 0.95 < ratio < 1.05, (
         f"African3Epoch pi ratio = {ratio:.3f} "
-        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})")
+        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi):.2e})"
+    )
 
 
 # ---------------------------------------------------------------
 # Test 3: Human OutOfAfrica_2T12 (two-pop OOA)
 # ---------------------------------------------------------------
+
 
 def test_homsap_ooa_2t12():
     """Two-population Out-of-Africa model."""
@@ -207,13 +219,15 @@ def test_homsap_ooa_2t12():
     mu = 1.4e-8
     r = 1e-8
 
-    hull_pi = []; msp_pi = []
+    hull_pi = []
+    msp_pi = []
     for seed in range(1, NREPS + 1):
         try:
             sim = _hull_from_stdpopsim(model, species, 3, L, r, seed)
             ts = sim.simulate()
-            mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed + 1000,
-                                         discrete_genome=False)
+            mts = msprime.sim_mutations(
+                ts, rate=mu, random_seed=seed + 1000, discrete_genome=False
+            )
             hull_pi.append(float(mts.diversity()))
         except Exception:
             continue
@@ -224,10 +238,11 @@ def test_homsap_ooa_2t12():
     if len(hull_pi) < 20:
         pytest.skip("Too few successful hull reps for OOA model")
 
-    ratio = np.mean(hull_pi) / np.mean(msp_pi[:len(hull_pi)])
+    ratio = np.mean(hull_pi) / np.mean(msp_pi[: len(hull_pi)])
     assert 0.85 < ratio < 1.15, (
         f"OOA_2T12 pi ratio = {ratio:.3f} "
-        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi[:len(hull_pi)]):.2e})")
+        f"(hull={np.mean(hull_pi):.2e}, stdpopsim={np.mean(msp_pi[: len(hull_pi)]):.2e})"
+    )
 
 
 def test_homsap_ooa_2t12_fst():
@@ -242,14 +257,20 @@ def test_homsap_ooa_2t12_fst():
     r = 1e-8
     n_per = 3
 
-    hull_fst = []; msp_fst = []
+    hull_fst = []
+    msp_fst = []
     for seed in range(1, NREPS + 1):
         try:
             sim = _hull_from_stdpopsim(model, species, n_per, L, r, seed)
             ts = sim.simulate()
-            hull_fst.append(float(ts.Fst(
-                [list(range(n_per)), list(range(n_per, 2*n_per))],
-                mode="branch")))
+            hull_fst.append(
+                float(
+                    ts.Fst(
+                        [list(range(n_per)), list(range(n_per, 2 * n_per))],
+                        mode="branch",
+                    )
+                )
+            )
         except Exception:
             continue
 
@@ -259,17 +280,25 @@ def test_homsap_ooa_2t12_fst():
             msprime.SampleSet(n_per, population=1, ploidy=1),
         ]
         ts2 = msprime.sim_ancestry(
-            samples=sample_sets, demography=demog,
-            sequence_length=L, recombination_rate=r,
-            random_seed=seed + 2000)
-        msp_fst.append(float(ts2.Fst(
-            [list(range(n_per)), list(range(n_per, 2*n_per))],
-            mode="branch")))
+            samples=sample_sets,
+            demography=demog,
+            sequence_length=L,
+            recombination_rate=r,
+            random_seed=seed + 2000,
+        )
+        msp_fst.append(
+            float(
+                ts2.Fst(
+                    [list(range(n_per)), list(range(n_per, 2 * n_per))], mode="branch"
+                )
+            )
+        )
 
     if len(hull_fst) < 20:
         pytest.skip("Too few successful hull reps for OOA Fst")
 
-    ratio = np.mean(hull_fst) / np.mean(msp_fst[:len(hull_fst)])
+    ratio = np.mean(hull_fst) / np.mean(msp_fst[: len(hull_fst)])
     assert 0.80 < ratio < 1.20, (
         f"OOA_2T12 Fst ratio = {ratio:.3f} "
-        f"(hull={np.mean(hull_fst):.3f}, stdpopsim={np.mean(msp_fst[:len(hull_fst)]):.3f})")
+        f"(hull={np.mean(hull_fst):.3f}, stdpopsim={np.mean(msp_fst[: len(hull_fst)]):.3f})"
+    )

@@ -1,4 +1,5 @@
 """Tests for tree-shape distributions (TMRCA, total branch, Colless)."""
+
 import numpy as np
 import msprime
 import pytest
@@ -9,9 +10,13 @@ from validation._lib.stats import tree_shape_stats
 @pytest.fixture
 def small_ts():
     ts = msprime.sim_ancestry(
-        samples=10, population_size=1000,
-        sequence_length=10_000, recombination_rate=1e-7,
-        random_seed=11, ploidy=1)
+        samples=10,
+        population_size=1000,
+        sequence_length=10_000,
+        recombination_rate=1e-7,
+        random_seed=11,
+        ploidy=1,
+    )
     return ts
 
 

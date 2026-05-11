@@ -25,10 +25,10 @@ Functions
   shared curve and per-ecotype tails into one trajectory dict ready
   for ``InversionSpec(trajectory=...)``.
 """
+
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
 
 import numpy as np
 
@@ -40,7 +40,7 @@ def deep_neutral_curve(
     t_split: float,
     seed: int = 0,
     max_attempts: int = 100,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Backward neutral WF from p_split at t=t_split toward 1/(2N) at
     t=t_inv.  Returns ``(times, freqs)`` with times in
     ``[t_split, t_inv]`` and freqs ending at the founding-allele
@@ -88,7 +88,7 @@ def post_split_logistic(
     t_split: float,
     n_e: float,
     n_samples: int = 200,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Deterministic logistic from p_today (at t=0) to p_split
     (at t=t_split) over [0, t_split].  Returns ``(times, freqs)``.
 
@@ -129,7 +129,7 @@ def post_split_neutral_walk(
     seed: int = 0,
     tolerance: float = 0.05,
     max_attempts: int = 1000,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Stochastic neutral WF from ``p_today`` (at t=0) to ``p_split``
     (at t=t_split) over [0, t_split].  Rejection-sampled — runs
     backward WF and accepts paths whose terminal freq is within
@@ -167,10 +167,10 @@ def post_split_neutral_walk(
 
 
 def bifurcate(
-    deep_curve: Tuple[List[float], List[float]],
-    k_tail: Tuple[List[float], List[float]],
-    f_tail: Tuple[List[float], List[float]],
-    n_e_pops: List[float],
+    deep_curve: tuple[list[float], list[float]],
+    k_tail: tuple[list[float], list[float]],
+    f_tail: tuple[list[float], list[float]],
+    n_e_pops: list[float],
     t_inv: float,
     t_split: float,
 ) -> dict:
@@ -215,11 +215,11 @@ def bifurcate(
     k_arr = np.interp(all_times, k_t + deep_t[1:], list(k_f) + list(deep_f[1:]))
     f_arr = np.interp(all_times, f_t + deep_t[1:], list(f_f) + list(deep_f[1:]))
     return {
-        'type': 'precomputed',
-        'times': list(map(float, all_times)),
-        'freqs': [list(map(float, k_arr)), list(map(float, f_arr))],
-        'n_e':   list(map(float, n_e_pops)),
-        't_inv': [float(t_inv), float(t_inv)],
+        "type": "precomputed",
+        "times": list(map(float, all_times)),
+        "freqs": [list(map(float, k_arr)), list(map(float, f_arr))],
+        "n_e": list(map(float, n_e_pops)),
+        "t_inv": [float(t_inv), float(t_inv)],
     }
 
 
@@ -229,7 +229,7 @@ def deterministic_logistic_curve(
     s: float,
     t_inv: float,
     n_samples: int = 200,
-) -> Tuple[List[float], List[float]]:
+) -> tuple[list[float], list[float]]:
     """Deterministic logistic going backward from ``p_final`` (at t=0)
     to ``p_start`` (at t=t_inv).  The selection coefficient ``s`` should
     satisfy s · t_inv ≈ logit(p_final) - logit(p_start) (so the
@@ -252,12 +252,12 @@ def deterministic_logistic_curve(
 
 def kir_fol_softsweep_trajectory(
     n_e_anc: float = 450_000.0,
-    n_e_K: float   = 126_772.0,
-    n_e_F: float   = 2_496_632.0,
+    n_e_K: float = 126_772.0,
+    n_e_F: float = 2_496_632.0,
     p_F_today: float = 0.734,
     p_start: float = 0.05,
     t_split: float = 9_194.0,
-    t_inv: float   = 330_000.0,
+    t_inv: float = 330_000.0,
 ) -> dict:
     """Per-pop bifurcated soft-sweep trajectory.
 
@@ -283,18 +283,16 @@ def kir_fol_softsweep_trajectory(
     Output: PrecomputedTrajectory dict with per-pop curves on a shared
     times axis.
     """
-    s = (math.log(p_F_today / (1 - p_F_today))
-         - math.log(p_start / (1 - p_start))) / float(t_inv)
+    s = (
+        math.log(p_F_today / (1 - p_F_today)) - math.log(p_start / (1 - p_start))
+    ) / float(t_inv)
     f_curve = deterministic_logistic_curve(
-        p_start=p_start, p_final=p_F_today, s=s, t_inv=t_inv,
-        n_samples=200)
+        p_start=p_start, p_final=p_F_today, s=s, t_inv=t_inv, n_samples=200
+    )
     times = list(f_curve[0])
     f_freqs = list(f_curve[1])
     # K curve: 0 below t_split, then follows F above t_split.
-    k_freqs = [
-        0.0 if t < float(t_split) else f_freqs[i]
-        for i, t in enumerate(times)
-    ]
+    k_freqs = [0.0 if t < float(t_split) else f_freqs[i] for i, t in enumerate(times)]
     # Make sure the t_split boundary point is sampled (anchors the
     # discontinuity from 0 to f(t_split) cleanly).
     if all(abs(t - float(t_split)) > 1.0 for t in times):
@@ -305,31 +303,29 @@ def kir_fol_softsweep_trajectory(
         # between the bracketing F samples (using np.interp here would
         # have to skip the just-inserted t_split row to avoid a
         # zero-width interval).
-        f_at_split = (f_freqs[idx - 1]
-                      + (f_freqs[idx] - f_freqs[idx - 1])
-                      * (float(t_split) - times[idx - 1])
-                      / (times[idx + 1] - times[idx - 1]))
+        f_at_split = f_freqs[idx - 1] + (f_freqs[idx] - f_freqs[idx - 1]) * (
+            float(t_split) - times[idx - 1]
+        ) / (times[idx + 1] - times[idx - 1])
         f_freqs.insert(idx, f_at_split)
         k_freqs.insert(idx, f_at_split)  # K joins F's curve at t_split
     return {
-        'type': 'precomputed',
-        'times': list(map(float, times)),
-        'freqs': [list(map(float, k_freqs)),
-                  list(map(float, f_freqs))],
-        'n_e':   [float(n_e_K), float(n_e_F)],
-        't_inv': [float(t_inv), float(t_inv)],
+        "type": "precomputed",
+        "times": list(map(float, times)),
+        "freqs": [list(map(float, k_freqs)), list(map(float, f_freqs))],
+        "n_e": [float(n_e_K), float(n_e_F)],
+        "t_inv": [float(t_inv), float(t_inv)],
     }
 
 
 def kir_fol_drift_filter_trajectory(
     n_e_anc: float = 450_000.0,
-    n_e_K: float   = 126_772.0,
-    n_e_F: float   = 2_496_632.0,
+    n_e_K: float = 126_772.0,
+    n_e_F: float = 2_496_632.0,
     p_F_today: float = 0.734,
     p_K_today: float = 0.0,
     p_split: float = 0.5,
     t_split: float = 9_194.0,
-    t_inv: float   = 330_000.0,
+    t_inv: float = 330_000.0,
     seed: int = 0,
 ) -> dict:
     """Build a Kir/Fol bifurcated trajectory for the **drift / filter**
@@ -359,16 +355,26 @@ def kir_fol_drift_filter_trajectory(
     """
     rng = np.random.default_rng(seed)
     deep = deep_neutral_curve(
-        p_split=p_split, n_e=n_e_anc,
-        t_inv=t_inv, t_split=t_split,
-        seed=int(rng.integers(0, 2**32)))
+        p_split=p_split,
+        n_e=n_e_anc,
+        t_inv=t_inv,
+        t_split=t_split,
+        seed=int(rng.integers(0, 2**32)),
+    )
     # K-tail flat at 0 — drift-filter, no class structure in K.
     k_tail = ([0.0, t_split], [0.0, 0.0])
     f_tail = post_split_neutral_walk(
-        p_today=p_F_today, p_split=p_split,
-        t_split=t_split, n_e=n_e_F,
-        seed=int(rng.integers(0, 2**32)))
+        p_today=p_F_today,
+        p_split=p_split,
+        t_split=t_split,
+        n_e=n_e_F,
+        seed=int(rng.integers(0, 2**32)),
+    )
     return bifurcate(
-        deep_curve=deep, k_tail=k_tail, f_tail=f_tail,
+        deep_curve=deep,
+        k_tail=k_tail,
+        f_tail=f_tail,
         n_e_pops=[n_e_K, n_e_F],
-        t_inv=t_inv, t_split=t_split)
+        t_inv=t_inv,
+        t_split=t_split,
+    )

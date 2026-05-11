@@ -25,27 +25,34 @@ class Segment:
     a class-barrier flip simply disappear from the frozenset.
     """
 
-    __slots__ = ('left', 'right', 'node_id', 'branch_class', 'prev', 'next')
+    __slots__ = ("left", "right", "node_id", "branch_class", "prev", "next")
 
-    def __init__(self, left: float, right: float, node_id: int,
-                 branch_class='P',
-                 prev: 'Segment' = None, next: 'Segment' = None):
+    def __init__(
+        self,
+        left: float,
+        right: float,
+        node_id: int,
+        branch_class="P",
+        prev: "Segment" = None,
+        next: "Segment" = None,
+    ):
         if right <= left:
-            raise ValueError(
-                f"Segment must have right > left, got [{left}, {right})")
+            raise ValueError(f"Segment must have right > left, got [{left}, {right})")
         self.left = left
         self.right = right
         self.node_id = node_id
         # Normalise None → 'P'. Preserve frozenset and string types.
         if branch_class is None:
-            branch_class = 'P'
+            branch_class = "P"
         self.branch_class = branch_class
         self.prev = prev
         self.next = next
 
     def __repr__(self):
-        return (f"Segment([{self.left:.4f}, {self.right:.4f}) "
-                f"-> n{self.node_id} cls={self.branch_class})")
+        return (
+            f"Segment([{self.left:.4f}, {self.right:.4f}) "
+            f"-> n{self.node_id} cls={self.branch_class})"
+        )
 
 
 def make_segment_list(intervals, node_ids):
@@ -101,17 +108,21 @@ def split_segment_list(head, tail, x):
             right_tail = seg
         else:
             # Segment straddles x: split into two new segments.
-            left_part = Segment(seg.left, x, seg.node_id,
-                                branch_class=seg.branch_class,
-                                prev=left_tail)
+            left_part = Segment(
+                seg.left, x, seg.node_id, branch_class=seg.branch_class, prev=left_tail
+            )
             if left_head is None:
                 left_head = left_part
             if left_tail is not None:
                 left_tail.next = left_part
             left_tail = left_part
-            right_part = Segment(x, seg.right, seg.node_id,
-                                 branch_class=seg.branch_class,
-                                 prev=right_tail)
+            right_part = Segment(
+                x,
+                seg.right,
+                seg.node_id,
+                branch_class=seg.branch_class,
+                prev=right_tail,
+            )
             if right_head is None:
                 right_head = right_part
             if right_tail is not None:
@@ -132,8 +143,7 @@ def total_length(head):
     return s
 
 
-def make_initial_segments(L: float, node_id: int,
-                          inversions=None, sample_class=None):
+def make_initial_segments(L: float, node_id: int, inversions=None, sample_class=None):
     """Build the initial segment list for one sample lineage.
 
     Parameters
@@ -159,7 +169,7 @@ def make_initial_segments(L: float, node_id: int,
     Returns ``(head, tail)`` of the linked list.
     """
     if not inversions:
-        seg = Segment(0.0, L, node_id, branch_class='P')
+        seg = Segment(0.0, L, node_id, branch_class="P")
         return seg, seg
 
     sorted_invs = sorted(inversions, key=lambda inv: inv.bp_left)
@@ -171,7 +181,7 @@ def make_initial_segments(L: float, node_id: int,
     # representation (back-compat with Phase 5b semantics).
     has_overlap = False
     for i, a in enumerate(sorted_invs):
-        for b in sorted_invs[i + 1:]:
+        for b in sorted_invs[i + 1 :]:
             if b.bp_left < a.bp_right:
                 has_overlap = True
                 break
@@ -183,20 +193,20 @@ def make_initial_segments(L: float, node_id: int,
         intervals = []
         cursor = 0.0
         for inv in sorted_invs:
-            inv_id = getattr(inv, 'inv_id', -1)
+            inv_id = getattr(inv, "inv_id", -1)
             if inv.bp_left > cursor:
-                intervals.append((cursor, inv.bp_left, 'P'))
+                intervals.append((cursor, inv.bp_left, "P"))
             kary = per_inv_class.get(inv_id)
             if kary is None:
-                cls = 'P'
+                cls = "P"
             elif inv_id is None or inv_id < 0:
                 cls = kary
             else:
-                cls = f'{kary}{inv_id}'
+                cls = f"{kary}{inv_id}"
             intervals.append((max(cursor, inv.bp_left), inv.bp_right, cls))
             cursor = inv.bp_right
         if cursor < L:
-            intervals.append((cursor, L, 'P'))
+            intervals.append((cursor, L, "P"))
     else:
         # Phase 5c.2 path: build per-position tag sets by scanning the
         # union of all inversion breakpoints.
@@ -212,15 +222,17 @@ def make_initial_segments(L: float, node_id: int,
             tags = []
             for inv in sorted_invs:
                 if inv.bp_left <= a and b <= inv.bp_right:
-                    inv_id = getattr(inv, 'inv_id', -1)
+                    inv_id = getattr(inv, "inv_id", -1)
                     kary = per_inv_class.get(inv_id)
                     if kary is None:
                         continue
-                    tags.append(f'{kary}{inv_id}'
-                                if inv_id is not None and inv_id >= 0
-                                else kary)
+                    tags.append(
+                        f"{kary}{inv_id}"
+                        if inv_id is not None and inv_id >= 0
+                        else kary
+                    )
             if not tags:
-                cls = 'P'
+                cls = "P"
             elif len(tags) == 1:
                 cls = tags[0]
             else:
@@ -228,7 +240,7 @@ def make_initial_segments(L: float, node_id: int,
             intervals.append((a, b, cls))
 
     head = tail = None
-    for (l, r, cls) in intervals:
+    for l, r, cls in intervals:
         if r <= l:
             continue
         seg = Segment(l, r, node_id, branch_class=cls, prev=tail)
@@ -248,14 +260,15 @@ def _resolve_per_inv_class(sample_class, sorted_invs) -> dict:
     if isinstance(sample_class, str) and len(sample_class) == 1:
         return {inv.inv_id: sample_class for inv in sorted_invs}
     # String or sequence of length n_inv: independent karyotype.
-    if (isinstance(sample_class, str) or
-            hasattr(sample_class, '__iter__')):
+    if isinstance(sample_class, str) or hasattr(sample_class, "__iter__"):
         seq = list(sample_class)
         if len(seq) != len(sorted_invs):
             raise ValueError(
                 f"sample_class has {len(seq)} entries but there are "
-                f"{len(sorted_invs)} inversions; lengths must match.")
+                f"{len(sorted_invs)} inversions; lengths must match."
+            )
         return {inv.inv_id: seq[i] for i, inv in enumerate(sorted_invs)}
     raise TypeError(
         f"sample_class must be None, 'S'/'I', or a sequence of "
-        f"karyotypes; got {type(sample_class).__name__} {sample_class!r}.")
+        f"karyotypes; got {type(sample_class).__name__} {sample_class!r}."
+    )

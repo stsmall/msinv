@@ -22,9 +22,9 @@ def _sim_factory(seed: int):
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Deterministic',
+        mode="Deterministic",
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10_000),
@@ -61,7 +61,8 @@ def test_pg2_global_pi_below_neutral():
         pis.append(ts.diversity(mode="branch"))
     mean_pi = statistics.mean(pis)
     ratio = mean_pi / neutral_pi
-    print(f"PG2 mean pi: {mean_pi:.0f}, neutral 4N: {neutral_pi}, "
-          f"ratio: {ratio*100:.1f}%")
-    assert ratio < 0.7, (
-        f"Expected mean pi ≤70% of neutral 4N; got {ratio*100:.1f}%")
+    print(
+        f"PG2 mean pi: {mean_pi:.0f}, neutral 4N: {neutral_pi}, "
+        f"ratio: {ratio * 100:.1f}%"
+    )
+    assert ratio < 0.7, f"Expected mean pi ≤70% of neutral 4N; got {ratio * 100:.1f}%"

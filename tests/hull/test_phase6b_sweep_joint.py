@@ -12,9 +12,17 @@ from msinv.hull.sweep import Sweep
 def test_j1_no_flux_locks_a_to_origin_kary():
     """γ=0, A originated on I → (S,A) stays exactly 0; (I,A) rises."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="I", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.001,
-        partial_sweep_final_freq=0.99, gamma_flux=0.0,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="I",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=500.0,
+        f0=0.001,
+        partial_sweep_final_freq=0.99,
+        gamma_flux=0.0,
     )
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
@@ -27,30 +35,48 @@ def test_j1_no_flux_locks_a_to_origin_kary():
 def test_j2_rdl_lifecycle_post_flux_mixing():
     """γ>0, origin on I → (S,A) grows over time; total A → near partial freq."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="I", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="I",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=2_000.0,
+        f0=0.001,
         partial_sweep_final_freq=0.95,
-        gamma_flux=1e-3, mean_tract_length=1000.0,
+        gamma_flux=1e-3,
+        mean_tract_length=1000.0,
     )
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
     final = rust_sw.trajectory_samples()[-1][1][0]
     total_a = final[1] + final[3]
-    assert total_a >= 0.90, f"total A should reach ~partial_sweep_final_freq, got {total_a}"
+    assert total_a >= 0.90, (
+        f"total A should reach ~partial_sweep_final_freq, got {total_a}"
+    )
     assert final[1] > 1e-3, f"(S,A) should accumulate via flux, got {final[1]}"
 
 
 def test_j3_origin_symmetry():
     """Origin on S vs origin on I should produce mirror trajectories at p_inv=0.5."""
     base_kwargs = dict(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=500.0,
+        f0=0.001,
         partial_sweep_final_freq=0.99,
     )
     sw_s = Sweep(origin_kary="S", **base_kwargs)
     sw_i = Sweep(origin_kary="I", **base_kwargs)
-    rs = sw_s.to_rust(); rs.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
-    ri = sw_i.to_rust(); ri.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
+    rs = sw_s.to_rust()
+    rs.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
+    ri = sw_i.to_rust()
+    ri.build_trajectory(n_pops=1, p_inv_init=[0.5], pop_sizes=[10_000.0])
     fs = rs.trajectory_samples()[-1][1][0]
     fi = ri.trajectory_samples()[-1][1][0]
     # (S,A) for origin=S should equal (I,A) for origin=I (mirror via the
@@ -61,16 +87,27 @@ def test_j3_origin_symmetry():
 def test_build_trajectory_accepts_per_pop_size_and_migration():
     """PyO3 build_trajectory accepts pop_sizes list and migration_matrix."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=500.0,
+        f0=0.001,
         partial_sweep_final_freq=0.99,
     )
     rust_sw = sw.to_rust()
     # New signature: pop_sizes is list[float]; migration_matrix is list[list[float]] (mig[dst][src]).
     rust_sw.build_trajectory(
-        n_pops=2, p_inv_init=[0.0, 0.0],
+        n_pops=2,
+        p_inv_init=[0.0, 0.0],
         pop_sizes=[10_000.0, 10_000.0],
-        migration_matrix=[[0.0, 1e-3], [0.0, 0.0]],   # mig[dst][src]; pop 0 absorbs from pop 1
+        migration_matrix=[
+            [0.0, 1e-3],
+            [0.0, 0.0],
+        ],  # mig[dst][src]; pop 0 absorbs from pop 1
     )
     final = rust_sw.trajectory_samples()[-1][1]
     # Sanity: trajectory has 2-pop shape.
@@ -87,18 +124,29 @@ def test_j4_bottleneck_through_sweep():
     `trajectory_bottleneck_increases_drift_variance`.
     """
     import statistics
+
     def final_a(seed, with_bottleneck):
         sw = Sweep(
-            x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-            mode="Stochastic", s=0.05, t_origin=600.0, f0=0.01,
-            partial_sweep_final_freq=1.0, seed=seed,
+            x_sel=50_000.0,
+            tau=0.0,
+            origin_pop=0,
+            origin_kary="S",
+            target_inv=0,
+            mode="Stochastic",
+            s=0.05,
+            t_origin=600.0,
+            f0=0.01,
+            partial_sweep_final_freq=1.0,
+            seed=seed,
         )
         rust_sw = sw.to_rust()
         rust_sw.build_trajectory(
-            n_pops=1, p_inv_init=[0.0],
+            n_pops=1,
+            p_inv_init=[0.0],
             pop_sizes=[100.0 if with_bottleneck else 10_000.0],
         )
         return rust_sw.final_a_freq()
+
     finals_b = [final_a(r + 1, True) for r in range(30)]
     finals_n = [final_a(r + 1, False) for r in range(30)]
     var_b = statistics.pvariance(finals_b)
@@ -116,27 +164,40 @@ def test_j5_backward_flux_consistent_with_trajectory():
     from msinv.hull._event_log import filter_flux
 
     inv = InversionSpec(
-        bp_left=20_000.0, bp_right=80_000.0, p_inv=0.5, t_inv=10_000.0,
-        gene_conversion_rate=1e-5, mean_tract_length=1000.0,
+        bp_left=20_000.0,
+        bp_right=80_000.0,
+        p_inv=0.5,
+        t_inv=10_000.0,
+        gene_conversion_rate=1e-5,
+        mean_tract_length=1000.0,
     )
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="I", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="I",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=2_000.0,
+        f0=0.001,
         partial_sweep_final_freq=0.95,
-        gamma_flux=1e-5, mean_tract_length=1000.0,
+        gamma_flux=1e-5,
+        mean_tract_length=1000.0,
     )
     sim = HullSimulator(
-        sample_config={('S', 0): 10, ('I', 0): 10},
+        sample_config={("S", 0): 10, ("I", 0): 10},
         demography=Demography(pop_sizes=[10_000.0]),
         sequence_length=100_000.0,
         recombination_rate=1e-8,
-        inversions=[inv], sweeps=[sw],
-        seed=42, record_events=True,
+        inversions=[inv],
+        sweeps=[sw],
+        seed=42,
+        record_events=True,
     )
     sim.simulate()
     flux_events_in_window = [
-        ev for ev in filter_flux(sim.event_log, 0)
-        if 0.0 <= ev["t"] <= sw.t_origin
+        ev for ev in filter_flux(sim.event_log, 0) if 0.0 <= ev["t"] <= sw.t_origin
     ]
     assert len(flux_events_in_window) > 0, "expected flux events inside sweep window"
 
@@ -144,32 +205,48 @@ def test_j5_backward_flux_consistent_with_trajectory():
 def test_j6_migration_spreads_sweep():
     """2-pop, m(1,0)>0, origin in pop 0 -> A appears in pop 1."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=1_000.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=1_000.0,
+        f0=0.001,
         partial_sweep_final_freq=0.99,
     )
     rust_sw = sw.to_rust()
     # mig[dst][src]: pop 1 absorbs from pop 0 at 1e-3 per gen.
     rust_sw.build_trajectory(
-        n_pops=2, p_inv_init=[0.0, 0.0],
+        n_pops=2,
+        p_inv_init=[0.0, 0.0],
         pop_sizes=[10_000.0, 10_000.0],
         migration_matrix=[[0.0, 0.0], [1e-3, 0.0]],
     )
     final = rust_sw.trajectory_samples()[-1][1]
-    pop1_A = final[1][1]    # (S, A) of pop 1
+    pop1_A = final[1][1]  # (S, A) of pop 1
     assert pop1_A > 1e-3, f"pop1 A freq = {pop1_A}, expected > 1e-3"
 
 
 def test_j7_no_migration_keeps_pops_independent():
     """m=0, 2-pop -> pop 1 stays unaffected by sweep in pop 0."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=1_000.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=1_000.0,
+        f0=0.001,
         partial_sweep_final_freq=0.99,
     )
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(
-        n_pops=2, p_inv_init=[0.0, 0.0],
+        n_pops=2,
+        p_inv_init=[0.0, 0.0],
         pop_sizes=[10_000.0, 10_000.0],
         migration_matrix=[[0.0, 0.0], [0.0, 0.0]],
     )
@@ -184,13 +261,20 @@ def test_j8_soft_sweep_seeds_K_founders():
     from msinv.hull.demography import Demography
 
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.05,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=2_000.0,
+        f0=0.05,
         partial_sweep_final_freq=1.0,
     )
     n_samples = 400
     sim = HullSimulator(
-        sample_config={('S', 0): n_samples},
+        sample_config={("S", 0): n_samples},
         demography=Demography(pop_sizes=[10_000.0]),
         sequence_length=100_000.0,
         recombination_rate=1e-12,
@@ -205,7 +289,8 @@ def test_j8_soft_sweep_seeds_K_founders():
 
 def test_j9_recurrent_de_novo_count():
     """uA>0 → Poisson(uA·2N·duration) origins fire across the sweep window."""
-    import math, statistics
+    import math
+    import statistics
 
     Ne = 10_000.0
     ua = 1e-5
@@ -215,16 +300,24 @@ def test_j9_recurrent_de_novo_count():
     counts = []
     for r in range(n_reps):
         sw = Sweep(
-            x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-            mode="Neutral", s=0.0, t_origin=duration, f0=0.0,
+            x_sel=50_000.0,
+            tau=0.0,
+            origin_pop=0,
+            origin_kary="S",
+            target_inv=0,
+            mode="Neutral",
+            s=0.0,
+            t_origin=duration,
+            f0=0.0,
             partial_sweep_final_freq=1.0,
-            recurrent_mutation_rate=ua, seed=r + 1,
+            recurrent_mutation_rate=ua,
+            seed=r + 1,
         )
         rust_sw = sw.to_rust()
         rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[Ne])
         prev_max = 0.0
         origins = 0
-        for t, freq in rust_sw.trajectory_samples():
+        for _t, freq in rust_sw.trajectory_samples():
             v = freq[0][1]
             if v > prev_max + 0.5 / (2 * Ne):
                 origins += 1

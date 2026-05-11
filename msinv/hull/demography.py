@@ -26,7 +26,7 @@ rate engine for arbitrary demes graphs.
 """
 
 import math
-from typing import List, Optional, Tuple
+from typing import Optional
 
 
 class Demography:
@@ -42,28 +42,29 @@ class Demography:
         ignored. Defaults to no migration.
     """
 
-    def __init__(self,
-                 pop_sizes: List[float],
-                 migration_matrix: Optional[List[List[float]]] = None):
+    def __init__(
+        self,
+        pop_sizes: list[float],
+        migration_matrix: Optional[list[list[float]]] = None,
+    ):
         self.pop_sizes = list(map(float, pop_sizes))
         self.n_pops = len(self.pop_sizes)
         self.growth_rates = [0.0] * self.n_pops
         self.growth_start = [0.0] * self.n_pops
         if migration_matrix is None:
-            self.migration_matrix = [[0.0] * self.n_pops
-                                      for _ in range(self.n_pops)]
+            self.migration_matrix = [[0.0] * self.n_pops for _ in range(self.n_pops)]
         else:
             if len(migration_matrix) != self.n_pops or any(
-                    len(row) != self.n_pops for row in migration_matrix):
+                len(row) != self.n_pops for row in migration_matrix
+            ):
                 raise ValueError(
-                    f"migration_matrix shape must be "
-                    f"{self.n_pops}x{self.n_pops}.")
-            self.migration_matrix = [list(map(float, row))
-                                       for row in migration_matrix]
+                    f"migration_matrix shape must be {self.n_pops}x{self.n_pops}."
+                )
+            self.migration_matrix = [list(map(float, row)) for row in migration_matrix]
         # Original events for replaying after a copy() / reset.
-        self.events: List[Tuple] = []
+        self.events: list[tuple] = []
 
-    def add_event(self, event: Tuple):
+    def add_event(self, event: tuple):
         """Add a raw ms-style demographic event. Events are kept sorted by time.
 
         Prefer the named methods below (``add_population_split``,
@@ -89,30 +90,34 @@ class Demography:
         if self.n_pops <= 1:
             return True
         parent = list(range(self.n_pops))
+
         def find(x):
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
+
         def union(a, b):
             ra, rb = find(a), find(b)
             if ra != rb:
                 parent[ra] = rb
+
         for i in range(self.n_pops):
             for j in range(self.n_pops):
-                if i == j: continue
+                if i == j:
+                    continue
                 if self.migration_matrix[i][j] != 0.0:
                     union(i, j)
         for ev in self.events:
-            if ev[0] == 'ej' and len(ev) >= 4:
+            if ev[0] == "ej" and len(ev) >= 4:
                 union(int(ev[2]), int(ev[3]))
-            elif ev[0] == 'em' and len(ev) >= 5 and ev[4] != 0.0:
+            elif ev[0] == "em" and len(ev) >= 5 and ev[4] != 0.0:
                 union(int(ev[2]), int(ev[3]))
-            elif ev[0] == 'cmig' and len(ev) >= 7 and ev[6] > 0.0:
+            elif ev[0] == "cmig" and len(ev) >= 7 and ev[6] > 0.0:
                 # ('cmig', t, src, dst, kary, inv_id, proportion)
                 # Class-conditional migration is also a connectivity edge.
                 union(int(ev[2]), int(ev[3]))
-            elif ev[0] == 'ema' and len(ev) >= 3:
+            elif ev[0] == "ema" and len(ev) >= 3:
                 mat = ev[2]
                 for i in range(self.n_pops):
                     for j in range(self.n_pops):
@@ -123,29 +128,32 @@ class Demography:
             return True
         if warn:
             import warnings as _warnings
+
             _warnings.warn(
                 f"Demography has {len(roots)} disjoint population "
                 f"components: {roots}. Lineages across components will "
                 f"never reach a common ancestor — msprime recap will "
                 f"hang with 'infinite waiting time'. Add migration or "
                 f"an 'ej' event.",
-                RuntimeWarning, stacklevel=2)
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return False
 
     # -- msprime-compatible convenience methods ----------------------------
 
-    def add_population_split(self, time: float, derived: List[int],
-                             ancestral: int):
+    def add_population_split(self, time: float, derived: list[int], ancestral: int):
         """Going backward, merge *derived* populations into *ancestral*.
 
         Equivalent to msprime ``Demography.add_population_split``
         (and to one ``ej`` event per derived pop in ms).
         """
         for src in derived:
-            self.add_event(('ej', time, src, ancestral))
+            self.add_event(("ej", time, src, ancestral))
 
-    def add_mass_migration(self, time: float, source: int, dest: int,
-                           proportion: float = 1.0):
+    def add_mass_migration(
+        self, time: float, source: int, dest: int, proportion: float = 1.0
+    ):
         """Going backward, move *proportion* of lineages from *source*
         to *dest*.
 
@@ -159,12 +167,19 @@ class Demography:
                 "implemented; only the class-conditional version is. "
                 "Use add_class_migration(time, src, dst, kary, inv_id, "
                 "proportion) or add_admixture(time, src, dst, proportion, "
-                "kary=...) — both support proportion < 1.")
-        self.add_event(('ej', time, source, dest))
+                "kary=...) — both support proportion < 1."
+            )
+        self.add_event(("ej", time, source, dest))
 
-    def add_class_migration(self, time: float, source: int, dest: int,
-                            karyotype: str, inv_id: int = 0,
-                            proportion: float = 1.0):
+    def add_class_migration(
+        self,
+        time: float,
+        source: int,
+        dest: int,
+        karyotype: str,
+        inv_id: int = 0,
+        proportion: float = 1.0,
+    ):
         """Class-conditional migration / admixture / class-mass-merge.
 
         Going backward at ``time``, for each lineage currently in
@@ -183,15 +198,21 @@ class Demography:
           migration pulse.  Each matching lineage migrates independently
           with the given probability.
         """
-        if karyotype not in ('S', 'I'):
+        if karyotype not in ("S", "I"):
             raise ValueError(f"karyotype must be 'S' or 'I', got {karyotype!r}")
         if not (0.0 < proportion <= 1.0):
             raise ValueError(f"proportion must be in (0, 1], got {proportion}")
-        self.add_event(('cmig', time, source, dest, karyotype, inv_id, proportion))
+        self.add_event(("cmig", time, source, dest, karyotype, inv_id, proportion))
 
-    def add_admixture(self, time: float, source: int, dest: int,
-                      proportion: float, karyotype: Optional[str] = None,
-                      inv_id: int = 0):
+    def add_admixture(
+        self,
+        time: float,
+        source: int,
+        dest: int,
+        proportion: float,
+        karyotype: Optional[str] = None,
+        inv_id: int = 0,
+    ):
         """Admixture pulse: at ``time``, fraction ``proportion`` of
         ``source`` migrates into ``dest`` (going backward).
 
@@ -212,12 +233,11 @@ class Demography:
                 "Class-unconditional admixture (proportion < 1, no "
                 "karyotype filter) not yet implemented; supply "
                 "karyotype='S' or 'I' to use the class-conditional "
-                "operator instead.")
-        self.add_class_migration(time, source, dest, karyotype, inv_id,
-                                  proportion)
+                "operator instead."
+            )
+        self.add_class_migration(time, source, dest, karyotype, inv_id, proportion)
 
-    def add_class_split(self, time: float, source: int, dest: int,
-                        inv_id: int = 0):
+    def add_class_split(self, time: float, source: int, dest: int, inv_id: int = 0):
         """Class-routed full split: at ``time`` going backward, every
         lineage in ``source`` moves to ``dest``, but the simulator
         routes S- and I-lineages through their class buckets first
@@ -236,26 +256,29 @@ class Demography:
         - With proportion=1.0, the cmig events are unconditional —
           they don't consume RNG (no Bernoulli draw needed).
         """
-        self.add_class_migration(time, source, dest, 'S', inv_id, 1.0)
-        self.add_class_migration(time, source, dest, 'I', inv_id, 1.0)
-        self.add_event(('ej', float(time), int(source), int(dest)))
+        self.add_class_migration(time, source, dest, "S", inv_id, 1.0)
+        self.add_class_migration(time, source, dest, "I", inv_id, 1.0)
+        self.add_event(("ej", float(time), int(source), int(dest)))
 
-    def add_population_size_change(self, time: float,
-                                   population: Optional[int] = None,
-                                   new_size: Optional[float] = None):
+    def add_population_size_change(
+        self,
+        time: float,
+        population: Optional[int] = None,
+        new_size: Optional[float] = None,
+    ):
         """Change effective population size going backward.
 
         If *population* is None, change all populations (``eN``).
         Otherwise change only that population (``en``).
         """
         if population is None:
-            self.add_event(('eN', time, new_size))
+            self.add_event(("eN", time, new_size))
         else:
-            self.add_event(('en', time, population, new_size))
+            self.add_event(("en", time, population, new_size))
 
-    def add_growth_rate_change(self, time: float,
-                               population: Optional[int] = None,
-                               growth_rate: float = 0.0):
+    def add_growth_rate_change(
+        self, time: float, population: Optional[int] = None, growth_rate: float = 0.0
+    ):
         """Set exponential growth rate going backward.
 
         N(t') = N(t) * exp(-growth_rate * (t' - t)).
@@ -263,14 +286,17 @@ class Demography:
         If *population* is None, change all populations (``eG``).
         """
         if population is None:
-            self.add_event(('eG', time, growth_rate))
+            self.add_event(("eG", time, growth_rate))
         else:
-            self.add_event(('eg', time, population, growth_rate))
+            self.add_event(("eg", time, population, growth_rate))
 
-    def add_migration_rate_change(self, time: float,
-                                  source: Optional[int] = None,
-                                  dest: Optional[int] = None,
-                                  rate: float = 0.0):
+    def add_migration_rate_change(
+        self,
+        time: float,
+        source: Optional[int] = None,
+        dest: Optional[int] = None,
+        rate: float = 0.0,
+    ):
         """Change migration rate going backward.
 
         If *source* and *dest* are both None, set all off-diagonal
@@ -279,12 +305,13 @@ class Demography:
         from source, matching msprime convention).
         """
         if source is None and dest is None:
-            self.add_event(('eM', time, rate))
+            self.add_event(("eM", time, rate))
         else:
-            self.add_event(('em', time, dest, source, rate))
+            self.add_event(("em", time, dest, source, rate))
 
-    def add_inversion_freq_change(self, time: float, population: int,
-                                   inv_id: int, p_inv: float):
+    def add_inversion_freq_change(
+        self, time: float, population: int, inv_id: int, p_inv: float
+    ):
         """Change inversion frequency for a specific population at *time*.
 
         This is useful at population merge events where the ancestral
@@ -303,12 +330,11 @@ class Demography:
         p_inv : float
             New inverted-arrangement frequency for this population.
         """
-        self.add_event(('eig', time, population, inv_id, p_inv))
+        self.add_event(("eig", time, population, inv_id, p_inv))
 
-    def copy(self) -> 'Demography':
+    def copy(self) -> "Demography":
         """Fresh copy with replayable events."""
-        d = Demography(list(self.pop_sizes),
-                        [list(r) for r in self.migration_matrix])
+        d = Demography(list(self.pop_sizes), [list(r) for r in self.migration_matrix])
         d.growth_rates = list(self.growth_rates)
         d.growth_start = list(self.growth_start)
         d.events = list(self.events)
@@ -343,7 +369,7 @@ class Demography:
         for ev in self.events:
             if ev[1] >= t_now - 1e-9:
                 return ev[1]
-        return float('inf')
+        return float("inf")
 
     def apply_event_at(self, t: float, active_lineages):
         """Apply all events scheduled for time t in chronological order,
@@ -360,32 +386,32 @@ class Demography:
                 new_events.append(ev)
                 continue
             etype = ev[0]
-            if etype == 'eN':
+            if etype == "eN":
                 _, _, N = ev
                 for p in range(self.n_pops):
                     # Lock in current size with growth, then reset.
                     self.pop_sizes[p] = N
                     self.growth_rates[p] = 0.0
                     self.growth_start[p] = t
-            elif etype == 'en':
+            elif etype == "en":
                 _, _, p, N = ev
                 if p < self.n_pops:
                     self.pop_sizes[p] = N
                     self.growth_rates[p] = 0.0
                     self.growth_start[p] = t
-            elif etype == 'eG':
+            elif etype == "eG":
                 _, _, alpha = ev
                 for p in range(self.n_pops):
                     self.pop_sizes[p] = self.size_at(p, t)
                     self.growth_rates[p] = alpha
                     self.growth_start[p] = t
-            elif etype == 'eg':
+            elif etype == "eg":
                 _, _, p, alpha = ev
                 if p < self.n_pops:
                     self.pop_sizes[p] = self.size_at(p, t)
                     self.growth_rates[p] = alpha
                     self.growth_start[p] = t
-            elif etype == 'eM':
+            elif etype == "eM":
                 _, _, M = ev
                 if self.n_pops > 1:
                     per = M / (self.n_pops - 1)
@@ -395,11 +421,11 @@ class Demography:
                     for j in range(self.n_pops):
                         if i != j:
                             self.migration_matrix[i][j] = per
-            elif etype == 'em':
+            elif etype == "em":
                 _, _, dst, src, M = ev
                 if dst < self.n_pops and src < self.n_pops and dst != src:
                     self.migration_matrix[dst][src] = M
-            elif etype == 'ej':
+            elif etype == "ej":
                 _, _, src, dst = ev
                 # Move every active lineage in src to dst.
                 for lin in active_lineages:
@@ -409,7 +435,7 @@ class Demography:
                 for k in range(self.n_pops):
                     self.migration_matrix[src][k] = 0.0
                     self.migration_matrix[k][src] = 0.0
-            elif etype == 'eig':
+            elif etype == "eig":
                 _, _, pop, inv_id, p_inv = ev
                 inv_changes.append((inv_id, pop, p_inv))
             else:

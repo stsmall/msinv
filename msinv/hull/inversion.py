@@ -45,8 +45,8 @@ Two modes for specifying the inversion frequency:
      deterministic-strong.
 """
 
-from dataclasses import dataclass, field
-from typing import Union, Dict, Optional
+from dataclasses import dataclass
+from typing import Union, Optional
 
 
 @dataclass
@@ -79,16 +79,16 @@ class InversionSpec:
 
     bp_left: float
     bp_right: float
-    p_inv: Union[float, Dict[int, float], None] = None
+    p_inv: Union[float, dict[int, float], None] = None
     t_inv: Optional[float] = None
     gene_conversion_rate: float = 1e-9
     # Peischl b2 flux model — see docs/superpowers/specs/2026-04-27-peischl-b2-flux-design.md.
-    mean_tract_length: float = 100.0   # bp
-    tract_distribution: str = 'geometric'  # 'geometric' or 'fixed'
-    inv_id: int = -1   # set by simulator
+    mean_tract_length: float = 100.0  # bp
+    tract_distribution: str = "geometric"  # 'geometric' or 'fixed'
+    inv_id: int = -1  # set by simulator
     # Trajectory dict overrides p_inv/t_inv when provided.  See module
     # docstring for the supported shapes.
-    trajectory: Optional[Dict] = None
+    trajectory: Optional[dict] = None
 
     @property
     def length(self) -> float:
@@ -130,47 +130,46 @@ class InversionSpec:
         # inv_id == -1 is the legacy single-inversion sentinel: use
         # plain 'S' (Phases 2-5a) so segment class tags don't carry
         # an id suffix. Multi-inversion (inversions=[...]) uses 'S0'/'S1'/...
-        return 'S' if self.inv_id < 0 else f'S{self.inv_id}'
+        return "S" if self.inv_id < 0 else f"S{self.inv_id}"
 
     def class_I(self) -> str:
-        return 'I' if self.inv_id < 0 else f'I{self.inv_id}'
+        return "I" if self.inv_id < 0 else f"I{self.inv_id}"
 
     def __post_init__(self):
         if self.bp_right <= self.bp_left:
             raise ValueError(
-                f"bp_right must be > bp_left, got "
-                f"({self.bp_left}, {self.bp_right}).")
+                f"bp_right must be > bp_left, got ({self.bp_left}, {self.bp_right})."
+            )
         # If a trajectory dict is provided, p_inv/t_inv are ignored.
         # The trajectory must specify a 'type' field.
         if self.trajectory is not None:
-            if 'type' not in self.trajectory:
+            if "type" not in self.trajectory:
                 raise ValueError("trajectory dict requires 'type' key")
             if self.gene_conversion_rate <= 0.0:
                 raise ValueError(
                     f"gene_conversion_rate (gamma) must be > 0, got "
-                    f"{self.gene_conversion_rate}.")
+                    f"{self.gene_conversion_rate}."
+                )
         else:
             # Legacy path: p_inv + t_inv required
             if self.p_inv is None or self.t_inv is None:
                 raise ValueError(
-                    "InversionSpec requires either (p_inv, t_inv) or trajectory.")
+                    "InversionSpec requires either (p_inv, t_inv) or trajectory."
+                )
             # Validate p_inv
             if isinstance(self.p_inv, dict):
                 if not self.p_inv:
                     raise ValueError("p_inv dict must not be empty.")
                 for pop, val in self.p_inv.items():
                     if not (0.0 <= val <= 1.0):
-                        raise ValueError(
-                            f"p_inv[{pop}] must be in [0, 1], got {val}.")
+                        raise ValueError(f"p_inv[{pop}] must be in [0, 1], got {val}.")
                 # At least one pop must have 0 < p_inv < 1 for the inversion
                 # to matter (otherwise it's monomorphic everywhere).
                 if not any(0.0 < v < 1.0 for v in self.p_inv.values()):
-                    raise ValueError(
-                        "At least one population must have 0 < p_inv < 1.")
+                    raise ValueError("At least one population must have 0 < p_inv < 1.")
             else:
                 if not (0.0 < self.p_inv < 1.0):
-                    raise ValueError(
-                        f"p_inv must be in (0, 1), got {self.p_inv}.")
+                    raise ValueError(f"p_inv must be in (0, 1), got {self.p_inv}.")
             if self.t_inv <= 0.0:
                 raise ValueError(f"t_inv > 0 required, got {self.t_inv}.")
             if self.gene_conversion_rate <= 0.0:
@@ -178,22 +177,28 @@ class InversionSpec:
                     f"gene_conversion_rate (gamma) must be > 0, got "
                     f"{self.gene_conversion_rate}. Inversions decouple from "
                     f"flanks unless gene flux is allowed; gamma=0 makes the "
-                    f"inversion an absolute barrier (often unrealistic).")
+                    f"inversion an absolute barrier (often unrealistic)."
+                )
         # ---- b2 flux: validate mean_tract_length, tract_distribution ----
         if self.mean_tract_length < 0.0:
             raise ValueError(
                 f"mean_tract_length must be >= 0, got {self.mean_tract_length}. "
                 f"Use mean_tract_length=0 (or gene_conversion_rate=0) to "
-                f"disable flux entirely.")
-        if self.tract_distribution not in ('geometric', 'fixed'):
+                f"disable flux entirely."
+            )
+        if self.tract_distribution not in ("geometric", "fixed"):
             raise ValueError(
                 f"tract_distribution must be 'geometric' or 'fixed', "
-                f"got {self.tract_distribution!r}.")
+                f"got {self.tract_distribution!r}."
+            )
         inv_len_local = self.bp_right - self.bp_left
         if self.mean_tract_length > inv_len_local / 2.0:
             import warnings as _warnings
+
             _warnings.warn(
                 f"mean_tract_length ({self.mean_tract_length:.1f}) exceeds "
-                f"inv_length/2 ({inv_len_local/2:.1f}); tracts will frequently "
+                f"inv_length/2 ({inv_len_local / 2:.1f}); tracts will frequently "
                 f"span much of the inversion. Verify this is intentional.",
-                UserWarning, stacklevel=2)
+                UserWarning,
+                stacklevel=2,
+            )

@@ -9,16 +9,18 @@ import tskit
 
 try:
     from msinv._msinv_core import simulate_raw as _simulate_raw
+
     RUST_AVAILABLE = True
 except ImportError:
     try:
         from _msinv_core import simulate_raw as _simulate_raw
+
         RUST_AVAILABLE = True
     except ImportError:
         RUST_AVAILABLE = False
 
 
-def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
+def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
     """Run a simulation using the Rust core.
 
     Parameters
@@ -40,14 +42,14 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
     # --- Sample config ---
     # Convert sample_config dict → list of (kary_str, pop, count) tuples.
     sample_list = []
-    n_inv = len(simulator.inversions)
+    len(simulator.inversions)
     for (karyotype, pop), count in simulator.sample_config.items():
         if karyotype is None:
-            kary_str = 'P'
+            kary_str = "P"
         elif isinstance(karyotype, str) and len(karyotype) == 1:
             kary_str = karyotype
-        elif hasattr(karyotype, '__iter__'):
-            kary_str = ''.join(k if k else 'P' for k in karyotype)
+        elif hasattr(karyotype, "__iter__"):
+            kary_str = "".join(k if k else "P" for k in karyotype)
         else:
             kary_str = str(karyotype)
         sample_list.append((kary_str, int(pop), int(count)))
@@ -57,19 +59,19 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
     inv_dicts = []
     for inv in simulator.inversions:
         d = {
-            'bp_left': float(inv.bp_left),
-            'bp_right': float(inv.bp_right),
-            'gene_conversion_rate': float(inv.gene_conversion_rate),
-            'mean_tract_length': float(inv.mean_tract_length),
-            'tract_distribution': str(inv.tract_distribution),
+            "bp_left": float(inv.bp_left),
+            "bp_right": float(inv.bp_right),
+            "gene_conversion_rate": float(inv.gene_conversion_rate),
+            "mean_tract_length": float(inv.mean_tract_length),
+            "tract_distribution": str(inv.tract_distribution),
         }
-        if getattr(inv, 'trajectory', None) is not None:
+        if getattr(inv, "trajectory", None) is not None:
             # New trajectory path — pass dict straight to Rust.
-            d['trajectory'] = dict(inv.trajectory)
+            d["trajectory"] = dict(inv.trajectory)
         else:
             # Back-compat: constant p_inv/t_inv
-            d['p_inv'] = inv._p_inv_as_list(n_pops)
-            d['t_inv'] = float(inv.t_inv)
+            d["p_inv"] = inv._p_inv_as_list(n_pops)
+            d["t_inv"] = float(inv.t_inv)
         inv_dicts.append(d)
 
     # --- Sweeps ---
@@ -78,9 +80,10 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
     # --- Demography ---
     demo = simulator.demography
     pop_sizes = [float(n) for n in demo.pop_sizes]
-    mig = [[float(demo.migration_matrix[i][j])
-             for j in range(demo.n_pops)]
-            for i in range(demo.n_pops)]
+    mig = [
+        [float(demo.migration_matrix[i][j]) for j in range(demo.n_pops)]
+        for i in range(demo.n_pops)
+    ]
 
     # Convert events to tuples.
     demo_events = []
@@ -97,29 +100,28 @@ def rust_simulate(simulator) -> 'tuple[tskit.TreeSequence, list | None]':
         sweeps=sweep_specs if sweep_specs else None,
         demo_events=demo_events if demo_events else None,
         migration_matrix=mig,
-        seed=int(simulator.rng.integers(0, 2**63))
-            if hasattr(simulator, 'rng') else 42,
-        stop_at=float(getattr(simulator, 'stop_at', float('inf'))),
-        compound_rate=bool(getattr(simulator, 'compound_rate', False)),
-        iters_max=int(getattr(simulator, 'iters_max', 10_000_000)),
-        gc_stride=int(getattr(simulator, 'gc_stride', 160)),
-        record_events=bool(getattr(simulator, '_record_events', False)),
+        seed=int(simulator.rng.integers(0, 2**63)) if hasattr(simulator, "rng") else 42,
+        stop_at=float(getattr(simulator, "stop_at", float("inf"))),
+        compound_rate=bool(getattr(simulator, "compound_rate", False)),
+        iters_max=int(getattr(simulator, "iters_max", 10_000_000)),
+        gc_stride=int(getattr(simulator, "gc_stride", 160)),
+        record_events=bool(getattr(simulator, "_record_events", False)),
     )
 
     # --- Convert to tskit TreeSequence ---
-    tc = tskit.TableCollection(raw['sequence_length'])
-    for _ in range(int(raw['num_populations'])):
+    tc = tskit.TableCollection(raw["sequence_length"])
+    for _ in range(int(raw["num_populations"])):
         tc.populations.add_row()
     tc.nodes.set_columns(
-        flags=raw['node_flags'],
-        time=raw['node_time'],
-        population=raw['node_population'],
+        flags=raw["node_flags"],
+        time=raw["node_time"],
+        population=raw["node_population"],
     )
     tc.edges.set_columns(
-        left=raw['edge_left'],
-        right=raw['edge_right'],
-        parent=raw['edge_parent'],
-        child=raw['edge_child'],
+        left=raw["edge_left"],
+        right=raw["edge_right"],
+        parent=raw["edge_parent"],
+        child=raw["edge_child"],
     )
     # Rust emits edges pre-sorted in tskit canonical order
     # (time[parent] asc, parent, child, left); skip tc.sort().

@@ -8,6 +8,7 @@ persists everything to `out_dir / {stats.npz, timing.json}`.
 Used to gate the full n=100 launch: per-rep wall < 4h AND peak RSS < 8GB
 must both hold.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,10 @@ from msinv import HullSimulator, InversionSpec
 from validation._lib import io, stats
 from validation._lib.demography import (
     v12_msinv,
-    T_INV_3RA, P_INV_F_3RA, P_INV_K_3RA, GAMMA_3RA,
+    T_INV_3RA,
+    P_INV_F_3RA,
+    P_INV_K_3RA,
+    GAMMA_3RA,
 )
 
 # 3Ra geometry: position 0.18·L start, width 0.20·L.
@@ -91,7 +95,10 @@ def run_pilot_rep(
 
     # Overlay neutral mutations
     ts = msprime.sim_mutations(
-        ts_raw, rate=MU, random_seed=seed + 1, keep=True,
+        ts_raw,
+        rate=MU,
+        random_seed=seed + 1,
+        keep=True,
     )
 
     # Sample-set partition: F_S = first N_F_S, F_I = next N_F_I.
@@ -105,7 +112,10 @@ def run_pilot_rep(
     tree_d = stats.tree_shape_stats(ts, n_samples=200, seed=seed + 2)
     bins = np.logspace(2, np.log10(L), 11)
     ld_d = stats.ld_decay(
-        ts, distance_bins=bins, max_pairs=2000, seed=seed + 3,
+        ts,
+        distance_bins=bins,
+        max_pairs=2000,
+        seed=seed + 3,
     )
 
     flat: dict[str, np.ndarray] = {}
@@ -156,7 +166,10 @@ def _cli_main():
     for rep in range(n_reps):
         out_dir = out_root / f"rep_{rep:03d}"
         seed = seed_for(
-            track="pilot", scenario="v12", engine="msinv", rep=rep,
+            track="pilot",
+            scenario="v12",
+            engine="msinv",
+            rep=rep,
         )
         print(
             f"Pilot rep {rep}: seed={seed}, L={L}, out={out_dir}",
@@ -179,8 +192,7 @@ def _cli_main():
         f"min={min(walls):.1f}s, max={max(walls):.1f}s"
     )
     print(
-        f"  rss : median={np.median(rsses) / 1e9:.2f}GB, "
-        f"max={max(rsses) / 1e9:.2f}GB"
+        f"  rss : median={np.median(rsses) / 1e9:.2f}GB, max={max(rsses) / 1e9:.2f}GB"
     )
     if max(walls) > 4 * 3600:
         print("  GATE: per-rep wall > 4h — escalate before full launch")

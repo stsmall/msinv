@@ -13,8 +13,8 @@ import numpy as np
 def _require_log(log):
     if log is None:
         raise ValueError(
-            "event log not recorded; pass record_events=True to "
-            "HullSimulator")
+            "event log not recorded; pass record_events=True to HullSimulator"
+        )
     return log
 
 
@@ -40,8 +40,7 @@ def filter_flux(log, inv_id=None):
 
 def tract_lengths(flux_records):
     """Return the tract lengths (right - left) for each flux record."""
-    return np.array(
-        [r["tract_right"] - r["tract_left"] for r in flux_records])
+    return np.array([r["tract_right"] - r["tract_left"] for r in flux_records])
 
 
 def survival_curve(values, ds):
@@ -52,8 +51,9 @@ def survival_curve(values, ds):
 
 def coverage_count(flux_records, position):
     """How many flux events have tract_left <= position <= tract_right."""
-    return sum(1 for r in flux_records
-                 if r["tract_left"] <= position <= r["tract_right"])
+    return sum(
+        1 for r in flux_records if r["tract_left"] <= position <= r["tract_right"]
+    )
 
 
 def samples_converted_at(flux_records, ts, position):

@@ -6,6 +6,7 @@ The asymmetric cases (one but not both) yield a "investigate" verdict.
 
 Defaults match the spec: alpha=0.01, d_threshold=0.2.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -49,8 +50,11 @@ def cohens_d(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def equivalence_verdict(
-    a: np.ndarray, b: np.ndarray,
-    *, alpha: float = 0.01, d_threshold: float = 0.2,
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    alpha: float = 0.01,
+    d_threshold: float = 0.2,
 ) -> dict[str, float | Literal["equivalent", "not_equivalent", "investigate"]]:
     """Run KS + Cohen's D and return verdict per the pre-registered rule."""
     stat, p = ks_test(a, b)

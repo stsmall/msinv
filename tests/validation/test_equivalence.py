@@ -1,9 +1,12 @@
 """Tests for KS test, Cohen's D, and equivalence verdict."""
+
 import numpy as np
 import pytest
 
 from validation._lib.equivalence import (
-    ks_test, cohens_d, equivalence_verdict,
+    ks_test,
+    cohens_d,
+    equivalence_verdict,
 )
 
 

@@ -17,9 +17,9 @@ def _sim_factory(seed: int):
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Stochastic',
+        mode="Stochastic",
         s=0.05,
         t_origin=1500.0,
         f0=0.05,
@@ -56,11 +56,14 @@ def test_tr2_soft_sweep_preserves_diversity():
         pis.append(ts.diversity(mode="branch"))
     mean_pi = statistics.mean(pis)
     ratio = mean_pi / neutral_pi
-    print(f"TR2 mean pi: {mean_pi:.0f}, neutral 4N: {neutral_pi}, "
-          f"ratio: {ratio*100:.1f}%")
+    print(
+        f"TR2 mean pi: {mean_pi:.0f}, neutral 4N: {neutral_pi}, "
+        f"ratio: {ratio * 100:.1f}%"
+    )
     # Threshold relaxed from 30% → 25% (2026-05-01) after the
     # apply_sweep + non-overlap-edge fixes adjusted soft-sweep
     # dynamics slightly. Observed ratio ~29-31% with the current stack.
     assert ratio > 0.25, (
         f"Expected mean pi > 25% of neutral 4N for soft sweep "
-        f"(target ~42% per discoal); got {ratio*100:.1f}%")
+        f"(target ~42% per discoal); got {ratio * 100:.1f}%"
+    )

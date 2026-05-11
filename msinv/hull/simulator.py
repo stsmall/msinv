@@ -19,23 +19,25 @@ Subsequent phases:
   Phase 7: Cython/C inner loop.
 """
 
-import math
-
 import numpy as np
 
 from .lineage import Lineage, reset_uids
 from .segment import Segment, total_length
 from .tables import TableBuilder
-from .events import (apply_coalescence, apply_recombination,
-                     apply_gene_flux, apply_migration)
+from .events import (
+    apply_coalescence,
+    apply_recombination,
+    apply_gene_flux,
+    apply_migration,
+)
 from .demography import Demography
 from .inversion import InversionSpec
-from .sweep import Sweep
 
 
 # ---------------------------------------------------------------------------
 # Gene-flux geometry (Peischl 2013): phi(x) for a fixed-window model.
 # ---------------------------------------------------------------------------
+
 
 def _phi(x: float, w: float) -> float:
     """Probability that the inversion-relative position ``x`` (in (0, 1))
@@ -68,15 +70,18 @@ def _phi_integral(a: float, b: float, w: float) -> float:
     denom = 1.0 - w
     total = 0.0
     # Rising part: phi = x / denom on [0, w]
-    lo = max(a, 0.0); hi = min(b, w)
+    lo = max(a, 0.0)
+    hi = min(b, w)
     if hi > lo:
         total += 0.5 * (hi * hi - lo * lo) / denom
     # Flat part: phi = w / denom on [w, 1-w]
-    lo = max(a, w); hi = min(b, 1.0 - w)
+    lo = max(a, w)
+    hi = min(b, 1.0 - w)
     if hi > lo:
         total += w * (hi - lo) / denom
     # Falling part: phi = (1 - x) / denom on [1-w, 1]
-    lo = max(a, 1.0 - w); hi = min(b, 1.0)
+    lo = max(a, 1.0 - w)
+    hi = min(b, 1.0)
     if hi > lo:
         total += ((hi - lo) - 0.5 * (hi * hi - lo * lo)) / denom
     return total
@@ -85,6 +90,7 @@ def _phi_integral(a: float, b: float, w: float) -> float:
 # ---------------------------------------------------------------------------
 # Lineage GC — remove "fully coalesced" lineages
 # ---------------------------------------------------------------------------
+
 
 def _gc_sole_lineages(active):
     """Remove lineages whose material doesn't overlap with any other
@@ -116,7 +122,7 @@ def _gc_sole_lineages(active):
     # any of their positions).
     n = len(active)
     has_overlap = [False] * n  # True if lineage i shares a position
-    coverage = 0               # current total coverage count
+    coverage = 0  # current total coverage count
     # Also track which lineages are currently active at this position.
     active_set = set()
 
@@ -144,6 +150,7 @@ def _gc_sole_lineages(active):
 # ---------------------------------------------------------------------------
 # Per-pair overlap helpers (Phase 5)
 # ---------------------------------------------------------------------------
+
 
 def _overlap_by_class(lin_a, lin_b) -> dict:
     """Total overlap length between lin_a and lin_b, bucketed by
@@ -183,7 +190,6 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
 
     Returns the new internal node id.
     """
-    from .events import Lineage as _Lineage  # avoid circular import
     new_node = tables.add_internal(time=t, population=lin_a.population)
     # Build new merged segment list (allowed-class overlap) + leftover
     # segment lists (everything else for each lineage).
@@ -193,9 +199,7 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
 
     def _emit_merged(l, r):
         nonlocal merged_head, merged_tail
-        from .segment import Segment
-        seg = Segment(l, r, new_node, branch_class=allowed_class,
-                      prev=merged_tail)
+        seg = Segment(l, r, new_node, branch_class=allowed_class, prev=merged_tail)
         if merged_head is None:
             merged_head = seg
         if merged_tail is not None:
@@ -204,10 +208,9 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
 
     def _emit_a(l, r, src_seg):
         nonlocal a_remain_head, a_remain_tail
-        from .segment import Segment
-        seg = Segment(l, r, src_seg.node_id,
-                      branch_class=src_seg.branch_class,
-                      prev=a_remain_tail)
+        seg = Segment(
+            l, r, src_seg.node_id, branch_class=src_seg.branch_class, prev=a_remain_tail
+        )
         if a_remain_head is None:
             a_remain_head = seg
         if a_remain_tail is not None:
@@ -216,30 +219,34 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
 
     def _emit_b(l, r, src_seg):
         nonlocal b_remain_head, b_remain_tail
-        from .segment import Segment
-        seg = Segment(l, r, src_seg.node_id,
-                      branch_class=src_seg.branch_class,
-                      prev=b_remain_tail)
+        seg = Segment(
+            l, r, src_seg.node_id, branch_class=src_seg.branch_class, prev=b_remain_tail
+        )
         if b_remain_head is None:
             b_remain_head = seg
         if b_remain_tail is not None:
             b_remain_tail.next = seg
         b_remain_tail = seg
 
-    sa = lin_a.head; sb = lin_b.head
+    sa = lin_a.head
+    sb = lin_b.head
     while sa is not None or sb is not None:
         if sa is None:
             _emit_b(sb.left, sb.right, sb)
-            sb = sb.next; continue
+            sb = sb.next
+            continue
         if sb is None:
             _emit_a(sa.left, sa.right, sa)
-            sa = sa.next; continue
+            sa = sa.next
+            continue
         if sa.right <= sb.left:
             _emit_a(sa.left, sa.right, sa)
-            sa = sa.next; continue
+            sa = sa.next
+            continue
         if sb.right <= sa.left:
             _emit_b(sb.left, sb.right, sb)
-            sb = sb.next; continue
+            sb = sb.next
+            continue
         # Some overlap.
         l = max(sa.left, sb.left)
         r = min(sa.right, sb.right)
@@ -250,8 +257,7 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
             _emit_b(sb.left, l, sb)
         # Overlap: if classes match `allowed_class`, MERGE into new
         # node; otherwise it stays on both lineages.
-        if (sa.branch_class == allowed_class and
-                sb.branch_class == allowed_class):
+        if sa.branch_class == allowed_class and sb.branch_class == allowed_class:
             tables.add_edge(l, r, new_node, sa.node_id)
             tables.add_edge(l, r, new_node, sb.node_id)
             _emit_merged(l, r)
@@ -263,39 +269,38 @@ def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
             sa = sa.next
         else:
             from .segment import Segment as _S
-            sa = _S(r, sa.right, sa.node_id,
-                    branch_class=sa.branch_class, next=sa.next)
+
+            sa = _S(r, sa.right, sa.node_id, branch_class=sa.branch_class, next=sa.next)
             if sa.next is not None:
                 sa.next.prev = sa
         if sb.right == r:
             sb = sb.next
         else:
             from .segment import Segment as _S
-            sb = _S(r, sb.right, sb.node_id,
-                    branch_class=sb.branch_class, next=sb.next)
+
+            sb = _S(r, sb.right, sb.node_id, branch_class=sb.branch_class, next=sb.next)
             if sb.next is not None:
                 sb.next.prev = sb
 
     # Replace lin_a, lin_b in active with whatever remains + the merged
     # lineage, where each is non-empty.
     from .lineage import Lineage as _L
+
     active.remove(lin_a)
     active.remove(lin_b)
     if merged_head is not None:
-        active.append(_L(merged_head, merged_tail,
-                          population=lin_a.population))
+        active.append(_L(merged_head, merged_tail, population=lin_a.population))
     if a_remain_head is not None:
-        active.append(_L(a_remain_head, a_remain_tail,
-                          population=lin_a.population))
+        active.append(_L(a_remain_head, a_remain_tail, population=lin_a.population))
     if b_remain_head is not None:
-        active.append(_L(b_remain_head, b_remain_tail,
-                          population=lin_b.population))
+        active.append(_L(b_remain_head, b_remain_tail, population=lin_b.population))
     return new_node
 
 
 # ---------------------------------------------------------------------------
 # Simulator
 # ---------------------------------------------------------------------------
+
 
 class HullSimulator:
     """Hull-algorithm simulator.
@@ -337,28 +342,33 @@ class HullSimulator:
     seed : int, optional
     """
 
-    def __init__(self, *, samples: int = None,
-                 n_std: int = None, n_inv: int = None,
-                 sample_config: dict = None,
-                 population_size: float = 1.0,
-                 demography: Demography = None,
-                 sequence_length: float = 1.0,
-                 recombination_rate: float = 0.0,
-                 p_inv: float = None,
-                 t_inv: float = None,
-                 bp_left: float = None,
-                 bp_right: float = None,
-                 gene_conversion_rate: float = 1e-9,
-                 mean_tract_length: float = 100.0,
-                 tract_distribution: str = 'geometric',
-                 inversions: list = None,
-                 sweeps: list = None,
-                 seed: int = None,
-                 stop_at: float = float('inf'),
-                 compound_rate: bool = False,
-                 iters_max: int = 10_000_000,
-                 gc_stride: int = 160,
-                 record_events: bool = False):
+    def __init__(
+        self,
+        *,
+        samples: int = None,
+        n_std: int = None,
+        n_inv: int = None,
+        sample_config: dict = None,
+        population_size: float = 1.0,
+        demography: Demography = None,
+        sequence_length: float = 1.0,
+        recombination_rate: float = 0.0,
+        p_inv: float = None,
+        t_inv: float = None,
+        bp_left: float = None,
+        bp_right: float = None,
+        gene_conversion_rate: float = 1e-9,
+        mean_tract_length: float = 100.0,
+        tract_distribution: str = "geometric",
+        inversions: list = None,
+        sweeps: list = None,
+        seed: int = None,
+        stop_at: float = float("inf"),
+        compound_rate: bool = False,
+        iters_max: int = 10_000_000,
+        gc_stride: int = 160,
+        record_events: bool = False,
+    ):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
         ``demography`` for multi-pop work).
@@ -367,34 +377,41 @@ class HullSimulator:
         # sample_config: {(karyotype, pop): n} where karyotype is
         # None, 'S', 'I', or a per-inv sequence.
         if sample_config is not None:
-            if (samples is not None or n_std is not None or
-                    n_inv is not None):
+            if samples is not None or n_std is not None or n_inv is not None:
                 raise ValueError(
                     "Use either `sample_config` OR the simpler "
-                    "`samples`/`n_std`/`n_inv` API, not both.")
+                    "`samples`/`n_std`/`n_inv` API, not both."
+                )
             self.sample_config = dict(sample_config)
+
             # n_std/n_inv counts: a sample is "n_std"-counted if it is
             # NOT 'I' at the FIRST inversion (back-compat heuristic for
             # the n_std/n_inv accessors that single-inv code uses).
             def _is_inv_sample(kary):
-                if kary is None or kary == 'S':
+                if kary is None or kary == "S":
                     return False
-                if kary == 'I':
+                if kary == "I":
                     return True
                 # Sequence/multi-char string: look at first entry.
-                if hasattr(kary, '__iter__'):
+                if hasattr(kary, "__iter__"):
                     first = next(iter(kary), None)
-                    return first == 'I'
+                    return first == "I"
                 return False
-            self.n_std = sum(c for (cls, _), c in self.sample_config.items()
-                             if not _is_inv_sample(cls))
-            self.n_inv = sum(c for (cls, _), c in self.sample_config.items()
-                             if _is_inv_sample(cls))
+
+            self.n_std = sum(
+                c
+                for (cls, _), c in self.sample_config.items()
+                if not _is_inv_sample(cls)
+            )
+            self.n_inv = sum(
+                c for (cls, _), c in self.sample_config.items() if _is_inv_sample(cls)
+            )
         elif samples is not None:
             if n_std is not None or n_inv is not None:
                 raise ValueError(
                     "Pass either `samples` (panmictic) or "
-                    "`n_std`/`n_inv` (structured), not both.")
+                    "`n_std`/`n_inv` (structured), not both."
+                )
             self.n_std = samples
             self.n_inv = 0
             self.sample_config = {(None, 0): samples}
@@ -403,13 +420,13 @@ class HullSimulator:
             self.n_inv = n_inv if n_inv is not None else 0
             if self.n_std + self.n_inv == 0:
                 raise ValueError(
-                    "Must pass `samples`, `sample_config`, or "
-                    "non-zero `n_std`/`n_inv`.")
+                    "Must pass `samples`, `sample_config`, or non-zero `n_std`/`n_inv`."
+                )
             self.sample_config = {}
             if self.n_std:
-                self.sample_config[('S', 0)] = self.n_std
+                self.sample_config[("S", 0)] = self.n_std
             if self.n_inv:
-                self.sample_config[('I', 0)] = self.n_inv
+                self.sample_config[("I", 0)] = self.n_inv
         self.samples = self.n_std + self.n_inv
 
         # ---- Demography ----
@@ -418,11 +435,12 @@ class HullSimulator:
         else:
             self.demography = Demography([population_size])
         # Sanity: every sample's pop must exist.
-        for (cls, pop), n in self.sample_config.items():
+        for (_cls, pop), _n in self.sample_config.items():
             if pop >= self.demography.n_pops:
                 raise ValueError(
                     f"Sample pop {pop} not in demography "
-                    f"(n_pops={self.demography.n_pops}).")
+                    f"(n_pops={self.demography.n_pops})."
+                )
 
         # Ne for backward compatibility (only meaningful when single pop).
         self.Ne = self.demography.pop_sizes[0]
@@ -437,13 +455,17 @@ class HullSimulator:
                 raise ValueError(
                     "Pass either `inversions=[...]` OR the legacy "
                     "single-inv args (bp_left/bp_right/p_inv/t_inv), "
-                    "not both.")
+                    "not both."
+                )
             self.inversions = []
             for i, spec in enumerate(inversions):
                 # Allow tuple shorthand or full InversionSpec.
                 if not isinstance(spec, InversionSpec):
-                    spec = InversionSpec(*spec) if isinstance(spec, tuple) \
+                    spec = (
+                        InversionSpec(*spec)
+                        if isinstance(spec, tuple)
                         else InversionSpec(**dict(spec))
+                    )
                 spec.inv_id = i
                 self.inversions.append(spec)
             # Sort by bp_left; nested/overlapping inversions ARE
@@ -457,7 +479,8 @@ class HullSimulator:
                         f"Inversion {inv} extends outside the sequence "
                         f"[0, {sequence_length}). Either widen "
                         f"`sequence_length` or shrink the inversion "
-                        f"breakpoints.")
+                        f"breakpoints."
+                    )
             # Back-compat single-inv attributes (used in some helpers).
             inv0 = self.inversions[0]
             self.p_inv = inv0.p_inv
@@ -471,18 +494,16 @@ class HullSimulator:
             self.tract_distribution = inv0.tract_distribution
         elif self.n_inv > 0:
             if p_inv is None or not (0.0 < p_inv < 1.0):
-                raise ValueError(
-                    "p_inv must be in (0, 1) when n_inv > 0.")
+                raise ValueError("p_inv must be in (0, 1) when n_inv > 0.")
             if t_inv is None or t_inv <= 0.0:
-                raise ValueError(
-                    "t_inv > 0 must be given when n_inv > 0.")
+                raise ValueError("t_inv > 0 must be given when n_inv > 0.")
             if bp_left is None or bp_right is None:
                 bp_left = 0.0
                 bp_right = sequence_length
             if bp_right <= bp_left:
                 raise ValueError(
-                    f"bp_right must be > bp_left, got "
-                    f"({bp_left}, {bp_right}).")
+                    f"bp_right must be > bp_left, got ({bp_left}, {bp_right})."
+                )
             self.p_inv = p_inv
             self.t_inv = t_inv
             self.bp_left = bp_left
@@ -494,12 +515,15 @@ class HullSimulator:
             # (sentinel) so initial-segment classes use plain 'S'/'I'
             # without inv_id suffix — preserves Phase 1-5a semantics.
             single = InversionSpec(
-                bp_left=bp_left, bp_right=bp_right,
-                p_inv=p_inv, t_inv=t_inv,
+                bp_left=bp_left,
+                bp_right=bp_right,
+                p_inv=p_inv,
+                t_inv=t_inv,
                 gene_conversion_rate=self.g_per_bp,
                 mean_tract_length=mean_tract_length,
                 tract_distribution=tract_distribution,
-                inv_id=-1)
+                inv_id=-1,
+            )
             self.inversions = [single]
         else:
             self.p_inv = None
@@ -524,7 +548,8 @@ class HullSimulator:
             raise ValueError(
                 f"recombination_rate must be > 0 (got {self.r}). "
                 "rho=0 is not supported. For non-recombining loci, "
-                "simulate each locus separately.")
+                "simulate each locus separately."
+            )
         # Sweeps: the new joint forward WF sweep API (msinv.hull.sweep.Sweep)
         # is implemented only in the Rust backend (see
         # docs/superpowers/specs/2026-04-28-sweep-rewrite-design.md).
@@ -540,12 +565,14 @@ class HullSimulator:
         self.gc_stride = int(gc_stride)
         self._record_events = record_events
         self.event_log = None  # populated after simulate() when record_events=True
-        self.sweep_a_count = 0  # count of A-tagged sample lineages after last simulate()
+        self.sweep_a_count = (
+            0  # count of A-tagged sample lineages after last simulate()
+        )
         # Sanity: cross-population reachability. Without a path between
         # populations (via migration or 'ej'), lineages in disjoint pops
         # never coalesce and downstream msprime recap hangs. Warn now
         # rather than mystery-fail later.
-        if hasattr(self, 'demography') and self.demography is not None:
+        if hasattr(self, "demography") and self.demography is not None:
             try:
                 self.demography.check_connectivity(warn=True)
             except AttributeError:
@@ -583,21 +610,22 @@ class HullSimulator:
             elif isinstance(karyotype, str) and len(karyotype) == 1:
                 # 'S' or 'I' — linked karyotype.
                 sample_cls = karyotype
-            elif (isinstance(karyotype, str)
-                    and len(karyotype) == n_inv_specs
-                    and n_inv_specs > 1):
+            elif (
+                isinstance(karyotype, str)
+                and len(karyotype) == n_inv_specs
+                and n_inv_specs > 1
+            ):
                 # 'SI' / 'IS' / 'II' / 'SS' for multi-inv shorthand.
                 sample_cls = tuple(karyotype)
-            elif hasattr(karyotype, '__iter__'):
+            elif hasattr(karyotype, "__iter__"):
                 sample_cls = tuple(karyotype)
             else:
-                raise ValueError(
-                    f"Unrecognized sample karyotype: {karyotype!r}")
+                raise ValueError(f"Unrecognized sample karyotype: {karyotype!r}")
             for _ in range(count):
                 nid = tables.add_sample(time=0.0, population=pop)
                 head, tail = make_initial_segments(
-                    self.L, nid, inversions=self.inversions,
-                    sample_class=sample_cls)
+                    self.L, nid, inversions=self.inversions, sample_class=sample_cls
+                )
                 active.append(Lineage(head, tail, population=pop))
         return active
 
@@ -633,7 +661,7 @@ class HullSimulator:
                     continue
                 ne_pop = max(self.demography.size_at(pop, t), 1e-9)
                 rate = k * (k - 1) / 2.0 / (2.0 * ne_pop)
-                rates.append((f'coal_{pop}', rate, idx_list))
+                rates.append((f"coal_{pop}", rate, idx_list))
             return rates
 
         # Build per-(class, pop) p_class lookup for active inversions.
@@ -644,15 +672,14 @@ class HullSimulator:
             if t >= inv.t_inv:
                 continue
             active_inversions.append(inv)
-            sample_positions.append(
-                ((inv.bp_left + inv.bp_right) / 2.0, inv))
+            sample_positions.append(((inv.bp_left + inv.bp_right) / 2.0, inv))
 
         # Pre-build (tag, pop) → p lookup for O(1) access in inner loops.
         _tag_p_cache = {}
         pops = {lin.population for lin in active}
         for inv in active_inversions:
-            cls_S = inv.class_S() if inv.inv_id != -1 else 'S'
-            cls_I = inv.class_I() if inv.inv_id != -1 else 'I'
+            cls_S = inv.class_S() if inv.inv_id != -1 else "S"
+            cls_I = inv.class_I() if inv.inv_id != -1 else "I"
             for pop in pops:
                 _tag_p_cache[(cls_S, pop)] = inv.p_std_for(pop)
                 _tag_p_cache[(cls_I, pop)] = inv.p_inv_for(pop)
@@ -662,7 +689,7 @@ class HullSimulator:
             return _tag_p_cache.get((tag, pop), 1.0)
 
         def _p_class_for(cls, pop=0):
-            if cls == 'P' or cls is None:
+            if cls == "P" or cls is None:
                 return 1.0
             if isinstance(cls, frozenset):
                 if not cls:
@@ -699,7 +726,7 @@ class HullSimulator:
                 seg = lin.head
                 while seg is not None:
                     bc = seg.branch_class
-                    if bc != 'P' and bc is not None:
+                    if bc != "P" and bc is not None:
                         if isinstance(bc, frozenset):
                             for tag in bc:
                                 for _, inv in sample_positions:
@@ -712,8 +739,8 @@ class HullSimulator:
                     seg = seg.next
                 tags = []
                 for _, inv in sample_positions:
-                    tags.append(inv_tags.get(inv.inv_id, 'P'))
-                return tuple(tags) if tags else ('P',)
+                    tags.append(inv_tags.get(inv.inv_id, "P"))
+                return tuple(tags) if tags else ("P",)
 
             buckets = {}
             for i, lin in enumerate(active):
@@ -730,7 +757,7 @@ class HullSimulator:
                 if p_class <= 0:
                     continue
                 rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
-                rates.append((f'coal_{pop}', rate, idx_list))
+                rates.append((f"coal_{pop}", rate, idx_list))
         else:
             # LOW RHO: exact per-pair overlap-by-class.
             for i in range(len(active)):
@@ -740,19 +767,20 @@ class HullSimulator:
                     if lin_i.population != lin_j.population:
                         continue
                     ovl = _overlap_by_class(lin_i, lin_j)
-                    ne_pop = max(
-                        self.demography.size_at(lin_i.population, t),
-                        1e-9)
+                    ne_pop = max(self.demography.size_at(lin_i.population, t), 1e-9)
                     for cls_key, ov_len in ovl.items():
                         if ov_len <= 0:
                             continue
                         p_class = _p_class_for(cls_key, lin_i.population)
                         if p_class <= 0:
                             continue
-                        rates.append((
-                            f'coal_{cls_key}_{lin_i.population}',
-                            1.0 / (2.0 * ne_pop * p_class),
-                            (i, j, cls_key)))
+                        rates.append(
+                            (
+                                f"coal_{cls_key}_{lin_i.population}",
+                                1.0 / (2.0 * ne_pop * p_class),
+                                (i, j, cls_key),
+                            )
+                        )
         return rates
 
     def _migration_rates(self, active, t: float):
@@ -773,7 +801,7 @@ class HullSimulator:
                     continue
                 m = M[dst][src]
                 if m > 0:
-                    rates.append(('mig', m, (i, dst)))
+                    rates.append(("mig", m, (i, dst)))
         return rates
 
     def _recomb_rates(self, active):
@@ -788,7 +816,7 @@ class HullSimulator:
         for idx, lin in enumerate(active):
             mat = total_length(lin.head)
             if mat > 0:
-                rates.append(('recomb', mat * self.r, idx))
+                rates.append(("recomb", mat * self.r, idx))
         return rates
 
     def _offset_to_position(self, lineage, offset):
@@ -841,21 +869,25 @@ class HullSimulator:
                 seg_class = None
                 if isinstance(bc, frozenset):
                     if cls_S in bc:
-                        seg_class = 'S'
+                        seg_class = "S"
                     elif cls_I in bc:
-                        seg_class = 'I'
+                        seg_class = "I"
                 else:
                     if bc == cls_S:
-                        seg_class = 'S'
+                        seg_class = "S"
                     elif bc == cls_I:
-                        seg_class = 'I'
+                        seg_class = "I"
                 if seg_class is not None:
-                    p_other = p_inv_v if seg_class == 'S' else 1.0 - p_inv_v
+                    p_other = p_inv_v if seg_class == "S" else 1.0 - p_inv_v
                     if p_other > 0.0:
                         a = (l - inv.bp_left) / inv_len
                         b = (r - inv.bp_left) / inv_len
-                        rate += (inv.gene_conversion_rate * p_other
-                                 * _phi_integral(a, b, w_phi) * inv_len)
+                        rate += (
+                            inv.gene_conversion_rate
+                            * p_other
+                            * _phi_integral(a, b, w_phi)
+                            * inv_len
+                        )
             seg = seg.next
         return rate
 
@@ -883,14 +915,14 @@ class HullSimulator:
                 bc = seg.branch_class
                 if isinstance(bc, frozenset):
                     if cls_S in bc:
-                        seen.add('S')
+                        seen.add("S")
                     if cls_I in bc:
-                        seen.add('I')
+                        seen.add("I")
                 else:
                     if bc == cls_S:
-                        seen.add('S')
+                        seen.add("S")
                     elif bc == cls_I:
-                        seen.add('I')
+                        seen.add("I")
             seg = seg.next
         if len(seen) == 1:
             return next(iter(seen))
@@ -914,7 +946,7 @@ class HullSimulator:
             for idx, lin in enumerate(active):
                 rate = self._flux_lineage_rate(lin, inv)
                 if rate > 0:
-                    rates.append(('flux', rate, (idx, inv.inv_id)))
+                    rates.append(("flux", rate, (idx, inv.inv_id)))
         return rates
 
     def _apply_sweep(self, active, sweep, t, tables):
@@ -942,13 +974,12 @@ class HullSimulator:
         # ---- identify qualifying lineages ----
         qualifying = []
         for lin in active:
-            if (sweep.population is not None
-                    and lin.population != sweep.population):
+            if sweep.population is not None and lin.population != sweep.population:
                 continue
             cls_at_x = lin.class_at(sweep.x_sel)
             if cls_at_x is None:
                 continue  # no material at x_sel
-            if sweep.target_class != 'any':
+            if sweep.target_class != "any":
                 if isinstance(cls_at_x, frozenset):
                     if isinstance(sweep.target_class, frozenset):
                         if not sweep.target_class.issubset(cls_at_x):
@@ -963,8 +994,11 @@ class HullSimulator:
                         # know the inv_id suffix for single-inversion
                         # cases.
                         tc = sweep.target_class
-                        if not (len(tc) == 1 and isinstance(cls_at_x, str)
-                                and cls_at_x.startswith(tc)):
+                        if not (
+                            len(tc) == 1
+                            and isinstance(cls_at_x, str)
+                            and cls_at_x.startswith(tc)
+                        ):
                             continue
             qualifying.append(lin)
 
@@ -975,7 +1009,7 @@ class HullSimulator:
 
         # ---- hitchhiking mode ----
         if sweep.selection_coefficient > 0:
-            r = getattr(self, 'recombination_rate', 0.0) or 0.0
+            r = getattr(self, "recombination_rate", 0.0) or 0.0
             Ne = self._get_Ne_for_sweep()
             swept_lineages = []
             for lin in qualifying:
@@ -995,33 +1029,43 @@ class HullSimulator:
                 # Build new lineage from swept segments
                 active.remove(lin)
                 from .segment import Segment as Seg
+
                 s_head = s_tail = None
                 for s in swept_segs:
-                    ns = Seg(s.left, s.right, s.node_id,
-                             branch_class=s.branch_class, prev=s_tail)
+                    ns = Seg(
+                        s.left,
+                        s.right,
+                        s.node_id,
+                        branch_class=s.branch_class,
+                        prev=s_tail,
+                    )
                     if s_head is None:
                         s_head = ns
                     if s_tail is not None:
                         s_tail.next = ns
                     s_tail = ns
                 from .lineage import Lineage
-                swept_lin = Lineage(s_head, s_tail,
-                                    population=lin.population)
+
+                swept_lin = Lineage(s_head, s_tail, population=lin.population)
                 active.append(swept_lin)
                 swept_lineages.append(swept_lin)
                 # Build lineage from unswept segments (if any)
                 if unswept_segs:
                     u_head = u_tail = None
                     for s in unswept_segs:
-                        ns = Seg(s.left, s.right, s.node_id,
-                                 branch_class=s.branch_class, prev=u_tail)
+                        ns = Seg(
+                            s.left,
+                            s.right,
+                            s.node_id,
+                            branch_class=s.branch_class,
+                            prev=u_tail,
+                        )
                         if u_head is None:
                             u_head = ns
                         if u_tail is not None:
                             u_tail.next = ns
                         u_tail = ns
-                    unsw_lin = Lineage(u_head, u_tail,
-                                       population=lin.population)
+                    unsw_lin = Lineage(u_head, u_tail, population=lin.population)
                     active.append(unsw_lin)
             if len(swept_lineages) < 2:
                 return None
@@ -1041,15 +1085,15 @@ class HullSimulator:
                 groups = [g for g in groups if len(g) >= 2]
 
             merged = None
-            for gi, group in enumerate(groups):
+            for _gi, group in enumerate(groups):
                 if len(group) < 2:
                     continue
                 m = group[0]
-                for k_idx, other in enumerate(group[1:], start=1):
+                for _k_idx, other in enumerate(group[1:], start=1):
                     t_merge = self._next_sweep_merge_time(t)
-                    result = apply_coalescence(active, m, other,
-                                               t_merge, tables,
-                                               skip_if_no_overlap=True)
+                    result = apply_coalescence(
+                        active, m, other, t_merge, tables, skip_if_no_overlap=True
+                    )
                     if result is not None:
                         m = active[-1]
                 merged = m
@@ -1089,9 +1133,9 @@ class HullSimulator:
 
     def _get_Ne_for_sweep(self):
         """Get effective population size for sweep duration calculation."""
-        if hasattr(self, 'demography') and self.demography is not None:
+        if hasattr(self, "demography") and self.demography is not None:
             return self.demography.pop_sizes[0]
-        return getattr(self, 'population_size', 10_000) or 10_000
+        return getattr(self, "population_size", 10_000) or 10_000
 
     def _next_sweep_merge_time(self, t):
         # Monotone counter shared across all sweep merges at the same
@@ -1099,7 +1143,7 @@ class HullSimulator:
         # sweeps fire simultaneously (same t_event) and a lineage
         # produced by an earlier merge is then touched by a later one.
         eps = max(1e-9, t * 1e-12)
-        if getattr(self, '_sweep_base_t', None) != t:
+        if getattr(self, "_sweep_base_t", None) != t:
             self._sweep_base_t = t
             self._sweep_merge_k = 0
         self._sweep_merge_k += 1
@@ -1116,7 +1160,7 @@ class HullSimulator:
             for lin in active:
                 seg = lin.head
                 while seg is not None:
-                    seg.branch_class = 'P'
+                    seg.branch_class = "P"
                     seg = seg.next
             self.p_inv = None
             self.t_inv = None
@@ -1128,8 +1172,8 @@ class HullSimulator:
         # remove just the matching tags; the segment retains other
         # tags. If after removal the frozenset is empty → 'P'. If
         # exactly one tag remains, collapse to a string.
-        cls_S = f'S{inv_id}' if inv_id != -1 else 'S'
-        cls_I = f'I{inv_id}' if inv_id != -1 else 'I'
+        cls_S = f"S{inv_id}" if inv_id != -1 else "S"
+        cls_I = f"I{inv_id}" if inv_id != -1 else "I"
         targets = {cls_S, cls_I}
         for lin in active:
             seg = lin.head
@@ -1138,13 +1182,13 @@ class HullSimulator:
                 if isinstance(bc, frozenset):
                     new_bc = bc - targets
                     if not new_bc:
-                        seg.branch_class = 'P'
+                        seg.branch_class = "P"
                     elif len(new_bc) == 1:
                         seg.branch_class = next(iter(new_bc))
                     else:
                         seg.branch_class = new_bc
                 elif bc == cls_S or bc == cls_I:
-                    seg.branch_class = 'P'
+                    seg.branch_class = "P"
                 seg = seg.next
 
     # -- gene-flux event helper -------------------------------------------
@@ -1208,7 +1252,7 @@ class HullSimulator:
         if mean_L <= 0.0:
             return float(x_event), float(x_event)
 
-        if inv.tract_distribution == 'fixed':
+        if inv.tract_distribution == "fixed":
             L = mean_L
         else:  # 'geometric'
             L = self.rng.exponential(mean_L)
@@ -1240,11 +1284,13 @@ class HullSimulator:
         if use_rust is None:
             try:
                 from ._rust_bridge import RUST_AVAILABLE
+
                 use_rust = RUST_AVAILABLE
             except ImportError:
                 use_rust = False
         if use_rust:
             from ._rust_bridge import rust_simulate
+
             ts, event_log, sweep_a_count = rust_simulate(self)
             self.event_log = event_log
             self.sweep_a_count = sweep_a_count
@@ -1258,16 +1304,17 @@ class HullSimulator:
         reset_uids()
         self._sweep_base_t = None
         self._sweep_merge_k = 0
-        tables = TableBuilder(sequence_length=self.L,
-                               num_populations=self.demography.n_pops)
+        tables = TableBuilder(
+            sequence_length=self.L, num_populations=self.demography.n_pops
+        )
         active = self._initial_lineages(tables)
 
         t = 0.0
         # Schedule of remaining inversion-barrier events: list of
         # (t_inv, inv_id) sorted by time. Each fires once.
         pending_barriers = sorted(
-            [(inv.t_inv, inv.inv_id) for inv in self.inversions],
-            key=lambda x: x[0])
+            [(inv.t_inv, inv.inv_id) for inv in self.inversions], key=lambda x: x[0]
+        )
         # Pending sweeps (already sorted by t_event in __init__).
         pending_sweeps = list(self.sweeps)
 
@@ -1288,18 +1335,19 @@ class HullSimulator:
 
             # Time of the next demographic event (or +inf).
             t_demo = self.demography.next_event_time(t)
-            t_class = pending_barriers[0][0] if pending_barriers else float('inf')
-            t_sweep = pending_sweeps[0].t_event if pending_sweeps else float('inf')
+            t_class = pending_barriers[0][0] if pending_barriers else float("inf")
+            t_sweep = pending_sweeps[0].t_event if pending_sweeps else float("inf")
 
             # If no per-event rate, advance to the next scheduled
             # event boundary.
             if total <= 0:
                 next_boundary = min(t_demo, t_class, t_sweep)
-                if next_boundary == float('inf'):
+                if next_boundary == float("inf"):
                     raise RuntimeError(
                         "No events possible and no scheduled boundaries "
                         f"to advance to — stuck with {len(active)} "
-                        "active lineages.")
+                        "active lineages."
+                    )
                 t = next_boundary
                 if next_boundary == t_class:
                     _, inv_id = pending_barriers.pop(0)
@@ -1309,7 +1357,7 @@ class HullSimulator:
                     self._apply_sweep(active, sweep, t, tables)
                 else:
                     inv_changes = self.demography.apply_event_at(t, active)
-                    for (inv_id, pop, p_inv_val) in inv_changes:
+                    for inv_id, pop, p_inv_val in inv_changes:
                         for inv in self.inversions:
                             if inv.inv_id == inv_id:
                                 inv.set_p_inv_for(pop, p_inv_val)
@@ -1334,7 +1382,7 @@ class HullSimulator:
             if t_demo < t_event:
                 t = t_demo
                 inv_changes = self.demography.apply_event_at(t, active)
-                for (inv_id, pop, p_inv_val) in inv_changes:
+                for inv_id, pop, p_inv_val in inv_changes:
                     for inv in self.inversions:
                         if inv.inv_id == inv_id:
                             inv.set_p_inv_for(pop, p_inv_val)
@@ -1356,7 +1404,7 @@ class HullSimulator:
             if chosen_kind is None:
                 continue  # numerical-precision miss
 
-            if chosen_kind.startswith('coal_'):
+            if chosen_kind.startswith("coal_"):
                 payload = chosen_payload
                 if isinstance(payload, list):
                     # Hudson bucket: pick two random lineages and merge.
@@ -1365,26 +1413,23 @@ class HullSimulator:
                     # pairs produce no edges and no lineage merge (a
                     # cheap no-op inside apply_coalescence).
                     pool = payload
-                    ii, jj = self.rng.choice(len(pool), size=2,
-                                              replace=False)
+                    ii, jj = self.rng.choice(len(pool), size=2, replace=False)
                     i, j = pool[ii], pool[jj]
-                    apply_coalescence(active, active[i], active[j],
-                                       t, tables,
-                                       skip_if_no_overlap=True)
+                    apply_coalescence(
+                        active, active[i], active[j], t, tables, skip_if_no_overlap=True
+                    )
                 else:
                     # Per-pair structured event: payload is
                     # (i, j, allowed_class). Partial coalescence —
                     # only merge at positions where both segments
                     # have this class.
                     i, j, allowed = payload
-                    _coalesce_partial(active, active[i], active[j],
-                                       t, tables, allowed)
-            elif chosen_kind == 'flux':
+                    _coalesce_partial(active, active[i], active[j], t, tables, allowed)
+            elif chosen_kind == "flux":
                 idx, inv_id = chosen_payload
                 lineage = active[idx]
                 # Find the InversionSpec for this event.
-                inv = next((iv for iv in self.inversions
-                            if iv.inv_id == inv_id), None)
+                inv = next((iv for iv in self.inversions if iv.inv_id == inv_id), None)
                 if inv is None:
                     continue
                 x_event = self._sample_flux_position(lineage, inv)
@@ -1393,9 +1438,8 @@ class HullSimulator:
                 tract_left, tract_right = self._draw_tract(x_event, inv)
                 if tract_right <= tract_left:
                     continue
-                apply_gene_flux(active, lineage, tract_left,
-                                 tract_right, inv=inv)
-            elif chosen_kind == 'recomb':
+                apply_gene_flux(active, lineage, tract_left, tract_right, inv=inv)
+            elif chosen_kind == "recomb":
                 idx = chosen_payload
                 lineage = active[idx]
                 # Pick a breakpoint within this lineage's material.
@@ -1403,7 +1447,7 @@ class HullSimulator:
                 x_offset = self.rng.random() * mat_len
                 x = self._offset_to_position(lineage, x_offset)
                 apply_recombination(active, lineage, x)
-            elif chosen_kind == 'mig':
+            elif chosen_kind == "mig":
                 idx, dst = chosen_payload
                 apply_migration(active[idx], dst)
             else:
@@ -1411,11 +1455,11 @@ class HullSimulator:
 
             # GC after recombination: remove sole-carrier lineages
             # to bound n for the O(n^2) structured rate computation.
-            if chosen_kind == 'recomb':
+            if chosen_kind == "recomb":
                 _gc_sole_lineages(active)
         else:
             raise RuntimeError(
-                f"max_iters ({max_iters}) exceeded — likely a runaway "
-                f"event loop.")
+                f"max_iters ({max_iters}) exceeded — likely a runaway event loop."
+            )
 
         return tables.finalize()

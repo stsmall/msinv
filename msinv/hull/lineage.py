@@ -42,11 +42,15 @@ class Lineage:
     uid : int
     """
 
-    __slots__ = ('head', 'tail', '_branch_class_override',
-                 'population', 'uid')
+    __slots__ = ("head", "tail", "_branch_class_override", "population", "uid")
 
-    def __init__(self, head: Segment, tail: Segment,
-                 branch_class: str = None, population: int = 0):
+    def __init__(
+        self,
+        head: Segment,
+        tail: Segment,
+        branch_class: str = None,
+        population: int = 0,
+    ):
         self.head = head
         self.tail = tail
         self._branch_class_override = None
@@ -67,7 +71,7 @@ class Lineage:
         seg = seg.next
         while seg is not None:
             if seg.branch_class != cls:
-                return 'mixed'
+                return "mixed"
             seg = seg.next
         return cls
 
@@ -84,11 +88,11 @@ class Lineage:
 
     @property
     def hull_left(self) -> float:
-        return self.head.left if self.head is not None else float('nan')
+        return self.head.left if self.head is not None else float("nan")
 
     @property
     def hull_right(self) -> float:
-        return self.tail.right if self.tail is not None else float('nan')
+        return self.tail.right if self.tail is not None else float("nan")
 
     @property
     def total_length(self) -> float:
@@ -114,7 +118,7 @@ class Lineage:
             seg = seg.next
         return None
 
-    def split_at(self, x: float) -> 'tuple[Lineage, Lineage]':
+    def split_at(self, x: float) -> "tuple[Lineage, Lineage]":
         """Split this lineage at position x. Returns two new lineages."""
         (lh, lt), (rh, rt) = split_segment_list(self.head, self.tail, x)
         left = Lineage(lh, lt, population=self.population) if lh else None
@@ -127,6 +131,8 @@ class Lineage:
         while seg is not None:
             n_segs += 1
             seg = seg.next
-        return (f"Lineage(uid={self.uid}, cls={self.branch_class}, "
-                f"pop={self.population}, {n_segs} segs, "
-                f"len={self.total_length:.4f})")
+        return (
+            f"Lineage(uid={self.uid}, cls={self.branch_class}, "
+            f"pop={self.population}, {n_segs} segs, "
+            f"len={self.total_length:.4f})"
+        )

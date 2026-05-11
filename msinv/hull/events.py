@@ -9,8 +9,7 @@ from .lineage import Lineage
 from .segment import Segment
 
 
-def apply_coalescence(active, lin_a, lin_b, t, tables,
-                      skip_if_no_overlap=False):
+def apply_coalescence(active, lin_a, lin_b, t, tables, skip_if_no_overlap=False):
     """Coalesce two lineages.
 
     For each genomic interval where both lin_a and lin_b have ancestral
@@ -57,12 +56,14 @@ def apply_coalescence(active, lin_a, lin_b, t, tables,
     # boundary, and emit at most one merged segment per interval.
     while sa is not None and sb is not None:
         if sa.right <= sb.left:
-            _append(Segment(sa.left, sa.right, sa.node_id,
-                            branch_class=sa.branch_class))
+            _append(
+                Segment(sa.left, sa.right, sa.node_id, branch_class=sa.branch_class)
+            )
             sa = sa.next
         elif sb.right <= sa.left:
-            _append(Segment(sb.left, sb.right, sb.node_id,
-                            branch_class=sb.branch_class))
+            _append(
+                Segment(sb.left, sb.right, sb.node_id, branch_class=sb.branch_class)
+            )
             sb = sb.next
         else:
             # Overlap [max(left), min(right))
@@ -70,38 +71,35 @@ def apply_coalescence(active, lin_a, lin_b, t, tables,
             r = min(sa.right, sb.right)
             # Pre-overlap solo bits
             if sa.left < l:
-                _append(Segment(sa.left, l, sa.node_id,
-                                branch_class=sa.branch_class))
+                _append(Segment(sa.left, l, sa.node_id, branch_class=sa.branch_class))
             if sb.left < l:
-                _append(Segment(sb.left, l, sb.node_id,
-                                branch_class=sb.branch_class))
+                _append(Segment(sb.left, l, sb.node_id, branch_class=sb.branch_class))
             # Overlap → coalesces here. Add edges from new_node to both.
             tables.add_edge(l, r, new_node, sa.node_id)
             tables.add_edge(l, r, new_node, sb.node_id)
-            _append(Segment(l, r, new_node,
-                            branch_class=sa.branch_class))
+            _append(Segment(l, r, new_node, branch_class=sa.branch_class))
             # Advance whichever ended at r; keep the other's tail
             if sa.right == r:
                 sa = sa.next
             else:
-                sa = Segment(r, sa.right, sa.node_id,
-                             branch_class=sa.branch_class, next=sa.next)
+                sa = Segment(
+                    r, sa.right, sa.node_id, branch_class=sa.branch_class, next=sa.next
+                )
                 if sa.next is not None:
                     sa.next.prev = sa
             if sb.right == r:
                 sb = sb.next
             else:
-                sb = Segment(r, sb.right, sb.node_id,
-                             branch_class=sb.branch_class, next=sb.next)
+                sb = Segment(
+                    r, sb.right, sb.node_id, branch_class=sb.branch_class, next=sb.next
+                )
                 if sb.next is not None:
                     sb.next.prev = sb
     while sa is not None:
-        _append(Segment(sa.left, sa.right, sa.node_id,
-                        branch_class=sa.branch_class))
+        _append(Segment(sa.left, sa.right, sa.node_id, branch_class=sa.branch_class))
         sa = sa.next
     while sb is not None:
-        _append(Segment(sb.left, sb.right, sb.node_id,
-                        branch_class=sb.branch_class))
+        _append(Segment(sb.left, sb.right, sb.node_id, branch_class=sb.branch_class))
         sb = sb.next
 
     active.remove(lin_a)
@@ -111,8 +109,7 @@ def apply_coalescence(active, lin_a, lin_b, t, tables,
         # correct per-position class from the merge.  Passing a
         # lineage-level class would overwrite every segment (the Lineage
         # constructor propagates branch_class to all segments).
-        merged = Lineage(new_head, new_tail,
-                         population=lin_a.population)
+        merged = Lineage(new_head, new_tail, population=lin_a.population)
         active.append(merged)
     return new_node
 
@@ -137,9 +134,11 @@ def _flip_class_tag(bc, cls_S: str, cls_I: str):
     if isinstance(bc, frozenset):
         new = set(bc)
         if cls_S in new:
-            new.remove(cls_S); new.add(cls_I)
+            new.remove(cls_S)
+            new.add(cls_I)
         elif cls_I in new:
-            new.remove(cls_I); new.add(cls_S)
+            new.remove(cls_I)
+            new.add(cls_S)
         if len(new) == 1:
             return next(iter(new))
         return frozenset(new)
@@ -150,8 +149,7 @@ def _flip_class_tag(bc, cls_S: str, cls_I: str):
     return bc  # not in this inversion (e.g., 'P' or another inv's tag)
 
 
-def apply_gene_flux(active, lineage, tract_left: float, tract_right: float,
-                     inv=None):
+def apply_gene_flux(active, lineage, tract_left: float, tract_right: float, inv=None):
     """Split a tract [tract_left, tract_right) out of ``lineage`` and
     flip the tract's class for the given ``inv`` (gene-conversion event).
 
@@ -182,8 +180,8 @@ def apply_gene_flux(active, lineage, tract_left: float, tract_right: float,
     """
     if tract_right <= tract_left:
         raise ValueError(
-            f"Tract must have right > left, got [{tract_left}, "
-            f"{tract_right}).")
+            f"Tract must have right > left, got [{tract_left}, {tract_right})."
+        )
 
     # Step 1: split lineage at tract_left → (A, BC)
     A, BC = lineage.split_at(tract_left)
@@ -204,7 +202,7 @@ def apply_gene_flux(active, lineage, tract_left: float, tract_right: float,
     # B is the converted tract — flip its class for `inv`.
     if inv is None:
         # Legacy single-inv path: flip 'S' <-> 'I' at the lineage level.
-        flipped = 'I' if lineage.branch_class == 'S' else 'S'
+        flipped = "I" if lineage.branch_class == "S" else "S"
         B.branch_class = flipped
     else:
         # Multi-inv (or single-inv via inversions=[...]): flip just

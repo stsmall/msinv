@@ -23,6 +23,7 @@ from .conftest import NEGLIGIBLE_GAMMA
 # Demography unit tests
 # ---------------------------------------------------------------------------
 
+
 def test_demography_basic():
     d = Demography([10000, 5000])
     assert d.n_pops == 2
@@ -42,16 +43,18 @@ def test_demography_ej_event_moves_lineages():
     """ej event at time t moves all lineages of src pop to dst pop."""
     from msinv.hull.lineage import Lineage, reset_uids
     from msinv.hull.segment import Segment
+
     reset_uids()
-    s1 = Segment(0, 1, 0); s2 = Segment(0, 1, 1)
-    a = Lineage(s1, s1, branch_class='S', population=0)
-    b = Lineage(s2, s2, branch_class='S', population=1)
+    s1 = Segment(0, 1, 0)
+    s2 = Segment(0, 1, 1)
+    a = Lineage(s1, s1, branch_class="S", population=0)
+    b = Lineage(s2, s2, branch_class="S", population=1)
     active = [a, b]
     d = Demography([10000, 5000])
-    d.add_event(('ej', 1000.0, 1, 0))   # pop 1 → pop 0
+    d.add_event(("ej", 1000.0, 1, 0))  # pop 1 → pop 0
     d.apply_event_at(1000.0, active)
     assert a.population == 0
-    assert b.population == 0   # moved
+    assert b.population == 0  # moved
     # Migration to/from pop 1 zeroed
     assert d.migration_matrix[1][0] == 0.0
     assert d.migration_matrix[0][1] == 0.0
@@ -61,13 +64,14 @@ def test_demography_ej_event_moves_lineages():
 # Two-pop simulation: cross-pop barrier respected without migration
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
 def test_no_migration_cross_pop_mrca_at_least_t_split(seed):
     """With ej at t_split and no migration, cross-pop T_MRCA must be >= t_split."""
     n_each = 4
     t_split = 5000.0
     demo = Demography([10000, 10000])
-    demo.add_event(('ej', t_split, 1, 0))  # pop 1 merges into pop 0
+    demo.add_event(("ej", t_split, 1, 0))  # pop 1 merges into pop 0
 
     sim = HullSimulator(
         sample_config={(None, 0): n_each, (None, 1): n_each},
@@ -85,22 +89,24 @@ def test_no_migration_cross_pop_mrca_at_least_t_split(seed):
             for b in pop1:
                 assert tree.time(tree.mrca(a, b)) >= t_split - 1e-6, (
                     f"Cross-pop T_MRCA below t_split: "
-                    f"{tree.time(tree.mrca(a, b))} < {t_split}")
+                    f"{tree.time(tree.mrca(a, b))} < {t_split}"
+                )
 
 
 # ---------------------------------------------------------------------------
 # Migration: with M > 0, cross-pop coalescence below t_split is allowed
 # ---------------------------------------------------------------------------
 
+
 def test_migration_allows_cross_pop_mrca_below_t_split():
     """With M > 0, some cross-pop MRCAs should be below t_split."""
     n_each = 5
-    t_split = 50_000.0   # very deep
+    t_split = 50_000.0  # very deep
     demo = Demography(
         [10000, 10000],
         migration_matrix=[[0.0, 1e-3], [1e-3, 0.0]],
     )
-    demo.add_event(('ej', t_split, 1, 0))
+    demo.add_event(("ej", t_split, 1, 0))
 
     below_t_split = 0
     total = 0
@@ -123,12 +129,14 @@ def test_migration_allows_cross_pop_mrca_below_t_split():
                     if tree.time(tree.mrca(a, b)) < t_split - 1e-6:
                         below_t_split += 1
     assert below_t_split > 0, (
-        "With M > 0, some cross-pop MRCAs should occur before t_split.")
+        "With M > 0, some cross-pop MRCAs should occur before t_split."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Per-pop size scaling: smaller pop → faster coal
 # ---------------------------------------------------------------------------
+
 
 def test_per_pop_size_scales_coal_rate():
     """A pop with size Ne/10 should have ~10× higher within-pop coal rate."""
@@ -137,7 +145,7 @@ def test_per_pop_size_scales_coal_rate():
     small_Ne = 1000
     demo = Demography([big_Ne, small_Ne])
     # No migration, very deep ej so within-pop dominates
-    demo.add_event(('ej', 200_000.0, 1, 0))
+    demo.add_event(("ej", 200_000.0, 1, 0))
 
     big_mrca = []
     small_mrca = []
@@ -158,36 +166,38 @@ def test_per_pop_size_scales_coal_rate():
             small_mrca.append(tree.time(tree.mrca(*pop1)))
 
     ratio = np.mean(big_mrca) / np.mean(small_mrca)
-    assert 5.0 < ratio < 20.0, (
-        f"Expected ~10× ratio (big/small Ne), got {ratio:.2f}")
+    assert 5.0 < ratio < 20.0, f"Expected ~10× ratio (big/small Ne), got {ratio:.2f}"
 
 
 # ---------------------------------------------------------------------------
 # Inversion + multi-pop (Kir/Fol style mini)
 # ---------------------------------------------------------------------------
 
+
 def test_inversion_with_two_pops():
     """Kir/Fol-style mini: 2 pops, ej at t_split, inversion shared."""
     Ne = 10000
-    t_split = 14_000.0   # 14k gen
-    t_inv = 40_000.0     # 4*Ne gen
+    t_split = 14_000.0  # 14k gen
+    t_inv = 40_000.0  # 4*Ne gen
     p_inv_anc = 0.5
 
     demo = Demography([Ne, Ne])
-    demo.add_event(('ej', t_split, 1, 0))   # Fol → Kir merge
+    demo.add_event(("ej", t_split, 1, 0))  # Fol → Kir merge
 
     # 5 K-S, 3 Fol-S, 3 Fol-I
     sample_config = {
-        ('S', 0): 5,
-        ('S', 1): 3,
-        ('I', 1): 3,
+        ("S", 0): 5,
+        ("S", 1): 3,
+        ("I", 1): 3,
     }
     sim = HullSimulator(
         sample_config=sample_config,
         demography=demo,
         sequence_length=10_000.0,
-        p_inv=p_inv_anc, t_inv=t_inv,
-        bp_left=0.0, bp_right=10_000.0,
+        p_inv=p_inv_anc,
+        t_inv=t_inv,
+        bp_left=0.0,
+        bp_right=10_000.0,
         gene_conversion_rate=NEGLIGIBLE_GAMMA,
         recombination_rate=1e-8,
         seed=42,

@@ -12,7 +12,10 @@ import msinv._msinv_core as _core
 
 
 SweepModeStr = Literal[
-    "Stochastic", "StochasticConditioned", "Deterministic", "Neutral",
+    "Stochastic",
+    "StochasticConditioned",
+    "Deterministic",
+    "Neutral",
 ]
 
 
@@ -37,13 +40,19 @@ class Sweep:
     def to_rust(self) -> "_core.PySweep":
         kary_int = 0 if self.origin_kary == "S" else 1
         return _core.PySweep(
-            x_sel=self.x_sel, tau=self.tau,
-            origin_pop=self.origin_pop, origin_kary=kary_int,
+            x_sel=self.x_sel,
+            tau=self.tau,
+            origin_pop=self.origin_pop,
+            origin_kary=kary_int,
             target_inv=self.target_inv,
-            mode=self.mode, s=self.s, t_origin=self.t_origin, f0=self.f0,
+            mode=self.mode,
+            s=self.s,
+            t_origin=self.t_origin,
+            f0=self.f0,
             partial_sweep_final_freq=self.partial_sweep_final_freq,
             recurrent_mutation_rate=self.recurrent_mutation_rate,
             gamma_flux=self.gamma_flux,
             mean_tract_length=self.mean_tract_length,
-            seed=self.seed, dt_scalar=self.dt_scalar,
+            seed=self.seed,
+            dt_scalar=self.dt_scalar,
         )

@@ -1,4 +1,5 @@
 """Tests for LD r²-decay binning."""
+
 import numpy as np
 import msprime
 import pytest
@@ -9,9 +10,13 @@ from validation._lib.stats import ld_decay
 @pytest.fixture
 def ld_ts():
     ts = msprime.sim_ancestry(
-        samples=20, population_size=1000,
-        sequence_length=100_000, recombination_rate=1e-7,
-        random_seed=21, ploidy=1)
+        samples=20,
+        population_size=1000,
+        sequence_length=100_000,
+        recombination_rate=1e-7,
+        random_seed=21,
+        ploidy=1,
+    )
     ts = msprime.sim_mutations(ts, rate=1e-7, random_seed=22)
     return ts
 

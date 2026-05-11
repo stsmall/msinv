@@ -3,11 +3,15 @@
 Pure-Python tests on synthetic dict-list event logs; no simulator
 dependency.
 """
+
 import numpy as np
 import pytest
 
 from msinv.hull._event_log import (
-    filter_cmig, filter_flux, tract_lengths, survival_curve,
+    filter_cmig,
+    filter_flux,
+    tract_lengths,
+    survival_curve,
     coverage_count,
 )
 
@@ -44,7 +48,7 @@ def test_filter_flux_inv_id_filter():
 def test_tract_lengths_returns_array():
     recs = [
         {"tract_left": 100, "tract_right": 250},
-        {"tract_left": 0,   "tract_right": 50},
+        {"tract_left": 0, "tract_right": 50},
     ]
     lens = tract_lengths(recs)
     np.testing.assert_array_equal(lens, [150, 50])
@@ -68,15 +72,17 @@ def test_coverage_count_inclusive_bounds():
     assert coverage_count(recs, 175) == 2  # both first two cover 175
     assert coverage_count(recs, 100) == 1  # only the first (boundary inclusive)
     assert coverage_count(recs, 350) == 1  # only the last
-    assert coverage_count(recs,  50) == 0
+    assert coverage_count(recs, 50) == 0
 
 
 def test_samples_converted_at_empty_log_returns_zero():
     """No flux records → fraction == 0.0 regardless of ts."""
     import msprime
     from msinv.hull._event_log import samples_converted_at
-    ts = msprime.sim_ancestry(samples=4, sequence_length=100,
-                              recombination_rate=0, random_seed=1)
+
+    ts = msprime.sim_ancestry(
+        samples=4, sequence_length=100, recombination_rate=0, random_seed=1
+    )
     assert samples_converted_at([], ts, 50.0) == 0.0
 
 
@@ -84,16 +90,17 @@ def test_samples_converted_at_root_node_returns_one():
     """A single record pointing at the root → all samples converted."""
     import msprime
     from msinv.hull._event_log import samples_converted_at
-    ts = msprime.sim_ancestry(samples=4, sequence_length=100,
-                              recombination_rate=0, random_seed=2)
+
+    ts = msprime.sim_ancestry(
+        samples=4, sequence_length=100, recombination_rate=0, random_seed=2
+    )
     tree = ts.at(50.0)
     root = tree.root
     rec = {
         "kind": "flux",
         "tract_left": 0.0,
         "tract_right": 100.0,
-        "tract_segments": [{"seg_left": 0.0, "seg_right": 100.0,
-                            "node_id": int(root)}],
+        "tract_segments": [{"seg_left": 0.0, "seg_right": 100.0, "node_id": int(root)}],
     }
     assert samples_converted_at([rec], ts, 50.0) == 1.0
 
@@ -103,8 +110,10 @@ def test_samples_converted_at_specific_descendants_match():
     descendant-leaf set."""
     import msprime
     from msinv.hull._event_log import samples_converted_at
-    ts = msprime.sim_ancestry(samples=8, sequence_length=100,
-                              recombination_rate=0, random_seed=3)
+
+    ts = msprime.sim_ancestry(
+        samples=8, sequence_length=100, recombination_rate=0, random_seed=3
+    )
     tree = ts.at(50.0)
     # Pick an internal node that is not the root and has at least 2
     # leaves below it.
@@ -120,8 +129,9 @@ def test_samples_converted_at_specific_descendants_match():
         "kind": "flux",
         "tract_left": 0.0,
         "tract_right": 100.0,
-        "tract_segments": [{"seg_left": 0.0, "seg_right": 100.0,
-                            "node_id": int(chosen)}],
+        "tract_segments": [
+            {"seg_left": 0.0, "seg_right": 100.0, "node_id": int(chosen)}
+        ],
     }
     expected_frac = len(list(tree.samples(chosen))) / ts.num_samples
     assert samples_converted_at([rec], ts, 50.0) == expected_frac

@@ -10,11 +10,12 @@ Outputs:
 Constant Ne for both pops (avoids the structured-coalescent dxy
 depression at extreme Ne asymmetry — see docs/known_issues.md).
 """
-import math
+
 import time
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
@@ -28,13 +29,13 @@ Ne = 44_000
 mu = 3.55e-9
 r = 4.0e-8  # An. funestus recombination rate (rho≈704, uses high-rho path)
 L = 100_000
-t_split_gen = 14_000     # ~1300 yr at 11 gen/yr
-t_inv_gen = 385_000      # ~35 kyr — 3Ra age (Small 2023)
+t_split_gen = 14_000  # ~1300 yr at 11 gen/yr
+t_inv_gen = 385_000  # ~35 kyr — 3Ra age (Small 2023)
 
 # Per-population inversion frequencies (K = all-Standard, F = empirical)
-p_inv_3Ra = {0: 0.0, 1: 0.73}   # K fixed-S, Fol 3Ra freq
-p_inv_3Rb = {0: 0.0, 1: 0.40}   # K fixed-S, Fol 3Rb freq
-p_inv_anc = 0.3                   # ancestral freq before split
+p_inv_3Ra = {0: 0.0, 1: 0.73}  # K fixed-S, Fol 3Ra freq
+p_inv_3Rb = {0: 0.0, 1: 0.40}  # K fixed-S, Fol 3Rb freq
+p_inv_anc = 0.3  # ancestral freq before split
 
 # 3Ra and 3Rb breakpoints, in genomic coords
 inv_3Ra = (15_000, 45_000)
@@ -46,7 +47,7 @@ n_fol_S = 5
 n_fol_I = 5
 
 NREPS = 200
-NW = 40   # number of windows for the spatial plot
+NW = 40  # number of windows for the spatial plot
 SEED_BASE = 4242
 
 # ---- Sample groups (set during simulation) ----
@@ -55,7 +56,7 @@ fol_same = list(range(n_kir, n_kir + n_fol_S))
 fol_alt = list(range(n_kir + n_fol_S, n_kir + n_fol_S + n_fol_I))
 
 
-def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
+def per_window_stats(haps, pos_bp, group_a, group_b, kind="dxy"):
     """Compute per-window dxy or pi.
 
     kind='dxy': between groups; 'pi': within group_a (group_b ignored).
@@ -67,15 +68,17 @@ def per_window_stats(haps, pos_bp, group_a, group_b, kind='dxy'):
         mask = (pos_bp >= wins[w]) & (pos_bp < wins[w + 1])
         if mask.sum() == 0:
             continue
-        if kind == 'dxy':
-            d = 0; n = 0
+        if kind == "dxy":
+            d = 0
+            n = 0
             for a in group_a:
                 for b in group_b:
                     d += (haps[a, mask] != haps[b, mask]).sum()
                     n += 1
             vals[w] = d / max(n, 1) / (wins[w + 1] - wins[w])
         else:  # pi
-            d = 0; n = 0
+            d = 0
+            n = 0
             ga = list(group_a)
             for i in range(len(ga)):
                 for j in range(i + 1, len(ga)):
@@ -100,51 +103,56 @@ mut_rng = np.random.default_rng(2026)
 
 for rep in range(NREPS):
     demo = Demography(pop_sizes=[Ne, Ne])
-    demo.add_event(('ej', t_split_gen, 1, 0))   # Fol → Kir at t_split
+    demo.add_event(("ej", t_split_gen, 1, 0))  # Fol → Kir at t_split
     # At split, ancestral pop (0) reverts to ancestral p_inv
-    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=0,
-                                   p_inv=p_inv_anc)
-    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=1,
-                                   p_inv=p_inv_anc)
+    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=0, p_inv=p_inv_anc)
+    demo.add_inversion_freq_change(t_split_gen, 0, inv_id=1, p_inv=p_inv_anc)
 
     sim = HullSimulator(
         sample_config={
-            ('S', 0): n_kir,            # Kiribina, all S at both invs (linked)
-            ('S', 1): n_fol_S,          # Folonzo standard
-            ('I', 1): n_fol_I,          # Folonzo inverted
+            ("S", 0): n_kir,  # Kiribina, all S at both invs (linked)
+            ("S", 1): n_fol_S,  # Folonzo standard
+            ("I", 1): n_fol_I,  # Folonzo inverted
         },
         demography=demo,
         sequence_length=L,
         inversions=[
-            InversionSpec(bp_left=inv_3Ra[0], bp_right=inv_3Ra[1],
-                              p_inv=p_inv_3Ra, t_inv=t_inv_gen),
-            InversionSpec(bp_left=inv_3Rb[0], bp_right=inv_3Rb[1],
-                              p_inv=p_inv_3Rb, t_inv=t_inv_gen),
+            InversionSpec(
+                bp_left=inv_3Ra[0],
+                bp_right=inv_3Ra[1],
+                p_inv=p_inv_3Ra,
+                t_inv=t_inv_gen,
+            ),
+            InversionSpec(
+                bp_left=inv_3Rb[0],
+                bp_right=inv_3Rb[1],
+                p_inv=p_inv_3Rb,
+                t_inv=t_inv_gen,
+            ),
         ],
         recombination_rate=r,
         seed=SEED_BASE + rep,
     )
     try:
         ts = sim.simulate()
-    except Exception as e:
+    except Exception:
         continue
     # Drop msprime mutations on the hull TS
     seed = int(mut_rng.integers(1, 2**31))
-    mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed,
-                                  discrete_genome=False)
+    mts = msprime.sim_mutations(ts, rate=mu, random_seed=seed, discrete_genome=False)
     G = mts.genotype_matrix()
     haps = G.T
     pos_bp = np.array([v.site.position for v in mts.variants()])
 
-    dxy_kf_same += per_window_stats(haps, pos_bp, kir, fol_same, 'dxy')
-    dxy_kf_alt += per_window_stats(haps, pos_bp, kir, fol_alt, 'dxy')
-    dxy_fs_fi += per_window_stats(haps, pos_bp, fol_same, fol_alt, 'dxy')
-    pi_K += per_window_stats(haps, pos_bp, kir, None, 'pi')
-    pi_FS += per_window_stats(haps, pos_bp, fol_same, None, 'pi')
-    pi_FI += per_window_stats(haps, pos_bp, fol_alt, None, 'pi')
+    dxy_kf_same += per_window_stats(haps, pos_bp, kir, fol_same, "dxy")
+    dxy_kf_alt += per_window_stats(haps, pos_bp, kir, fol_alt, "dxy")
+    dxy_fs_fi += per_window_stats(haps, pos_bp, fol_same, fol_alt, "dxy")
+    pi_K += per_window_stats(haps, pos_bp, kir, None, "pi")
+    pi_FS += per_window_stats(haps, pos_bp, fol_same, None, "pi")
+    pi_FI += per_window_stats(haps, pos_bp, fol_alt, None, "pi")
     n_ok += 1
     if (rep + 1) % 50 == 0:
-        print(f"  {rep + 1}/{NREPS}  elapsed={time.time()-t0:.0f}s")
+        print(f"  {rep + 1}/{NREPS}  elapsed={time.time() - t0:.0f}s")
 
 if n_ok > 0:
     for arr in (dxy_kf_same, dxy_kf_alt, dxy_fs_fi, pi_K, pi_FS, pi_FI):
@@ -155,11 +163,12 @@ da_kf_same = dxy_kf_same - (pi_K + pi_FS) / 2
 da_kf_alt = dxy_kf_alt - (pi_K + pi_FI) / 2
 da_fs_fi = dxy_fs_fi - (pi_FS + pi_FI) / 2
 
-print(f"\nDone: {n_ok}/{NREPS} reps in {time.time()-t0:.0f}s")
+print(f"\nDone: {n_ok}/{NREPS} reps in {time.time() - t0:.0f}s")
+
 
 # ---- Plot ----
 def smooth(y, k=3):
-    return np.convolve(y, np.ones(k) / k, mode='same')
+    return np.convolve(y, np.ones(k) / k, mode="same")
 
 
 wins = np.linspace(0, L, NW + 1)
@@ -168,36 +177,61 @@ mid = (wins[:-1] + wins[1:]) / 2
 fig = plt.figure(figsize=(12, 8))
 gs = GridSpec(2, 1, hspace=0.30)
 
-c_kf_same = '#2E7D32'   # K vs F-same (greenish)
-c_fs_fi = '#FF8F00'      # Fol within (orange)
-c_kf_alt = '#00838F'    # K vs F-alt (teal)
+c_kf_same = "#2E7D32"  # K vs F-same (greenish)
+c_fs_fi = "#FF8F00"  # Fol within (orange)
+c_kf_alt = "#00838F"  # K vs F-alt (teal)
 
 
 def shade_inv(ax):
-    for (l, rt), lbl in [(inv_3Ra, '3Ra'), (inv_3Rb, '3Rb')]:
-        ax.axvspan(l, rt, alpha=0.10, color='#90A4AE', zorder=0)
-        ax.axvline(l, color='#78909C', ls='--', alpha=0.4, lw=0.8)
-        ax.axvline(rt, color='#78909C', ls='--', alpha=0.4, lw=0.8)
-        ax.text((l + rt) / 2, ax.get_ylim()[1] * 0.95, lbl,
-                ha='center', va='top', fontsize=9, fontstyle='italic',
-                color='#546E7A')
+    for (l, rt), lbl in [(inv_3Ra, "3Ra"), (inv_3Rb, "3Rb")]:
+        ax.axvspan(l, rt, alpha=0.10, color="#90A4AE", zorder=0)
+        ax.axvline(l, color="#78909C", ls="--", alpha=0.4, lw=0.8)
+        ax.axvline(rt, color="#78909C", ls="--", alpha=0.4, lw=0.8)
+        ax.text(
+            (l + rt) / 2,
+            ax.get_ylim()[1] * 0.95,
+            lbl,
+            ha="center",
+            va="top",
+            fontsize=9,
+            fontstyle="italic",
+            color="#546E7A",
+        )
 
 
 # Panel A: dxy
 ax_dxy = fig.add_subplot(gs[0])
-ax_dxy.plot(mid, smooth(dxy_kf_same), '-', color=c_kf_same, lw=2,
-            label=r'K vs F$_S$ (same karyotype)')
-ax_dxy.plot(mid, smooth(dxy_fs_fi), '-', color=c_fs_fi, lw=2,
-            label=r'F$_S$ vs F$_I$ (within Folonzo)')
-ax_dxy.plot(mid, smooth(dxy_kf_alt), '-', color=c_kf_alt, lw=2,
-            label=r'K vs F$_I$ (alt karyotype)')
+ax_dxy.plot(
+    mid,
+    smooth(dxy_kf_same),
+    "-",
+    color=c_kf_same,
+    lw=2,
+    label=r"K vs F$_S$ (same karyotype)",
+)
+ax_dxy.plot(
+    mid,
+    smooth(dxy_fs_fi),
+    "-",
+    color=c_fs_fi,
+    lw=2,
+    label=r"F$_S$ vs F$_I$ (within Folonzo)",
+)
+ax_dxy.plot(
+    mid,
+    smooth(dxy_kf_alt),
+    "-",
+    color=c_kf_alt,
+    lw=2,
+    label=r"K vs F$_I$ (alt karyotype)",
+)
 shade_inv(ax_dxy)
-ax_dxy.set_ylabel(r'$d_{XY}$ (per bp)', fontsize=11)
+ax_dxy.set_ylabel(r"$d_{XY}$ (per bp)", fontsize=11)
 ax_dxy.set_xlim(0, L)
-ax_dxy.legend(fontsize=9, loc='upper right')
+ax_dxy.legend(fontsize=9, loc="upper right")
 ax_dxy.set_title(
-    r'A.  Absolute divergence $d_{XY}$',
-    fontsize=11, fontweight='bold', loc='left')
+    r"A.  Absolute divergence $d_{XY}$", fontsize=11, fontweight="bold", loc="left"
+)
 ax_dxy.tick_params(labelbottom=False)
 
 # Panel B: Da on the SAME y-axis as Panel A so the magnitude
@@ -206,65 +240,79 @@ ax_dxy.tick_params(labelbottom=False)
 # dxy can look "the same magnitude" just because each panel
 # auto-fits its own range.
 ax_da = fig.add_subplot(gs[1], sharey=ax_dxy)
-ax_da.plot(mid, smooth(da_kf_same), '-', color=c_kf_same, lw=2,
-           label=r'K vs F$_S$')
-ax_da.plot(mid, smooth(da_fs_fi), '-', color=c_fs_fi, lw=2,
-           label=r'F$_S$ vs F$_I$')
-ax_da.plot(mid, smooth(da_kf_alt), '-', color=c_kf_alt, lw=2,
-           label=r'K vs F$_I$')
+ax_da.plot(mid, smooth(da_kf_same), "-", color=c_kf_same, lw=2, label=r"K vs F$_S$")
+ax_da.plot(mid, smooth(da_fs_fi), "-", color=c_fs_fi, lw=2, label=r"F$_S$ vs F$_I$")
+ax_da.plot(mid, smooth(da_kf_alt), "-", color=c_kf_alt, lw=2, label=r"K vs F$_I$")
 shade_inv(ax_da)
-ax_da.axhline(0, color='#555', ls=':', lw=0.8)
-ax_da.set_ylabel(r'$D_a = d_{XY} - (\pi_A + \pi_B)/2$ (per bp)',
-                  fontsize=11)
-ax_da.set_xlabel('Position (bp)', fontsize=10)
+ax_da.axhline(0, color="#555", ls=":", lw=0.8)
+ax_da.set_ylabel(r"$D_a = d_{XY} - (\pi_A + \pi_B)/2$ (per bp)", fontsize=11)
+ax_da.set_xlabel("Position (bp)", fontsize=10)
 ax_da.set_xlim(0, L)
-ax_da.legend(fontsize=9, loc='upper right')
+ax_da.legend(fontsize=9, loc="upper right")
 ax_da.set_title(
-    r'B.  Net divergence $D_a$ (same y-axis as A → magnitude visible)',
-    fontsize=11, fontweight='bold', loc='left')
+    r"B.  Net divergence $D_a$ (same y-axis as A → magnitude visible)",
+    fontsize=11,
+    fontweight="bold",
+    loc="left",
+)
 
 annot = (
-    f'Figure. An. funestus Kiribina/Folonzo cross-karyotype divergence for the 3Ra and 3Rb '
-    f'inversions on chromosome arm 3R, simulated with msinv (hull algorithm). '
-    f'(A) Absolute divergence $d_{{XY}}$ between Kiribina (all-Standard, pop 0) and Folonzo '
-    f'(mixed S/I, pop 1) haplotypes. K vs F$_I$ (alt karyotype) shows elevated $d_{{XY}}$ inside '
-    f'both inversions due to the recombination barrier, while K vs F$_S$ (same karyotype) shows '
-    f'only the population-split signal. F$_S$ vs F$_I$ (within Folonzo, cross-class) captures '
-    f'the inversion barrier alone. '
-    f'(B) Net divergence $D_a$ on the same y-axis as A — the inversion signal is a '
-    f'small fraction of total $d_{{XY}}$, dominated by ancestral polymorphism. '
-    f'Parameters: Ne_K = Ne_F = {Ne:,}, T$_{{split}}$ = {t_split_gen:,} gen, '
-    f'T$_{{inv}}$ = {t_inv_gen:,} gen, $\\mu$ = {mu:.2e}, r = {r:.1e}, '
-    f'$\\gamma$ = 0, {n_ok} replicates.\n'
-    f'Command: pixi run -e all python examples/empirical_kir_fol.py'
+    f"Figure. An. funestus Kiribina/Folonzo cross-karyotype divergence for the 3Ra and 3Rb "
+    f"inversions on chromosome arm 3R, simulated with msinv (hull algorithm). "
+    f"(A) Absolute divergence $d_{{XY}}$ between Kiribina (all-Standard, pop 0) and Folonzo "
+    f"(mixed S/I, pop 1) haplotypes. K vs F$_I$ (alt karyotype) shows elevated $d_{{XY}}$ inside "
+    f"both inversions due to the recombination barrier, while K vs F$_S$ (same karyotype) shows "
+    f"only the population-split signal. F$_S$ vs F$_I$ (within Folonzo, cross-class) captures "
+    f"the inversion barrier alone. "
+    f"(B) Net divergence $D_a$ on the same y-axis as A — the inversion signal is a "
+    f"small fraction of total $d_{{XY}}$, dominated by ancestral polymorphism. "
+    f"Parameters: Ne_K = Ne_F = {Ne:,}, T$_{{split}}$ = {t_split_gen:,} gen, "
+    f"T$_{{inv}}$ = {t_inv_gen:,} gen, $\\mu$ = {mu:.2e}, r = {r:.1e}, "
+    f"$\\gamma$ = 0, {n_ok} replicates.\n"
+    f"Command: pixi run -e all python examples/empirical_kir_fol.py"
 )
-fig.text(0.5, -0.02, annot, ha='center', fontsize=7, wrap=True,
-         fontstyle='italic', color='#333',
-         bbox=dict(boxstyle='round,pad=0.4', facecolor='#F5F5F5',
-                   edgecolor='#BDBDBD', alpha=0.9))
+fig.text(
+    0.5,
+    -0.02,
+    annot,
+    ha="center",
+    fontsize=7,
+    wrap=True,
+    fontstyle="italic",
+    color="#333",
+    bbox=dict(
+        boxstyle="round,pad=0.4", facecolor="#F5F5F5", edgecolor="#BDBDBD", alpha=0.9
+    ),
+)
 
 fig.suptitle(
-    'An. funestus Kir/Fol — 3Ra + 3Rb inversion divergence (hull simulator)',
-    fontsize=12, fontweight='bold', y=0.99)
+    "An. funestus Kir/Fol — 3Ra + 3Rb inversion divergence (hull simulator)",
+    fontsize=12,
+    fontweight="bold",
+    y=0.99,
+)
 
-fig.savefig('figures/empirical_kir_fol.pdf',
-            bbox_inches='tight', dpi=150)
-print('Saved: figures/empirical_kir_fol.pdf')
+fig.savefig("figures/empirical_kir_fol.pdf", bbox_inches="tight", dpi=150)
+print("Saved: figures/empirical_kir_fol.pdf")
 
 # ---- Summary table ----
-print('\nIn-inv vs collinear ratios:')
-inv_w = [w for w in range(NW)
-         if (inv_3Ra[0] < mid[w] < inv_3Ra[1]) or
-            (inv_3Rb[0] < mid[w] < inv_3Rb[1])]
+print("\nIn-inv vs collinear ratios:")
+inv_w = [
+    w
+    for w in range(NW)
+    if (inv_3Ra[0] < mid[w] < inv_3Ra[1]) or (inv_3Rb[0] < mid[w] < inv_3Rb[1])
+]
 col_w = [w for w in range(NW) if w not in inv_w]
 print(f"  {'metric':<14} {'inv':>10} {'col':>10} {'ratio':>10}")
-for label, arr in [('dxy K-Fs', dxy_kf_same),
-                    ('dxy Fs-Fi', dxy_fs_fi),
-                    ('dxy K-Fi', dxy_kf_alt),
-                    ('Da K-Fs', da_kf_same),
-                    ('Da Fs-Fi', da_fs_fi),
-                    ('Da K-Fi', da_kf_alt)]:
+for label, arr in [
+    ("dxy K-Fs", dxy_kf_same),
+    ("dxy Fs-Fi", dxy_fs_fi),
+    ("dxy K-Fi", dxy_kf_alt),
+    ("Da K-Fs", da_kf_same),
+    ("Da Fs-Fi", da_fs_fi),
+    ("Da K-Fi", da_kf_alt),
+]:
     i_m = float(np.mean([arr[w] for w in inv_w]))
     c_m = float(np.mean([arr[w] for w in col_w]))
-    ratio = i_m / c_m if c_m != 0 else float('nan')
+    ratio = i_m / c_m if c_m != 0 else float("nan")
     print(f"  {label:<14} {i_m:>10.6g} {c_m:>10.6g} {ratio:>10.2f}")

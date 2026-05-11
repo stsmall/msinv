@@ -12,8 +12,10 @@ from msinv.hull import InversionSpec
 def _kw(**overrides):
     """Minimal valid InversionSpec kwargs; override what each test needs."""
     base = dict(
-        bp_left=0.0, bp_right=10_000.0,
-        p_inv=0.5, t_inv=1000.0,
+        bp_left=0.0,
+        bp_right=10_000.0,
+        p_inv=0.5,
+        t_inv=1000.0,
         gene_conversion_rate=1e-9,
     )
     base.update(overrides)
@@ -45,18 +47,18 @@ def test_mean_tract_length_above_half_inv_warns():
 
 
 def test_tract_distribution_geometric_legal():
-    inv = InversionSpec(**_kw(tract_distribution='geometric'))
-    assert inv.tract_distribution == 'geometric'
+    inv = InversionSpec(**_kw(tract_distribution="geometric"))
+    assert inv.tract_distribution == "geometric"
 
 
 def test_tract_distribution_fixed_legal():
-    inv = InversionSpec(**_kw(tract_distribution='fixed'))
-    assert inv.tract_distribution == 'fixed'
+    inv = InversionSpec(**_kw(tract_distribution="fixed"))
+    assert inv.tract_distribution == "fixed"
 
 
 def test_tract_distribution_invalid_rejected():
     with pytest.raises(ValueError, match="tract_distribution"):
-        InversionSpec(**_kw(tract_distribution='gamma'))
+        InversionSpec(**_kw(tract_distribution="gamma"))
 
 
 def test_default_mean_tract_length_is_100():
@@ -66,7 +68,7 @@ def test_default_mean_tract_length_is_100():
 
 def test_default_tract_distribution_is_geometric():
     inv = InversionSpec(**_kw())
-    assert inv.tract_distribution == 'geometric'
+    assert inv.tract_distribution == "geometric"
 
 
 def test_flux_window_field_removed():

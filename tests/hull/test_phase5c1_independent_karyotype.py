@@ -26,6 +26,7 @@ from msinv.hull.tables import TableBuilder
 # Sample-init: per-inv class assignments
 # ---------------------------------------------------------------------------
 
+
 def _classes_of_lineage(lin):
     out = []
     seg = lin.head
@@ -37,88 +38,98 @@ def _classes_of_lineage(lin):
 
 def test_linked_karyotype_uses_single_S_for_both_invs():
     """Linked karyotype: sample 'S' assigns S<inv_id> at every inv."""
-    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0,
-                          p_inv=0.5, t_inv=1000.0)
-    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0,
-                          p_inv=0.5, t_inv=1000.0)
+    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0, p_inv=0.5, t_inv=1000.0)
+    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={('S', 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
+        sample_config={("S", 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv0, inv1],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
     assert classes == [
-        (0.0, 10.0, 'P'),
-        (10.0, 30.0, 'S0'),
-        (30.0, 50.0, 'P'),
-        (50.0, 80.0, 'S1'),
-        (80.0, 100.0, 'P'),
+        (0.0, 10.0, "P"),
+        (10.0, 30.0, "S0"),
+        (30.0, 50.0, "P"),
+        (50.0, 80.0, "S1"),
+        (80.0, 100.0, "P"),
     ]
 
 
 def test_independent_karyotype_tuple_assigns_per_inv():
     """Independent karyotype ('S', 'I') → S0 at inv 0 and I1 at inv 1."""
-    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0,
-                          p_inv=0.5, t_inv=1000.0)
-    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0,
-                          p_inv=0.5, t_inv=1000.0)
+    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0, p_inv=0.5, t_inv=1000.0)
+    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={(('S', 'I'), 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
+        sample_config={(("S", "I"), 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv0, inv1],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
-    assert classes[1] == (10.0, 30.0, 'S0')
-    assert classes[3] == (50.0, 80.0, 'I1')
+    assert classes[1] == (10.0, 30.0, "S0")
+    assert classes[3] == (50.0, 80.0, "I1")
 
 
 def test_string_shorthand_for_two_invs():
     """The 2-char string 'SI' → equivalent to ('S', 'I') tuple."""
-    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0,
-                          p_inv=0.5, t_inv=1000.0)
-    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0,
-                          p_inv=0.5, t_inv=1000.0)
+    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0, p_inv=0.5, t_inv=1000.0)
+    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={('SI', 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
+        sample_config={("SI", 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv0, inv1],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
-    assert classes[1] == (10.0, 30.0, 'S0')
-    assert classes[3] == (50.0, 80.0, 'I1')
+    assert classes[1] == (10.0, 30.0, "S0")
+    assert classes[3] == (50.0, 80.0, "I1")
 
 
 def test_None_at_one_inv_uses_panmictic_there():
     """Karyotype tuple ('S', None) → S at inv 0, panmictic at inv 1."""
-    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0,
-                          p_inv=0.5, t_inv=1000.0)
-    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0,
-                          p_inv=0.5, t_inv=1000.0)
+    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0, p_inv=0.5, t_inv=1000.0)
+    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={(('S', None), 0): 1},
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
+        sample_config={(("S", None), 0): 1},
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv0, inv1],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     active = sim._initial_lineages(tables)
     classes = _classes_of_lineage(active[0])
     # inv 0: S0; inv 1: P; flanks: P
-    assert classes[1] == (10.0, 30.0, 'S0')
-    assert classes[3] == (50.0, 80.0, 'P')
+    assert classes[1] == (10.0, 30.0, "S0")
+    assert classes[3] == (50.0, 80.0, "P")
 
 
 def test_wrong_length_raises():
     """Mismatched karyotype tuple length raises ValueError."""
-    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0,
-                          p_inv=0.5, t_inv=1000.0)
-    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0,
-                          p_inv=0.5, t_inv=1000.0)
+    inv0 = InversionSpec(bp_left=10.0, bp_right=30.0, p_inv=0.5, t_inv=1000.0)
+    inv1 = InversionSpec(bp_left=50.0, bp_right=80.0, p_inv=0.5, t_inv=1000.0)
     sim = HullSimulator(
-        sample_config={(('S', 'I', 'S'), 0): 1},  # 3 entries for 2 invs
-        population_size=1000, sequence_length=100.0,
-        inversions=[inv0, inv1], seed=1, recombination_rate=1e-8)
+        sample_config={(("S", "I", "S"), 0): 1},  # 3 entries for 2 invs
+        population_size=1000,
+        sequence_length=100.0,
+        inversions=[inv0, inv1],
+        seed=1,
+        recombination_rate=1e-8,
+    )
     tables = TableBuilder(sequence_length=100.0)
     with pytest.raises(ValueError, match="entries but there are"):
         sim._initial_lineages(tables)
@@ -127,6 +138,7 @@ def test_wrong_length_raises():
 # ---------------------------------------------------------------------------
 # Class barrier behaviour with independent karyotype
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
 def test_independent_karyotype_each_inv_barrier_independent(seed):
@@ -142,20 +154,21 @@ def test_independent_karyotype_each_inv_barrier_independent(seed):
     """
     Ne = 1000
     L = 10000.0
-    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
-                          p_inv=0.5, t_inv=2000.0)
-    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
-                          p_inv=0.5, t_inv=4000.0)
+    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0, p_inv=0.5, t_inv=2000.0)
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0, p_inv=0.5, t_inv=4000.0)
 
     # 4 samples, all 'S' at inv 0, but split S/I at inv 1.
     sim = HullSimulator(
         sample_config={
-            (('S', 'S'), 0): 2,   # SS samples
-            (('S', 'I'), 0): 2,   # SI samples (S at inv 0, I at inv 1)
+            (("S", "S"), 0): 2,  # SS samples
+            (("S", "I"), 0): 2,  # SI samples (S at inv 0, I at inv 1)
         },
-        population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=seed,
-        recombination_rate=1e-8)
+        population_size=Ne,
+        sequence_length=L,
+        inversions=[inv0, inv1],
+        seed=seed,
+        recombination_rate=1e-8,
+    )
     ts = sim.simulate()
     samples = list(ts.samples())
     SS = samples[:2]
@@ -181,19 +194,22 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
     cross-class T_MRCA at inv 0 should be ≪ inv 0's t_inv."""
     Ne = 1000
     L = 10000.0
-    inv0 = InversionSpec(bp_left=1000.0, bp_right=4000.0,
-                          p_inv=0.5, t_inv=10_000.0)  # very deep
-    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0,
-                          p_inv=0.5, t_inv=2000.0)
+    inv0 = InversionSpec(
+        bp_left=1000.0, bp_right=4000.0, p_inv=0.5, t_inv=10_000.0
+    )  # very deep
+    inv1 = InversionSpec(bp_left=6000.0, bp_right=9000.0, p_inv=0.5, t_inv=2000.0)
 
     sim = HullSimulator(
         sample_config={
-            (('S', 'S'), 0): 3,
-            (('S', 'I'), 0): 3,
+            (("S", "S"), 0): 3,
+            (("S", "I"), 0): 3,
         },
-        population_size=Ne, sequence_length=L,
-        inversions=[inv0, inv1], seed=42,
-        recombination_rate=1e-8)
+        population_size=Ne,
+        sequence_length=L,
+        inversions=[inv0, inv1],
+        seed=42,
+        recombination_rate=1e-8,
+    )
     ts = sim.simulate()
     samples = list(ts.samples())
     # Inside inv 0, ALL samples are S → SS pair MRCA should follow
@@ -211,4 +227,5 @@ def test_independent_karyotype_inv0_panmictic_when_all_S():
         median_t = np.median(SS_pairs_mrca)
         assert median_t < inv0.t_inv / 2, (
             f"Inv 0 with all-S samples should NOT impose t_inv barrier; "
-            f"median T_MRCA = {median_t:.0f}, t_inv = {inv0.t_inv}")
+            f"median T_MRCA = {median_t:.0f}, t_inv = {inv0.t_inv}"
+        )

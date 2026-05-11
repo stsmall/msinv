@@ -1,4 +1,5 @@
 """Tests for window-level stats: pi, dxy, Fst, Tajima's D, SFS."""
+
 import numpy as np
 import msprime
 import pytest

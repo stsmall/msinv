@@ -14,21 +14,26 @@ from msinv.hull.demography import Demography
 
 # ----- Tier 1: geometric sampling correctness ----------------------
 
+
 def test_geometric_tract_length_mean_matches_parameter():
     """Sampled tract lengths should have mean ≈ mean_tract_length
     within 2-sigma tolerance over N=10_000 draws."""
     inv = InversionSpec(
-        bp_left=0.0, bp_right=1_000_000.0,
-        p_inv=0.5, t_inv=10_000.0,
+        bp_left=0.0,
+        bp_right=1_000_000.0,
+        p_inv=0.5,
+        t_inv=10_000.0,
         gene_conversion_rate=1e-9,
         mean_tract_length=200.0,
-        tract_distribution='geometric',
+        tract_distribution="geometric",
     )
-    sim = HullSimulator(
-        sample_config={('S', 0): 2},
+    HullSimulator(
+        sample_config={("S", 0): 2},
         demography=Demography(pop_sizes=[1000]),
         sequence_length=1_000_000,
-        recombination_rate=1e-8, inversions=[inv], seed=42,
+        recombination_rate=1e-8,
+        inversions=[inv],
+        seed=42,
     )
     rng = np.random.default_rng(0)
     samples = []
@@ -40,7 +45,8 @@ def test_geometric_tract_length_mean_matches_parameter():
     sd_of_mean = expected / math.sqrt(len(samples))
     assert abs(mean - expected) < 2 * sd_of_mean, (
         f"empirical mean {mean:.2f} vs expected {expected:.2f} "
-        f"(2σ={2*sd_of_mean:.2f})")
+        f"(2σ={2 * sd_of_mean:.2f})"
+    )
 
 
 def test_geometric_tract_length_distribution_is_exponential():
@@ -49,29 +55,33 @@ def test_geometric_tract_length_distribution_is_exponential():
     rng = np.random.default_rng(1)
     lam = 200.0
     samples = rng.exponential(lam, size=10_000)
-    ks_stat, p = stats.kstest(samples, 'expon', args=(0.0, lam))
+    ks_stat, p = stats.kstest(samples, "expon", args=(0.0, lam))
     assert p > 0.05, f"KS test failed: stat={ks_stat:.4f} p={p:.4f}"
 
 
 # ----- Tier 1: smoke at biological 3Ra-scale params ---------------
 
+
 def test_smoke_3ra_scale_geometric():
     """3Ra-scale params (6 Mb inv, 100 bp tract) run without crashing
     and produce a well-formed tree sequence."""
     inv = InversionSpec(
-        bp_left=1.0, bp_right=6_000_000.0 - 1.0,
-        p_inv=0.5, t_inv=100_000.0,
+        bp_left=1.0,
+        bp_right=6_000_000.0 - 1.0,
+        p_inv=0.5,
+        t_inv=100_000.0,
         gene_conversion_rate=1e-6,
         mean_tract_length=100.0,
-        tract_distribution='geometric',
+        tract_distribution="geometric",
     )
     demo = Demography(pop_sizes=[5000])
     sim = HullSimulator(
-        sample_config={('S', 0): 4, ('I', 0): 4},
+        sample_config={("S", 0): 4, ("I", 0): 4},
         demography=demo,
         sequence_length=6_000_000,
         recombination_rate=1e-8,
-        inversions=[inv], seed=42,
+        inversions=[inv],
+        seed=42,
     )
     ts = sim.simulate()
     assert ts.num_trees > 0
@@ -79,6 +89,7 @@ def test_smoke_3ra_scale_geometric():
 
 
 # ----- Tier 2: spatial profile φ(x) ------------------------------
+
 
 def test_spatial_profile_uniform_in_interior_geometric():
     """Empirical fraction of flux events that touch position x should
@@ -89,11 +100,13 @@ def test_spatial_profile_uniform_in_interior_geometric():
     histogram the per-bp coverage. This validates the geometry, which
     is the determinant of the spatial profile."""
     inv = InversionSpec(
-        bp_left=0.0, bp_right=10_000.0,
-        p_inv=0.5, t_inv=10_000.0,
+        bp_left=0.0,
+        bp_right=10_000.0,
+        p_inv=0.5,
+        t_inv=10_000.0,
         gene_conversion_rate=1e-9,
         mean_tract_length=100.0,
-        tract_distribution='geometric',
+        tract_distribution="geometric",
     )
 
     rng = np.random.default_rng(2)
@@ -126,10 +139,12 @@ def test_spatial_profile_uniform_in_interior_geometric():
     rel_err = abs(mean_interior - expected_interior) / expected_interior
     assert rel_err < 0.10, (
         f"interior coverage {mean_interior:.5f} vs expected "
-        f"{expected_interior:.5f} (rel err {rel_err:.3f}, > 10%)")
+        f"{expected_interior:.5f} (rel err {rel_err:.3f}, > 10%)"
+    )
 
 
 # ----- Tier 2: rate scaling with mean_tract_length ---------------
+
 
 def test_flux_rate_scales_linearly_with_mean_tract_length():
     """Per-lineage flux event rate ≈ γ × p_other × mean_tract_length
@@ -154,21 +169,24 @@ def test_flux_rate_scales_linearly_with_mean_tract_length():
     means = []
     for lam in lambdas:
         inv = InversionSpec(
-            bp_left=bp_left, bp_right=bp_right,
-            p_inv=0.5, t_inv=20_000.0,
+            bp_left=bp_left,
+            bp_right=bp_right,
+            p_inv=0.5,
+            t_inv=20_000.0,
             gene_conversion_rate=gamma,
             mean_tract_length=lam,
-            tract_distribution='geometric',
+            tract_distribution="geometric",
         )
         demo = Demography(pop_sizes=[2000])
         n_trees_reps = []
         for seed in range(NREPS):
             sim = HullSimulator(
-                sample_config={('S', 0): 4, ('I', 0): 4},
+                sample_config={("S", 0): 4, ("I", 0): 4},
                 demography=demo,
                 sequence_length=int(inv_len),
                 recombination_rate=1e-9,
-                inversions=[inv], seed=seed,
+                inversions=[inv],
+                seed=seed,
             )
             ts = sim.simulate()
             n_trees_reps.append(ts.num_trees)
@@ -177,21 +195,24 @@ def test_flux_rate_scales_linearly_with_mean_tract_length():
     # Subtract the no-flux baseline (recombination-driven trees) so
     # the flux contribution is what scales with λ.
     inv_zero = InversionSpec(
-        bp_left=bp_left, bp_right=bp_right,
-        p_inv=0.5, t_inv=20_000.0,
+        bp_left=bp_left,
+        bp_right=bp_right,
+        p_inv=0.5,
+        t_inv=20_000.0,
         gene_conversion_rate=gamma,
-        mean_tract_length=0.0,                # disables flux
-        tract_distribution='geometric',
+        mean_tract_length=0.0,  # disables flux
+        tract_distribution="geometric",
     )
     demo = Demography(pop_sizes=[2000])
     no_flux_trees = []
     for seed in range(NREPS):
         sim = HullSimulator(
-            sample_config={('S', 0): 4, ('I', 0): 4},
+            sample_config={("S", 0): 4, ("I", 0): 4},
             demography=demo,
             sequence_length=int(inv_len),
             recombination_rate=1e-9,
-            inversions=[inv_zero], seed=seed,
+            inversions=[inv_zero],
+            seed=seed,
         )
         no_flux_trees.append(sim.simulate().num_trees)
     baseline = float(np.mean(no_flux_trees))
@@ -201,7 +222,8 @@ def test_flux_rate_scales_linearly_with_mean_tract_length():
     # Assert: the flux contribution scales monotonically with λ.
     assert flux_contribution[0] < flux_contribution[1] < flux_contribution[2], (
         f"flux_contribution should be monotone-increasing in λ, "
-        f"got {flux_contribution} at λ={lambdas}")
+        f"got {flux_contribution} at λ={lambdas}"
+    )
 
     # Soft linearity: the largest λ should contribute substantially
     # more than the smallest. We don't enforce exact linear scaling
@@ -211,12 +233,14 @@ def test_flux_rate_scales_linearly_with_mean_tract_length():
     # tight calibration.
     assert flux_contribution[2] > 1.5 * flux_contribution[0], (
         f"largest-λ flux contribution should be >1.5× smallest-λ, "
-        f"got {flux_contribution[2]:.1f} vs {flux_contribution[0]:.1f}")
+        f"got {flux_contribution[2]:.1f} vs {flux_contribution[0]:.1f}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tier 3-cheap (Q5a): flux tract-break survival shape — geometric vs fixed
 # ---------------------------------------------------------------------------
+
 
 def test_flux_tract_break_survival_geometric_vs_fixed():
     """Q5a: empirical S(d) = P(tract_length >= d) discriminates modes.
@@ -241,17 +265,19 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
     # Store raw lengths for each mode so assertions can use eps-adjusted thresholds.
     raw_lengths = {}
     results = {}
-    for mode in ['geometric', 'fixed']:
+    for mode in ["geometric", "fixed"]:
         inv = InversionSpec(
-            bp_left=2000.0, bp_right=8000.0,
-            p_inv=0.5, t_inv=t_inv,
+            bp_left=2000.0,
+            bp_right=8000.0,
+            p_inv=0.5,
+            t_inv=t_inv,
             gene_conversion_rate=gamma,
             mean_tract_length=lam,
             tract_distribution=mode,
         )
         demo = Demography(pop_sizes=[1000])
         sim = HullSimulator(
-            sample_config={('S', 0): 10, ('I', 0): 10},
+            sample_config={("S", 0): 10, ("I", 0): 10},
             demography=demo,
             sequence_length=10_000,
             recombination_rate=1e-8,
@@ -263,7 +289,8 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
         flux = filter_flux(sim.event_log, inv_id=0)
         assert len(flux) >= 200, (
             f"mode={mode}: only {len(flux)} flux events; "
-            f"bump γ or t_inv for adequate MC sample size")
+            f"bump γ or t_inv for adequate MC sample size"
+        )
         lengths = tract_lengths(flux)
         raw_lengths[mode] = lengths
         s_at_lam = float((lengths >= lam).mean())
@@ -273,32 +300,37 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
     # 'fixed' mode: every tract has length == λ (up to float rounding ≤ 1e-9),
     # so S(λ) = 1.0 and S(2λ) = 0.0.  We use a tiny eps on the threshold to
     # absorb double-precision representation noise (observed max deviation < 1e-12).
-    _, _, n_fixed = results['fixed']
+    _, _, n_fixed = results["fixed"]
     eps = 1e-9
-    lens_fixed = raw_lengths['fixed']
+    lens_fixed = raw_lengths["fixed"]
     s_lam_fixed_adj = float((lens_fixed >= lam - eps).mean())
     s_2lam_fixed_adj = float((lens_fixed >= 2 * lam - eps).mean())
 
     assert s_lam_fixed_adj == 1.0, (
         f"'fixed': S(λ-ε) = {s_lam_fixed_adj}, expected exactly 1.0 "
-        f"(n_events={n_fixed}; max deviation from λ should be < 1e-9)")
+        f"(n_events={n_fixed}; max deviation from λ should be < 1e-9)"
+    )
     assert s_2lam_fixed_adj == 0.0, (
         f"'fixed': S(2λ-ε) = {s_2lam_fixed_adj}, expected exactly 0.0 "
-        f"(n_events={n_fixed})")
+        f"(n_events={n_fixed})"
+    )
 
     # 'geometric' mode: S(λ) ≈ exp(-1) ≈ 0.368; S(2λ) ≈ exp(-2) ≈ 0.135.
-    s_lam_geom, s_2lam_geom, n_geom = results['geometric']
+    s_lam_geom, s_2lam_geom, n_geom = results["geometric"]
     assert abs(s_lam_geom - 0.368) < 0.05, (
         f"'geometric': S(λ) = {s_lam_geom:.3f}, expected 0.368 ± 0.05 "
-        f"(n_events={n_geom})")
+        f"(n_events={n_geom})"
+    )
     assert abs(s_2lam_geom - 0.135) < 0.05, (
         f"'geometric': S(2λ) = {s_2lam_geom:.3f}, expected 0.135 ± 0.05 "
-        f"(n_events={n_geom})")
+        f"(n_events={n_geom})"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tier 3-cheap (Q5b): Andolfatto event-coverage monotonicity
 # ---------------------------------------------------------------------------
+
 
 def test_andolfatto_event_coverage_monotone_in_t_inv():
     """Q5b: event-coverage at the inversion center
@@ -309,7 +341,7 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
     """
     from msinv.hull._event_log import filter_flux, coverage_count
 
-    gamma = 5e-3   # bumped well above biological for sufficient event counts
+    gamma = 5e-3  # bumped well above biological for sufficient event counts
     lam = 300.0
     t_inv_ladder = [500.0, 2000.0, 5000.0]
     n_seeds = 20
@@ -317,21 +349,23 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
 
     means_by_mode = {}
 
-    for mode in ['fixed', 'geometric']:
+    for mode in ["fixed", "geometric"]:
         means_per_t = []
         for t_inv in t_inv_ladder:
             covers = []
             for seed in range(n_seeds):
                 inv = InversionSpec(
-                    bp_left=2000.0, bp_right=8000.0,
-                    p_inv=0.5, t_inv=t_inv,
+                    bp_left=2000.0,
+                    bp_right=8000.0,
+                    p_inv=0.5,
+                    t_inv=t_inv,
                     gene_conversion_rate=gamma,
                     mean_tract_length=lam,
                     tract_distribution=mode,
                 )
                 demo = Demography(pop_sizes=[1000])
                 sim = HullSimulator(
-                    sample_config={('S', 0): 10, ('I', 0): 10},
+                    sample_config={("S", 0): 10, ("I", 0): 10},
                     demography=demo,
                     sequence_length=10_000,
                     recombination_rate=1e-8,
@@ -347,27 +381,30 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
         # (i) monotonicity in t_inv at fixed (γ, λ)
         assert means_per_t[0] < means_per_t[1] < means_per_t[2], (
             f"mode={mode}: not monotone in t_inv: "
-            f"means at t_inv={t_inv_ladder} = {means_per_t}")
+            f"means at t_inv={t_inv_ladder} = {means_per_t}"
+        )
 
         means_by_mode[mode] = means_per_t
 
     # (ii) at each t_inv, 'fixed' and 'geometric' should have equal MEAN
     #      coverage at matched λ. Variance differs; mean shouldn't.
     for i, t_inv in enumerate(t_inv_ladder):
-        m_fixed = means_by_mode['fixed'][i]
-        m_geom  = means_by_mode['geometric'][i]
+        m_fixed = means_by_mode["fixed"][i]
+        m_geom = means_by_mode["geometric"][i]
         scale = max(m_fixed, m_geom, 1.0)
         rel_diff = abs(m_fixed - m_geom) / scale
         assert rel_diff < 0.20, (
             f"t_inv={t_inv}: mean coverage diverges between modes — "
             f"fixed={m_fixed:.2f}, geom={m_geom:.2f}, "
             f"rel_diff={rel_diff:.3f}; expected agreement within 20% "
-            f"at n_seeds={n_seeds}")
+            f"at n_seeds={n_seeds}"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Sanity: log size stays bounded at biological γ (regression guard)
 # ---------------------------------------------------------------------------
+
 
 def test_event_log_size_bounded_at_biological_gamma():
     """At a biologically-realistic γ (1e-7) and modest scale,
@@ -381,15 +418,17 @@ def test_event_log_size_bounded_at_biological_gamma():
     from msinv.hull._event_log import filter_flux
 
     inv = InversionSpec(
-        bp_left=1000.0, bp_right=9000.0,
-        p_inv=0.5, t_inv=5000.0,
+        bp_left=1000.0,
+        bp_right=9000.0,
+        p_inv=0.5,
+        t_inv=5000.0,
         gene_conversion_rate=1e-7,  # biological γ
         mean_tract_length=100.0,
-        tract_distribution='geometric',
+        tract_distribution="geometric",
     )
     demo = Demography(pop_sizes=[1000])
     sim = HullSimulator(
-        sample_config={('S', 0): 10, ('I', 0): 10},
+        sample_config={("S", 0): 10, ("I", 0): 10},
         demography=demo,
         sequence_length=10_000,
         recombination_rate=1e-8,
@@ -405,14 +444,16 @@ def test_event_log_size_bounded_at_biological_gamma():
     assert n_total < 1_000_000, (
         f"event_log unexpectedly large: {n_total} records (flux={n_flux}). "
         f"This may indicate a scale regression — investigate before "
-        f"running production sims with record_events=True.")
+        f"running production sims with record_events=True."
+    )
 
     # Sanity: at biological γ, expect a small but non-zero count.
     # If this assertion ever fails low, our γ assumption changed.
     if n_total > 0:
         assert n_total < 10_000, (
             f"event_log size {n_total} suggests parameters changed; "
-            f"update this test or investigate.")
+            f"update this test or investigate."
+        )
 
     # Print the actual count for reference in CI logs.
     print(f"\nevent_log at biological γ=1e-7: n_total={n_total} (flux={n_flux})")
@@ -422,25 +463,36 @@ def test_event_log_size_bounded_at_biological_gamma():
 # Tier 3-full (R): closed-form Andolfatto + coalescent event-count anchors
 # ---------------------------------------------------------------------------
 
-def _run_tier3_sim(t_inv, gamma, seed,
-                   bp_left=2000.0, bp_right=8000.0,
-                   lam=300.0, p_inv=0.5,
-                   Ne=1000, n_S=10, n_I=10,
-                   sequence_length=10_000,
-                   recombination_rate=1e-8):
+
+def _run_tier3_sim(
+    t_inv,
+    gamma,
+    seed,
+    bp_left=2000.0,
+    bp_right=8000.0,
+    lam=300.0,
+    p_inv=0.5,
+    Ne=1000,
+    n_S=10,
+    n_I=10,
+    sequence_length=10_000,
+    recombination_rate=1e-8,
+):
     """Run a Tier 3-full sim and return (ts, event_log).
 
     Centralizes parameters so test C and test D differ only in t_inv and γ.
     """
     inv = InversionSpec(
-        bp_left=bp_left, bp_right=bp_right,
-        p_inv=p_inv, t_inv=t_inv,
+        bp_left=bp_left,
+        bp_right=bp_right,
+        p_inv=p_inv,
+        t_inv=t_inv,
         gene_conversion_rate=gamma,
         mean_tract_length=lam,
-        tract_distribution='geometric',
+        tract_distribution="geometric",
     )
     sim = HullSimulator(
-        sample_config={('S', 0): n_S, ('I', 0): n_I},
+        sample_config={("S", 0): n_S, ("I", 0): n_I},
         demography=Demography(pop_sizes=[Ne]),
         sequence_length=sequence_length,
         recombination_rate=recombination_rate,
@@ -472,32 +524,40 @@ def test_andolfatto_sample_fraction_matches_closed_form():
     """
     from msinv.hull._event_log import filter_flux, samples_converted_at
 
-    gamma = 1.5e-5     # γ_C: rate puts f_pred in [0.10, 0.95] over ladder
+    gamma = 1.5e-5  # γ_C: rate puts f_pred in [0.10, 0.95] over ladder
     lam = 300.0
     bp_left, bp_right = 2000.0, 8000.0
-    L = bp_right - bp_left          # 6000.0
+    L = bp_right - bp_left  # 6000.0
     Ne, p_inv = 1000, 0.5
-    p_other = 1.0 - p_inv           # 0.5 (symmetric at p_inv=0.5)
-    inv_center = 0.5 * (bp_left + bp_right)   # 5000.0
+    p_other = 1.0 - p_inv  # 0.5 (symmetric at p_inv=0.5)
+    inv_center = 0.5 * (bp_left + bp_right)  # 5000.0
     n_seeds = 30
     t_inv_ladder = [1000.0, 4000.0, 10_000.0, 25_000.0]
 
     for t_inv in t_inv_ladder:
         f_emp = []
         for seed in range(n_seeds):
-            ts, log = _run_tier3_sim(t_inv=t_inv, gamma=gamma, seed=seed,
-                                     bp_left=bp_left, bp_right=bp_right,
-                                     lam=lam, p_inv=p_inv, Ne=Ne)
+            ts, log = _run_tier3_sim(
+                t_inv=t_inv,
+                gamma=gamma,
+                seed=seed,
+                bp_left=bp_left,
+                bp_right=bp_right,
+                lam=lam,
+                p_inv=p_inv,
+                Ne=Ne,
+            )
             flux = filter_flux(log, inv_id=0)
             f_emp.append(samples_converted_at(flux, ts, inv_center))
         f_hat = float(np.mean(f_emp))
-        f_pred = 1.0 - math.exp(-gamma * p_other * (lam ** 2) * t_inv / L)
+        f_pred = 1.0 - math.exp(-gamma * p_other * (lam**2) * t_inv / L)
         tol = max(0.15, 0.50 * f_pred)
         assert abs(f_hat - f_pred) < tol, (
             f"t_inv={t_inv}: f̂={f_hat:.3f} vs predicted {f_pred:.3f} "
             f"(tol={tol:.3f}, n_seeds={n_seeds}). "
             f"~25% systematic under-prediction expected (fragmentation); "
-            f"larger gaps indicate a real rate-calc regression.")
+            f"larger gaps indicate a real rate-calc regression."
+        )
 
 
 def test_event_coverage_matches_coalescent_closed_form():
@@ -516,27 +576,34 @@ def test_event_coverage_matches_coalescent_closed_form():
     """
     from msinv.hull._event_log import filter_flux, coverage_count
 
-    gamma = 5e-3       # γ_D: matches Q5b; ~500 events/seed at t_inv=25k
+    gamma = 5e-3  # γ_D: matches Q5b; ~500 events/seed at t_inv=25k
     lam = 300.0
     bp_left, bp_right = 2000.0, 8000.0
     L = bp_right - bp_left
     Ne, p_inv = 1000, 0.5
     p_other = 1.0 - p_inv
     n_S, n_I = 10, 10
-    n = n_S + n_I                       # 20 lineages at t=0
-    t_inv = 25_000.0                    # ≫ 2Ne; truncation corr. ~4e-6
+    n = n_S + n_I  # 20 lineages at t=0
+    t_inv = 25_000.0  # ≫ 2Ne; truncation corr. ~4e-6
     inv_center = 5000.0
     n_seeds = 30
 
-    H = sum(1.0 / k for k in range(1, n))                  # H_{n−1} ≈ 3.548
-    e_total_branch = 4.0 * Ne * H                          # generations
-    expected = gamma * p_other * (lam ** 2 / L) * e_total_branch
+    H = sum(1.0 / k for k in range(1, n))  # H_{n−1} ≈ 3.548
+    e_total_branch = 4.0 * Ne * H  # generations
+    expected = gamma * p_other * (lam**2 / L) * e_total_branch
 
     counts = []
     for seed in range(n_seeds):
-        ts, log = _run_tier3_sim(t_inv=t_inv, gamma=gamma, seed=seed,
-                                 bp_left=bp_left, bp_right=bp_right,
-                                 lam=lam, p_inv=p_inv, Ne=Ne)
+        ts, log = _run_tier3_sim(
+            t_inv=t_inv,
+            gamma=gamma,
+            seed=seed,
+            bp_left=bp_left,
+            bp_right=bp_right,
+            lam=lam,
+            p_inv=p_inv,
+            Ne=Ne,
+        )
         flux = filter_flux(log, inv_id=0)
         counts.append(coverage_count(flux, inv_center))
 
@@ -547,4 +614,5 @@ def test_event_coverage_matches_coalescent_closed_form():
         f"empirical coverage {mean_emp:.1f} outside [0.3×, 5×] of "
         f"closed-form prediction {expected:.1f}. Pure Kingman predicts "
         f"~{expected:.0f}; simulator typically gives ~3× this due to "
-        f"post-TMRCA recomb. A 10× drift indicates a real regression.")
+        f"post-TMRCA recomb. A 10× drift indicates a real regression."
+    )

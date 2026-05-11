@@ -1,4 +1,5 @@
 """Tests for validation seed generation."""
+
 import pytest
 from validation._lib.seeds import seed_for
 
@@ -39,6 +40,12 @@ def test_no_collisions_across_10k_combos():
     for track_i in range(5):
         for engine in ("msinv", "slim", "msprime", "discoal"):
             for rep in range(500):
-                seeds.add(seed_for(track=f"track{track_i}", scenario="default",
-                                   engine=engine, rep=rep))
+                seeds.add(
+                    seed_for(
+                        track=f"track{track_i}",
+                        scenario="default",
+                        engine=engine,
+                        rep=rep,
+                    )
+                )
     assert len(seeds) == 5 * 4 * 500

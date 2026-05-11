@@ -9,6 +9,7 @@ Outputs to slim_validation/output/:
     scenario{N}_rep{i}_msinv.trees  — msinv tree sequence
     scenario{N}_results.npz         — per-rep + aggregated stats + timing
 """
+
 import argparse
 import os
 import subprocess
@@ -25,8 +26,7 @@ sys.path.insert(0, str(HERE.parent))
 from msinv import HullSimulator, InversionSpec  # noqa: E402
 from msinv.hull.sweep import Sweep  # noqa: E402
 
-SLIM_BIN = os.environ.get(
-    "SLIM_BIN", "/home/ssmall/miniforge3/envs/popgen/bin/slim")
+SLIM_BIN = os.environ.get("SLIM_BIN", "/home/ssmall/miniforge3/envs/popgen/bin/slim")
 
 # --- Shared constants ---
 Ne = 1000
@@ -36,44 +36,67 @@ gc_rate = 1e-8
 mu_rate = 1e-8
 burnin_factor = 8
 t_inv_factor = 4
-s_bal = 0.01           # balancing selection in SLIM (keeps inv polymorphic)
+s_bal = 0.01  # balancing selection in SLIM (keeps inv polymorphic)
 n_window = 40
 
 # Scenario-specific
 SCENARIO_PARAMS = {
     1: dict(inv_list=[(30_000, 70_000)]),
     2: dict(inv_list=[(15_000, 45_000), (55_000, 85_000)]),
-    3: dict(inv_list=[(30_000, 70_000)],
-            x_sel=50_000, t_sweep_factor=0.2, s_coef=0.05,
-            starting_frequency=20.0 / (2 * Ne)),
+    3: dict(
+        inv_list=[(30_000, 70_000)],
+        x_sel=50_000,
+        t_sweep_factor=0.2,
+        s_coef=0.05,
+        starting_frequency=20.0 / (2 * Ne),
+    ),
 }
 
 
 def slim_script(scenario):
-    name = {1: "scenario1_single_inv.slim",
-            2: "scenario2_multi_inv.slim",
-            3: "scenario3_sweep_in_inv.slim"}[scenario]
+    name = {
+        1: "scenario1_single_inv.slim",
+        2: "scenario2_multi_inv.slim",
+        3: "scenario3_sweep_in_inv.slim",
+    }[scenario]
     return HERE / "scenarios" / name
 
 
 def _slim_cmd(scenario, seed, out_trees):
     script = slim_script(scenario)
-    cmd = [SLIM_BIN,
-           "-d", f'trees_path="{out_trees}"',
-           "-d", f"Ne={Ne}",
-           "-d", f"L={L}",
-           "-d", f"r_rate={r_rate}",
-           "-d", f"gc_rate={gc_rate}",
-           "-d", f"burnin_factor={burnin_factor}",
-           "-d", f"t_inv_factor={t_inv_factor}",
-           "-d", f"s_bal={s_bal}",
-           "-d", f"seed={seed}"]
+    cmd = [
+        SLIM_BIN,
+        "-d",
+        f'trees_path="{out_trees}"',
+        "-d",
+        f"Ne={Ne}",
+        "-d",
+        f"L={L}",
+        "-d",
+        f"r_rate={r_rate}",
+        "-d",
+        f"gc_rate={gc_rate}",
+        "-d",
+        f"burnin_factor={burnin_factor}",
+        "-d",
+        f"t_inv_factor={t_inv_factor}",
+        "-d",
+        f"s_bal={s_bal}",
+        "-d",
+        f"seed={seed}",
+    ]
     if scenario == 3:
         p = SCENARIO_PARAMS[3]
-        cmd += ["-d", f"x_sel={p['x_sel']}",
-                "-d", f"t_sweep_factor={p['t_sweep_factor']}",
-                "-d", f"s_coef={p['s_coef']}",
-                "-d", f"n_sweep_copies=20"]
+        cmd += [
+            "-d",
+            f"x_sel={p['x_sel']}",
+            "-d",
+            f"t_sweep_factor={p['t_sweep_factor']}",
+            "-d",
+            f"s_coef={p['s_coef']}",
+            "-d",
+            "n_sweep_copies=20",
+        ]
     cmd.append(str(script))
     return cmd
 
@@ -86,8 +109,7 @@ def run_slim(scenario, rep, out_trees, max_retries=30):
         seed = 1000 + rep * 100 + attempt
         cmd = _slim_cmd(scenario, seed, out_trees)
         t0 = time.time()
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                               cwd=HERE.parent)
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=HERE.parent)
         total_elapsed += time.time() - t0
         if proc.returncode != 0:
             print(proc.stdout[-500:])
@@ -98,7 +120,8 @@ def run_slim(scenario, rep, out_trees, max_retries=30):
             if attempt < max_retries - 1:
                 continue
             raise RuntimeError(
-                f"scenario 3 rep {rep}: sweep lost in {max_retries} attempts")
+                f"scenario 3 rep {rep}: sweep lost in {max_retries} attempts"
+            )
         return total_elapsed, attempt + 1
     raise RuntimeError("unreachable")
 
@@ -108,11 +131,17 @@ def run_msinv(scenario, rep, out_trees):
     params = SCENARIO_PARAMS[scenario]
     inv_list = params["inv_list"]
     t_inv = t_inv_factor * Ne
-    invs = [InversionSpec(bp_left=float(lo), bp_right=float(hi),
-                          p_inv=0.5, t_inv=float(t_inv),
-                          gene_conversion_rate=gc_rate,
-                          inv_id=i)
-            for i, (lo, hi) in enumerate(inv_list)]
+    invs = [
+        InversionSpec(
+            bp_left=float(lo),
+            bp_right=float(hi),
+            p_inv=0.5,
+            t_inv=float(t_inv),
+            gene_conversion_rate=gc_rate,
+            inv_id=i,
+        )
+        for i, (lo, hi) in enumerate(inv_list)
+    ]
 
     sweeps = []
     if scenario == 3:
@@ -126,33 +155,39 @@ def run_msinv(scenario, rep, out_trees):
         # New required: origin_pop=0, target_inv=0, mode='Stochastic'.
         # Stochastic mirrors discoal D3 soft-sweep calibration, matching
         # SLiM's 20-genome S-karyotype introduction.
-        sweeps = [Sweep(
-            x_sel=float(params["x_sel"]),
-            tau=0.0,
-            t_origin=float(params["t_sweep_factor"] * Ne),
-            origin_pop=0,
-            origin_kary="S",
-            target_inv=0,
-            mode="Stochastic",
-            s=float(params["s_coef"]),
-            f0=float(params.get("starting_frequency", 0.0)),
-            seed=2000 + rep)]
+        sweeps = [
+            Sweep(
+                x_sel=float(params["x_sel"]),
+                tau=0.0,
+                t_origin=float(params["t_sweep_factor"] * Ne),
+                origin_pop=0,
+                origin_kary="S",
+                target_inv=0,
+                mode="Stochastic",
+                s=float(params["s_coef"]),
+                f0=float(params.get("starting_frequency", 0.0)),
+                seed=2000 + rep,
+            )
+        ]
 
     # Match 10 S + 10 I haploid samples.
     sim = HullSimulator(
-        n_std=10, n_inv=10,
-        population_size=Ne, sequence_length=float(L),
+        n_std=10,
+        n_inv=10,
+        population_size=Ne,
+        sequence_length=float(L),
         recombination_rate=r_rate,
-        inversions=invs, sweeps=sweeps,
-        seed=2000 + rep)
+        inversions=invs,
+        sweeps=sweeps,
+        seed=2000 + rep,
+    )
 
     t0 = time.time()
     ts = sim.simulate()
     elapsed = time.time() - t0
 
     # Overlay neutral mutations at mu_rate for stats.
-    ts = msprime.sim_mutations(ts, rate=mu_rate, random_seed=3000 + rep,
-                                keep=True)
+    ts = msprime.sim_mutations(ts, rate=mu_rate, random_seed=3000 + rep, keep=True)
     ts.dump(out_trees)
     return elapsed
 
@@ -184,13 +219,13 @@ def load_slim_trees(path, rep, scenario):
     rng = np.random.default_rng(5000 + rep)
     if len(s_nodes) < 10 or len(i_nodes) < 10:
         raise RuntimeError(
-            f"rep {rep}: insufficient haps S={len(s_nodes)} I={len(i_nodes)}")
+            f"rep {rep}: insufficient haps S={len(s_nodes)} I={len(i_nodes)}"
+        )
     s_pick = list(rng.choice(s_nodes, 10, replace=False))
     i_pick = list(rng.choice(i_nodes, 10, replace=False))
     keep = s_pick + i_pick
     ts = ts.simplify(samples=keep, filter_sites=True)
-    ts = msprime.sim_mutations(ts, rate=mu_rate, random_seed=6000 + rep,
-                                keep=True)
+    ts = msprime.sim_mutations(ts, rate=mu_rate, random_seed=6000 + rep, keep=True)
     return ts, list(range(10)), list(range(10, 20))
 
 
@@ -236,28 +271,35 @@ def run_rep(scenario, rep, outdir):
 
     return dict(
         rep=rep,
-        slim_time=slim_time, msinv_time=msinv_time,
-        slim_pi_s=pi_s_s, slim_pi_i=pi_i_s,
-        slim_dxy=dxy_s, slim_fst=fst_s,
-        msinv_pi_s=pi_s_m, msinv_pi_i=pi_i_m,
-        msinv_dxy=dxy_m, msinv_fst=fst_m,
+        slim_time=slim_time,
+        msinv_time=msinv_time,
+        slim_pi_s=pi_s_s,
+        slim_pi_i=pi_i_s,
+        slim_dxy=dxy_s,
+        slim_fst=fst_s,
+        msinv_pi_s=pi_s_m,
+        msinv_pi_i=pi_i_m,
+        msinv_dxy=dxy_m,
+        msinv_fst=fst_m,
         slim_num_trees=slim_ts.num_trees,
         msinv_num_trees=msinv_ts.num_trees,
-        mid=mid_m)
+        mid=mid_m,
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=int, required=True,
-                        choices=[1, 2, 3])
+    parser.add_argument("--scenario", type=int, required=True, choices=[1, 2, 3])
     parser.add_argument("--reps", type=int, default=3)
     args = parser.parse_args()
 
     outdir = HERE / "output"
     outdir.mkdir(exist_ok=True)
     print(f"Scenario {args.scenario}: {args.reps} reps")
-    print(f"  Ne={Ne}, L={L}, r={r_rate}, gc={gc_rate}, "
-          f"mu={mu_rate}, t_inv={t_inv_factor}Ne, burnin={burnin_factor}Ne")
+    print(
+        f"  Ne={Ne}, L={L}, r={r_rate}, gc={gc_rate}, "
+        f"mu={mu_rate}, t_inv={t_inv_factor}Ne, burnin={burnin_factor}Ne"
+    )
 
     reps = []
     for rep in range(args.reps):
@@ -272,9 +314,19 @@ def main():
         return
 
     # Aggregate
-    agg = {k: np.mean([r[k] for r in reps], axis=0)
-           for k in ("slim_pi_s", "slim_pi_i", "slim_dxy", "slim_fst",
-                     "msinv_pi_s", "msinv_pi_i", "msinv_dxy", "msinv_fst")}
+    agg = {
+        k: np.mean([r[k] for r in reps], axis=0)
+        for k in (
+            "slim_pi_s",
+            "slim_pi_i",
+            "slim_dxy",
+            "slim_fst",
+            "msinv_pi_s",
+            "msinv_pi_i",
+            "msinv_dxy",
+            "msinv_fst",
+        )
+    }
     slim_times = np.array([r["slim_time"] for r in reps])
     msinv_times = np.array([r["msinv_time"] for r in reps])
 
@@ -282,16 +334,28 @@ def main():
     np.savez(
         npz_path,
         mid=reps[0]["mid"],
-        slim_times=slim_times, msinv_times=msinv_times,
-        scenario=args.scenario, n_reps=len(reps),
-        Ne=Ne, L=L, r_rate=r_rate, gc_rate=gc_rate, mu_rate=mu_rate,
-        burnin_factor=burnin_factor, t_inv_factor=t_inv_factor,
-        **agg)
+        slim_times=slim_times,
+        msinv_times=msinv_times,
+        scenario=args.scenario,
+        n_reps=len(reps),
+        Ne=Ne,
+        L=L,
+        r_rate=r_rate,
+        gc_rate=gc_rate,
+        mu_rate=mu_rate,
+        burnin_factor=burnin_factor,
+        t_inv_factor=t_inv_factor,
+        **agg,
+    )
     print(f"\nSaved: {npz_path}")
-    print(f"  SLIM:  mean {slim_times.mean():.1f}s  "
-          f"(min {slim_times.min():.1f}, max {slim_times.max():.1f})")
-    print(f"  msinv: mean {msinv_times.mean():.3f}s  "
-          f"(min {msinv_times.min():.3f}, max {msinv_times.max():.3f})")
+    print(
+        f"  SLIM:  mean {slim_times.mean():.1f}s  "
+        f"(min {slim_times.min():.1f}, max {slim_times.max():.1f})"
+    )
+    print(
+        f"  msinv: mean {msinv_times.mean():.3f}s  "
+        f"(min {msinv_times.min():.3f}, max {msinv_times.max():.3f})"
+    )
     print(f"  speedup: {slim_times.mean() / msinv_times.mean():.0f}x")
 
 

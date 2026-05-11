@@ -3,6 +3,7 @@
 The full bench (L=10 Mb on v12) is too slow for unit tests; we test
 the harness mechanics here and run the real bench manually in Task 3.
 """
+
 import json
 from pathlib import Path
 
@@ -36,7 +37,10 @@ def test_smoke_run_creates_outputs(tmp_path):
 def test_smoke_stats_has_expected_keys(tmp_path):
     out_dir = tmp_path / "rep_000"
     run_pilot_rep(
-        out_dir=out_dir, rep=0, L=50_000, seed=12345,
+        out_dir=out_dir,
+        rep=0,
+        L=50_000,
+        seed=12345,
     )
     z = np.load(out_dir / "stats.npz", allow_pickle=False)
     keys = set(z.files)

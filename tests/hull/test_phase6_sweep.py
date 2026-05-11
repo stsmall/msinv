@@ -27,8 +27,15 @@ def _logistic_pt_discrete(t, s, f0):
 def test_t1_det_logistic_per_gen_within_1e6():
     """T1: DetOnly, panmictic-on-S, no flux. Trajectory matches discrete logistic."""
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=500.0, f0=0.01,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=500.0,
+        f0=0.01,
         partial_sweep_final_freq=1.0,
     )
     rust_sw = sw.to_rust()
@@ -38,14 +45,13 @@ def test_t1_det_logistic_per_gen_within_1e6():
     # (samples with t > t_origin, populated when f0 > 1/(2N)) holds
     # post-window stochastic neutral drift values that don't match
     # the deterministic-logistic closed form.
-    sel_samples = [(t, f) for (t, f) in samples
-                   if sw.tau <= t <= sw.t_origin + 1e-9]
+    sel_samples = [(t, f) for (t, f) in samples if sw.tau <= t <= sw.t_origin + 1e-9]
     # Spot-check at 25%, 50%, 75% along the selection phase
     for frac in [0.25, 0.5, 0.75]:
         i = int(len(sel_samples) * frac)
         sample_t, freq = sel_samples[i]
         forward_t = sw.t_origin - sample_t
-        observed = freq[0][1]   # (S, A) class
+        observed = freq[0][1]  # (S, A) class
         expected = _logistic_pt_discrete(forward_t, sw.s, sw.f0)
         assert abs(observed - expected) < 1e-9, (
             f"at frac {frac}, t={sample_t}: obs={observed}, exp={expected}"
@@ -60,9 +66,17 @@ def test_t2_stoch_fixation_proportion():
     fixations = 0
     for r in range(n_reps):
         sw = Sweep(
-            x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-            mode="Stochastic", s=s, t_origin=2_000.0, f0=1.0/(2*5_000),
-            partial_sweep_final_freq=0.95, seed=r + 1,
+            x_sel=50_000.0,
+            tau=0.0,
+            origin_pop=0,
+            origin_kary="S",
+            target_inv=0,
+            mode="Stochastic",
+            s=s,
+            t_origin=2_000.0,
+            f0=1.0 / (2 * 5_000),
+            partial_sweep_final_freq=0.95,
+            seed=r + 1,
         )
         rust_sw = sw.to_rust()
         rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.0], pop_sizes=[5_000.0])
@@ -89,7 +103,7 @@ def test_t3_hitchhiking_footprint_kim_stephan():
     s = 0.05
     L = 100_000.0
     x_sel = L / 2
-    t_origin = (2.0 / s) * math.log(2.0 * Ne)   # sojourn time
+    t_origin = (2.0 / s) * math.log(2.0 * Ne)  # sojourn time
     n_samples = 30
     n_reps = 15
     r = 1e-7
@@ -104,7 +118,7 @@ def test_t3_hitchhiking_footprint_kim_stephan():
 
     def run_pair(rep_seed, with_sweep):
         sw_kwargs = dict(
-            sample_config={('S', 0): n_samples},
+            sample_config={("S", 0): n_samples},
             demography=Demography(pop_sizes=[Ne]),
             sequence_length=L,
             recombination_rate=r,
@@ -112,10 +126,16 @@ def test_t3_hitchhiking_footprint_kim_stephan():
         )
         if with_sweep:
             sw = Sweep(
-                x_sel=x_sel, tau=0.0, origin_pop=0, origin_kary="S",
+                x_sel=x_sel,
+                tau=0.0,
+                origin_pop=0,
+                origin_kary="S",
                 target_inv=0,
-                mode="Deterministic", s=s, t_origin=t_origin,
-                f0=1.0/(2*Ne), partial_sweep_final_freq=1.0,
+                mode="Deterministic",
+                s=s,
+                t_origin=t_origin,
+                f0=1.0 / (2 * Ne),
+                partial_sweep_final_freq=1.0,
             )
             sim = HullSimulator(sweeps=[sw], **sw_kwargs)
         else:
@@ -132,8 +152,8 @@ def test_t3_hitchhiking_footprint_kim_stephan():
             w_hi = min(L, x_sel + d + 100.0)
             # tskit diversity(windows=...) needs breakpoints spanning [0, L]
             wins = [0.0, w_lo, w_hi, L]
-            with_pi.append(ts_w.diversity(windows=wins, mode='branch')[1])
-            no_pi.append(ts_n.diversity(windows=wins, mode='branch')[1])
+            with_pi.append(ts_w.diversity(windows=wins, mode="branch")[1])
+            no_pi.append(ts_n.diversity(windows=wins, mode="branch")[1])
         pi_w, pi_n = np.mean(with_pi), np.mean(no_pi)
         if pi_n > 0:
             pi_reductions.append((d, 1.0 - pi_w / pi_n))
@@ -149,8 +169,6 @@ def test_t3_hitchhiking_footprint_kim_stephan():
             f"d={d}: observed reduction {observed:.3f}, "
             f"predicted {predicted:.3f}, tol={tol:.3f}"
         )
-
-
 
 
 def test_t4_soft_sweep_partial_diversity_reduction():
@@ -172,18 +190,24 @@ def test_t4_soft_sweep_partial_diversity_reduction():
 
     def run_pair(rep_seed, with_sweep):
         sw_kwargs = dict(
-            sample_config={('S', 0): n_samples},
+            sample_config={("S", 0): n_samples},
             demography=Demography(pop_sizes=[Ne]),
             sequence_length=L,
-            recombination_rate=1e-12,   # near-zero so soft-sweep signature
-                                         # isn't washed out by recomb
+            recombination_rate=1e-12,  # near-zero so soft-sweep signature
+            # isn't washed out by recomb
             seed=rep_seed,
         )
         if with_sweep:
             sw = Sweep(
-                x_sel=x_sel, tau=0.0, origin_pop=0, origin_kary="S",
+                x_sel=x_sel,
+                tau=0.0,
+                origin_pop=0,
+                origin_kary="S",
                 target_inv=0,
-                mode="Deterministic", s=s, t_origin=t_origin, f0=f0,
+                mode="Deterministic",
+                s=s,
+                t_origin=t_origin,
+                f0=f0,
                 partial_sweep_final_freq=1.0,
             )
             sim = HullSimulator(sweeps=[sw], **sw_kwargs)
@@ -198,8 +222,8 @@ def test_t4_soft_sweep_partial_diversity_reduction():
         w_lo = max(0.0, x_sel - 100.0)
         w_hi = min(L, x_sel + 100.0)
         wins = [0.0, w_lo, w_hi, L]
-        with_pi.append(ts_w.diversity(windows=wins, mode='branch')[1])
-        no_pi.append(ts_n.diversity(windows=wins, mode='branch')[1])
+        with_pi.append(ts_w.diversity(windows=wins, mode="branch")[1])
+        no_pi.append(ts_n.diversity(windows=wins, mode="branch")[1])
 
     pi_w, pi_n = np.mean(with_pi), np.mean(no_pi)
     observed_reduction = 1.0 - pi_w / pi_n if pi_n > 0 else 0
@@ -217,13 +241,20 @@ def test_t5_partial_sweep_final_freq_assignment():
     from msinv.hull.demography import Demography
 
     sw = Sweep(
-        x_sel=50_000.0, tau=0.0, origin_pop=0, origin_kary="S", target_inv=0,
-        mode="Deterministic", s=0.05, t_origin=2_000.0, f0=0.001,
+        x_sel=50_000.0,
+        tau=0.0,
+        origin_pop=0,
+        origin_kary="S",
+        target_inv=0,
+        mode="Deterministic",
+        s=0.05,
+        t_origin=2_000.0,
+        f0=0.001,
         partial_sweep_final_freq=0.5,
     )
     n_samples = 400
     sim = HullSimulator(
-        sample_config={('S', 0): n_samples},
+        sample_config={("S", 0): n_samples},
         demography=Demography(pop_sizes=[10_000.0]),
         sequence_length=100_000.0,
         recombination_rate=1e-12,

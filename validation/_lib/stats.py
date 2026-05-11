@@ -3,6 +3,7 @@
 All implementations are tskit-native where possible. The H-stats and LD
 decay are hand-rolled in later tasks since tskit does not provide them.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -33,9 +34,9 @@ def window_stats(
     pi = {}
     tajd = {}
     for name in names:
-        pi[name] = ts.diversity(
-            [sample_sets[name]], windows=wins, mode="site"
-        ).reshape(-1)
+        pi[name] = ts.diversity([sample_sets[name]], windows=wins, mode="site").reshape(
+            -1
+        )
         tajd[name] = ts.Tajimas_D(
             [sample_sets[name]], windows=wins, mode="site"
         ).reshape(-1)
@@ -43,7 +44,7 @@ def window_stats(
     dxy = {}
     fst = {}
     for i, a in enumerate(names):
-        for b in names[i + 1:]:
+        for b in names[i + 1 :]:
             key = f"{a}_{b}"
             d = ts.divergence(
                 [sample_sets[a], sample_sets[b]], windows=wins, mode="site"
@@ -77,7 +78,10 @@ def sfs(
 
 
 def tree_shape_stats(
-    ts: tskit.TreeSequence, *, n_samples: int = 1000, seed: int = 0,
+    ts: tskit.TreeSequence,
+    *,
+    n_samples: int = 1000,
+    seed: int = 0,
 ) -> dict[str, np.ndarray]:
     """Distributions of TMRCA, total branch length, Colless imbalance.
 
@@ -158,10 +162,12 @@ def ld_decay(
         geno.append(var.genotypes.astype(np.int8))
         positions.append(var.site.position)
     if not geno:
-        return {"bin_edges": distance_bins,
-                "mean_r2": np.full(n_bins, np.nan),
-                "count": counts}
-    geno = np.array(geno)            # shape (S, n_samples)
+        return {
+            "bin_edges": distance_bins,
+            "mean_r2": np.full(n_bins, np.nan),
+            "count": counts,
+        }
+    geno = np.array(geno)  # shape (S, n_samples)
     positions = np.array(positions)  # shape (S,)
     n_sites = len(positions)
 
@@ -211,8 +217,12 @@ def hstats_from_haps(haps: np.ndarray) -> dict[str, float]:
     """
     n = haps.shape[0]
     if n == 0:
-        return {"H1": float("nan"), "H12": float("nan"),
-                "H2": float("nan"), "H2_over_H1": float("nan")}
+        return {
+            "H1": float("nan"),
+            "H12": float("nan"),
+            "H2": float("nan"),
+            "H2_over_H1": float("nan"),
+        }
     # Pack each row to a tuple so we can count duplicates
     keys = [tuple(row.tolist()) for row in haps]
     counts: dict[tuple, int] = {}

@@ -30,4 +30,5 @@ from .hull import (
     Demography,
 )
 
+__all__ = ["HullSimulator", "InversionSpec", "Sweep", "Demography"]
 __version__ = "0.3.0"

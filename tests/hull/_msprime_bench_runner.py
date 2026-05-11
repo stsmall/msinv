@@ -71,8 +71,7 @@ SCENARIOS["n1"] = {
 
 def _samples_by_pop(ts, n_pops: int):
     populations = ts.tables.nodes.population[ts.samples()]
-    return [
-        ts.samples()[populations == p].tolist() for p in range(n_pops)]
+    return [ts.samples()[populations == p].tolist() for p in range(n_pops)]
 
 
 def _make_n2_msinv(seed: int):
@@ -144,8 +143,7 @@ def _make_n3_msprime(seed: int):
     demo.set_migration_rate(source="B", dest="A", rate=1e-4)
     # mass_migration with proportion=1.0, NOT add_population_split (which
     # auto-derives growth/size resets that don't match msinv ej semantics).
-    demo.add_mass_migration(
-        time=2000.0, source="B", dest="A", proportion=1.0)
+    demo.add_mass_migration(time=2000.0, source="B", dest="A", proportion=1.0)
     # Zero all migration at T=2000 to match msinv's ej semantics: the ej
     # event zeros migration to/from the source population.  Without this,
     # msprime keeps M[B][A]=1e-4 active above T=2000, sending lineages to
@@ -176,10 +174,8 @@ SCENARIOS["n3"] = {
 
 def _make_n4_msinv(seed: int):
     demo = Demography(pop_sizes=[10000.0])
-    demo.add_population_size_change(
-        time=1000.0, population=0, new_size=1000.0)
-    demo.add_population_size_change(
-        time=2000.0, population=0, new_size=10000.0)
+    demo.add_population_size_change(time=1000.0, population=0, new_size=1000.0)
+    demo.add_population_size_change(time=2000.0, population=0, new_size=10000.0)
     ts = HullSimulator(
         samples=10,
         demography=demo,
@@ -195,9 +191,11 @@ def _make_n4_msprime(seed: int):
     demo = msprime.Demography()
     demo.add_population(name="A", initial_size=20000.0)
     demo.add_population_parameters_change(
-        time=1000.0, initial_size=2000.0, population="A")
+        time=1000.0, initial_size=2000.0, population="A"
+    )
     demo.add_population_parameters_change(
-        time=2000.0, initial_size=20000.0, population="A")
+        time=2000.0, initial_size=20000.0, population="A"
+    )
     ts = msprime.sim_ancestry(
         samples=10,
         demography=demo,
@@ -220,8 +218,7 @@ SCENARIOS["n4"] = {
 
 def _make_n5_msinv(seed: int):
     demo = Demography(pop_sizes=[10000.0])
-    demo.add_growth_rate_change(
-        time=0.0, population=0, growth_rate=0.0005)
+    demo.add_growth_rate_change(time=0.0, population=0, growth_rate=0.0005)
     ts = HullSimulator(
         samples=10,
         demography=demo,
@@ -235,8 +232,7 @@ def _make_n5_msinv(seed: int):
 
 def _make_n5_msprime(seed: int):
     demo = msprime.Demography()
-    demo.add_population(
-        name="A", initial_size=20000.0, growth_rate=0.0005)
+    demo.add_population(name="A", initial_size=20000.0, growth_rate=0.0005)
     ts = msprime.sim_ancestry(
         samples=10,
         demography=demo,
@@ -261,9 +257,9 @@ def _make_n6_msinv(seed: int):
     demo = Demography(
         pop_sizes=[10000.0, 10000.0, 10000.0],
         migration_matrix=[
-            [0.0,  5e-5, 5e-5],
-            [5e-5, 0.0,  5e-5],
-            [5e-5, 5e-5, 0.0 ],
+            [0.0, 5e-5, 5e-5],
+            [5e-5, 0.0, 5e-5],
+            [5e-5, 5e-5, 0.0],
         ],
     )
     demo.add_population_split(time=3000.0, derived=[1, 2], ancestral=0)
@@ -283,14 +279,11 @@ def _make_n6_msprime(seed: int):
     demo.add_population(name="A", initial_size=20000.0)
     demo.add_population(name="B", initial_size=20000.0)
     demo.add_population(name="C", initial_size=20000.0)
-    pairs = [("A", "B"), ("B", "A"), ("A", "C"),
-             ("C", "A"), ("B", "C"), ("C", "B")]
+    pairs = [("A", "B"), ("B", "A"), ("A", "C"), ("C", "A"), ("B", "C"), ("C", "B")]
     for src, dst in pairs:
         demo.set_migration_rate(source=src, dest=dst, rate=5e-5)
-    demo.add_mass_migration(
-        time=3000.0, source="B", dest="A", proportion=1.0)
-    demo.add_mass_migration(
-        time=3000.0, source="C", dest="A", proportion=1.0)
+    demo.add_mass_migration(time=3000.0, source="B", dest="A", proportion=1.0)
+    demo.add_mass_migration(time=3000.0, source="C", dest="A", proportion=1.0)
     # Match msinv ej semantics: msprime add_mass_migration leaves the
     # migration matrix active, so without this line A↔B and A↔C migrate
     # above T=3000 (populated A → empty B/C), inflating Ne. Order
@@ -337,14 +330,18 @@ def _stats_from_ts(ts, sample_sets, compute_afs: bool):
     if compute_afs:
         if sample_sets is None:
             afs = ts.allele_frequency_spectrum(
-                mode="branch", polarised=True, span_normalise=True)
+                mode="branch", polarised=True, span_normalise=True
+            )
             for k in range(1, len(afs) - 1):
                 out[f"afs_bin_{k}"] = float(afs[k])
         else:
             for p, samples in enumerate(sample_sets):
                 afs = ts.allele_frequency_spectrum(
-                    sample_sets=[samples], mode="branch",
-                    polarised=True, span_normalise=True)
+                    sample_sets=[samples],
+                    mode="branch",
+                    polarised=True,
+                    span_normalise=True,
+                )
                 for k in range(1, len(afs) - 1):
                     out[f"afs_p{p}_bin_{k}"] = float(afs[k])
     return out
@@ -359,18 +356,17 @@ def _mean_pairwise_divergence(ts, sample_sets):
         return float(ts.divergence(sample_sets=sample_sets, mode="branch"))
     pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
     vals = [
-        float(ts.divergence(
-            sample_sets=[sample_sets[i], sample_sets[j]], mode="branch"))
+        float(
+            ts.divergence(sample_sets=[sample_sets[i], sample_sets[j]], mode="branch")
+        )
         for i, j in pairs
     ]
     return sum(vals) / len(vals)
 
 
-def _run_one_engine(scenario_name: str, engine: str,
-                    n_reps: int, seed_base: int):
+def _run_one_engine(scenario_name: str, engine: str, n_reps: int, seed_base: int):
     spec = SCENARIOS[scenario_name]
-    factory = (spec["make_msinv"] if engine == "msinv"
-               else spec["make_msprime"])
+    factory = spec["make_msinv"] if engine == "msinv" else spec["make_msprime"]
     compute_afs = spec["compute_afs"]
     # warm-up rep, untimed (engine import / .so warm-up)
     factory(seed=seed_base)
@@ -393,11 +389,11 @@ def main():
     ap.add_argument("--seed-base", type=int, default=0)
     args = ap.parse_args()
     per_rep_stats, per_rep_seconds = _run_one_engine(
-        args.scenario, args.engine, args.n_reps, args.seed_base)
+        args.scenario, args.engine, args.n_reps, args.seed_base
+    )
     json.dump(
-        {"per_rep_stats": per_rep_stats,
-         "per_rep_seconds": per_rep_seconds},
-        sys.stdout)
+        {"per_rep_stats": per_rep_stats, "per_rep_seconds": per_rep_seconds}, sys.stdout
+    )
     sys.stdout.write("\n")
 
 

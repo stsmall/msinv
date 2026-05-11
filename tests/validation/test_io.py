@@ -1,9 +1,12 @@
 """Tests for save/load of per-rep stats + aggregation."""
+
 import numpy as np
 import pytest
 
 from validation._lib.io import (
-    save_rep_stats, load_rep_stats, aggregate_track,
+    save_rep_stats,
+    load_rep_stats,
+    aggregate_track,
 )
 
 
@@ -35,10 +38,8 @@ def test_aggregate_three_reps(tmp_path):
 
 def test_aggregate_skips_missing(tmp_path):
     track_dir = tmp_path / "track_partial"
-    save_rep_stats(track_dir / "rep_000" / "stats.npz",
-                    pi__A=np.array([1.0]))
-    save_rep_stats(track_dir / "rep_002" / "stats.npz",
-                    pi__A=np.array([3.0]))
+    save_rep_stats(track_dir / "rep_000" / "stats.npz", pi__A=np.array([1.0]))
+    save_rep_stats(track_dir / "rep_002" / "stats.npz", pi__A=np.array([3.0]))
     agg = aggregate_track(track_dir)
     np.testing.assert_array_equal(agg["pi__A"], [[1.0], [3.0]])
     assert agg["__rep_indices__"].tolist() == [0, 2]

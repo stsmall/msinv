@@ -10,6 +10,8 @@ Spec: docs/superpowers/specs/2026-04-30-sweep-per-segment-hitchhiking-design.md
 
 import statistics
 
+import tskit
+
 from msinv.hull.simulator import HullSimulator
 from msinv.hull.sweep import Sweep
 
@@ -19,9 +21,9 @@ def _sim_factory(seed: int) -> "tskit.TreeSequence":
         x_sel=50_000.0,
         tau=1000.0,
         origin_pop=0,
-        origin_kary='S',
+        origin_kary="S",
         target_inv=0,
-        mode='Deterministic',
+        mode="Deterministic",
         s=0.05,
         t_origin=1500.0,
         f0=1.0 / (2 * 10000),
@@ -100,13 +102,15 @@ def test_ps2_spatial_profile_decays_monotonically():
     # Strict test: pi at bin 0 (nearest sweep) < pi at bin 9 (farthest)
     assert bin_means[0] < bin_means[9], (
         f"Bin 0 (nearest x_sel) should have lower pi than bin 9 (farthest); "
-        f"got {bin_means[0]:.1f} vs {bin_means[9]:.1f}")
+        f"got {bin_means[0]:.1f} vs {bin_means[9]:.1f}"
+    )
     # Sanity: bin 0 should be at least 30% reduced relative to bin 9
     # (strong sweep with s=0.05 produces ~50% reduction at d≈0)
     reduction = 1.0 - bin_means[0] / bin_means[9]
     assert reduction > 0.3, (
         f"Expected ≥30% pi reduction at sweep center vs edge; "
-        f"got {reduction*100:.1f}%")
+        f"got {reduction * 100:.1f}%"
+    )
 
 
 def test_ps3_at_x_sel_pi_matches_kim_stephan_anchor():
@@ -135,12 +139,14 @@ def test_ps3_at_x_sel_pi_matches_kim_stephan_anchor():
         ts = _sim_factory(seed=r)
         # Narrow window at x_sel (1kb each side)
         center = ts.diversity(
-            windows=[0.0, 49_500.0, 50_500.0, 100_000.0], mode="branch")
-        c_pi = center[1]   # middle bin = [49_500, 50_500) near x_sel
+            windows=[0.0, 49_500.0, 50_500.0, 100_000.0], mode="branch"
+        )
+        c_pi = center[1]  # middle bin = [49_500, 50_500) near x_sel
         pi_at_xsel.append(c_pi)
     mean_x = statistics.mean(pi_at_xsel)
     print(f"PS3 mean pi at x_sel: {mean_x:.1f}, neutral expectation: {neutral_pi}")
     ratio = mean_x / neutral_pi
     assert ratio < 0.10, (
         f"pi at x_sel should be <10% of neutral (4N={neutral_pi}); "
-        f"got pi={mean_x:.1f}, ratio={ratio*100:.1f}%")
+        f"got pi={mean_x:.1f}, ratio={ratio * 100:.1f}%"
+    )

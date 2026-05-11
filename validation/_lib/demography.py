@@ -7,6 +7,7 @@ change. All Ne(t) stair-steps from v11 are preserved.
 
 Spec: docs/superpowers/specs/2026-05-09-msinv-validation-suite-design.md
 """
+
 from __future__ import annotations
 
 from msinv import Demography
@@ -48,15 +49,15 @@ def v12_msinv() -> Demography:
     d = Demography(pop_sizes=[NE_K_PRESENT, NE_F_PRESENT])
 
     # ---- K Ne(t): ABC stair-step (t=200 dip dropped per v11 lock) --
-    d.add_event(("en", 400.0,   0, 161_546))
-    d.add_event(("en", 600.0,   0, 152_453))
+    d.add_event(("en", 400.0, 0, 161_546))
+    d.add_event(("en", 600.0, 0, 152_453))
     d.add_event(("en", 1_400.0, 0, 174_800))
     d.add_event(("en", 3_000.0, 0, 182_180))
     d.add_event(("en", 6_200.0, 0, 159_861))
 
     # ---- F Ne(t): ABC stair-step ----------------------------------
-    d.add_event(("en", 400.0,   1, 1_157_768))
-    d.add_event(("en", 600.0,   1, 205_260))
+    d.add_event(("en", 400.0, 1, 1_157_768))
+    d.add_event(("en", 600.0, 1, 205_260))
     d.add_event(("en", 1_000.0, 1, 1_374_810))
     d.add_event(("en", 1_400.0, 1, 674_766))
     d.add_event(("en", 3_000.0, 1, 340_074))

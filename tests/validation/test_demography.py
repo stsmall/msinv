@@ -1,13 +1,21 @@
 """Tests for v12 demography builder."""
+
 import pytest
 
 from msinv import Demography
 from validation._lib.demography import (
     v12_msinv,
-    NE_K_PRESENT, NE_F_PRESENT, NE_F_AT_SPLIT,
-    NE_KF_AT_MERGE, NE_ANC_DEEP,
-    T_KF_SPLIT, T_ANC_RENAME,
-    T_INV_3RA, P_INV_F_3RA, P_INV_K_3RA, P_INV_ANC_3RA,
+    NE_K_PRESENT,
+    NE_F_PRESENT,
+    NE_F_AT_SPLIT,
+    NE_KF_AT_MERGE,
+    NE_ANC_DEEP,
+    T_KF_SPLIT,
+    T_ANC_RENAME,
+    T_INV_3RA,
+    P_INV_F_3RA,
+    P_INV_K_3RA,
+    P_INV_ANC_3RA,
     GAMMA_3RA,
 )
 
@@ -44,9 +52,9 @@ def test_v12_has_kf_split_event():
     d = v12_msinv()
     events = list(d.events)
     ej_events = [e for e in events if e[0] == "ej"]
-    assert any(e[1] == T_KF_SPLIT and e[2] == 1 and e[3] == 0
-               for e in ej_events), (
-        f"expected ('ej', {T_KF_SPLIT}, 1, 0) — got ej events: {ej_events}")
+    assert any(e[1] == T_KF_SPLIT and e[2] == 1 and e[3] == 0 for e in ej_events), (
+        f"expected ('ej', {T_KF_SPLIT}, 1, 0) — got ej events: {ej_events}"
+    )
 
 
 def test_v12_has_anc_deep_size_change():
@@ -54,9 +62,9 @@ def test_v12_has_anc_deep_size_change():
     d = v12_msinv()
     events = list(d.events)
     en_events = [e for e in events if e[0] == "en"]
-    assert any(e[1] == T_ANC_RENAME and e[2] == 0 and e[3] == NE_ANC_DEEP
-               for e in en_events), (
-        f"expected ('en', {T_ANC_RENAME}, 0, {NE_ANC_DEEP}) — got: {en_events}")
+    assert any(
+        e[1] == T_ANC_RENAME and e[2] == 0 and e[3] == NE_ANC_DEEP for e in en_events
+    ), f"expected ('en', {T_ANC_RENAME}, 0, {NE_ANC_DEEP}) — got: {en_events}"
 
 
 def test_v12_no_migration_events():

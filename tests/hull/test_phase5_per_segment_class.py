@@ -26,19 +26,25 @@ from .conftest import NEGLIGIBLE_GAMMA
 # Initial-segment construction
 # ---------------------------------------------------------------------------
 
+
 def test_sample_segments_split_at_inv_bounds():
     """A sample with bp_left=3000, bp_right=7000 in L=10000 should have 3
     initial segments: outside-left ('P'), inside-inv ('S' or 'I'),
     outside-right ('P')."""
     sim = HullSimulator(
-        n_std=2, n_inv=2,
-        population_size=1000, sequence_length=10000.0,
-        p_inv=0.5, t_inv=10_000.0,
-        bp_left=3000.0, bp_right=7000.0,
+        n_std=2,
+        n_inv=2,
+        population_size=1000,
+        sequence_length=10000.0,
+        p_inv=0.5,
+        t_inv=10_000.0,
+        bp_left=3000.0,
+        bp_right=7000.0,
         recombination_rate=1e-8,
         seed=42,
     )
     from msinv.hull.tables import TableBuilder
+
     tables = TableBuilder(sequence_length=10000.0, num_populations=1)
     active = sim._initial_lineages(tables)
     # First lineage is class S
@@ -48,18 +54,24 @@ def test_sample_segments_split_at_inv_bounds():
     while seg is not None:
         classes.append((seg.left, seg.right, seg.branch_class))
         seg = seg.next
-    assert classes == [(0.0, 3000.0, 'P'), (3000.0, 7000.0, 'S'), (7000.0, 10000.0, 'P')]
+    assert classes == [
+        (0.0, 3000.0, "P"),
+        (3000.0, 7000.0, "S"),
+        (7000.0, 10000.0, "P"),
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Cross-class T_MRCA depends on POSITION
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
 def test_inside_class_barrier_outside_panmictic(seed):
     """Cross-class T_MRCA should be >= t_inv ONLY inside the inversion;
     outside positions can coalesce panmictically."""
-    n_std = 4; n_inv = 4
+    n_std = 4
+    n_inv = 4
     Ne = 1000
     t_inv = 4.0 * 2 * Ne  # 8000 gen
     L = 10000.0
@@ -67,10 +79,14 @@ def test_inside_class_barrier_outside_panmictic(seed):
     bp_right = 7000.0
 
     sim = HullSimulator(
-        n_std=n_std, n_inv=n_inv,
-        population_size=Ne, sequence_length=L,
-        p_inv=0.5, t_inv=t_inv,
-        bp_left=bp_left, bp_right=bp_right,
+        n_std=n_std,
+        n_inv=n_inv,
+        population_size=Ne,
+        sequence_length=L,
+        p_inv=0.5,
+        t_inv=t_inv,
+        bp_left=bp_left,
+        bp_right=bp_right,
         recombination_rate=1e-8,
         seed=seed,
     )
@@ -105,42 +121,53 @@ def test_inside_class_barrier_outside_panmictic(seed):
     # margin so stochastic flux outcomes don't trip the barrier check.
     assert inside_violations <= 20, (
         f"inside-inv class barrier violated {inside_violations} times "
-        f"— far more than a single flux-mediated MRCA would produce")
+        f"— far more than a single flux-mediated MRCA would produce"
+    )
     # Outside-inv: most cross-class MRCAs should be MUCH younger than t_inv
     # (panmictic coal). At Ne=1000 and t_inv=8000, we expect mean T_MRCA
     # ~ 2*Ne = 2000 << 8000.
     assert outside_below_t_inv > 0, (
         "Outside-inv cross-class MRCAs should be able to occur before "
         "t_inv (panmictic). Got 0 — class barrier is being incorrectly "
-        "applied to outside-inv positions.")
+        "applied to outside-inv positions."
+    )
     frac = outside_below_t_inv / max(outside_total, 1)
     assert frac > 0.5, (
         f"Outside-inv: only {frac:.0%} of cross-class MRCAs are below "
         f"t_inv; expected most (panmictic). Class barrier may still be "
-        f"applied globally.")
+        f"applied globally."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Within-class T_MRCA panmictic outside, structured inside
 # ---------------------------------------------------------------------------
 
+
 def test_within_class_outside_panmictic():
     """For S-S samples: inside the inversion they're in the S sub-pop
     (effective Ne·p_std), outside they're in the full pop. So outside
     T_MRCA should be ~2× inside T_MRCA when p_std=0.5."""
-    n_std = 5; n_inv = 5
+    n_std = 5
+    n_inv = 5
     Ne = 1000
     t_inv = 8_000.0  # 4*Ne; deep enough that class barrier doesn't constrain S-S
     L = 10000.0
-    bp_left = 2500.0; bp_right = 7500.0
+    bp_left = 2500.0
+    bp_right = 7500.0
 
-    inside_T = []; outside_T = []
+    inside_T = []
+    outside_T = []
     for seed in range(15):
         sim = HullSimulator(
-            n_std=n_std, n_inv=n_inv,
-            population_size=Ne, sequence_length=L,
-            p_inv=0.5, t_inv=t_inv,
-            bp_left=bp_left, bp_right=bp_right,
+            n_std=n_std,
+            n_inv=n_inv,
+            population_size=Ne,
+            sequence_length=L,
+            p_inv=0.5,
+            t_inv=t_inv,
+            bp_left=bp_left,
+            bp_right=bp_right,
             recombination_rate=1e-8,
             seed=seed,
         )
@@ -166,20 +193,25 @@ def test_within_class_outside_panmictic():
     # Expectation: inside ~ 2·Ne·p_std = 1000, outside ~ 2·Ne = 2000
     # → inside/outside ratio ~ 0.5. Allow generous tolerance.
     assert 0.3 < ratio < 0.8, (
-        f"Inside/outside within-S T_MRCA ratio = {ratio:.2f}, "
-        f"expected ~0.5 (= p_std).")
+        f"Inside/outside within-S T_MRCA ratio = {ratio:.2f}, expected ~0.5 (= p_std)."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tree-sequence well-formedness with per-segment class
 # ---------------------------------------------------------------------------
 
+
 def test_treeseq_valid_with_inv_subregion():
     sim = HullSimulator(
-        n_std=4, n_inv=4,
-        population_size=1000, sequence_length=20000.0,
-        p_inv=0.5, t_inv=8000.0,
-        bp_left=5000.0, bp_right=15000.0,
+        n_std=4,
+        n_inv=4,
+        population_size=1000,
+        sequence_length=20000.0,
+        p_inv=0.5,
+        t_inv=8000.0,
+        bp_left=5000.0,
+        bp_right=15000.0,
         recombination_rate=1e-8,
         gene_conversion_rate=NEGLIGIBLE_GAMMA,
         seed=42,

@@ -65,3 +65,35 @@ python-source = "."
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 600
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+exclude = [
+    ".venv",
+    ".tmp",
+    "build",
+    "dist",
+    "rust/target",
+    ".claude/worktrees",
+]
+
+[tool.ruff.lint]
+# Sensible defaults for a scientific Python codebase: pycodestyle errors,
+# pyflakes, basic upgrades, and bug-likely checks. Skip noisy stylistic
+# rules (E501 line-too-long handled separately, D docstring rules off).
+select = ["E", "F", "W", "B", "UP"]
+# Numerical / scientific code often has long expressions and intentional
+# ambiguous names (alpha/beta/N/T). Whitelist common ones.
+ignore = [
+    "E501",  # line too long — formatter's job, not the linter's
+    "E741",  # ambiguous variable name (e.g. l, I) — common in math
+    "E731",  # lambda assignment — sometimes clearer in callbacks
+    "B008",  # function calls in argument defaults — common in scientific configs
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests routinely import for side-effect and use long fixtures
+"tests/**/*.py" = ["F401", "F811"]
+# Scratch scripts in .tmp/ should never gate commits
+".tmp/**/*.py" = ["ALL"]

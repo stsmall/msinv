@@ -15,20 +15,25 @@ class TableBuilder:
         for _ in range(num_populations):
             self.tc.populations.add_row()
 
-    def add_sample(self, time: float = 0.0, population: int = 0,
-                   metadata: bytes = b'') -> int:
+    def add_sample(
+        self, time: float = 0.0, population: int = 0, metadata: bytes = b""
+    ) -> int:
         return self.tc.nodes.add_row(
-            flags=tskit.NODE_IS_SAMPLE, time=time, population=population,
-            metadata=metadata)
+            flags=tskit.NODE_IS_SAMPLE,
+            time=time,
+            population=population,
+            metadata=metadata,
+        )
 
-    def add_internal(self, time: float, population: int = 0,
-                     metadata: bytes = b'') -> int:
+    def add_internal(
+        self, time: float, population: int = 0, metadata: bytes = b""
+    ) -> int:
         return self.tc.nodes.add_row(
-            flags=0, time=time, population=population, metadata=metadata)
+            flags=0, time=time, population=population, metadata=metadata
+        )
 
     def add_edge(self, left: float, right: float, parent: int, child: int):
-        self.tc.edges.add_row(left=left, right=right,
-                              parent=parent, child=child)
+        self.tc.edges.add_row(left=left, right=right, parent=parent, child=child)
 
     def finalize(self) -> tskit.TreeSequence:
         self.tc.sort()

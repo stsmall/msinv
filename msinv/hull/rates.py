@@ -9,6 +9,7 @@ Currently a STUB — future work will hook in demestats as the rate engine.
 
 try:
     import demestats  # noqa: F401
+
     _HAS_DEMESTATS = True
 except ImportError:
     _HAS_DEMESTATS = False
@@ -24,9 +25,9 @@ def coalescence_rate_same_class_pop(k: int, p_class: float, ne: float) -> float:
     return k * (k - 1) / 2.0 / max(p_class * ne, 1e-300)
 
 
-def recombination_rate_for_lineage(lineage, rho_per_unit: float,
-                                   bp_left: float, bp_right: float,
-                                   p_class_in_pop: float) -> float:
+def recombination_rate_for_lineage(
+    lineage, rho_per_unit: float, bp_left: float, bp_right: float, p_class_in_pop: float
+) -> float:
     """Effective recombination rate for one lineage.
 
     Out-of-inv intervals: full rho_per_unit per unit length.
@@ -45,9 +46,14 @@ def recombination_rate_for_lineage(lineage, rho_per_unit: float,
     return rate
 
 
-def gene_flux_rate_for_lineage(lineage, gamma: float, phi_func,
-                               bp_left: float, bp_right: float,
-                               p_other_in_pop: float) -> float:
+def gene_flux_rate_for_lineage(
+    lineage,
+    gamma: float,
+    phi_func,
+    bp_left: float,
+    bp_right: float,
+    p_other_in_pop: float,
+) -> float:
     """Gene-flux rate for in-inv segments of one lineage.
 
     Integrates gamma * phi(x) * p_other across in-inv portions of the

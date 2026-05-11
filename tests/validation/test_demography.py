@@ -88,6 +88,8 @@ def test_v12_msprime_returns_demography():
 
 
 def test_v12_msprime_has_two_pops():
+    """msprime Ne values are 2x msinv values (haploid-Ne convention for
+    ploidy=1; see CLAUDE.md and the docstring on v12_msprime)."""
     from validation._lib.demography import v12_msprime, NE_K_PRESENT, NE_F_PRESENT
     d = v12_msprime()
     names = {p.name for p in d.populations}
@@ -95,8 +97,8 @@ def test_v12_msprime_has_two_pops():
     assert "F" in names
     sizes = {p.name: p.initial_size for p in d.populations
              if p.name in ("K", "F")}
-    assert sizes["K"] == NE_K_PRESENT
-    assert sizes["F"] == NE_F_PRESENT
+    assert sizes["K"] == 2.0 * NE_K_PRESENT
+    assert sizes["F"] == 2.0 * NE_F_PRESENT
 
 
 def test_v12_msprime_has_kf_split():

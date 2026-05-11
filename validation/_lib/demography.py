@@ -95,57 +95,67 @@ def v12_msprime():
     Same events as v12_msinv() but expressed using msprime's API: named
     populations, population_parameters_change events, and a population
     split (msprime's natural representation of a backward-time join).
+
+    Ne values are 2x the msinv values per the CLAUDE.md convention:
+    msinv treats `population_size=N` as diploid Ne (per-pair coal rate
+    = 1/(2N)). msprime with ploidy=1 treats N as haploid Ne (per-pair
+    coal rate = 1/N). To match msinv's coalescent rates, msprime must
+    receive 2*N. Track 3 confirmed without the doubling: msinv tree
+    heights were 3x msprime tree heights (msprime's effective Ne was
+    half of msinv's). With the doubling, both engines see the same
+    per-pair coal rates.
     """
     import msprime
+    H = 2.0  # haploid-Ne doubling factor for msprime ploidy=1
     d = msprime.Demography()
-    d.add_population(name="K", initial_size=NE_K_PRESENT)
-    d.add_population(name="F", initial_size=NE_F_PRESENT)
-    d.add_population(name="KF", initial_size=NE_KF_AT_MERGE)
+    d.add_population(name="K", initial_size=H * NE_K_PRESENT)
+    d.add_population(name="F", initial_size=H * NE_F_PRESENT)
+    d.add_population(name="KF", initial_size=H * NE_KF_AT_MERGE)
     # ---- K Ne(t) stair-step ----
     d.add_population_parameters_change(
-        time=400, population="K", initial_size=161_546)
+        time=400, population="K", initial_size=H * 161_546)
     d.add_population_parameters_change(
-        time=600, population="K", initial_size=152_453)
+        time=600, population="K", initial_size=H * 152_453)
     d.add_population_parameters_change(
-        time=1_400, population="K", initial_size=174_800)
+        time=1_400, population="K", initial_size=H * 174_800)
     d.add_population_parameters_change(
-        time=3_000, population="K", initial_size=182_180)
+        time=3_000, population="K", initial_size=H * 182_180)
     d.add_population_parameters_change(
-        time=6_200, population="K", initial_size=159_861)
+        time=6_200, population="K", initial_size=H * 159_861)
     # ---- F Ne(t) stair-step ----
     d.add_population_parameters_change(
-        time=400, population="F", initial_size=1_157_768)
+        time=400, population="F", initial_size=H * 1_157_768)
     d.add_population_parameters_change(
-        time=600, population="F", initial_size=205_260)
+        time=600, population="F", initial_size=H * 205_260)
     d.add_population_parameters_change(
-        time=1_000, population="F", initial_size=1_374_810)
+        time=1_000, population="F", initial_size=H * 1_374_810)
     d.add_population_parameters_change(
-        time=1_400, population="F", initial_size=674_766)
+        time=1_400, population="F", initial_size=H * 674_766)
     d.add_population_parameters_change(
-        time=3_000, population="F", initial_size=340_074)
+        time=3_000, population="F", initial_size=H * 340_074)
     d.add_population_parameters_change(
-        time=6_200, population="F", initial_size=NE_F_AT_SPLIT)
+        time=6_200, population="F", initial_size=H * NE_F_AT_SPLIT)
     # ---- K-F split: K and F merge backward into KF ----
     d.add_population_split(
         time=T_KF_SPLIT, derived=["K", "F"], ancestral="KF")
     # ---- KF Ne(t) trajectory ----
     d.add_population_parameters_change(
-        time=13_000, population="KF", initial_size=81_072)
+        time=13_000, population="KF", initial_size=H * 81_072)
     d.add_population_parameters_change(
-        time=20_000, population="KF", initial_size=95_546)
+        time=20_000, population="KF", initial_size=H * 95_546)
     d.add_population_parameters_change(
-        time=30_000, population="KF", initial_size=73_250)
+        time=30_000, population="KF", initial_size=H * 73_250)
     d.add_population_parameters_change(
-        time=40_000, population="KF", initial_size=50_000)
+        time=40_000, population="KF", initial_size=H * 50_000)
     d.add_population_parameters_change(
-        time=50_000, population="KF", initial_size=50_000)
+        time=50_000, population="KF", initial_size=H * 50_000)
     d.add_population_parameters_change(
-        time=60_000, population="KF", initial_size=50_000)
+        time=60_000, population="KF", initial_size=H * 50_000)
     d.add_population_parameters_change(
-        time=70_000, population="KF", initial_size=50_000)
+        time=70_000, population="KF", initial_size=H * 50_000)
     # ---- KF -> Anc deep change ----
     d.add_population_parameters_change(
-        time=T_ANC_RENAME, population="KF", initial_size=NE_ANC_DEEP)
+        time=T_ANC_RENAME, population="KF", initial_size=H * NE_ANC_DEEP)
     # add_population_split internally appends activation/deactivation events
     # that can land out of time-sorted order relative to the manually added
     # stair-steps.  sort_events() is the msprime-documented fix.

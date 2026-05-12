@@ -1533,8 +1533,28 @@ impl HullSimulator {
                     if bucket.is_empty() { continue; }
                     let pick = rng.random_range(0..bucket.len());
                     let idx = bucket[pick] as usize;
+                    let migrating_uid = active[idx].uid;
                     active[idx].population = dst;
-                    buckets.on_pop_change(active[idx].uid, dst, idx as u32);
+                    buckets.on_pop_change(migrating_uid, dst, idx as u32);
+                    // Backward migration OUT of an active sweep's
+                    // origin_pop: the lineage's chromosome before this
+                    // migration (i.e., its forward-time ancestor in the
+                    // non-origin pop) did not carry the swept allele.
+                    // Drop the A-tag so it isn't swept up by the
+                    // still_a force-coalesce at t_origin. Without this
+                    // drop, A-tagged migrants in non-origin pops collapse
+                    // into the de novo founder, capping TMRCA for any
+                    // non-origin samples that descend from them and
+                    // producing a spurious π valley across non-origin
+                    // populations (Track 4 2-pop bug, 2026-05-12).
+                    if let Some(sw) = finalized_sweeps.iter().find(|s| s.covers(t)) {
+                        if src == sw.origin_pop && dst != sw.origin_pop {
+                            if a_tag.remove(&migrating_uid).is_some() {
+                                buckets.clear_tag(migrating_uid);
+                                active[idx].a_tag = None;
+                            }
+                        }
+                    }
                     engine_dirty = true;
                     if any_barrier && !flux_dirty && idx < flux_per_lin.len() {
                         if cache_dirty {

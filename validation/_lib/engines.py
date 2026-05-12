@@ -70,6 +70,14 @@ def msprime_run(
         recombination_rate=float(r),
         random_seed=int(seed),
         ploidy=1,
+        # record_full_arg=True would match msinv's num_trees convention
+        # (msinv records every recombination boundary; msprime default
+        # simplifies non-topology-changing ones) but costs 4x wall + 4x
+        # RAM at L=5 Mb. Verified at L=100kb pilot: full_arg matches
+        # msinv within ~1%; default is ~10% lower. Decision: drop the
+        # flag, treat num_trees as a known convention difference; all
+        # other stats (pi, dxy, Fst, TajD, tree-shape, LD) are
+        # unaffected.
     )
     ts = msprime.sim_mutations(
         ts_raw, rate=float(mu), random_seed=int(seed) + 1, keep=True,

@@ -32,7 +32,7 @@ T_KF_SPLIT = 9_194
 T_ANC_RENAME = 87_163
 
 # Inversion (3Ra)
-T_INV_3RA = 330_000
+T_INV_3RA = 300_000
 P_INV_F_3RA = 0.73
 P_INV_K_3RA = 0.0
 P_INV_ANC_3RA = 0.30
@@ -210,5 +210,147 @@ def v12_discoal_events():
         "-en", t(70_000.0), "0", sz(50_000),
         # Anc deep change
         "-en", t(T_ANC_RENAME), "0", sz(NE_ANC_DEEP),
+    ]
+    return args
+
+
+# ====================================================================
+# v_simple — 2-population split with optional migration. Used by Tracks
+# 1, 2_a/b, 3_a/b, 4, 6.
+#
+# Single biological "fact": a t_split = 15,000 gen split with N_anc =
+# 1e6 ancestrally and asymmetric present-day Ne (1e6 in pop 0, 1e5 in
+# pop 1). No stair-steps. Migration symmetric, on or off.
+# ====================================================================
+
+V_SIMPLE_T_SPLIT = 15_000.0
+V_SIMPLE_T_INV = 30_000.0  # older than t_split; inversion is ancestral
+V_SIMPLE_NE_ANC = 100_000
+V_SIMPLE_NE_ANC_BN = 10_000  # Option B: bottlenecked ancestor (10× smaller)
+V_SIMPLE_NE_POP0 = 100_000
+V_SIMPLE_NE_POP1 = 10_000
+V_SIMPLE_M_DEFAULT = 1.0e-5  # symmetric per-generation rate; 4Nm≈4 in pop0
+
+# Reference N0 for discoal CLI scaling — match pop 0 present-day Ne so
+# the "big" pop is the unit baseline.
+V_SIMPLE_DISCOAL_N0 = V_SIMPLE_NE_POP0  # 100,000
+
+
+def v_simple_msinv(
+    *,
+    two_pop: bool = True,
+    migration: float = 0.0,
+    bottleneck: bool = False,
+) -> Demography:
+    """v_simple msinv.Demography.
+
+    1-pop mode (``two_pop=False``): single population, Ne = 1e5
+    constant, no split, no migration (Track 1).
+
+    2-pop mode (``two_pop=True``): pop 0 (Ne=1e5) and pop 1 (Ne=1e4)
+    join backward at ``V_SIMPLE_T_SPLIT`` into ancestral pop. Ancestral
+    Ne is 1e5 by default (Option A); pass ``bottleneck=True`` to use
+    a tighter ancestral Ne of 1e4 (Option B — narrower founder, faster
+    deep coalescence).
+
+    ``migration`` is the symmetric per-generation rate; 0 ⇒ strict
+    isolation (sub-scenarios `_a`). msinv's matrix M[i][j] is "fraction
+    of pop i absorbing from pop j" per generation.
+    """
+    if not two_pop:
+        return Demography(pop_sizes=[V_SIMPLE_NE_POP0])
+
+    ne_anc = V_SIMPLE_NE_ANC_BN if bottleneck else V_SIMPLE_NE_ANC
+    if migration > 0.0:
+        mig = [[0.0, float(migration)], [float(migration), 0.0]]
+    else:
+        mig = None
+    d = Demography(
+        pop_sizes=[V_SIMPLE_NE_POP0, V_SIMPLE_NE_POP1],
+        migration_matrix=mig,
+    )
+    d.add_event(("ej", V_SIMPLE_T_SPLIT, 1, 0))
+    d.add_event(("en", V_SIMPLE_T_SPLIT, 0, ne_anc))
+    if migration > 0.0:
+        d.add_event(("em", V_SIMPLE_T_SPLIT, 0, 1, 0.0))
+        d.add_event(("em", V_SIMPLE_T_SPLIT, 1, 0, 0.0))
+    return d
+
+
+def v_simple_msprime(
+    *,
+    two_pop: bool = True,
+    migration: float = 0.0,
+    bottleneck: bool = False,
+):
+    """v_simple as an msprime.Demography (ploidy=1 conventions).
+
+    Ne values doubled to match msinv's diploid-Ne convention (see
+    CLAUDE.md: msprime ploidy=1 needs 2·N to give same per-pair coal
+    rate as msinv's `population_size`).
+
+    ``bottleneck=True`` selects Option B (N_anc = 1e4 instead of 1e5).
+    """
+    import msprime
+    H = 2.0  # haploid-Ne doubling for msprime ploidy=1
+    d = msprime.Demography()
+    if not two_pop:
+        d.add_population(name="pop0", initial_size=H * V_SIMPLE_NE_POP0)
+        return d
+    ne_anc = V_SIMPLE_NE_ANC_BN if bottleneck else V_SIMPLE_NE_ANC
+    d.add_population(name="pop0", initial_size=H * V_SIMPLE_NE_POP0)
+    d.add_population(name="pop1", initial_size=H * V_SIMPLE_NE_POP1)
+    d.add_population(name="anc", initial_size=H * ne_anc)
+    if migration > 0.0:
+        d.set_symmetric_migration_rate(
+            populations=["pop0", "pop1"], rate=float(migration),
+        )
+    d.add_population_split(
+        time=V_SIMPLE_T_SPLIT, derived=["pop0", "pop1"], ancestral="anc",
+    )
+    d.sort_events()
+    return d
+
+
+def v_simple_discoal_events(
+    *,
+    two_pop: bool = True,
+    migration: float = 0.0,
+    bottleneck: bool = False,
+) -> list[str]:
+    """v_simple as discoal CLI argument tokens.
+
+    Scaling: times divided by 4*N0, sizes divided by N0, where
+    N0 = V_SIMPLE_DISCOAL_N0 = pop 0 present Ne. Caller prepends
+    ``-p N sample_0 sample_1`` etc.
+
+    ``bottleneck=True`` selects Option B (N_anc = 1e4 instead of 1e5).
+    """
+    N0 = V_SIMPLE_DISCOAL_N0
+    ne_anc = V_SIMPLE_NE_ANC_BN if bottleneck else V_SIMPLE_NE_ANC
+
+    def t(gens):
+        return f"{gens / (4.0 * N0):.10g}"
+
+    def sz(ne):
+        return f"{ne / N0:.10g}"
+
+    if not two_pop:
+        return []
+
+    args: list[str] = [
+        # Pop 0 starts at sz(NE_POP0)=1.0 (no -en at t=0 needed).
+        # Pop 1 starts at sz(NE_POP1)=0.1.
+        "-en", "0", "1", sz(V_SIMPLE_NE_POP1),
+    ]
+    if migration > 0.0:
+        m_scaled = f"{4.0 * N0 * migration:.10g}"
+        args += [
+            "-m", "0", "1", m_scaled,
+            "-m", "1", "0", m_scaled,
+        ]
+    args += [
+        "-ed", t(V_SIMPLE_T_SPLIT), "1", "0",
+        "-en", t(V_SIMPLE_T_SPLIT), "0", sz(ne_anc),
     ]
     return args

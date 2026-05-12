@@ -1015,22 +1015,26 @@ impl HullSimulator {
                     // gate on the live sweep state instead of
                     // a_tag.is_empty().
                     let in_any_sweep = finalized_sweeps.iter().any(|s| s.covers(t));
-                    // Any-pair AA/aa picker only engages in SV-phase
-                    // sweeps. For hard sweeps (`f0 = 1/(2N)`,
-                    // `t_de_novo == t_origin`) the rate divergence
-                    // already absorbs the A subgroup into one ancestor
-                    // stochastically; the still_a force-coalesce in
-                    // `apply_sweep_finalize` catches any stragglers.
-                    // Restricting any-pair to SV phase preserves D2
-                    // (hard sweep) timing while fixing D3 (soft sweep,
-                    // multi-lineage non-overlap pair gap).
-                    let in_sv_sweep = finalized_sweeps.iter().any(|s| {
-                        s.covers(t) && s.has_sv_phase()
-                    });
+                    // Any-pair AA/aa picker engages in any active sweep
+                    // window (SV or hard). The emitter rate
+                    // `(n_A choose 2)/(2N·p_kary·p_A)` is calibrated for
+                    // any-pair semantics; restricting to overlapping
+                    // pairs inflates the per-pair rate by `(n_A choose
+                    // 2)/|overlapping_AA|` (Bug found 2026-05-12: at
+                    // large L with heavy fragmentation, this inflation
+                    // is severe and concentrates coalescence near x_sel
+                    // — producing uniform π suppression instead of a
+                    // localized valley, because surviving non-overlapping
+                    // A-tagged lineages all get swept up by the still_a
+                    // force-coalesce at t_origin regardless of position.
+                    // D2 (Ne=1e4, L=100k, ρ≈0.04) is insensitive because
+                    // its lineages almost never fragment, so any-pair ≈
+                    // bucket. Verified via PS2/PS3 / D-test rerun.
+                    let in_any_sweep_for_aa = in_any_sweep;
                     let (i, j) = if !in_any_sweep && matches!(allele, AlleleTag::Mixed) {
                         let target = rng.random_range(0..bucket.len());
                         crate::rate_index::unpack_ij(bucket[target])
-                    } else if in_sv_sweep && matches!(allele, AlleleTag::A | AlleleTag::ALower) {
+                    } else if in_any_sweep_for_aa && matches!(allele, AlleleTag::A | AlleleTag::ALower) {
                         // Inside the sweep window, AA / aa events sample
                         // ANY two lineages of the matching allele subgroup
                         // in (pop, cls) — regardless of ancestral overlap.

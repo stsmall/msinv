@@ -37,6 +37,12 @@ T_ORIGIN_GENS = 4_000.0  # post-split (split=15,000 gen); within pop0/pop1 era
 F0_SOFT = 0.05
 U_RECURRENT_DISCOAL = 5.0e-4  # discoal -uA rate (4N*uA units)
 MIGRATION = 1.0e-5
+# discoal `-ws tau` is in 4*N0 coalescent units (parsed as `tau*2` in 2N
+# units inside discoal_multipop.c:582). Convert msinv's t_origin (gens)
+# to match. Without this, `-ws 0.0` puts discoal's sweep at the present
+# while msinv runs it 4000 gens ago — different scenarios, breaking all
+# sweep-window stats (verified 2026-05-13 against rep_000).
+DISCOAL_WS_TAU = T_ORIGIN_GENS / (4.0 * V_SIMPLE_DISCOAL_N0)
 
 
 def _msinv_sweep_for(subscenario: str, seed: int) -> Sweep:
@@ -77,20 +83,20 @@ def _discoal_sweep_args_for(subscenario: str, L: float) -> list[str]:
     """discoal sweep CLI args. Sweep is on pop 0 (default for discoal)."""
     if subscenario == "hard":
         return [
-            "-ws", "0.0",
+            "-ws", f"{DISCOAL_WS_TAU:.10g}",
             "-a", str(2.0 * V_SIMPLE_DISCOAL_N0 * S_SEL),
             "-x", str(2_500_000.0 / L),
         ]
     elif subscenario == "soft":
         return [
-            "-ws", "0.0",
+            "-ws", f"{DISCOAL_WS_TAU:.10g}",
             "-a", str(2.0 * V_SIMPLE_DISCOAL_N0 * S_SEL),
             "-x", str(2_500_000.0 / L),
             "-f", str(F0_SOFT),
         ]
     elif subscenario == "recurrent":
         return [
-            "-ws", "0.0",
+            "-ws", f"{DISCOAL_WS_TAU:.10g}",
             "-a", str(2.0 * V_SIMPLE_DISCOAL_N0 * S_SEL),
             "-x", str(2_500_000.0 / L),
             "-uA", str(U_RECURRENT_DISCOAL),

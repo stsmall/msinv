@@ -1,0 +1,23 @@
+FALSIFICATION CHECK: flux predicts dxy higher at breakpoints than mid-inversion
+
+Empirically differentiated inversion body: Fst > 0.15 => 38/40 windows (60,500,000-79,500,000); 2 outermost window(s) excluded as undifferentiated flanking sequence (Fst 0.0034-0.0055, control-like).
+
+Raw dxy (confounded by the diversity gradient -- pi also declines
+toward the breakpoints, so a raw dxy gradient cannot on its own
+distinguish a flux effect from a general diversity/callability
+gradient):
+  mean raw dxy, core (|rel pos| < 0.35):  0.002320  (n=14)
+  mean raw dxy, edge (|rel pos| > 0.75):  0.001964  (n=10)
+  edge/core raw-dxy ratio: 0.847  -> central dip ABSENT
+
+Diversity-controlled ratio dxy / mean(pi_AA, pi_BB) (isolates the
+flux-specific spatial signature from the diversity gradient):
+  mean dxy/pi, core:  1.591  (n=14)
+  mean dxy/pi, edge:  1.590  (n=10)
+  edge/core dxy/pi ratio: 0.999  -> central dip ABSENT
+
+dxy/pi across the full differentiated body: mean=1.598, range=[1.348, 2.024]; whole-region reference dxy/mean(piAA,piBB) = 1.575.
+
+VERDICT: raw-dxy central dip ABSENT; diversity-controlled (dxy/pi) central dip ABSENT.
+  Neither the raw nor the diversity-controlled statistic shows the predicted dip.
+  ACTION: do not treat this as confirming the flux interpretation. Phases B-D should not rely solely on the spatial dip as evidence; revisit/re-examine the design before committing to flux as the explanation.

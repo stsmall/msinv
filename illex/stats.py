@@ -33,10 +33,16 @@ def sample_nodes_by_karyotype(sim, ts):
     monophyletic clade distinct from the other 55 in every marginal tree,
     consistent with them being the small n_inv=5 class.
 
-    The partition-completeness test guards this: if a future msinv version
-    reorders sample construction, that test still passes (sizes and
-    disjointness are order-independent) but a monophyly-based test would
-    need to catch a silent mislabel -- see test_stats.py.
+    The partition-completeness test guards only sizes/disjointness/coverage
+    and would pass either way; test_sample_nodes_by_karyotype_direction (in
+    test_stats.py) is the regression guard for *direction* -- it fails if a
+    future msinv version ever swaps which node-ID block is standard vs.
+    inverted.
+
+    Unverified: this ordering (and the ``sim.n_std`` split point used
+    below) was only traced/tested for the ``n_std=``/``n_inv=`` constructor
+    API. The raw ``sample_config=`` constructor path may insert "I" before
+    "S" for a given call and has not been checked.
     """
     samples = list(ts.samples())
     n_std = int(sim.n_std)

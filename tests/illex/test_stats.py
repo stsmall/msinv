@@ -52,6 +52,54 @@ def test_node_partition_is_complete(neutral_ts):
     assert set(i_nodes) | set(s_nodes) == set(ts.samples())
 
 
+def test_sample_nodes_by_karyotype_direction():
+    """Regression guard for label *direction*, not just partition shape.
+
+    test_node_partition_is_complete is order-agnostic -- it passes
+    identically whether sample_nodes_by_karyotype's mapping is
+    standard-first or inverted-first, so it can't catch a silent label
+    swap. This test can: with the inverted arrangement rare in the
+    population (p_inv=0.05) and an old, strong barrier (t_inv=5e6 >>
+    2*Ne*p_inv=1e4), the inverted class's effective size is Ne*p_inv, so
+    lineages sampled from it coalesce much faster than standard-class
+    lineages -- branch-mode diversity restricted to the inversion
+    interval (avoiding dilution from the freely-recombining collinear
+    flanks) should be far lower for i_nodes than for s_nodes. If a future
+    msinv change ever swapped which block of node IDs is standard vs.
+    inverted, this assertion would flip and fail.
+    """
+    from msinv import HullSimulator
+
+    sim = HullSimulator(
+        n_std=30, n_inv=30,
+        population_size=100_000.0,
+        sequence_length=50_000,
+        recombination_rate=2.5e-9,
+        p_inv=0.05, t_inv=5.0e6,
+        bp_left=1_000.0, bp_right=49_000.0,  # large interior inversion
+        gene_conversion_rate=1e-15,
+        seed=99,
+    )
+    ts = sim.simulate()
+    i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
+
+    # windows must run 0..L; the middle window isolates the inversion
+    # interval from the collinear (undifferentiated) flanks.
+    windows = [0.0, 1_000.0, 49_000.0, 50_000.0]
+    pi_i = 3e-9 * ts.diversity([i_nodes], mode="branch", windows=windows)[1, 0]
+    pi_s = 3e-9 * ts.diversity([s_nodes], mode="branch", windows=windows)[1, 0]
+
+    assert pi_s > 0
+    ratio = pi_i / pi_s
+    assert ratio < 0.3, (
+        f"expected the rare inverted class (labeled i_nodes) to have "
+        f"much lower diversity than the common standard class (labeled "
+        f"s_nodes) within the inversion interval; got pi_i={pi_i:.3g}, "
+        f"pi_s={pi_s:.3g}, ratio={ratio:.3g} -- possible label-direction "
+        f"regression in sample_nodes_by_karyotype"
+    )
+
+
 @pytest.mark.slow
 def test_msinv_matches_msprime_neutral():
     """Harness test 3 from the spec: msinv <-> msprime neutral agreement.

@@ -35,6 +35,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.20",
     "tskit>=0.5",
+    "scipy>=1.7",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +43,7 @@ test = [
     "pytest>=7.0",
     "pytest-timeout",
     "msprime>=1.2",
+    "pandas>=1.3",
 ]
 plots = [
     "matplotlib>=3.5",

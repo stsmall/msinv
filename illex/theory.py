@@ -9,6 +9,29 @@ Two independent implementations are provided on purpose:
   * const_closed_form() -- analytic, constant Ne only
 They must agree (see tests). That cross-check exists because this derivation
 has produced arithmetic errors before.
+
+WARNING -- do not use as an msinv acceptance criterion (I1, from the final
+whole-branch review, task-final-fixes-report.md): this module encodes a
+STRICT single-origin-monophyly model that holds ``p_i`` constant backward in
+time and forces a mass-point coalescence of every I-I pair exactly at
+``t_inv`` (see ``within_i`` in ``expected_times()``/``const_closed_form()``).
+msinv's own trajectory family (``model.build_inversion_sim``'s ``p_start``
+parameter) is strictly larger than this: msinv can express this same
+hard-sweep limit (``p_start = 1/(2*Ne)``), but also a continuum of softer
+origins up to the no-monophyly constant-``p_inv`` limit, none of which this
+module's formulas describe. ``dxy_floor()``'s 2.563/3.978 are the floors of
+*this* model only, not of msinv in general -- do not fit or gate msinv's
+simulated ratios against them.
+
+Holding ``p_i`` constant backward in time OVERESTIMATES E[T_I] relative to a
+model where the I class actually shrinks toward its founding event (a
+shrinking class coalesces faster than one held at a fixed, larger effective
+size). A larger E[T_I] means a smaller dxy/pi_I. So this module's floors are
+CONSERVATIVE LOWER BOUNDS on the true single-founder floor, not simply wrong
+numbers: the real single-founder floor is at least as high as 2.563/3.978,
+and typically higher. This is verified in practice -- msinv's own hard-sweep
+limit (``p_start = 1/(2*Ne)``) gives dxy/pi_I = 4.75-5.33 across the tested
+t_inv range, always above this module's 3.978 constant-Ne floor.
 """
 
 from __future__ import annotations
@@ -103,7 +126,17 @@ def ratios(N_fn, t_inv, p_i=P_I_DEFAULT, **kw):
 
 
 def dxy_floor(N_fn, p_i=P_I_DEFAULT, bounds=(2.0e5, 5.0e6)):
-    """Minimum attainable dxy/pi_I over t_inv. Returns (floor, t_inv_at_floor)."""
+    """Minimum attainable dxy/pi_I over t_inv. Returns (floor, t_inv_at_floor).
+
+    WARNING: this is the floor of the strict single-origin-monophyly model
+    documented in this module's docstring (constant p_i backward in time,
+    forced I-I coalescence at t_inv) -- NOT a floor on msinv's simulated
+    dxy/pi_I in general, and must not be used as an msinv acceptance
+    criterion (see the module docstring's I1 warning). Because holding p_i
+    constant OVERESTIMATES E[T_I], the value returned here is a
+    CONSERVATIVE LOWER BOUND on the true single-founder floor, not an
+    exact or over-stated one.
+    """
     res = minimize_scalar(
         lambda t: ratios(N_fn, t, p_i=p_i)["dxy_over_pi_i"],
         bounds=bounds, method="bounded", options={"xatol": 2000},

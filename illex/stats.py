@@ -49,14 +49,50 @@ def sample_nodes_by_karyotype(sim, ts):
     return samples[n_std:], samples[:n_std]
 
 
-def arrangement_stats(ts, i_nodes, s_nodes, mu: float = MU_DEFAULT) -> dict:
-    """pi within each arrangement, dxy between, and Hudson Fst."""
-    pi_i = mu * ts.diversity([i_nodes], mode="branch")[0]
-    pi_s = mu * ts.diversity([s_nodes], mode="branch")[0]
-    # tskit 1.0.2 returns a bare numpy scalar (not a length-1 array) from
-    # divergence() when given exactly two sample sets and no explicit
-    # `indexes`, unlike diversity()'s always-an-array return -- so no [0].
-    dxy = mu * ts.divergence([i_nodes, s_nodes], mode="branch")
+def arrangement_stats(ts, i_nodes, s_nodes, mu: float = MU_DEFAULT, *,
+                       interval) -> dict:
+    """pi within each arrangement, dxy between, and Hudson Fst.
+
+    ``interval``: ``(left, right)`` bp bounds to restrict the statistic to,
+    or ``None`` for the whole sequence. This is a required keyword-only
+    argument on purpose (see finding C1, "flank dilution of the primary
+    statistics"): ``build_inversion_sim`` places the inversion body inside
+    a larger, fully panmictic collinear flank (``model.MARGIN_FRACTION``),
+    and integrating over the whole sequence drags both pi_I/pi_S and
+    dxy/pi_I toward the panmictic null (measured ~21% understatement of
+    dxy/pi_I, ~16% of Fst, at the anchor config) -- the empirical targets
+    in ``illex.empirical`` are measured over the inversion body only, so
+    the two sides are not comparable unless the simulated side is
+    restricted the same way. Making this argument required (no default)
+    means a caller must make an explicit choice rather than silently
+    getting the diluted whole-sequence behaviour.
+
+    For a sim built by ``model.build_inversion_sim``, pass
+    ``model.inversion_interval(sim)``. Pass ``interval=None`` only when the
+    whole sequence genuinely *is* the region of interest (e.g. a
+    degenerate no-barrier control sim with no meaningful flank).
+    """
+    if interval is None:
+        pi_i = mu * ts.diversity([i_nodes], mode="branch")[0]
+        pi_s = mu * ts.diversity([s_nodes], mode="branch")[0]
+        # tskit 1.0.2 returns a bare numpy scalar (not a length-1 array)
+        # from divergence() when given exactly two sample sets and no
+        # explicit `indexes`, unlike diversity()'s always-an-array return
+        # -- so no [0].
+        dxy = mu * ts.divergence([i_nodes, s_nodes], mode="branch")
+    else:
+        left, right = interval
+        windows = [0.0, left, right, ts.sequence_length]
+        # windows -> diversity/divergence both gain a leading window axis;
+        # index 1 is the middle (inversion-body) window. diversity keeps
+        # its sample-set axis ([1, 0]); divergence with windows collapses
+        # to one value per window ([1]), unlike the no-windows bare-scalar
+        # case handled above.
+        pi_i = mu * ts.diversity([i_nodes], mode="branch", windows=windows)[1, 0]
+        pi_s = mu * ts.diversity([s_nodes], mode="branch", windows=windows)[1, 0]
+        dxy = mu * ts.divergence(
+            [i_nodes, s_nodes], mode="branch", windows=windows
+        )[1]
 
     # Hudson Fst = 1 - mean_within / between
     mean_within = 0.5 * (pi_i + pi_s)

@@ -27,6 +27,21 @@ A ladder that only benched the legacy path would give the wrong budget for
 production, since the two paths have different lineage dynamics.
 
 One rep per rung. Sequential, with an RSS watchdog: shared device.
+
+NOTE (C1, flank dilution -- added after this ladder was run; NOT re-run,
+see task-final-fixes-report.md): the committed
+``results/illex/pilot_rho_ladder.csv``'s ``pi_i_over_pi_s``/
+``dxy_over_pi_i`` columns are computed with ``interval=None``, i.e. over
+the WHOLE simulated sequence including the collinear
+``model.MARGIN_FRACTION`` flank, not restricted to the inversion body. They
+are therefore diluted toward the panmictic null relative to the
+interval-restricted values used elsewhere (e.g.
+``tests/illex/test_floor_harness.py``'s anchor) and must not be compared
+directly to those or to the empirical ratios in ``illex.empirical``. The
+ladder's cost/RSS numbers (wall time, peak RSS, num_trees) are unaffected
+and remain valid -- only the two ratio columns are diluted. Do not re-run
+this ladder solely to fix the ratio columns; it costs real GPU-box time and
+the cost/RSS numbers are what downstream tasks actually depend on.
 """
 from __future__ import annotations
 
@@ -92,7 +107,10 @@ def run_rung(arm: str, path: str, rho: float, present_ne: float) -> dict:
         return row
 
     i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
-    st = stats.arrangement_stats(ts, i_nodes, s_nodes)
+    # interval=None preserves this script's original (whole-sequence,
+    # flank-diluted) behaviour -- see the module docstring's C1 note. Do
+    # not change this to an interval without re-running the ladder.
+    st = stats.arrangement_stats(ts, i_nodes, s_nodes, interval=None)
     row.update(
         wall_s=round(time.time() - t0, 1),
         peak_rss_gb=round(peak_rss_gb(), 2),

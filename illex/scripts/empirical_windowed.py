@@ -39,7 +39,6 @@ from pathlib import Path
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
-import numpy as np
 import pandas as pd
 from pg_gpu import HaplotypeMatrix, windowed_analysis
 
@@ -169,6 +168,14 @@ def main() -> None:
         f"dxy/pi across the full differentiated body: mean={diff.dxy_over_pi.mean():.3f}, "
         f"range=[{diff.dxy_over_pi.min():.3f}, {diff.dxy_over_pi.max():.3f}]; "
         f"whole-region reference dxy/mean(piAA,piBB) = {whole_region_ratio:.3f}.",
+        "NOTE ON NORMALISATION: the dxy/pi figures above all use "
+        "dxy/mean(pi_AA,pi_BB), the correct baseline for THIS spatial "
+        "(core-vs-edge) comparison. That is a DIFFERENT normalisation "
+        "from the package's fitted target dxy/pi_I=1.846 "
+        "(see illex/empirical.py), which is dxy divided by pi_AA "
+        "SPECIFICALLY (the inverted arrangement's own pi), not by the "
+        "mean of both arrangements -- do not read the two ratios as the "
+        "same quantity.",
         "",
         f"VERDICT: raw-dxy central dip {'PRESENT' if dip_raw else 'ABSENT'}; "
         f"diversity-controlled (dxy/pi) central dip {'PRESENT (nominal direction)' if dip_norm else 'ABSENT'}.",

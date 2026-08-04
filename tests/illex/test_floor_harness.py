@@ -43,7 +43,7 @@ Marked slow. Run with: .venv/bin/python -m pytest tests/illex/ -m slow
 import numpy as np
 import pytest
 
-from illex import model, stats, theory
+from illex import empirical, model, stats, theory
 
 N_REPS = 8
 SEQ_LEN = 30_000
@@ -58,14 +58,22 @@ P_START_ANCHOR = 0.15
 
 # These two are a SIMULATION SNAPSHOT (one particular msinv run at
 # t_inv=5e5, p_start=0.15), NOT empirical observations -- do not confuse
-# them with the package's actual empirical values (0.744 / 1.846; see
-# EMPIRICAL_PI_RATIO below and tests/illex/test_theory.py:62,71). They
-# exist purely to catch a future regression in msinv's or model.py's
-# behaviour at this one fixed configuration.
-ANCHOR_PI_RATIO = 0.755
-ANCHOR_DXY_RATIO = 1.935
+# them with the package's actual empirical values (see illex.empirical and
+# tests/illex/test_theory.py). They exist purely to catch a future
+# regression in msinv's or model.py's behaviour at this one fixed
+# configuration.
+#
+# INTERVAL-RESTRICTED (C1 fix, task-final-fixes-report.md): measured with
+# stats.arrangement_stats(..., interval=model.inversion_interval(sim)), i.e.
+# restricted to the inversion body only, NOT the whole simulated sequence
+# (the whole-sequence values at this same config were ~0.774/1.888 --
+# diluted by the panmictic collinear flank outside the inversion body, see
+# model.MARGIN_FRACTION). Regenerated at N_REPS=8, seed0=4000: pi_I/pi_S =
+# 0.7015 (SEM 0.0107), dxy/pi_I = 2.2889 (SEM 0.0138).
+ANCHOR_PI_RATIO = 0.7015
+ANCHOR_DXY_RATIO = 2.2889
 
-EMPIRICAL_PI_RATIO = 0.744             # observed Illex chr2 pi_I/pi_S (real)
+EMPIRICAL_PI_RATIO = empirical.PI_I_OVER_PI_S  # observed Illex chr2 pi_I/pi_S
 
 # Growth-arm coverage (Finding 2b): smaller n and fewer reps than the
 # constant-arm tests above, since the growth arm costs ~5 s/rep vs.
@@ -89,7 +97,10 @@ def _mean_ratio(arm, N_fn, t_inv):
         )
         ts = sim.simulate()
         i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
-        vals.append(stats.arrangement_stats(ts, i_nodes, s_nodes)["dxy_over_pi_i"])
+        r = stats.arrangement_stats(
+            ts, i_nodes, s_nodes, interval=model.inversion_interval(sim)
+        )
+        vals.append(r["dxy_over_pi_i"])
     return float(np.mean(vals))
 
 
@@ -105,7 +116,10 @@ def _mean_stats(arm, t_inv, p_start, n_reps=N_REPS, seed0=4000,
         )
         ts = sim.simulate()
         i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
-        r = stats.arrangement_stats(ts, i_nodes, s_nodes, mu=MU)
+        r = stats.arrangement_stats(
+            ts, i_nodes, s_nodes, mu=MU,
+            interval=model.inversion_interval(sim),
+        )
         pi_ratios.append(r["pi_i_over_pi_s"])
         dxy_ratios.append(r["dxy_over_pi_i"])
         et_i.append(r["pi_i"] / (2.0 * MU))
@@ -204,12 +218,12 @@ def test_constant_p_inv_lacks_monophyly_founder_limit_has_it(det_stats):
 @pytest.mark.slow
 def test_regression_anchor_p_start_0_15(det_stats):
     """Fixed numeric regression point: t_inv=5e5, p_start=0.15, constant
-    arm, gamma~=0 -- pi_I/pi_S~=0.755, dxy/pi_I~=1.935. These are a
-    simulation snapshot (see ANCHOR_PI_RATIO/ANCHOR_DXY_RATIO above), not
-    the package's empirical values -- this test only guards against
-    silent regressions in msinv's or model.py's behaviour at this one
-    fixed configuration. Measured SEMs ~0.005-0.05 at 8 reps, so rel=0.10
-    is not flaky."""
+    arm, gamma~=0, INTERVAL-RESTRICTED to the inversion body (C1 fix) --
+    pi_I/pi_S~=0.7015, dxy/pi_I~=2.2889. These are a simulation snapshot
+    (see ANCHOR_PI_RATIO/ANCHOR_DXY_RATIO above), not the package's
+    empirical values -- this test only guards against silent regressions
+    in msinv's or model.py's behaviour at this one fixed configuration.
+    Measured SEMs ~0.011/0.014 at 8 reps, so rel=0.10 is not flaky."""
     r = det_stats[P_START_ANCHOR]
     assert r["pi_i_over_pi_s"] == pytest.approx(ANCHOR_PI_RATIO, rel=0.10), (
         f"pi_I/pi_S={r['pi_i_over_pi_s']:.3f}, anchor {ANCHOR_PI_RATIO}"

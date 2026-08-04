@@ -90,6 +90,21 @@ TRACT_FRACTION = 1e-4
 MARGIN_FRACTION = 0.1        # collinear flank on each side of the inversion
 
 
+def inversion_interval(sim) -> tuple[float, float]:
+    """(bp_left, bp_right) of ``sim``'s inversion body.
+
+    Pass the result as ``interval=`` to ``stats.arrangement_stats`` to
+    restrict the diversity/divergence statistics to the inversion body
+    (see C1, "flank dilution": the whole-sequence statistic is diluted by
+    the panmictic collinear flank outside this interval). Reads the
+    bounds back off the built ``InversionSpec`` rather than recomputing
+    ``MARGIN_FRACTION``, so it stays correct for any sim with exactly one
+    inversion, including ``build_control_sim``'s degenerate geometry.
+    """
+    spec = sim.inversions[0]
+    return float(spec.bp_left), float(spec.bp_right)
+
+
 def _arm_parts(arm: str):
     if arm == "growth":
         return growth_demography(), PRESENT_NE_GROWTH
@@ -154,6 +169,30 @@ def build_inversion_sim(*, arm, seq_length, t_inv, gamma, p_inv=0.626,
         # p_start at t_inv up to p_inv today. p_start=1/(2*Ne) is the
         # single-founder limit; see trajectory_ne() and module docstring.
         ne_traj = trajectory_ne(arm)
+        if p_start >= p_inv:
+            raise ValueError(
+                f"p_start ({p_start!r}) must be strictly less than p_inv "
+                f"({p_inv!r}): p_start >= p_inv yields a non-positive "
+                f"selection coefficient s = [logit(p_inv) - "
+                f"logit(p_start)] / t_inv <= 0, which enters msinv's "
+                f"untested s<=0 fallback in "
+                f"DeterministicTrajectory::new_with_p_start (see I2, "
+                f"task-final-fixes-report.md)."
+            )
+        clamp_floor = 1.0 / (2.0 * ne_traj)
+        if p_start < clamp_floor:
+            raise ValueError(
+                f"p_start ({p_start!r}) is below msinv's clamp floor "
+                f"1/(2*n_e) = {clamp_floor!r} for arm={arm!r} "
+                f"(n_e={ne_traj!r}): msinv would silently clamp p_start "
+                f"to this floor and re-derive its own t_inv from the "
+                f"clamped value, a silent error against the requested "
+                f"t_inv={t_inv!r} (measured up to 32% -- see I2, "
+                f"task-final-fixes-report.md). Use p_start >= "
+                f"{clamp_floor!r}, or pass p_start=None / "
+                f"p_start={clamp_floor!r} exactly for the intentional "
+                f"hard-sweep/single-founder limit."
+            )
         s = _derive_s(p_final=p_inv, p_start=p_start, t_inv=t_inv)
         spec = InversionSpec(
             bp_left=bp_left,

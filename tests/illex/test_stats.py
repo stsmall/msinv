@@ -28,7 +28,10 @@ def test_pi_matches_4_ne_mu(neutral_ts):
     panmictic population pi = 4*Ne*mu."""
     sim, ts = neutral_ts
     i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
-    out = stats.arrangement_stats(ts, i_nodes, s_nodes)
+    # interval=None: this fixture's inversion is a degenerate 1 bp stub
+    # (bp_left=1, bp_right=2) with no real barrier, so the whole 20 kb
+    # sequence -- not that stub -- is the intended region of interest.
+    out = stats.arrangement_stats(ts, i_nodes, s_nodes, interval=None)
     expected = 4 * demography.PRESENT_NE_CONST * 3e-9
     assert out["pi_i"] == pytest.approx(expected, rel=0.25)
 
@@ -38,7 +41,10 @@ def test_no_barrier_gives_no_differentiation(neutral_ts):
     two label sets are exchangeable -- pi ratio ~1, Fst ~0."""
     sim, ts = neutral_ts
     i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
-    out = stats.arrangement_stats(ts, i_nodes, s_nodes)
+    # interval=None: see test_pi_matches_4_ne_mu above -- no real barrier
+    # or flank geometry here, so the whole sequence is the region of
+    # interest.
+    out = stats.arrangement_stats(ts, i_nodes, s_nodes, interval=None)
     assert out["pi_i_over_pi_s"] == pytest.approx(1.0, abs=0.20)
     assert abs(out["fst"]) < 0.05
     assert out["dxy_over_pi_i"] == pytest.approx(1.0, abs=0.20)

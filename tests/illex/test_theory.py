@@ -3,7 +3,7 @@ one: it is what catches algebra errors in the E[T] derivations."""
 import numpy as np
 import pytest
 
-from illex import theory
+from illex import empirical, theory
 
 
 def test_panmictic_constant_ne_is_2ne():
@@ -47,7 +47,16 @@ def test_old_inversion_pi_ratio_approaches_frequency_ratio():
 
 
 def test_dxy_floor_values_match_spec():
-    """The floors the spec commits to, and that harness test 1 checks msinv against."""
+    """Regression check on the closed-form floor computation itself.
+
+    These are the floors of theory.py's single-origin-monophyly model
+    (see its module docstring's warning) -- retained here purely as a
+    numeric regression guard on dxy_floor()'s implementation. Harness
+    test 1 (tests/illex/test_floor_harness.py) no longer checks msinv
+    against these values: msinv's trajectory family is larger than this
+    model (see I1, task-final-fixes-report.md), so these floors are not
+    an msinv acceptance criterion.
+    """
     g_floor, g_at = theory.dxy_floor(theory.N_growth)
     c_floor, c_at = theory.dxy_floor(theory.N_const)
     assert g_floor == pytest.approx(2.563, abs=0.02)
@@ -65,8 +74,23 @@ def test_solve_t_inv_matches_spec():
     assert got_c == pytest.approx(896_340, rel=0.03)
 
 
-def test_observed_is_below_growth_floor():
-    """The flux claim: observed 1.846 sits below the growth floor, by 1.39x."""
+def test_observed_below_single_founder_bound():
+    """Observed dxy/pi_I=1.846 sits below the strict single-founder floor.
+
+    This does NOT imply gene flux (that conclusion was retracted -- see
+    progress.md's FINAL WHOLE-BRANCH REVIEW and I1/task-final-fixes-report
+    .md). What this test actually shows: the growth-arm floor from
+    theory.py's strict single-origin-monophyly model is a CONSERVATIVE
+    LOWER BOUND on the true single-founder floor (see theory.py's module
+    docstring), and the observed ratio sits below even that conservative
+    bound. So this excludes the strict k=1 single-origin-monophyly origin
+    specifically -- msinv's own hard-sweep limit (p_start=1/(2*Ne)) in
+    fact gives dxy/pi_I=4.75-5.33, well above 1.846 too. It says nothing
+    about softer origins (intermediate p_start), which msinv can express
+    and theory.py cannot, and which do reproduce 1.846 with zero flux
+    (gamma~0) -- see progress.md Task 4's reconnaissance and the
+    growth-arm result in the final whole-branch review.
+    """
     floor, _ = theory.dxy_floor(theory.N_growth)
-    assert 1.846 < floor
-    assert floor / 1.846 == pytest.approx(1.39, abs=0.05)
+    assert empirical.DXY_OVER_PI_I < floor
+    assert floor / empirical.DXY_OVER_PI_I == pytest.approx(1.39, abs=0.05)

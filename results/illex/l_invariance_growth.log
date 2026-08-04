@@ -1,0 +1,70 @@
+growth-arm L-invariance: 5 L values x 120 reps = 600 sims, 24 workers
+  t_inv=800,000  p_start=0.15  gamma=1e-15  interval-restricted
+  rho=  200 -> L=   2,938 bp
+  rho=  500 -> L=   7,344 bp
+  rho= 1000 -> L=  14,688 bp
+  rho= 2000 -> L=  29,377 bp
+  rho= 5000 -> L=  73,442 bp
+    20/600 done (1s)
+    40/600 done (1s)
+    60/600 done (1s)
+    80/600 done (1s)
+    100/600 done (1s)
+    120/600 done (2s)
+    140/600 done (3s)
+    160/600 done (3s)
+    180/600 done (4s)
+    200/600 done (4s)
+    220/600 done (5s)
+    240/600 done (5s)
+    260/600 done (7s)
+    280/600 done (9s)
+    300/600 done (11s)
+    320/600 done (12s)
+    340/600 done (14s)
+    360/600 done (16s)
+    380/600 done (20s)
+    400/600 done (25s)
+    420/600 done (29s)
+    440/600 done (34s)
+    460/600 done (37s)
+    480/600 done (41s)
+    500/600 done (61s)
+    520/600 done (78s)
+    540/600 done (96s)
+    560/600 done (112s)
+    580/600 done (126s)
+    600/600 done (139s)
+
+==============================================================================
+   L (bp)    trees      pi_I/pi_S mean+-sem       dxy/pi_I mean+-sem
+    2,938      319          0.6720 +-0.0038          1.9740 +-0.0094
+    7,344      792          0.6759 +-0.0028          1.9576 +-0.0075
+   14,688    1,580          0.6727 +-0.0020          1.9687 +-0.0055
+   29,377    3,161          0.6740 +-0.0015          1.9653 +-0.0041
+   73,442    7,897          0.6743 +-0.0008          1.9664 +-0.0022
+
+   L (bp)         pi_I         pi_S          dxy        Fst
+    2,938     0.005714     0.008519     0.011262     0.3676
+    7,344     0.005793     0.008577     0.011327     0.3654
+   14,688     0.005780     0.008596     0.011372     0.3678
+   29,377     0.005788     0.008590     0.011372     0.3678
+   73,442     0.005785     0.008579     0.011374     0.3685
+
+slope vs log10(L)  [0 = invariant]  (CIs are HC3-robust)
+  pi_i_over_pi_s     all_L                  slope=+0.0009/decade  95% CI [-0.0040, +0.0057]  p=0.722
+  pi_i_over_pi_s     production_L_ge_14kb   slope=+0.0021/decade  95% CI [-0.0038, +0.0081]  p=0.482
+  pi_i_over_pi_s     wls_on_means (check)   slope=+0.0007/decade  95% CI [-0.0049, +0.0063]  p=0.716
+  dxy_over_pi_i      all_L                  slope=-0.0026/decade  95% CI [-0.0148, +0.0097]  p=0.680
+  dxy_over_pi_i      production_L_ge_14kb   slope=-0.0029/decade  95% CI [-0.0189, +0.0130]  p=0.719
+  dxy_over_pi_i      wls_on_means (check)   slope=-0.0001/decade  95% CI [-0.0149, +0.0147]  p=0.983
+
+EXTRAPOLATION to L=20,000,000 (2.44 decades beyond the largest rung)
+  pi_i_over_pi_s     worst-case bias 0.0139 = 2.1% of the mean (0.6743)
+  dxy_over_pi_i      worst-case bias 0.0360 = 1.8% of the mean (1.9664)
+
+smallest vs largest L (Welch)
+  pi_i_over_pi_s     0.6720 (sd 0.0412) vs 0.6743 (sd 0.0085)  p=0.559
+  dxy_over_pi_i      1.9740 (sd 0.1025) vs 1.9664 (sd 0.0238)  p=0.432
+==============================================================================
+total wall 139s -> results/illex/l_invariance_growth.csv, results/illex/l_invariance_growth.json

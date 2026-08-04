@@ -42,8 +42,12 @@ Two independent lines:
   1.39× that motivated flux — but it is **not** a fit, and must not be
   described as reproducing the targets. Closing the residual −10.3% is Phase C's
   job, on a finer grid with more replicates.
-  Its **unfitted** held-out Fst is **0.358** against the observed 0.3652 — the
-  strongest single result Phase A produced, precisely because nothing tuned it.
+  ~~Its **unfitted** held-out Fst is **0.358** against the observed 0.3652 — the
+  strongest single result Phase A produced, precisely because nothing tuned
+  it.~~ **WITHDRAWN — see A15. Fst is algebraically determined by the two
+  fitted ratios, so it was never held out and is not evidence of anything.**
+  (The better-replicated value at this point is Fst = 0.3685, from the 600-sim
+  run in A8, not 0.358.)
 
 ### A2. The origin model is the second parameter, and it is a continuum.
 
@@ -131,7 +135,9 @@ indirect evidence in A1. Three parameters against two primary ratios is
 - Report **γ as a bound** ("consistent with 0, bounded above by X"), never a
   point estimate off an under-determined ridge.
 - The **held-out statistics become load-bearing for identification**, not
-  merely validation. State which one breaks the degeneracy.
+  merely validation. State which one breaks the degeneracy. **But not Fst —
+  A15 shows Fst carries zero information beyond the two fitted ratios.** The
+  candidate that survives is the within-arrangement SFS shape; see A15.
 
 ### A7. Feasibility is much less binding than projected.
 
@@ -142,14 +148,45 @@ growth arm ran L = 73 kb (22 s / 0.91 GB) and the constant arm L = 645 kb
 remains unknown** — ρ = 5000 was the top rung, and the full 20 Mb inversion
 would need ρ ≈ 110,000, i.e. 22× beyond anything benchmarked.
 
-### A8. L-invariance: supported on one arm, unverified on the other.
+### A8. L-invariance: RESOLVED. It holds on the growth arm.
 
-The rescaling premise (per-site π and dxy depend on Ne, µ, t_inv and not on L)
-is **supported on the constant arm** (no trend across a 25× L range) but
-**unverified on the growth arm** — the arm required for the fitted statistics.
-The pilot's single replicate per rung cannot separate low-L Monte Carlo noise
-from a small systematic bias. **Follow-up required before production fitting:**
-multiple replicates at 2–3 fixed L values on the growth arm, with CIs.
+~~supported on one arm, unverified on the other~~ — the follow-up this
+amendment demanded has been run: `illex/scripts/l_invariance_growth.py`,
+**5 L values × 120 replicates = 600 sims**, growth arm, interval-restricted, at
+the production point (t_inv = 8e5, p_start = 0.15, γ = 1e-15). Results in
+`results/illex/l_invariance_growth.{csv,json}`.
+
+| L (bp) | trees | π_I/π_S | dxy/π_I |
+|---|---|---|---|
+| 2,938 | 319 | 0.6720 ± 0.0038 | 1.9740 ± 0.0094 |
+| 7,344 | 792 | 0.6759 ± 0.0028 | 1.9576 ± 0.0075 |
+| 14,688 | 1,580 | 0.6727 ± 0.0020 | 1.9687 ± 0.0055 |
+| 29,377 | 3,161 | 0.6740 ± 0.0015 | 1.9653 ± 0.0041 |
+| 73,442 | 7,897 | 0.6743 ± 0.0008 | 1.9664 ± 0.0022 |
+
+**The premise holds.** Means are flat to 0.6% (π ratio) and 0.8% (dxy ratio)
+across a 25× L range; π_I, π_S, dxy and Fst are individually flat too. Slopes
+against log10(L) are indistinguishable from zero under three estimators that
+agree — OLS/HC3 over all reps, OLS restricted to the production range, and WLS
+on the per-L means (which is immune to the within-L variance structure):
+π_I/π_S +0.0009, +0.0021, +0.0007 per decade; dxy/π_I −0.0026, −0.0029, −0.0001.
+
+**The pilot's |r| ≈ 0.65–0.74 was Monte Carlo noise, now demonstrated rather
+than assumed.** Replicate SD falls 4.8× across a 25× L range (π ratio:
+0.0412 → 0.0085), i.e. SD ∝ 1/√L to within rounding (√25 = 5). That is the
+signature of a shrinking-variance estimator with a fixed mean, which is
+precisely what one replicate per rung could not distinguish from a bias.
+
+**The number that licenses the rescaling** is not the p-value — a
+non-significant slope can still permit a large bias 2.44 decades out. Converting
+the slope CIs to L = 20 Mb: worst-case bias **2.1%** on π_I/π_S and **1.8%** on
+dxy/π_I. Both are well inside the ~10% residual the fit is trying to close, so
+extrapolating a 30–75 kb fit to the real 20 Mb inversion is sound.
+
+Mechanistic check stated in advance, and consistent with the result: the only
+process that would bias small L is breakpoint leakage within a recombination
+escape length 1/(2·Ne·r) = **29.4 bp**, against a 2,350 bp inversion body at the
+smallest rung — 80× — so leakage was predicted negligible at every L tested.
 
 ### A9. Best-fit parameters do not transfer between demographic arms.
 
@@ -253,11 +290,12 @@ geographic Fst and is untouched by it.
 
 ### A14. Two verified facts that the fit depends on
 
-- **The held-out Fst comparison is valid.** `illex/stats.py`'s Hudson Fst
+- **The Fst comparison is valid but vacuous.** `illex/stats.py`'s Hudson Fst
   (1 − Hw/Hb) was checked against pg_gpu's `divergence.fst_hudson` and matches
-  exactly, so simulated Fst is directly comparable to the empirical 0.3652.
-  This matters more now than when it was checked: per A6, Fst is no longer just
-  validation, it is the statistic expected to break the parameter degeneracy.
+  exactly, so simulated Fst *is* directly comparable to the empirical 0.3652.
+  ~~per A6, Fst is the statistic expected to break the parameter degeneracy~~
+  **— it cannot be. A15: Fst is a deterministic function of the two ratios
+  already being fitted.** Comparability was never the problem.
 - **`n_e` in the trajectory is inert for intermediate `p_start`, but defines the
   hard-sweep limit.** In `DeterministicTrajectory::new_with_p_start`, `n_e` is
   used only to clamp `p0 = p_start.clamp(1/(2·n_e), 1−1/(2·n_e))`. So at
@@ -265,6 +303,52 @@ geographic Fst and is untouched by it.
   *is* the founding frequency, and 1/(2·N_ANC) = 9.1e-7 versus
   1/(2·N0) = 7.3e-8 differ 12×. Record which `n_e` any hard-sweep-limit result
   used; it is a modelling choice, not an approximation.
+
+### A15. Fst is not a held-out statistic. It is redundant by algebra.
+
+Found while running A8's L-invariance check. With `r = π_I/π_S` and
+`d = dxy/π_I` — the two quantities the design fits — Hudson Fst as computed by
+`illex/stats.py` is
+
+    Fst = 1 − ½(π_I + π_S)/dxy = 1 − (r + 1)/(2·d·r)
+
+a **deterministic function of the two fitted ratios**, with no third degree of
+freedom. Verified across all 600 replicates of the A8 run: max |Fst −
+1−(r+1)/(2dr)| = **2.2e-16**, i.e. floating-point identity. It holds on the
+empirical side too — the published r = 0.744 and d = 1.846 imply Fst = 0.36509
+against the measured 0.3652.
+
+**Consequences, all of which correct earlier text in this document:**
+
+- A1's "unfitted held-out Fst 0.358 vs 0.3652, the strongest single result Phase
+  A produced, precisely because nothing tuned it" is **withdrawn**. Nothing
+  tuned it because nothing *could*: it was pinned by the two ratios that were
+  tuned. The apparent agreement is partly error cancellation — at the current
+  growth-arm point r is 9.4% low and d is 6.5% high, and those errors offset in
+  Fst.
+- A6 and A14's identification strategy needs a different statistic. Fst cannot
+  break the (t_inv, p_start, γ) degeneracy, because a ridge that holds r and d
+  fixed holds Fst fixed automatically.
+- The Acceptance criteria table's "Validate | Fst(AA,BB)" row is not a
+  validation. Keep it only as an arithmetic consistency check.
+
+**Absolute levels cannot substitute.** The obvious repair — fit π_I, π_S and dxy
+separately rather than two ratios, adding the overall scale as a third
+constraint — is blocked by the missing chr2 accessibility mask. Simulated levels
+exceed empirical by 4.84× (π_S), 4.42× (π_I) and 4.63× (dxy): near-uniform, the
+signature of a denominator problem rather than a model failure, and it cancels in
+ratios. (For scale: 4·Ne·µ = 0.0093 genome-wide, the control region measures
+0.00432 through the same pipeline, and the inversion body 0.00131–0.00177.) This
+vindicates the original ratio-only decision; it does not leave room to widen it.
+
+**What is actually still independent**, and the recommended next identifying
+statistic: the **within-arrangement SFS shape**. It is a normalized shape, so it
+needs no accessibility mask, and it responds to t_inv and p_start differently
+from mean π — a young inversion from few founders leaves a different
+within-I spectrum than an old one from many, at matched π_I/π_S. The machinery
+already exists from A13's coalescent test. The other genuinely independent
+constraints are the windowed spatial shape (already spent, on γ), the r² decay
+(blocked, A10), and *I. argentinus* presence/absence as a hard age bracket.
 
 ---
 
@@ -590,9 +674,14 @@ to the inversion body** (A4). Grid over t_inv × p_start × γ × both polarizat
 arms. Fit π_AA/π_BB and dxy/π_AA.
 
 Three parameters against two ratios is under-determined, so this stage produces
-a **ridge, not a point**. Report γ as a bound (A6). Prerequisites carried over
-from A8 and A10: verify L-invariance on the growth arm with replicated runs
-first, and choose a new control region before any r² comparison.
+a **ridge, not a point**. Report γ as a bound (A6). Do not expect Fst to pin the
+ridge down — it is algebraically redundant with the two fitted ratios (A15); add
+the within-arrangement SFS shape as the third target instead.
+
+Prerequisite status: **A8's L-invariance check is DONE and passed** (worst-case
+extrapolation bias to 20 Mb is 2.1% / 1.8%), so the rescaling is licensed.
+**A10 remains open** — a new control region is still required before any r²
+comparison.
 
 ### Stage 4 — validation on held-out statistics
 
@@ -603,14 +692,16 @@ under-determined — the ratios can be matched along a ridge, so the match itsel
 is **not** evidence. The test is whether the fitted point reproduces statistics
 it was not fitted to; per A6 the held-out statistics are load-bearing for
 identification, not merely confirmatory, and the write-up must name which one
-breaks the degeneracy. Fst is the strongest candidate: it came out at 0.358
-unfitted against an observed 0.3652 (A1).
+breaks the degeneracy. ~~Fst is the strongest candidate~~ **— Fst is disqualified
+(A15): it is algebraically fixed by the two fitted ratios. The recommended
+candidate is the within-arrangement SFS shape, which is mask-free and responds
+to t_inv and p_start differently from mean π.**
 
 | Role | Statistic | Observed |
 |---|---|---|
 | Fit | π_AA/π_BB | 0.744 |
 | Fit | dxy/π_AA | 1.846 |
-| Validate | Fst(AA,BB) | 0.365 |
+| ~~Validate~~ **redundant** | Fst(AA,BB) | 0.365 — **NOT a validation, see A15**: Fst = 1−(r+1)/(2dr) is fixed by the two fitted ratios. Arithmetic check only |
 | Validate | windowed dxy shape | ~~stage-2 deliverable~~ **DONE (A1)**: flat, edge/core 0.999 — no central dip, flux falsified |
 | Validate | control π ratio, Fst | 0.989, 0.0035 |
 | Validate | inv:control long-range r² | 3.88 overall; 0.97 within homA — **but this comparison is BLOCKED, see A10** |

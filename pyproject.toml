@@ -65,6 +65,9 @@ python-source = "."
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 600
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.ruff]
 line-length = 88

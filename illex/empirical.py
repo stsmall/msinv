@@ -26,12 +26,13 @@ from __future__ import annotations
 PI_I_OVER_PI_S = 0.744
 
 # dxy / pi_I = dxy(AA,BB) / pi(AA) -- normalised by the INVERTED class's own
-# pi specifically, NOT by mean(pi_AA, pi_BB) (that pooled-pi normalisation
-# was considered and rejected as wrong for the windowed spatial analysis --
-# see illex/scripts/empirical_windowed.py's module docstring and progress.md
-# Task 6 -- because pooled pi over combined AA+BB contains the same
-# between-arrangement pairwise differences that make up dxy, partly dividing
-# dxy by itself). This is the second fitted target.
+# pi specifically. Unlike the windowed spatial analysis in
+# illex/scripts/empirical_windowed.py, which uses mean(pi_AA, pi_BB) as the
+# correct baseline (yielding ~1.598), these two normalizations are not
+# directly comparable. A third option—pooled pi over combined AA+BB—was
+# rejected as wrong: it contains the between-arrangement differences that
+# constitute dxy, partly dividing dxy by itself (see progress.md Task 6).
+# This is the second fitted target.
 DXY_OVER_PI_I = 1.846
 
 # --- held-out validation statistic, inversion body ---

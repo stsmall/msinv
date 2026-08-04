@@ -1,10 +1,12 @@
 # Illex chr2 inversion — neutral-sufficiency test and age estimate (msinv)
 
 Date: 2026-08-03
-Amended: 2026-08-04 after Phase A implementation
+Amended: 2026-08-04 after Phase A implementation, and again after the
+coalescent-model check (A13).
 Status: **Phase A implemented and reviewed** (plan Tasks 1–6, branch
-`feature/illex-chr2-neutral-sufficiency`, HEAD `e1e7c62`, 34 tests green,
-never merged). Phases B–D not implemented. **Read the Amendments section
+`feature/illex-chr2-neutral-sufficiency`, 34 tests green, never merged).
+Phases B–D not implemented; Stage 1 needs reformulating before it can run
+(see A11 and the Stage 1 note). **Read the Amendments section
 next — Phase A falsified this design's central hypothesis and several
 numbers below are superseded.**
 
@@ -14,9 +16,14 @@ numbers below are superseded.**
 
 Phase A did what it was built to do: it tested the design's assumptions and
 several failed. Every claim below supersedes the corresponding text later in
-this document. The full evidence trail, including measurements, is in
+this document. Where a later section is superseded, it is struck through in
+place rather than deleted, so the reasoning trail stays legible.
+
+The raw evidence trail, with per-task measurements and SEMs, is in
 `.superpowers/sdd/2026-08-03-illex-chr2-neutral-sufficiency/progress.md`
-(gitignored — fold it in before deleting it).
+(gitignored). Every load-bearing finding in it has now been folded into these
+amendments, so the spec is self-contained; the ledger is kept only for the
+measurement detail behind each claim.
 
 ### A1. Gene flux is NOT required. The flux hypothesis is withdrawn.
 
@@ -28,10 +35,15 @@ Two independent lines:
   windowing. Flux via double crossover must produce a gradient. There is none,
   at any magnitude.
 - **A zero-flux fit exists.** On the growth arm, interval-restricted, γ = 1e-15:
-  t_inv ≈ **7–8 × 10⁵**, p_start ≈ **0.15–0.20** reproduces both target ratios
-  (π_I/π_S = 0.667, dxy/π_I = 1.947 at (8e5, 0.15)). Its **unfitted** held-out
-  Fst is **0.358** against the observed 0.3652 — the strongest single result
-  Phase A produced, precisely because nothing tuned it.
+  t_inv ≈ **7–8 × 10⁵**, p_start ≈ **0.15–0.20** approaches both target ratios
+  without any flux. At (8e5, 0.15): π_I/π_S = 0.667 against the target 0.744
+  (**−10.3%**) and dxy/π_I = 1.947 against 1.846 (**+5.5%**). This is close
+  enough to remove flux's *necessity* — the shortfall is far smaller than the
+  1.39× that motivated flux — but it is **not** a fit, and must not be
+  described as reproducing the targets. Closing the residual −10.3% is Phase C's
+  job, on a finer grid with more replicates.
+  Its **unfitted** held-out Fst is **0.358** against the observed 0.3652 — the
+  strongest single result Phase A produced, precisely because nothing tuned it.
 
 ### A2. The origin model is the second parameter, and it is a continuum.
 
@@ -76,14 +88,27 @@ criterion — msinv's trajectory family is strictly larger than the model
 
 `illex/model.py` places the inversion at `[0.1L, 0.9L]`, so **20% of each
 simulated sequence is collinear flank**, which is panmictic and drags both
-ratios toward the null. Measured at one configuration: whole-sequence
-0.772 / 1.887 versus interval-restricted 0.701 / 2.281 — **dxy/π_I understated
-by 21%, Fst by 16%.** The empirical targets are measured over the inversion
-body, so unwindowed simulated statistics are not comparable to them.
-`stats.arrangement_stats` now takes a **required** `interval=` keyword.
+ratios toward the null. Measured at (t_inv = 5e5, p_start = 0.15, constant arm,
+8 reps): whole-sequence 0.772 / 1.887 versus interval-restricted
+**0.7015 (SEM 0.0107) / 2.2889 (SEM 0.0138)** — **dxy/π_I understated by 21%,
+Fst by 16%.** (A reviewer's independent measurement gave 0.701 / 2.281; the
+values with SEMs above are canonical.) The empirical targets are measured over
+the inversion body, so unwindowed simulated statistics are not comparable to
+them. `stats.arrangement_stats` now takes a **required** `interval=` keyword.
 
 Any simulated ratio produced before this fix (including the pilot ladder's
 `pi_i_over_pi_s` / `dxy_over_pi_i` columns) is whole-sequence and diluted.
+
+**Two consequences that are easy to miss:**
+
+- The corrected dxy/π_I of **2.289** at (5e5, 0.15) on the constant arm is far
+  from the empirical 1.846, so **that point does not fit once measured
+  properly** — the flank dilution had been masking the miss and producing an
+  apparent 4–5% agreement.
+- Restricting to the interval moves the constant arm's best t_inv from
+  **5e5 to 3.5e5**. Both numbers appear in earlier notes; 3.5e5 is the
+  interval-restricted one. Neither is the age to report — see A9, the age comes
+  from the growth arm.
 
 ### A5. Three normalisations exist; do not conflate them.
 
@@ -151,9 +176,17 @@ control region must be chosen before that comparison is attempted.**
   33–107 k/Mb, mean 68.6 k). Use the CSV, never the prose.
 - **A genuinely neutral single-founder trajectory is not samplable at Illex Ne.**
   `StochasticTrajectory` and `BridgeStochasticTrajectory` are limited to
-  N ≲ 10⁴. The deterministic trajectory used instead implies a weak positive
-  s ≈ 1.1e-5, so the single-founder arm is **neutral in form, not strictly
-  neutral**. This connects to Stage 1: P(a neutral mutation reaching p = 0.626)
+  N ≲ 10⁴. The deterministic trajectory used instead implies a weak positive s,
+  so the single-founder arm is **neutral in form, not strictly neutral**.
+  s is not a single number — it is fixed by the endpoints,
+  `s = [logit(p_inv) − logit(p_start)] / t_inv`, so it varies with t_inv.
+  On the constant arm at p_start = 1/(2N) the numerator is 14.77, giving
+  s = 1.1e-5 at t_inv = 1.34e6, 1.5e-5 at 1e6, 3.0e-5 at 5e5, and 7.4e-5 at
+  2e5; on the growth arm the numerator is 16.94 and every value is ~15% larger.
+  Earlier notes quote 1.1e-5, 1.4e-5 and 2.95e-5 — these are the **same
+  formula at different t_inv**, not competing estimates. Always state the t_inv
+  alongside s.
+  This connects to Stage 1: P(a neutral mutation reaching p = 0.626)
   ≈ 1.1e-7, so "neutral single-founder at 0.626" may be intrinsically
   implausible.
 
@@ -176,6 +209,62 @@ reintroduced.
 - **pg_gpu bug:** `windowed_analysis` silently returns π for `populations[0]`
   only when π is requested together with `dxy`/`fst`. Fails silently rather than
   erroring. Use separate per-population calls.
+
+### A13. The coalescent model itself was tested. Kingman + growth holds.
+
+This design assumes a Kingman coalescent under the moments growth history. That
+assumption was **not** taken on faith, because *Illex illecebrosus* has the
+classic sweepstakes-reproduction profile (annual, semelparous broadcast spawner,
+~10⁵ fecundity, boom-bust recruitment) that motivates a Beta(2−α,α)
+multiple-merger coalescent — and multiple mergers and growth are confounded,
+both inflating rare variants. If a Beta process explained the SFS, the ×12.4
+expansion this design's null carries would be an artifact.
+
+`illex/scripts/beta_vs_kingman.py` (msprime only, no msinv) compares normalized
+folded SFS shapes: the genome-wide observed spectrum projected to n = 40 against
+Kingman-constant, Kingman + moments growth, and Beta(α) over α ∈ [1.05, 1.99].
+
+| model | L1 shape deviation | singleton fraction (obs 0.4832) |
+|---|---|---|
+| **Kingman + moments growth** | **0.0356** | 0.4810 (ratio 1.00) |
+| Beta, best α = 1.35 | 0.1078 | 0.5155 (ratio 0.94) |
+| Kingman constant | 0.5373 | 0.2413 (ratio 2.00) |
+
+**Kingman + growth wins, and the Beta failure is diagnostic:** its best fit
+overshoots singletons and undershoots doubletons/tripletons by ~20% — the
+Λ-coalescent singleton spike with a flattened tail, which these data do not
+show. Kingman-constant is decisively rejected (2× singleton deficit), which
+independently corroborates A6's choice to carry the expansion.
+
+Two things must travel with this result:
+
+- **Do not quote the ΔAIC.** With S = 85 M projected sites the multinomial
+  log-likelihoods are ~1.7e8 and differences reach 10⁶. The AIC margin is a
+  sample-size artifact; the L1 deviations above are the interpretable numbers.
+- **α̂ = 1.35 is far from Kingman (α = 2).** This *strengthens* the negative
+  result: the confounding worry in the literature (e.g. the *P. falciparum*
+  study, PMC12871270) bites at α ≈ 1.8, adjacent to Kingman. Illex's Beta
+  optimum is nowhere near there and still loses, so this is a real rejection,
+  not a weak-α ambiguity.
+
+Scope: this constrains the **coalescent and demography**, nothing else. The
+supergene interpretation of the inversion rests on karyotype Fst with ~zero
+geographic Fst and is untouched by it.
+
+### A14. Two verified facts that the fit depends on
+
+- **The held-out Fst comparison is valid.** `illex/stats.py`'s Hudson Fst
+  (1 − Hw/Hb) was checked against pg_gpu's `divergence.fst_hudson` and matches
+  exactly, so simulated Fst is directly comparable to the empirical 0.3652.
+  This matters more now than when it was checked: per A6, Fst is no longer just
+  validation, it is the statistic expected to break the parameter degeneracy.
+- **`n_e` in the trajectory is inert for intermediate `p_start`, but defines the
+  hard-sweep limit.** In `DeterministicTrajectory::new_with_p_start`, `n_e` is
+  used only to clamp `p0 = p_start.clamp(1/(2·n_e), 1−1/(2·n_e))`. So at
+  p_start ≈ 0.15 the choice of `n_e` is harmless — but in the k = 1 limit it
+  *is* the founding frequency, and 1/(2·N_ANC) = 9.1e-7 versus
+  1/(2·N0) = 7.3e-8 differ 12×. Record which `n_e` any hard-sweep-limit result
+  used; it is a modelling choice, not an approximation.
 
 ---
 
@@ -308,7 +397,9 @@ Three consequences:
    the equilibrium subpopulation ratio π_I/π_S ≈ p_I/p_S = 1.674 as the null;
    that ignores the single-origin bottleneck and is wrong. Under the corrected
    null, π_I/π_S = 0.744 implies **t_inv ≈ 0.95 M generations** (growth) or
-   0.90 M (constant Ne).
+   0.90 M (constant Ne) — **but these are `theory.py` numbers under a strict
+   single-founder premise that A2 relaxes, so they are not the age estimate.**
+   The msinv growth-arm fit gives ≈ 7–8 × 10⁵ (A9). Report that one.
 
 2. **dxy/π_I has a floor** — a genuine minimum of E[T_between]/E[T_I] over
    t_inv, unconditional in both age and Ne, but **conditional on the
@@ -320,8 +411,9 @@ Three consequences:
 3. ~~Flux is therefore still implied~~ **— SUPERSEDED by amendments A1 and A3.**
    Flux is **not** implied. The 1.39× shortfall was a correct exclusion of
    *strict single-origin monophyly*, not evidence for flux: relaxing the origin
-   premise to an intermediate founding frequency (`p_start` ≈ 0.15) reproduces
-   both ratios at γ ≈ 0, and Stage 2's windowed test found no spatial flux
+   premise to an intermediate founding frequency (`p_start` ≈ 0.15) brings both
+   ratios close at γ ≈ 0 (within +5.5% on dxy/π_I and −10.3% on π_I/π_S — near,
+   not fitted; see A1), and Stage 2's windowed test found no spatial flux
    gradient whatsoever (edge/core = 0.999). γ is still fitted, but as a
    co-equal third parameter reported as a **bound** — see A6.
    `project_gene_flux_decoupled` ("γ irrelevant for neutral divergence") turns
@@ -397,11 +489,12 @@ each stays further from the remnant ratchet.
 | mutation rate | 3e-9 |
 | `sequence_length` | fit arm 30–75 kb; LD arm ≥300 kb (both pilot-confirmed) |
 | `p_inv` | 0.626 and 0.374 (sensitivity pair) |
-| `t_inv` | grid spanning 0.2–3.0 M gen; both estimators land near 0.90–0.95 M |
-| `gene_conversion_rate` γ | **fitted**, grid |
+| `t_inv` | **fitted**, grid spanning 0.2–3.0 M gen. ~~both estimators land near 0.90–0.95 M~~ **SUPERSEDED by A9**: the age is arm-specific and comes from the growth arm — ≈ **7–8 × 10⁵** gen. The 0.90–0.95 M figure came from `theory.py`'s constant-`p_i` model, which A3 shows is a conservative bound, not an estimate; do not report it. |
+| `p_start` | **fitted** (added per A2/A6), grid over the founding-frequency continuum. Best current value ≈ 0.15–0.20 on the growth arm. Report as phenomenological, not a founder count. |
+| `gene_conversion_rate` γ | **fitted**, grid. Report as a **bound**, not a point estimate (A6). |
 | `mean_tract_length` | `inv_length × 1e-4` |
-| `n_inv` / `n_std` | 100 / 100 sampled lineages (haplotypes) per arrangement |
-| trajectory | neutral (`s=0`). Growth arm needs a **time-varying n_e**, which `integer_wf` does not take as a scalar — expected to require the `precomputed` trajectory type with an n_e schedule (the `trajectory_helpers` neutral-walk builders already construct these). **Verify before coding.** |
+| `n_inv` / `n_std` | 100 / 100 sampled lineages (haplotypes) per arrangement. **msinv emits standard FIRST, inverted last** (A12). |
+| trajectory | `deterministic` with `p_start`, implemented in `illex/model.py`. **Not `s=0`** — A11: a genuinely neutral single-founder walk is not samplable at Illex Ne (`StochasticTrajectory` caps at N ≲ 10⁴), so the deterministic path carries a weak implied `s` set by the endpoints. Neutral in form, not strictly neutral. The `precomputed`/n_e-schedule route this row previously anticipated was **not** needed. |
 
 Sample sizes need not match 254/95 because all primary targets are ratios,
 which cancel the ≈1/n bias in r².
@@ -440,10 +533,22 @@ high, which is the regime that produced the remnant ratchet before.
 
 ### Stage 1 — neutral persistence
 
-Neutral (`s=0`) trajectory under the **moments growth n_e schedule**, not
-constant Ne, `p_final` ∈ {0.626, 0.374}, over the t_inv grid. Deliverable: the
-distribution of p **conditional on still segregating**, and where the observed p
-falls within it.
+**This stage is not executable as originally written — see A11.** It specified a
+neutral (`s=0`) stochastic trajectory, but msinv's stochastic trajectory
+samplers cap at N ≲ 10⁴ and Illex Ne is 10⁵–10⁷, so the forward neutral walk
+this stage assumed cannot be drawn. Two further problems: a forward walk from a
+single copy reaches p = 0.626 with probability ≈ 1.1e-7, so a forward
+rejection sampler yields **zero** survivors at any feasible replicate count; and
+`p_final` cannot be imposed on a walk that is genuinely unconditioned.
+
+**Reformulate before implementing** — the plan's Task 7 was rewritten as a
+**backward** walk from the observed p = 0.626 under the moments growth n_e
+schedule, which samples the conditional distribution directly instead of by
+rejection. Deliverable is unchanged: the distribution of p **conditional on
+still segregating**, and where the observed p falls within it.
+
+The Kingman + growth coalescent this schedule assumes is now itself validated
+rather than assumed — see **A13**.
 
 Growth matters here too, and in the direction that helps: drift is faster in the
 small ancestral phase, so the expected neutral age at p = 0.626 is below the
@@ -477,27 +582,39 @@ distribution.
   t_inv > split. Independent hard bracket on the age.
 - **chr2 accessibility mask**, or an explicit decision to remain ratio-only.
 
-### Stage 3 — (t_inv, γ) grid fit
+### Stage 3 — (t_inv, p_start, γ) grid fit
 
-Scaled msinv at the pilot's L. Grid over t_inv × γ × both polarization arms.
-Fit π_AA/π_BB and dxy/π_AA.
+**Three** parameters, not two — `p_start` was added per A2/A6. Scaled msinv at
+the pilot's L, on the **growth arm** (A9), with statistics **interval-restricted
+to the inversion body** (A4). Grid over t_inv × p_start × γ × both polarization
+arms. Fit π_AA/π_BB and dxy/π_AA.
+
+Three parameters against two ratios is under-determined, so this stage produces
+a **ridge, not a point**. Report γ as a bound (A6). Prerequisites carried over
+from A8 and A10: verify L-invariance on the growth arm with replicated runs
+first, and choose a new control region before any r² comparison.
 
 ### Stage 4 — validation on held-out statistics
 
 ## Acceptance criteria
 
-Two free parameters fitted to two ratios match by construction, so the match
-itself is **not** evidence. The test is whether the fitted (t_inv, γ)
-reproduces statistics it was not fitted to.
+**Three** free parameters (t_inv, p_start, γ) against two fitted ratios is
+under-determined — the ratios can be matched along a ridge, so the match itself
+is **not** evidence. The test is whether the fitted point reproduces statistics
+it was not fitted to; per A6 the held-out statistics are load-bearing for
+identification, not merely confirmatory, and the write-up must name which one
+breaks the degeneracy. Fst is the strongest candidate: it came out at 0.358
+unfitted against an observed 0.3652 (A1).
 
 | Role | Statistic | Observed |
 |---|---|---|
 | Fit | π_AA/π_BB | 0.744 |
 | Fit | dxy/π_AA | 1.846 |
 | Validate | Fst(AA,BB) | 0.365 |
-| Validate | windowed dxy shape | stage-2 deliverable; flux predicts a central dip |
+| Validate | windowed dxy shape | ~~stage-2 deliverable~~ **DONE (A1)**: flat, edge/core 0.999 — no central dip, flux falsified |
 | Validate | control π ratio, Fst | 0.989, 0.0035 |
-| Validate | inv:control long-range r² | 3.88 overall; 0.97 within homA |
+| Validate | inv:control long-range r² | 3.88 overall; 0.97 within homA — **but this comparison is BLOCKED, see A10** |
+| Validate | genome-wide folded SFS shape | **DONE (A13)**: Kingman + growth L1 = 0.036; Beta rejected at every α |
 
 The LD panel is demoted to validation deliberately. Flat within-inversion LD and
 its collapse within a homokaryotype are mechanical consequences of
@@ -506,8 +623,11 @@ selected. They confirm the inversion is real; they do not discriminate
 neutrality.
 
 Outcome for goal 1/3 is whichever holds: the neutral model reproduces the
-held-out set (neutrality sufficient), or no (t_inv, γ) reproduces it
+held-out set (neutrality sufficient), or no (t_inv, p_start, γ) reproduces it
 (neutrality insufficient — selection or a more complex history required).
+Note the third parameter: with an under-determined fit, "neutrality sufficient"
+means *some point on the ridge* reproduces the held-out set, which is a weaker
+claim than a point estimate would suggest. State it that way.
 
 ## Harness tests
 
@@ -530,11 +650,11 @@ held-out set (neutrality sufficient), or no (t_inv, γ) reproduces it
 
 | Risk | Response |
 |---|---|
-| **Flux margin is only 1.39×** | The strongest quantitative claim rests on 1.846 vs a 2.563 floor. N_ANC uncertainty, the r proxy, φ's shape, or polarity could each close that gap. Mandatory robustness arm: recompute the floor across the moments N_ANC CI, the male/female r bracket, and both polarities. If any plausible combination lifts the observation above the floor, the flux conclusion is withdrawn |
+| ~~**Flux margin is only 1.39×**~~ **RESOLVED — the flux conclusion WAS withdrawn** (A1). Not by the robustness arm this row anticipated, but by relaxing the single-founder premise (A2) and by the windowed test finding no spatial gradient (edge/core 0.999). The remaining risk inverts: `p_start` is now a fitted phenomenological parameter, so the burden moves to whether the held-out statistics identify it (A6) | — |
 | Growth arm hits the remnant ratchet | N0 = 6.8 M keeps lineage counts high. Fall back on the ρ ladder to the largest viable L; per-site targets tolerate small L, so this degrades precision rather than validity |
 | Pilot cannot reach 300 kb (LD arm) | Fall back to truncated LD range, or escalate to the `structured-analytic-middle` feature (2–3 sessions, already on the roadmap for exactly this shape) |
 | γ needed to fit dxy is implausibly large | Model misspecification — recurrent inversion, or not a single-origin event |
-| φ(x) length-dependence mishandled | Harness test 1 catches it |
+| φ(x) length-dependence mishandled | ~~Harness test 1 catches it~~ — harness test 1 was superseded (A3) and its replacements do not test φ. **Currently uncovered**; add a test before γ is fitted for real |
 | Selection later required | Sweep residuals block quantitative work; fix before extending |
 | No chr2 recombination map | Autosomal proxy + male/female bracket; absolute ρ uncertain by ~1.4× |
 

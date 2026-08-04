@@ -1,0 +1,35 @@
+observed: 633 folded bins (n=1266 hap) -> projected to n=40 (20 bins), S=85,152,980
+projected singleton fraction = 0.4832
+
+simulating Kingman models...
+  kingman_constant         lnL = -182,078,708.7   L1 = 0.5373
+  kingman_moments_growth   lnL = -166,816,730.5   L1 = 0.0356
+
+simulating Beta-coalescent grid (no growth)...
+  alpha=1.05  lnL = -172,811,711.1   L1 = 0.3512
+  alpha=1.2   lnL = -169,570,248.9   L1 = 0.2368
+  alpha=1.35  lnL = -167,424,861.3   L1 = 0.1078
+  alpha=1.5   lnL = -168,188,843.2   L1 = 0.1493
+  alpha=1.65  lnL = -170,814,410.5   L1 = 0.2799
+  alpha=1.75  lnL = -172,574,626.2   L1 = 0.3362
+  alpha=1.85  lnL = -175,649,495.2   L1 = 0.4137
+  alpha=1.9   lnL = -177,766,737.8   L1 = 0.4612
+  alpha=1.95  lnL = -180,131,911.0   L1 = 0.5060
+  alpha=1.99  lnL = -181,507,391.0   L1 = 0.5321
+
+======================================================================
+L1 shape deviation from observed (lower = better; THIS is the
+interpretable comparison -- the AIC gap below is inflated by S):
+  Kingman + moments growth   L1 = 0.0356
+  Beta alpha=1.35             L1 = 0.1078
+  Kingman constant           L1 = 0.5373
+
+log-likelihoods / AIC (magnitudes NOT interpretable, S=85,152,980):
+  best Beta:  alpha=1.35  lnL=-167,424,861.3  AIC=334,849,724.6
+  Kingman+growth        lnL=-166,816,730.5  AIC=333,633,465.0
+  Kingman constant      lnL=-182,078,708.7  AIC=364,157,417.4
+
+LRT best-Beta vs Kingman-constant: 2dlnL = 29,307,694.8 (1 df)
+VERDICT: KINGMAN+GROWTH favoured over Beta
+======================================================================
+wrote results/illex/beta_vs_kingman.json

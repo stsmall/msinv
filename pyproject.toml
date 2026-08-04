@@ -35,7 +35,6 @@ classifiers = [
 dependencies = [
     "numpy>=1.20",
     "tskit>=0.5",
-    "scipy>=1.7",
 ]
 
 [project.optional-dependencies]
@@ -49,8 +48,14 @@ plots = [
     "matplotlib>=3.5",
     "PyPDF2",
 ]
+# Illex chr2 application (illex/) -- NOT needed by msinv itself. Kept out of
+# core `dependencies` so msinv users don't inherit the analysis stack.
+illex = [
+    "scipy>=1.7",
+    "pandas>=1.3",
+]
 all = [
-    "msinv[test,plots]",
+    "msinv[test,plots,illex]",
 ]
 
 [project.urls]

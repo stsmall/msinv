@@ -41,17 +41,39 @@ requested ``t_inv`` (msinv derives its own t_inv from the same equation, so
 the two are consistent by construction as long as ``p_start`` isn't clamped
 against the ``1/(2*Ne) <= p_start <= 1 - 1/(2*Ne)`` boundary).
 
-For the deterministic trajectory's scalar ``n_e``, the growth arm uses
-``theory.N_ANC`` (the size during the barrier era, T_GROW..t_inv, which is
-when the trajectory is load-bearing) rather than the time-varying N(t) --
-msinv's trajectory module has no varying-Ne deterministic type. This is an
-explicit approximation, noted here rather than silently baked in. One
-consequence: solving for ``s`` this way generally yields a small positive
-selection coefficient (s on the order of 1e-5 for the anchor scenario), so
-a fitted ``p_start != None`` arm is neutral *in form* (it's still the
-neutral-sufficiency null being tested) but not perfectly neutral in the
-literal sense of s=0 -- the ``s`` is a bookkeeping device for hitting a
-target founding frequency by a target time, not a claim of real selection
+On the deterministic path, ``n_e`` is used by msinv (see
+``DeterministicTrajectory::new_with_p_start`` in
+``rust/msinv-core/src/trajectory.rs``) for exactly one thing: clamping
+``p_start`` to ``[1/(2*n_e), 1 - 1/(2*n_e)]`` (plus an ``s <= 0`` fallback
+this module never reaches, since ``_derive_s`` only produces ``s <= 0`` if
+``p_start >= p_final``, which callers should not request). For an
+intermediate ``p_start`` (e.g. 0.15) no clamping occurs, so the exact value
+of ``n_e`` is **inert** -- it doesn't matter which Ne is passed. But it is
+*not* inert at the hard-sweep limit, where callers set
+``p_start = 1/(2*n_e)`` themselves: there, ``n_e`` directly *defines* the
+founding frequency (``1/(2*N_ANC) = 9.1e-7`` vs. ``1/(2*N0) = 7.3e-8`` differ
+12x), so which Ne the growth arm uses is a real modeling choice, not a
+free parameter.
+
+The growth arm passes ``theory.N_ANC`` here. This is *not* because N_ANC is
+"the size during the barrier era" -- that claim is false whenever
+``t_inv < T_GROW`` (=769,519): at the current best-fit ``t_inv ~ 5e5``, the
+entire barrier era falls inside the growth phase, where N(t) runs from
+~1.32e6 up to N0=6.81e6, nowhere near N_ANC=547,928. N_ANC is simply the
+one available fixed reference point on the growth arm's N(t) curve (the
+pre-growth asymptote); using it is a documented, deliberately-visible
+approximation of "some large-N scale", not a claim about the trajectory's
+actual local Ne. Because n_e is inert away from the hard-sweep limit (see
+above), this approximation only bites when someone actually fits
+``p_start = 1/(2*Ne)`` for the growth arm -- flagged here so that choice
+isn't silently baked in.
+
+One further consequence: solving for ``s`` this way generally yields a
+small positive selection coefficient (s on the order of 1e-5 for the anchor
+scenario), so a fitted ``p_start != None`` arm is neutral *in form* (it's
+still the neutral-sufficiency null being tested) but not perfectly neutral
+in the literal sense of s=0 -- the ``s`` is a bookkeeping device for hitting
+a target founding frequency by a target time, not a claim of real selection
 on the inversion.
 """
 
@@ -79,10 +101,13 @@ def _arm_parts(arm: str):
 def trajectory_ne(arm: str) -> float:
     """Scalar Ne fed to msinv's deterministic trajectory for ``arm``.
 
-    Growth arm: the trajectory has no varying-Ne form, so we use
-    ``theory.N_ANC`` (the barrier-era size, T_GROW..t_inv) as an explicit
-    approximation -- see module docstring. Constant arm: the (single, true)
-    Ne throughout.
+    Only matters at the hard-sweep limit (``p_start = 1/(2*n_e)``); for
+    intermediate ``p_start`` this value only clamps the bound and is inert
+    in practice. Growth arm: uses ``theory.N_ANC`` as a fixed reference
+    point on the growth curve -- NOT because it's "the barrier-era size"
+    (false whenever t_inv < T_GROW, which includes the current best-fit
+    t_inv ~ 5e5). See module docstring for the full explanation. Constant
+    arm: the (single, true) Ne throughout.
     """
     if arm == "growth":
         return N_ANC

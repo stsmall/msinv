@@ -19,12 +19,19 @@ monophyly) limit, and any value between is a legitimate fitted parameter.
 This file tests structural properties of that family instead of asserting
 agreement with theory.py's (different) model:
 
-  (a) monotonicity of pi_I/pi_S and dxy/pi_I in p_start;
-  (b) the hard/soft limits bracket the empirically observed pi_I/pi_S;
+  (a) monotonicity of pi_I/pi_S and dxy/pi_I in p_start (constant arm, then
+      repeated at reduced cost on the growth arm so trajectory_ne("growth")
+      is actually exercised);
+  (b) the hard/soft limits bracket the empirically observed pi_I/pi_S
+      (constant and growth arms);
   (c) the semantic distinction this task discovered (constant p_inv lacks
       monophyly at t_inv; the founder limit has it) is pinned as a
       regression guard;
-  (d) a fixed numeric regression anchor at a specific (t_inv, p_start).
+  (d) a fixed numeric regression anchor at a specific (t_inv, p_start) --
+      a simulation snapshot for regression-catching, not an empirical
+      value (see ANCHOR_PI_RATIO/ANCHOR_DXY_RATIO below);
+  (e) the flux-geometry invariant (mean_tract_length/inv_length ==
+      TRACT_FRACTION) holds on the trajectory path specifically.
 
 ``theory.py`` remains imported and used only where it's still valid: as
 the analytic-limit reference for the qualitative growth-vs-constant
@@ -48,9 +55,25 @@ T_INV_ANCHOR = 5.0e5
 P_START_HARD = 1.0 / (2.0 * model.trajectory_ne(ARM))   # single-founder limit
 P_STARTS = [P_START_HARD, 0.05, 0.15, 0.30]
 P_START_ANCHOR = 0.15
-TARGET_PI_RATIO_ANCHOR = 0.755
-TARGET_DXY_RATIO_ANCHOR = 1.935
-EMPIRICAL_PI_RATIO = 0.744             # observed Illex chr2 pi_I/pi_S
+
+# These two are a SIMULATION SNAPSHOT (one particular msinv run at
+# t_inv=5e5, p_start=0.15), NOT empirical observations -- do not confuse
+# them with the package's actual empirical values (0.744 / 1.846; see
+# EMPIRICAL_PI_RATIO below and tests/illex/test_theory.py:62,71). They
+# exist purely to catch a future regression in msinv's or model.py's
+# behaviour at this one fixed configuration.
+ANCHOR_PI_RATIO = 0.755
+ANCHOR_DXY_RATIO = 1.935
+
+EMPIRICAL_PI_RATIO = 0.744             # observed Illex chr2 pi_I/pi_S (real)
+
+# Growth-arm coverage (Finding 2b): smaller n and fewer reps than the
+# constant-arm tests above, since the growth arm costs ~5 s/rep vs.
+# ~0.5 s/rep for constant (see task-4-report.md bench numbers).
+GROWTH_N_REPS = 4
+GROWTH_N_SAMPLES = 30
+GROWTH_P_START_HARD = 1.0 / (2.0 * model.trajectory_ne("growth"))
+GROWTH_P_STARTS = [GROWTH_P_START_HARD, 0.15, 0.30]
 
 
 def _mean_ratio(arm, N_fn, t_inv):
@@ -70,13 +93,15 @@ def _mean_ratio(arm, N_fn, t_inv):
     return float(np.mean(vals))
 
 
-def _mean_stats(arm, t_inv, p_start, n_reps=N_REPS, seed0=4000):
+def _mean_stats(arm, t_inv, p_start, n_reps=N_REPS, seed0=4000,
+                n_i=100, n_s=100):
     """Mean pi_I/pi_S, dxy/pi_I, and E[T]_I (=pi_i/(2*mu)) over n_reps."""
     pi_ratios, dxy_ratios, et_i = [], [], []
     for rep in range(n_reps):
         sim = model.build_inversion_sim(
             arm=arm, seq_length=SEQ_LEN, t_inv=t_inv, p_inv=P_FINAL,
             gamma=1e-15, p_start=p_start, seed=seed0 + rep,
+            n_i=n_i, n_s=n_s,
         )
         ts = sim.simulate()
         i_nodes, s_nodes = stats.sample_nodes_by_karyotype(sim, ts)
@@ -98,6 +123,26 @@ def det_stats():
     tests (a)-(d) below so each config is only simulated once."""
     results = {p: _mean_stats(ARM, T_INV_ANCHOR, p_start=p) for p in P_STARTS}
     results["soft"] = _mean_stats(ARM, T_INV_ANCHOR, p_start=None)
+    return results
+
+
+@pytest.fixture(scope="module")
+def det_stats_growth():
+    """Same shape as det_stats, but on the growth arm (where
+    trajectory_ne("growth") returns theory.N_ANC -- otherwise untested).
+    Fewer reps and smaller sample sizes than det_stats to keep runtime sane
+    given the growth arm's higher per-rep cost."""
+    results = {
+        p: _mean_stats("growth", T_INV_ANCHOR, p_start=p,
+                       n_reps=GROWTH_N_REPS, seed0=5000,
+                       n_i=GROWTH_N_SAMPLES, n_s=GROWTH_N_SAMPLES)
+        for p in GROWTH_P_STARTS
+    }
+    results["soft"] = _mean_stats(
+        "growth", T_INV_ANCHOR, p_start=None,
+        n_reps=GROWTH_N_REPS, seed0=5000,
+        n_i=GROWTH_N_SAMPLES, n_s=GROWTH_N_SAMPLES,
+    )
     return results
 
 
@@ -159,15 +204,59 @@ def test_constant_p_inv_lacks_monophyly_founder_limit_has_it(det_stats):
 @pytest.mark.slow
 def test_regression_anchor_p_start_0_15(det_stats):
     """Fixed numeric regression point: t_inv=5e5, p_start=0.15, constant
-    arm, gamma~=0 -- pi_I/pi_S~=0.755, dxy/pi_I~=1.935 (empirical targets;
-    measured SEMs ~0.005-0.05 at 8 reps, so rel=0.10 is not flaky)."""
+    arm, gamma~=0 -- pi_I/pi_S~=0.755, dxy/pi_I~=1.935. These are a
+    simulation snapshot (see ANCHOR_PI_RATIO/ANCHOR_DXY_RATIO above), not
+    the package's empirical values -- this test only guards against
+    silent regressions in msinv's or model.py's behaviour at this one
+    fixed configuration. Measured SEMs ~0.005-0.05 at 8 reps, so rel=0.10
+    is not flaky."""
     r = det_stats[P_START_ANCHOR]
-    assert r["pi_i_over_pi_s"] == pytest.approx(TARGET_PI_RATIO_ANCHOR, rel=0.10), (
-        f"pi_I/pi_S={r['pi_i_over_pi_s']:.3f}, target {TARGET_PI_RATIO_ANCHOR}"
+    assert r["pi_i_over_pi_s"] == pytest.approx(ANCHOR_PI_RATIO, rel=0.10), (
+        f"pi_I/pi_S={r['pi_i_over_pi_s']:.3f}, anchor {ANCHOR_PI_RATIO}"
     )
-    assert r["dxy_over_pi_i"] == pytest.approx(TARGET_DXY_RATIO_ANCHOR, rel=0.10), (
-        f"dxy/pi_I={r['dxy_over_pi_i']:.3f}, target {TARGET_DXY_RATIO_ANCHOR}"
+    assert r["dxy_over_pi_i"] == pytest.approx(ANCHOR_DXY_RATIO, rel=0.10), (
+        f"dxy/pi_I={r['dxy_over_pi_i']:.3f}, anchor {ANCHOR_DXY_RATIO}"
     )
+
+
+@pytest.mark.slow
+def test_p_start_monotonicity_and_bracketing_growth_arm(det_stats_growth):
+    """Growth-arm coverage of the trajectory path (Finding 2b): the
+    monotonicity and bracketing properties verified on the constant arm
+    above must also hold on the growth arm, where trajectory_ne("growth")
+    returns theory.N_ANC. Without this, the growth arm's trajectory path
+    (and its n_e choice) would be exercised nowhere in the suite."""
+    pi_ratios = [det_stats_growth[p]["pi_i_over_pi_s"] for p in GROWTH_P_STARTS]
+    dxy_ratios = [det_stats_growth[p]["dxy_over_pi_i"] for p in GROWTH_P_STARTS]
+    assert pi_ratios == sorted(pi_ratios), (
+        f"growth: pi_I/pi_S not increasing in p_start {GROWTH_P_STARTS}: "
+        f"{pi_ratios}"
+    )
+    assert dxy_ratios == sorted(dxy_ratios, reverse=True), (
+        f"growth: dxy/pi_I not decreasing in p_start {GROWTH_P_STARTS}: "
+        f"{dxy_ratios}"
+    )
+
+    hard = det_stats_growth[GROWTH_P_START_HARD]["pi_i_over_pi_s"]
+    soft = det_stats_growth["soft"]["pi_i_over_pi_s"]
+    assert hard < 1.0, f"growth hard limit should give pi_I/pi_S < 1, got {hard:.3f}"
+    assert soft > 1.0, f"growth soft limit should give pi_I/pi_S > 1, got {soft:.3f}"
+
+
+def test_trajectory_path_flux_geometry_invariant():
+    """The flux-geometry invariant (mean_tract_length / inv_length ==
+    TRACT_FRACTION) must hold on the trajectory (p_start set) path
+    specifically, not just the legacy path -- both build the InversionSpec
+    independently in build_inversion_sim, so this guards against the two
+    branches drifting apart. Not marked slow: builds the sim but never
+    calls .simulate()."""
+    sim = model.build_inversion_sim(
+        arm=ARM, seq_length=SEQ_LEN, t_inv=T_INV_ANCHOR, p_inv=P_FINAL,
+        gamma=1e-15, p_start=P_START_ANCHOR, seed=1,
+    )
+    spec = sim.inversions[0]
+    inv_len = spec.bp_right - spec.bp_left
+    assert spec.mean_tract_length / inv_len == pytest.approx(model.TRACT_FRACTION)
 
 
 @pytest.mark.slow

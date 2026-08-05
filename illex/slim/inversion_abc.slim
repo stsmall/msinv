@@ -1,0 +1,215 @@
+// Forward-in-time model of the Illex chr2 inversion, for ABC inference.
+//
+// WHY FORWARD AND NOT COALESCENT. The coalescent work (msinv) cannot answer two
+// of the manuscript's questions:
+//   1. "Can the inversion persist without selection?" A genuinely neutral
+//      trajectory is not samplable backwards at Illex Ne -- msinv's stochastic
+//      samplers cap at N <~ 1e4, and P(a neutral mutation reaching p=0.626)
+//      ~ 1.1e-7, so forward rejection sampling of a *coalescent* model yields
+//      zero survivors. A scaled forward WF model samples it directly.
+//   2. "Why is p_inv at an intermediate 0.626?" That needs an explicit fitness
+//      model; overdominance is the classic explanation and is testable here.
+// Illex is annual and semelparous with non-overlapping generations, so a
+// discrete-generation WF model is a good structural match, and generations are
+// years.
+//
+// SCALING. Illex N0 = 6.8e6 is far too large to simulate directly. Standard
+// Q-scaling: N/Q, and mu*Q, r*Q, s*Q, times/Q. This preserves the products that
+// matter (rho = 4Nr, theta = 4Nmu, Ns). It breaks down when the SCALED
+// selection coefficient stops being small, so the script asserts s*Q < 0.1.
+// Choose Q from the README's cost table.
+//
+// NEUTRAL MUTATIONS ARE NOT SIMULATED HERE. The only mutation is the inversion
+// marker. Neutral variation is added afterwards with msprime on the recapitated
+// tree sequence (see summarize.py) -- much faster and statistically identical.
+//
+// CONDITIONING. Restarts on loss or fixation of the inversion. That is
+// legitimate: we observe a segregating inversion, so conditioning on segregation
+// conditions on an observed fact. It does NOT condition on the final frequency
+// being 0.626 -- p_inv is recorded as a summary statistic and left for ABC to
+// match. Conditioning on it here would use the same datum twice.
+//
+// Required -d arguments (all in UNSCALED units except where noted); see
+// run_one.py, which always passes every one of them explicitly:
+//   Q, T_INV, P_START, S_COEF, H_COEF, P_FLUX, TRACT_FRAC,
+//   INV_LEN, FLANK_LEN, REC_RATE, N_ANC, N_NOW, T_GROW, TREES_PATH, SEED
+
+// Written for SLiM 4.x. SLiM 5 renamed Genome -> Haplosome; under SLiM 5 the
+// recombination() callback's genome1/genome2 and p1.genomes must be renamed.
+
+initialize() {
+    setSeed(SEED);
+    initializeTreeSequence();
+    if (!exists("MAX_RESTARTS"))
+        defineConstant("MAX_RESTARTS", 2000);
+
+    // Scaled demography and rates.
+    defineConstant("N_ANC_Q", asInteger(round(N_ANC / Q)));
+    defineConstant("N_NOW_Q", asInteger(round(N_NOW / Q)));
+    defineConstant("T_GROW_Q", asInteger(round(T_GROW / Q)));
+    defineConstant("T_INV_Q", asInteger(round(T_INV / Q)));
+    defineConstant("S_Q", S_COEF * Q);
+    defineConstant("R_Q", REC_RATE * Q);
+
+    if (S_Q >= 0.1)
+        stop("scaled s = " + S_Q + " >= 0.1; Q-scaling invalid. Lower Q or s.");
+    if (N_ANC_Q < 100)
+        stop("scaled N_ANC = " + N_ANC_Q + " < 100; Q too large for the "
+             + "ancestral phase.");
+
+    // Exponential growth rate per SCALED generation.
+    defineConstant("ALPHA_Q", log(N_NOW * 1.0 / N_ANC) / T_GROW_Q);
+
+    // Total forward duration: always cover the whole growth phase, and the
+    // inversion's whole lifetime if it is older than that. Then the pre-forward
+    // history is always constant N_ANC, so recapitation is unambiguous.
+    defineConstant("T_FWD", max(T_INV_Q, T_GROW_Q) + 1);
+    defineConstant("TICK_INTRO", T_FWD - T_INV_Q);
+
+    // Sequence layout: flank | inversion | flank.
+    defineConstant("INV_START", asInteger(FLANK_LEN));
+    defineConstant("INV_END", asInteger(FLANK_LEN + INV_LEN - 1));
+    defineConstant("L_TOT", asInteger(2 * FLANK_LEN + INV_LEN));
+    // Flux tract length in bp. w = tract/inv_len is held FIXED at the real
+    // 2kb/20Mb = 1e-4 so the Peischl flux profile stays scale-invariant under
+    // the inversion-length rescaling (which L-invariance licenses; see
+    // NOTES_illex_biology.md sec 7.3).
+    defineConstant("TRACT_BP", max(1, asInteger(round(INV_LEN * TRACT_FRAC))));
+
+    initializeMutationRate(0.0);
+    // The inversion marker. dominanceCoeff = H_COEF, so heterozygote fitness is
+    // 1 + H*s and inverted homozygote 1 + s: H > 1 is overdominance, the classic
+    // mechanism for a stable intermediate frequency like 0.626.
+    initializeMutationType("m2", H_COEF, "f", S_Q);
+    m2.convertToSubstitution = F;
+    m2.color = "red";
+
+    initializeGenomicElementType("g1", m2, 1.0);
+    initializeGenomicElement(g1, 0, L_TOT - 1);
+    initializeRecombinationRate(R_Q);
+}
+
+// --- demography -------------------------------------------------------------
+
+1 early() {
+    sim.addSubpop("p1", N_ANC_Q);
+    defineGlobal("N_RESTARTS", 0);
+}
+
+early() {
+    // Time before present, in scaled generations.
+    tbp = T_FWD - community.tick;
+    if (tbp >= T_GROW_Q) {
+        p1.setSubpopulationSize(N_ANC_Q);
+    } else {
+        n = asInteger(round(N_ANC_Q * exp(ALPHA_Q * (T_GROW_Q - tbp))));
+        p1.setSubpopulationSize(max(2, n));
+    }
+}
+
+// --- introduce the inversion ------------------------------------------------
+
+// Tick specifiers are deliberately NOT used for the blocks below: passing a
+// defineConstant() as a script-block tick range is accepted by some SLiM
+// versions and not others, so the tick tests are done in-block instead.
+
+late() {
+    if (community.tick != TICK_INTRO)
+        return;
+    // One mutation object carried by k genomes: a single origin whose founding
+    // frequency is p_start. For p_start > 1/(2N) this is the phenomenological
+    // "soft" origin documented in NOTES_illex_biology.md sec 7.1 -- it is a
+    // founding FREQUENCY, not a claim about k independent inversion events.
+    k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
+    targets = sample(p1.genomes, k);
+    mut = targets[0].addNewDrawnMutation(m2, INV_START);
+    if (k > 1)
+        targets[1:(k - 1)].addMutations(mut);
+    sim.treeSeqOutput(TREES_PATH + ".restart");
+}
+
+// --- condition on the inversion still segregating ---------------------------
+
+late() {
+    if (community.tick <= TICK_INTRO | community.tick >= T_FWD)
+        return;
+
+    muts = sim.mutationsOfType(m2);
+    lost = (muts.size() == 0);
+    fixed = F;
+    if (!lost)
+        fixed = (sim.mutationFrequencies(NULL, muts) == 1.0);
+
+    if (lost | fixed) {
+        // Restart from the state saved at introduction. The RNG is NOT reseeded
+        // to the original value, so each retry explores a different trajectory.
+        defineGlobal("N_RESTARTS", N_RESTARTS + 1);
+        if (N_RESTARTS > MAX_RESTARTS) {
+            catn("ABORT_TOO_MANY_RESTARTS " + N_RESTARTS);
+            sim.simulationFinished();
+            return;
+        }
+        sim.readFromPopulationFile(TREES_PATH + ".restart");
+        setSeed(rdunif(1, 0, asInteger(2^62) - 1));
+    }
+}
+
+// --- recombination: suppression in heterokaryotypes, plus flux --------------
+
+recombination() {
+    g1inv = genome1.containsMarkerMutation(m2, INV_START);
+    g2inv = genome2.containsMarkerMutation(m2, INV_START);
+    if (g1inv == g2inv)
+        return F;                      // homokaryotype: normal recombination
+
+    // Heterokaryotype: a single crossover inside the inversion yields an
+    // unbalanced (duplication/deletion) gamete, so those breakpoints are removed.
+    inInv = (breakpoints > INV_START) & (breakpoints <= INV_END);
+    changed = F;
+    if (any(inInv)) {
+        breakpoints = breakpoints[!inInv];
+        changed = T;
+    }
+
+    // Gene flux: a double crossover (or gene-conversion tract) inside the
+    // inversion transfers a short tract between arrangements without creating an
+    // unbalanced gamete. Added as a PAIR of breakpoints, which is what makes it
+    // a tract swap rather than a crossover.
+    if (P_FLUX > 0.0) {
+        if (runif(1) < P_FLUX) {
+            a = INV_START + rdunif(1, 0, asInteger(INV_LEN) - 1);
+            b = min(a + rgeom(1, 1.0 / TRACT_BP) + 1, INV_END);
+            if (b > a) {
+                breakpoints = sort(c(breakpoints, asInteger(a), asInteger(b)));
+                changed = T;
+            }
+        }
+    }
+    return changed;
+}
+
+// --- output -----------------------------------------------------------------
+
+late() {
+    if (community.tick != T_FWD)
+        return;
+    muts = sim.mutationsOfType(m2);
+    if (muts.size() == 0) {
+        catn("ABORT_LOST_AT_END");
+        sim.simulationFinished();
+        return;
+    }
+    p_final = sim.mutationFrequencies(NULL, muts);
+    catn("P_FINAL " + p_final);
+    catn("N_RESTARTS " + N_RESTARTS);
+    catn("N_FINAL_Q " + p1.individualCount);
+    sim.treeSeqOutput(TREES_PATH,
+        metadata=Dictionary(
+            "Q", Q, "t_inv", T_INV, "p_start", P_START, "s", S_COEF,
+            "h", H_COEF, "p_flux", P_FLUX, "tract_frac", TRACT_FRAC,
+            "inv_len", INV_LEN, "flank_len", FLANK_LEN, "rec_rate", REC_RATE,
+            "n_anc", N_ANC, "n_now", N_NOW, "t_grow", T_GROW,
+            "inv_start", INV_START, "inv_end", INV_END, "l_tot", L_TOT,
+            "p_final", p_final, "n_restarts", N_RESTARTS, "seed", SEED));
+    sim.simulationFinished();
+}

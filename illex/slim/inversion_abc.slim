@@ -1,180 +1,229 @@
-// Forward-in-time model of the Illex chr2 inversion, for ABC inference.
+// ============================================================================
+// inversion_abc.slim  --  Conditional segregating-inversion recipe for the
+//                         Illex chr2:60-80 Mb ABC.
 //
-// WHY FORWARD AND NOT COALESCENT. The coalescent work (msinv) cannot answer two
-// of the manuscript's questions:
-//   1. "Can the inversion persist without selection?" A genuinely neutral
-//      trajectory is not samplable backwards at Illex Ne -- msinv's stochastic
-//      samplers cap at N <~ 1e4, and P(a neutral mutation reaching p=0.626)
-//      ~ 1.1e-7, so forward rejection sampling of a *coalescent* model yields
-//      zero survivors. A scaled forward WF model samples it directly.
-//   2. "Why is p_inv at an intermediate 0.626?" That needs an explicit fitness
-//      model; overdominance is the classic explanation and is testable here.
-// Illex is annual and semelparous with non-overlapping generations, so a
-// discrete-generation WF model is a good structural match, and generations are
-// years.
+// SLiM 5.2 (tick/cycle model, haplosome API). Deliberately a SIBLING of
+// 14_sweep_seqmodel/scripts/harness/slim/{hard,soft}_sweep.slim and follows the
+// same conventions: !exists() defaults for every parameter, initializeTreeSeq(),
+// community.rescheduleScriptBlock() from a 1 early() block, seed supplied with
+// `slim -s <seed>`, restart-on-loss against a saved snapshot with a prime seed
+// stride, and one machine-readable result line for the driver to parse.
 //
-// SCALING. Illex N0 = 6.8e6 is far too large to simulate directly. Standard
-// Q-scaling: N/Q, and mu*Q, r*Q, s*Q, times/Q. This preserves the products that
-// matter (rho = 4Nr, theta = 4Nmu, Ns). It breaks down when the SCALED
-// selection coefficient stops being small, so the script asserts s*Q < 0.1.
-// Choose Q from the README's cost table.
+// Demography: the same validated Illex "moments" exponential-growth model the
+//   sweep recipes use -- N0 = 6,808,096, NREF = 547,928, TGROW = 769,519. The
+//   forward sim covers ONLY the growth epoch; the deep constant-NREF ancestry is
+//   added afterwards by pyslim.recapitate(). Validated to reproduce genome-wide
+//   pi ~ 0.0093 and Tajima's D ~ -2.0.
+//   The Kingman coalescent this assumes is not assumed lightly: a Beta
+//   multiple-merger coalescent was tested and rejected at every alpha
+//   (illex/scripts/beta_vs_kingman.py).
 //
-// NEUTRAL MUTATIONS ARE NOT SIMULATED HERE. The only mutation is the inversion
-// marker. Neutral variation is added afterwards with msprime on the recapitated
-// tree sequence (see summarize.py) -- much faster and statistically identical.
+// WHAT IS DIFFERENT from the sweep recipes, and why this recipe has to exist:
+//   1. The selected element is an INVERSION, so recombination is suppressed in
+//      heterokaryotypes (single crossovers inside the inversion make unbalanced
+//      gametes). That barrier is the whole mechanism generating the observed
+//      dxy/pi_I = 1.846 and pi_I/pi_S = 0.744, and no sweep recipe has it.
+//   2. Conditioning is on SEGREGATION, not fixation. We observe a POLYMORPHIC
+//      inversion at p = 0.626, so the run restarts on loss AND on fixation. The
+//      present frequency is deliberately NOT conditioned into a narrow band --
+//      it is reported and left for ABC to match, because conditioning on 0.626
+//      and then fitting to 0.626 would use the same datum twice.
+//   3. Gene flux (double crossover / conversion tract inside the inversion in
+//      heterokaryotypes) is an explicit parameter, so flux stays testable.
 //
-// CONDITIONING. Restarts on loss or fixation of the inversion. That is
-// legitimate: we observe a segregating inversion, so conditioning on segregation
-// conditions on an observed fact. It does NOT condition on the final frequency
-// being 0.626 -- p_inv is recorded as a summary statistic and left for ABC to
-// match. Conditioning on it here would use the same datum twice.
+// Rescaling by Q, as in the sweep recipes: N/Q with rates x Q and times /Q,
+//   preserving theta = 4Nmu, rho = 4Nr and Ns. HARD LIMIT: Q-scaling is only
+//   valid while the SCALED selection coefficient stays small, so this recipe
+//   ABORTS if SEL*Q >= 0.1. With the ABC prior's s_max = 3e-4 that caps Q at
+//   333. Do not raise Q past that to save time -- strongly-selected simulations
+//   would abort and the posterior on s would be silently truncated from above,
+//   biasing the neutrality question toward "neutral".
 //
-// Required -d arguments (all in UNSCALED units except where noted); see
-// run_one.py, which always passes every one of them explicitly:
-//   Q, T_INV, P_START, S_COEF, H_COEF, P_FLUX, TRACT_FRAC,
-//   INV_LEN, FLANK_LEN, REC_RATE, N_ANC, N_NOW, T_GROW, TREES_PATH, SEED
-
-// Written for SLiM 4.x. SLiM 5 renamed Genome -> Haplosome; under SLiM 5 the
-// recombination() callback's genome1/genome2 and p1.genomes must be renamed.
+// The inversion is simulated far shorter than the real 20 Mb (INV_LEN default
+//   100 kb). Licensed by the measured L-invariance of per-site pi and dxy
+//   (worst-case 2.1%/1.8% bias extrapolating to 20 Mb; see
+//   illex/NOTES_illex_biology.md sec 7.3), with w = TRACT/INV_LEN held fixed so
+//   the flux geometry is scale-invariant too. NOT licensed for r^2-vs-distance,
+//   which is why the ABC uses no LD statistic.
+//
+// Parameters (override with -d "NAME=value"); all have defaults:
+//   Q, N0, NREF, TGROW, MU, R, INV_LEN, FLANK_LEN,
+//   T_INV (inversion age, generations before present),
+//   P_START (founding frequency at T_INV), SEL, DOM (dominance; >1 = overdominant),
+//   P_FLUX (per-gamete flux probability), TRACT_FRAC (tract/INV_LEN, fixed w),
+//   MAX_RESTARTS, OUTPATH, SAVEPATH
+// Seed: `slim -s <seed>`.
+// ============================================================================
 
 initialize() {
-    setSeed(SEED);
-    initializeTreeSequence();
-    if (!exists("MAX_RESTARTS"))
-        defineConstant("MAX_RESTARTS", 2000);
+    // ---- parameters with defaults ------------------------------------------
+    if (!exists("Q"))            defineConstant("Q", 100.0);
+    if (!exists("N0"))           defineConstant("N0", 6808096.0);
+    if (!exists("NREF"))         defineConstant("NREF", 547928.0);
+    if (!exists("TGROW"))        defineConstant("TGROW", 769519.0);
+    if (!exists("MU"))           defineConstant("MU", 3e-9);
+    // Sex-averaged ReLERNN rate (male 2.148e-9, female 2.892e-9). NOTE the sweep
+    // recipes default to 2.1e-9, which is the MALE map only. chr2 is excluded
+    // from the ReLERNN run by design (the inversion's LD block would corrupt the
+    // fit), so this is an autosomal proxy; the six length-matched autosomes span
+    // 2.467-2.594e-9. Override once a chr2-specific map exists.
+    if (!exists("R"))            defineConstant("R", 2.52e-9);
+    if (!exists("INV_LEN"))      defineConstant("INV_LEN", 100000);
+    if (!exists("FLANK_LEN"))    defineConstant("FLANK_LEN", 25000);
+    if (!exists("T_INV"))        defineConstant("T_INV", 800000.0);
+    if (!exists("P_START"))      defineConstant("P_START", 0.15);
+    if (!exists("SEL"))          defineConstant("SEL", 0.0);
+    if (!exists("DOM"))          defineConstant("DOM", 0.5);
+    if (!exists("P_FLUX"))       defineConstant("P_FLUX", 0.0);
+    if (!exists("TRACT_FRAC"))   defineConstant("TRACT_FRAC", 1e-4);
+    if (!exists("MAX_RESTARTS")) defineConstant("MAX_RESTARTS", 20000);
+    if (!exists("OUTPATH"))      defineConstant("OUTPATH", "inversion.trees");
+    if (!exists("SAVEPATH"))     defineConstant("SAVEPATH", "inversion_restart.trees");
 
-    // Scaled demography and rates.
-    defineConstant("N_ANC_Q", asInteger(round(N_ANC / Q)));
-    defineConstant("N_NOW_Q", asInteger(round(N_NOW / Q)));
-    defineConstant("T_GROW_Q", asInteger(round(T_GROW / Q)));
-    defineConstant("T_INV_Q", asInteger(round(T_INV / Q)));
-    defineConstant("S_Q", S_COEF * Q);
-    defineConstant("R_Q", REC_RATE * Q);
+    // ---- rescaled quantities ----------------------------------------------
+    defineConstant("N0s",   asInteger(round(N0 / Q)));
+    defineConstant("NREFs", asInteger(round(NREF / Q)));
+    defineConstant("Rs",    R * Q);
+    defineConstant("MUs",   MU * Q);              // provenance; forward rate is 0
+    defineConstant("SELs",  SEL * Q);
 
-    if (S_Q >= 0.1)
-        stop("scaled s = " + S_Q + " >= 0.1; Q-scaling invalid. Lower Q or s.");
-    if (N_ANC_Q < 100)
-        stop("scaled N_ANC = " + N_ANC_Q + " < 100; Q too large for the "
-             + "ancestral phase.");
+    if (SELs >= 0.1)
+        stop("[slim] ERROR: scaled SEL*Q = " + SELs + " >= 0.1; Q-rescaling is "
+             + "invalid here. Lower Q (or the s prior), do not raise Q.");
+    if (NREFs < 100)
+        stop("[slim] ERROR: scaled NREF = " + NREFs + " < 100; Q too large for "
+             + "the ancestral phase.");
 
-    // Exponential growth rate per SCALED generation.
-    defineConstant("ALPHA_Q", log(N_NOW * 1.0 / N_ANC) / T_GROW_Q);
+    // Forward duration. The sweep recipes cover exactly the growth epoch; an
+    // inversion can be OLDER than the growth epoch, so the forward window is
+    // extended back to T_INV when needed. Either way the pre-forward history is
+    // constant NREF, so recapitation stays unambiguous.
+    defineConstant("G_GROW", asInteger(round(TGROW / Q)));
+    defineConstant("T_INV_T", asInteger(round(T_INV / Q)));
+    defineConstant("G", max(G_GROW, T_INV_T) + 1);        // total forward ticks
+    defineConstant("PRE", G - G_GROW);       // ticks at constant NREFs before growth
+    defineConstant("TINTRO", G - T_INV_T);   // tick the inversion is introduced
+    // Per-tick growth so size(PRE) = NREFs and size(G) = N0s.
+    defineConstant("GROWTH", log(N0 / NREF) / (G_GROW - 1));
+    defineConstant("SEED_STRIDE", 7919);                 // prime restart stride
 
-    // Total forward duration: always cover the whole growth phase, and the
-    // inversion's whole lifetime if it is older than that. Then the pre-forward
-    // history is always constant N_ANC, so recapitation is unambiguous.
-    defineConstant("T_FWD", max(T_INV_Q, T_GROW_Q) + 1);
-    defineConstant("TICK_INTRO", T_FWD - T_INV_Q);
-
-    // Sequence layout: flank | inversion | flank.
+    // ---- sequence layout: flank | inversion | flank -----------------------
     defineConstant("INV_START", asInteger(FLANK_LEN));
     defineConstant("INV_END", asInteger(FLANK_LEN + INV_LEN - 1));
-    defineConstant("L_TOT", asInteger(2 * FLANK_LEN + INV_LEN));
-    // Flux tract length in bp. w = tract/inv_len is held FIXED at the real
-    // 2kb/20Mb = 1e-4 so the Peischl flux profile stays scale-invariant under
-    // the inversion-length rescaling (which L-invariance licenses; see
-    // NOTES_illex_biology.md sec 7.3).
+    defineConstant("L", asInteger(2 * FLANK_LEN + INV_LEN));
     defineConstant("TRACT_BP", max(1, asInteger(round(INV_LEN * TRACT_FRAC))));
 
-    initializeMutationRate(0.0);
-    // The inversion marker. dominanceCoeff = H_COEF, so heterozygote fitness is
-    // 1 + H*s and inverted homozygote 1 + s: H > 1 is overdominance, the classic
-    // mechanism for a stable intermediate frequency like 0.626.
-    initializeMutationType("m2", H_COEF, "f", S_Q);
-    m2.convertToSubstitution = F;
+    // ---- genetic architecture ---------------------------------------------
+    initializeTreeSeq();
+    initializeMutationRate(0.0);               // neutral variation overlaid later
+    // The inversion marker IS the selected element. dominanceCoeff = DOM, so
+    // heterozygote fitness is 1 + DOM*s and inverted homozygote 1 + s:
+    // DOM > 1 is OVERDOMINANCE, the classic mechanism for a stable intermediate
+    // frequency, which is the point of the p_inv = 0.626 question.
+    initializeMutationType("m2", DOM, "f", SELs);
+    m2.convertToSubstitution = F;              // keep trackable at freq 1
     m2.color = "red";
-
     initializeGenomicElementType("g1", m2, 1.0);
-    initializeGenomicElement(g1, 0, L_TOT - 1);
-    initializeRecombinationRate(R_Q);
+    initializeGenomicElement(g1, 0, L - 1);
+    initializeRecombinationRate(Rs);
+
+    catn("[slim] INVERSION Q=" + Q + " N0s=" + N0s + " NREFs=" + NREFs +
+         " G=" + G + " PRE=" + PRE + " TINTRO=" + TINTRO +
+         " GROWTH=" + GROWTH + " Rs=" + Rs + " SELs=" + SELs + " DOM=" + DOM +
+         " P_START=" + P_START + " P_FLUX=" + P_FLUX +
+         " L=" + L + " inv=[" + INV_START + "," + INV_END + "]" +
+         " TRACT_BP=" + TRACT_BP);
 }
 
-// --- demography -------------------------------------------------------------
-
+// ---- tick 1: found the population, schedule the control blocks -------------
 1 early() {
-    sim.addSubpop("p1", N_ANC_Q);
-    defineGlobal("N_RESTARTS", 0);
+    sim.addSubpop("p1", NREFs);
+    defineGlobal("nrestart", 0);
+    community.rescheduleScriptBlock(s1, TINTRO, TINTRO);     // introduce + save
+    community.rescheduleScriptBlock(s2, TINTRO + 1, G - 1);  // loss/fixation monitor
+    community.rescheduleScriptBlock(s3, G, G);               // finalize
 }
 
-early() {
-    // Time before present, in scaled generations.
-    tbp = T_FWD - community.tick;
-    if (tbp >= T_GROW_Q) {
-        p1.setSubpopulationSize(N_ANC_Q);
+// ---- demography: constant NREFs, then the growth epoch ---------------------
+2: early() {
+    t = community.tick;
+    if (t <= PRE) {
+        p1.setSubpopulationSize(NREFs);
     } else {
-        n = asInteger(round(N_ANC_Q * exp(ALPHA_Q * (T_GROW_Q - tbp))));
-        p1.setSubpopulationSize(max(2, n));
+        newSize = asInteger(round(NREFs * exp(GROWTH * (t - PRE))));
+        p1.setSubpopulationSize(max(2, newSize));
     }
 }
 
-// --- introduce the inversion ------------------------------------------------
-
-// Tick specifiers are deliberately NOT used for the blocks below: passing a
-// defineConstant() as a script-block tick range is accepted by some SLiM
-// versions and not others, so the tick tests are done in-block instead.
-
-late() {
-    if (community.tick != TICK_INTRO)
-        return;
-    // One mutation object carried by k genomes: a single origin whose founding
-    // frequency is p_start. For p_start > 1/(2N) this is the phenomenological
-    // "soft" origin documented in NOTES_illex_biology.md sec 7.1 -- it is a
-    // founding FREQUENCY, not a claim about k independent inversion events.
+// ---- s1: introduce the inversion at founding frequency P_START -------------
+s1 900 late() {
+    sim.treeSeqOutput(SAVEPATH);                 // pre-introduction snapshot
     k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
-    targets = sample(p1.genomes, k);
+    targets = sample(p1.haplosomes, k);
     mut = targets[0].addNewDrawnMutation(m2, INV_START);
     if (k > 1)
         targets[1:(k - 1)].addMutations(mut);
-    sim.treeSeqOutput(TREES_PATH + ".restart");
+    // ONE mutation object on k haplosomes: a single inversion ORIGIN whose
+    // founding FREQUENCY is P_START. This is the phenomenological soft origin
+    // documented in NOTES sec 7.1 -- not a claim of k independent inversion
+    // events. Both endpoints of the continuum (k=1, and constant p) are already
+    // excluded by the data, so the prior must span them.
+    catn("[slim] introduced inversion at tick " + community.tick +
+         " on " + k + " of " + (2 * p1.individualCount) + " haplosomes");
 }
 
-// --- condition on the inversion still segregating ---------------------------
-
-late() {
-    if (community.tick <= TICK_INTRO | community.tick >= T_FWD)
-        return;
-
-    muts = sim.mutationsOfType(m2);
-    lost = (muts.size() == 0);
+// ---- s2: restart on loss OR fixation ---------------------------------------
+//   Both are legitimate: the observed inversion is POLYMORPHIC, so a run that
+//   loses or fixes it is not a realization of the observed system. The restart
+//   COUNT is retained and reported -- for a single-founder, old inversion it is
+//   itself the measurement of how hard reaching p = 0.626 is.
+s2 901 late() {
+    mut = sim.mutationsOfType(m2);
+    lost = (mut.size() == 0);
     fixed = F;
     if (!lost)
-        fixed = (sim.mutationFrequencies(NULL, muts) == 1.0);
+        fixed = (sim.mutationFrequencies(p1, mut) >= 1.0);
+    if (!(lost | fixed))
+        return;
 
-    if (lost | fixed) {
-        // Restart from the state saved at introduction. The RNG is NOT reseeded
-        // to the original value, so each retry explores a different trajectory.
-        defineGlobal("N_RESTARTS", N_RESTARTS + 1);
-        if (N_RESTARTS > MAX_RESTARTS) {
-            catn("ABORT_TOO_MANY_RESTARTS " + N_RESTARTS);
-            sim.simulationFinished();
-            return;
-        }
-        sim.readFromPopulationFile(TREES_PATH + ".restart");
-        setSeed(rdunif(1, 0, asInteger(2^62) - 1));
+    defineGlobal("nrestart", nrestart + 1);
+    if (nrestart > MAX_RESTARTS) {
+        catn("[slim] INVERSION_RESULT status=ABORT_RESTARTS nrestart=" +
+             nrestart + " reason=" + (lost ? "lost" else "fixed"));
+        sim.simulationFinished();
+        return;
     }
+    sim.readFromPopulationFile(SAVEPATH);        // restores population AND tick
+    setSeed(getSeed() + SEED_STRIDE);
+    k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
+    targets = sample(p1.haplosomes, k);
+    mut2 = targets[0].addNewDrawnMutation(m2, INV_START);
+    if (k > 1)
+        targets[1:(k - 1)].addMutations(mut2);
 }
 
-// --- recombination: suppression in heterokaryotypes, plus flux --------------
-
+// ---- recombination: barrier in heterokaryotypes, plus optional flux --------
 recombination() {
-    g1inv = genome1.containsMarkerMutation(m2, INV_START);
-    g2inv = genome2.containsMarkerMutation(m2, INV_START);
-    if (g1inv == g2inv)
-        return F;                      // homokaryotype: normal recombination
+    h1 = haplosome1.containsMarkerMutation(m2, INV_START);
+    h2 = haplosome2.containsMarkerMutation(m2, INV_START);
+    if (h1 == h2)
+        return F;                       // homokaryotype: unmodified recombination
 
     // Heterokaryotype: a single crossover inside the inversion yields an
     // unbalanced (duplication/deletion) gamete, so those breakpoints are removed.
-    inInv = (breakpoints > INV_START) & (breakpoints <= INV_END);
+    // This is the barrier that generates the observed divergence.
     changed = F;
+    inInv = (breakpoints > INV_START) & (breakpoints <= INV_END);
     if (any(inInv)) {
         breakpoints = breakpoints[!inInv];
         changed = T;
     }
 
-    // Gene flux: a double crossover (or gene-conversion tract) inside the
-    // inversion transfers a short tract between arrangements without creating an
-    // unbalanced gamete. Added as a PAIR of breakpoints, which is what makes it
-    // a tract swap rather than a crossover.
+    // Gene flux: a double crossover (or conversion tract) inside the inversion
+    // transfers a tract between arrangements WITHOUT creating an unbalanced
+    // gamete. Added as a PAIR of breakpoints, which is what makes it a tract
+    // swap rather than a crossover. Placed uniformly in the inversion, which
+    // approximates the flat-interior Peischl phi(x) profile.
     if (P_FLUX > 0.0) {
         if (runif(1) < P_FLUX) {
             a = INV_START + rdunif(1, 0, asInteger(INV_LEN) - 1);
@@ -188,28 +237,29 @@ recombination() {
     return changed;
 }
 
-// --- output -----------------------------------------------------------------
-
-late() {
-    if (community.tick != T_FWD)
-        return;
-    muts = sim.mutationsOfType(m2);
-    if (muts.size() == 0) {
-        catn("ABORT_LOST_AT_END");
+// ---- s3: finalize at the present -------------------------------------------
+s3 902 late() {
+    mut = sim.mutationsOfType(m2);
+    if (mut.size() == 0) {
+        catn("[slim] INVERSION_RESULT status=LOST_AT_END nrestart=" + nrestart);
         sim.simulationFinished();
         return;
     }
-    p_final = sim.mutationFrequencies(NULL, muts);
-    catn("P_FINAL " + p_final);
-    catn("N_RESTARTS " + N_RESTARTS);
-    catn("N_FINAL_Q " + p1.individualCount);
-    sim.treeSeqOutput(TREES_PATH,
+    freq = sim.mutationFrequencies(p1, mut);
+    // freq is NOT conditioned into a band on purpose: it is a summary statistic
+    // the ABC matches against the observed 0.626.
+    sim.treeSeqOutput(OUTPATH,
         metadata=Dictionary(
-            "Q", Q, "t_inv", T_INV, "p_start", P_START, "s", S_COEF,
-            "h", H_COEF, "p_flux", P_FLUX, "tract_frac", TRACT_FRAC,
-            "inv_len", INV_LEN, "flank_len", FLANK_LEN, "rec_rate", REC_RATE,
-            "n_anc", N_ANC, "n_now", N_NOW, "t_grow", T_GROW,
-            "inv_start", INV_START, "inv_end", INV_END, "l_tot", L_TOT,
-            "p_final", p_final, "n_restarts", N_RESTARTS, "seed", SEED));
+            "Q", Q, "t_inv", T_INV, "p_start", P_START, "s", SEL, "h", DOM,
+            "p_flux", P_FLUX, "tract_frac", TRACT_FRAC, "tract_bp", TRACT_BP,
+            "inv_len", INV_LEN, "flank_len", FLANK_LEN, "rec_rate", R,
+            "mu", MU, "n_anc", NREF, "n_now", N0, "t_grow", TGROW,
+            "inv_start", INV_START, "inv_end", INV_END, "l_tot", L,
+            "p_final", freq, "n_restarts", nrestart,
+            "g_total", G, "tintro", TINTRO));
+    catn("[slim] INVERSION_RESULT status=SEGREGATING freq=" + freq +
+         " nrestart=" + nrestart + " final_tick=" + community.tick +
+         " final_size=" + p1.individualCount);
+    catn("[slim] wrote " + OUTPATH);
     sim.simulationFinished();
 }

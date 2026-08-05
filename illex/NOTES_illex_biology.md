@@ -10,6 +10,13 @@ Companion documents:
   `docs/superpowers/specs/2026-08-03-illex-chr2-neutral-sufficiency-design.md`
 - Canonical numeric constants (importable): `illex/empirical.py`
 - ABC/SLiM pipeline: `illex/slim/README.md`
+- **Existing validated SLiM + Talapas harness** (sweep classes; the inversion
+  recipe is a sibling of it and copies its conventions):
+  `analysis/steps/14_sweep_seqmodel/scripts/harness/` — `slim/{hard,soft}_sweep.slim`,
+  `slim/run_slim_sweep.py`, `talapas/config.sh`. Requires **SLiM ≥ 5.0**
+  (haplosome/tick API); Talapas account `kernlab`, partition `compute`, conda env
+  `illex_slimsim`. Its demography is the same moments growth model, already
+  validated to reproduce genome-wide π ≈ 0.0093 and Tajima's D ≈ −2.0.
 
 Status key: **[M]** measured here · **[E]** external/prior analysis ·
 **[I]** inferred · **[W]** was believed, now known wrong.
@@ -327,6 +334,12 @@ designed to address by adding genuinely independent statistics (§9).
 ## 8. Recombination map and accessibility mask — what actually exists
 
 **[M]** Both exist. An earlier conclusion that neither did was wrong.
+
+**In progress (as of 2026-08-05):** a chr2-specific accessibility mask and
+ReLERNN map are being built. Until they land, §8.1/§8.2 describe the proxy and
+the genome-wide mask actually in use. Hooks for the chr2 versions are
+`illex/slim/config.py::CHR2_RMAP` / `CHR2_MASK_BED` and
+`rec_rate_for_inversion()`.
 
 ### 8.1 Recombination: ReLERNN, genome-wide, chr2 deliberately excluded
 

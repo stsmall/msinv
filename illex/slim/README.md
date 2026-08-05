@@ -11,6 +11,45 @@ answer three manuscript questions the coalescent work could not:
 
 Background, provenance, and every fixed constant: `../NOTES_illex_biology.md`.
 
+## Relationship to the existing sweep harness — read this first
+
+This is a **sibling of an existing, validated harness**, not a new stack:
+
+```
+analysis/steps/14_sweep_seqmodel/scripts/harness/
+    slim/hard_sweep.slim, soft_sweep.slim     <- the recipes this one copies
+    slim/run_slim_sweep.py                    <- the driver pattern
+    talapas/config.sh, gen_array.sbatch, submit.sh
+```
+
+`inversion_abc.slim` deliberately follows those recipes' conventions:
+`!exists()` defaults for every parameter, `initializeTreeSeq()`,
+`community.rescheduleScriptBlock()` from a `1 early()` block, seed via
+`slim -s <seed>`, restart-against-a-snapshot with the same prime seed stride
+(7919), and one machine-readable result line (`[slim] INVERSION_RESULT status=…`)
+for the driver to parse. `config.sh` copies `ACCOUNT=kernlab`,
+`PARTITION=compute`, `ENV=illex_slimsim` and the `/gpfs/projects/$ACCOUNT/$USER`
+scratch convention from `14_.../talapas/config.sh` rather than inventing them.
+The seed base is `4e8`, distinct from the sweep campaign's `1e8`/`2e8`/`3e8`, so
+seeds cannot collide across campaigns.
+
+**SLiM ≥ 5.0 is required**, exactly as for the sweep recipes — the haplosome/tick
+API. SLiM 4.x will not run this.
+
+**Why a separate recipe at all**, rather than reusing `soft_sweep.slim`: the
+selected element is an inversion, so recombination must be suppressed inside it
+in heterokaryotypes. That barrier is the entire mechanism producing the observed
+`dxy/π_I = 1.846` and `π_I/π_S = 0.744`, and no sweep recipe has it. Conditioning
+also differs — on **segregation**, not fixation.
+
+Two differences from the sweep recipes that are intentional, not drift:
+- `R` defaults to **2.52e-9** (sex-averaged ReLERNN) where the sweep recipes use
+  2.1e-9 (**male map only**). ~20% in ρ, and it sets the barrier's leakage scale.
+- The forward window extends back to `T_INV` when the inversion is older than the
+  growth epoch, where the sweep recipes always cover exactly the growth epoch.
+  Either way the pre-forward history is constant `NREF`, so recapitation is
+  unchanged.
+
 ## Why forward, when msinv already exists
 
 msinv (backward/ARG) is the right tool for the diversity ratios and produced the
@@ -37,9 +76,11 @@ generation WF is a good structural match and generations are years.
 | `run_one.py` | one array task: draw priors → SLiM → summarize → TSV |
 | `observed_targets.py` | the empirical statistic vector to match |
 | `abc_fit.py` | rejection ABC + regression adjustment + the three answers |
-| `submit_talapas.sbatch` | SLURM array |
+| `config.sh` | Talapas settings, copied from the sweep harness |
+| `submit.sh` | sizes and submits the array from `config.sh` |
+| `submit_talapas.sbatch` | one array task |
 | `collect.sh` | concatenate task TSVs, report failure breakdown |
-| `smoke_slim.sh` | **run this first**, on a machine with SLiM |
+| `smoke_slim.sh` | **run this first**, on a machine with SLiM ≥ 5 |
 | `selftest.py` | validates everything except the `.slim` file |
 
 ## Order of operations
@@ -56,16 +97,17 @@ bash illex/slim/smoke_slim.sh
     -m illex.slim.observed_targets --out results/illex/abc_observed.json
 
 # 3. Benchmark ONE production-Q simulation before committing the array.
-REPS=1 QSCALE=200 .venv/bin/python -m illex.slim.run_one \
-    --task-id 0 --reps 1 --Q 200 --out-dir ./.tmp/bench --slim $(which slim)
+python -m illex.slim.run_one --task-id 0 --reps 1 --Q 200 \
+    --out-dir ./.tmp/bench --slim $(which slim)
 
-# 4. Launch. --account is mandatory on Talapas.
-sbatch --account=<your_pirg> --partition=compute illex/slim/submit_talapas.sbatch
+# 4. Launch. Account/partition come from config.sh (kernlab/compute).
+DRYRUN=1 bash illex/slim/submit.sh      # check the sbatch line first
+bash illex/slim/submit.sh
 
 # 5. Collect and fit.
-bash illex/slim/collect.sh results/abc results/abc/sims_all.tsv
-.venv/bin/python -m illex.slim.abc_fit \
-    --sims results/abc/sims_all.tsv \
+bash illex/slim/collect.sh "$OUTROOT/sims" "$OUTROOT/sims_all.tsv"
+python -m illex.slim.abc_fit \
+    --sims "$OUTROOT/sims_all.tsv" \
     --observed results/illex/abc_observed.json \
     --tol 0.005 --out results/illex/abc_posterior.json
 ```
@@ -146,22 +188,40 @@ p = 0.626 — which is question 1 from a different angle.
 | Accessibility | 47.91% in the inversion body | `degenotate_illex/accessible_sites.bed` |
 | p_inv | 0.626 | karyotypes, baker-633 |
 
-**chr2 has no recombination map of its own, by design** — `build_persex_vcf.sh`
-excludes it ("autosomes (excl chr2 inv, chr42, chrZ)") because the inversion's LD
-block would corrupt a ReLERNN fit. The six length-matched autosomes give
+**chr2 is excluded from the existing ReLERNN run by design** —
+`build_persex_vcf.sh` reads "autosomes (excl chr2 inv, chr42, chrZ)", because the
+inversion's LD block would corrupt the fit. The six length-matched autosomes give
 2.467–2.594e-9, so r is effectively known rather than free, and is held fixed.
 `config.REC_RATE_BRACKET` has the male/female bracket for a sensitivity arm.
+
+**A chr2-specific mask and ReLERNN map are being built.** When they land, set
+`config.CHR2_RMAP` and `config.CHR2_MASK_BED` rather than editing `REC_RATE` by
+hand, so the provenance stays visible. `config.rec_rate_for_inversion()` will
+then return the length-weighted mean across the inversion body instead of the
+autosomal proxy. Note a positional map cannot be applied to a 100 kb stand-in for
+a 20 Mb inversion, so what the chr2 map buys is the correct **scalar** mean (and,
+if wanted later, a heterogeneity sensitivity arm) — not per-window rates.
+Likewise a chr2 mask improves the **observed** absolute levels
+(`observed_targets.py`) and the accessible-fraction correction; it cannot be
+applied positionally to the rescaled simulation, so the shape statistics continue
+to assume masking is not diversity-biased. That assumption is worth checking once
+the mask exists.
 
 ## Known limitations
 
 - **`inversion_abc.slim` has not been executed.** No SLiM on the analysis box.
-  `selftest.py` covers everything downstream; the `.slim` file is carefully
-  written but unrun, so step 1 is not optional.
-- Written for **SLiM 4.x**. SLiM 5 renamed `Genome` → `Haplosome`, which breaks
-  the `recombination()` callback and `p1.genomes`.
+  `selftest.py` covers everything downstream; the `.slim` file follows the sweep
+  recipes' SLiM 5.2 idiom closely but is unrun, so step 1 is not optional.
 - Single panmictic population. Justified by geographic Fst ≈ 0, but it means the
   model cannot express local adaptation as the balancing mechanism.
-- The `--time` and `--mem` in the sbatch file are guesses pending step 3.
+- `WALLTIME` and `MEM` in `config.sh` are guesses pending step 3. The cost is
+  dominated by the recent high-N phase, and unlike the sweep recipes this one may
+  run a longer forward window (back to `T_INV`, not just the growth epoch) when
+  the inversion is old — so per-sim cost rises with `t_inv`, and the prior goes to
+  3e6. Budget from the benchmark, not from the sweep campaign's numbers.
+- The restart loop can be the dominant cost for parameter combinations where the
+  inversion rarely survives. `MAX_RESTARTS` (default 20,000) bounds it, and those
+  runs are recorded as `abort_restarts` rather than silently retried forever.
 - Rejection ABC with 23 statistics is at the edge of where curse-of-
   dimensionality starts to bite. If the posterior looks prior-like, the first
   thing to try is reducing the SFS to fewer bins (`config.SFS_BINS`) rather than

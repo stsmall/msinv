@@ -34,29 +34,52 @@ SLIM_SCRIPT = Path(__file__).resolve().parent / "inversion_abc.slim"
 
 def slim_command(slim_bin: str, params: dict, q: float, trees_path: Path,
                  seed: int) -> list[str]:
+    """Build the SLiM 5.2 invocation.
+
+    Follows the 14_sweep_seqmodel harness conventions: the seed goes to `slim -s`
+    (NOT a -d define), floats are passed with repr() for full precision, and
+    string paths are Eidos-quoted.
+    """
+    save_path = Path(str(trees_path) + ".restart")
     d = {
         "Q": q,
         "T_INV": params["t_inv"],
         "P_START": params["p_start"],
-        "S_COEF": params["s"],
-        "H_COEF": params["h"],
+        "SEL": params["s"],
+        "DOM": params["h"],
         "P_FLUX": params["p_flux"],
         "TRACT_FRAC": C.TRACT_FRAC,
         "INV_LEN": C.INV_LEN_SIM,
         "FLANK_LEN": C.FLANK_LEN_SIM,
-        "REC_RATE": C.REC_RATE,
-        "N_ANC": C.N_ANC,
-        "N_NOW": C.N_NOW,
-        "T_GROW": C.T_GROW,
-        "SEED": seed,
+        "R": C.REC_RATE,
+        "MU": C.MU,
+        "NREF": C.N_ANC,
+        "N0": C.N_NOW,
+        "TGROW": C.T_GROW,
     }
-    cmd = [slim_bin]
+    cmd = [slim_bin, "-s", str(seed)]
     for k, v in d.items():
-        cmd += ["-d", f"{k}={v!r}" if isinstance(v, str) else f"{k}={v}"]
-    # String constants need Eidos quoting.
-    cmd += ["-d", f'TREES_PATH="{trees_path}"']
+        if isinstance(v, int):
+            cmd += ["-d", f"{k}={v}"]
+        else:
+            cmd += ["-d", f"{k}={v!r}"]          # full-precision float
+    cmd += ["-d", f'OUTPATH="{trees_path}"']
+    cmd += ["-d", f'SAVEPATH="{save_path}"']
     cmd.append(str(SLIM_SCRIPT))
     return cmd
+
+
+def parse_slim_result(stdout: str) -> dict:
+    """Pull the machine-readable INVERSION_RESULT line the recipe emits."""
+    for line in stdout.splitlines():
+        if "INVERSION_RESULT" in line:
+            out = {}
+            for tok in line.split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    out[k] = v
+            return out
+    return {}
 
 
 def run_replicate(rep_seed: int, q: float, slim_bin: str, scratch: Path,
@@ -84,11 +107,22 @@ def run_replicate(rep_seed: int, q: float, slim_bin: str, scratch: Path,
         row["status"] = "slim_error"
         row["stderr_tail"] = proc.stderr.strip()[-300:]
         return row
-    if "ABORT_TOO_MANY_RESTARTS" in proc.stdout:
-        row["status"] = "lost_too_often"
+
+    res = parse_slim_result(proc.stdout)
+    slim_status = res.get("status", "")
+    if "nrestart" in res:
+        row["n_restarts"] = res["nrestart"]
+    if slim_status == "ABORT_RESTARTS":
+        # Not a failure: a measurement. These parameter combinations cannot keep
+        # the inversion segregating to the present, which is itself evidence
+        # about the neutrality question. collect.sh reports the counts.
+        row["status"] = "abort_restarts"
         return row
-    if "ABORT_LOST_AT_END" in proc.stdout or not trees.exists():
+    if slim_status == "LOST_AT_END" or not trees.exists():
         row["status"] = "lost"
+        return row
+    if slim_status != "SEGREGATING":
+        row["status"] = f"unexpected_slim_status:{slim_status or 'none'}"
         return row
 
     try:

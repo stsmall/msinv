@@ -18,15 +18,51 @@ MU = 3e-9
 
 # --- fixed recombination (ReLERNN; NOTES sec 8.1) ---------------------------
 # Sex-averaged genome-wide length-weighted mean, male 2.148e-9 / female 2.892e-9.
-# chr2 is deliberately absent from the ReLERNN run, but the six length-matched
-# autosomes span 2.467-2.594e-9, so r is effectively KNOWN for chr2 rather than
-# a free parameter. Kept fixed; use REC_RATE_BRACKET for a sensitivity arm.
+# chr2 is deliberately absent from the existing ReLERNN run (the inversion's LD
+# block would corrupt the fit), but the six length-matched autosomes span
+# 2.467-2.594e-9, so r is effectively KNOWN for chr2 rather than a free
+# parameter. Kept fixed; REC_RATE_BRACKET is the male/female sensitivity arm.
+#
+# NOTE the sweep recipes in 14_sweep_seqmodel default to 2.1e-9, which is the
+# MALE map only. This pipeline uses the sex-averaged value; the difference is
+# ~20% in rho and matters for the barrier's leakage scale.
 REC_RATE = 2.52e-9
 REC_RATE_BRACKET = (2.148e-9, 2.892e-9)
 
+# A chr2-specific mask and ReLERNN map are being built. When they land, set these
+# and rerun -- do NOT edit REC_RATE by hand, so the provenance stays visible.
+# CHR2_RMAP is expected in ReLERNN PREDICT format (chrom/start/end/nSites/
+# recombRate/CI95LO/CI95HI, with chrom possibly a b'2' bytes-repr).
+CHR2_RMAP = None            # e.g. ".../chr2.kept.PREDICT.BSCORRECTED.txt"
+CHR2_MASK_BED = None        # e.g. ".../chr2_accessible.bed"
+
+
+def rec_rate_for_inversion(rmap_path: str | None = None) -> float:
+    """Mean recombination rate inside the inversion body.
+
+    Falls back to the autosomal proxy REC_RATE when no chr2 map is available.
+    Once a chr2 map exists, this returns the length-weighted mean across the
+    inversion body, which is the right scalar for the rescaled proxy inversion
+    (a positional map cannot be applied to a 100 kb stand-in for 20 Mb).
+    """
+    path = rmap_path or CHR2_RMAP
+    if path is None:
+        return REC_RATE
+    import pandas as pd
+    d = pd.read_csv(path, sep="\t")
+    d["chrom"] = d["chrom"].astype(str).str.replace(r"^b'|'$", "", regex=True)
+    d = d[d.chrom == "2"]
+    body = d[(d.start >= INV_START_REAL) & (d.end <= INV_STOP_REAL)]
+    if body.empty:
+        raise ValueError(f"no chr2 windows inside the inversion body in {path}")
+    w = (body.end - body.start).to_numpy(dtype=float)
+    return float((body.recombRate.to_numpy(dtype=float) * w).sum() / w.sum())
+
 # --- observed inversion ------------------------------------------------------
 P_INV_OBS = 0.626
-INV_LEN_REAL = 19_954_980          # chr2:60,040,617-79,995,597
+INV_START_REAL = 60_040_617
+INV_STOP_REAL = 79_995_597
+INV_LEN_REAL = INV_STOP_REAL - INV_START_REAL
 
 # --- accessibility (NOTES sec 8.2) ------------------------------------------
 ACCESSIBLE_BED = ("/sietch_colab/data_share/illex/popgen_data/"

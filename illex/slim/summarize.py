@@ -40,12 +40,24 @@ def load_and_prepare(trees_path: str, q: float, seed: int):
     meta = {k: (v[0] if isinstance(v, list) and len(v) == 1 else v)
             for k, v in meta.items()}
 
-    n_anc_q = max(2, int(round(C.N_ANC / q)))
-    ts = pyslim.recapitate(ts, ancestral_Ne=n_anc_q,
-                           recombination_rate=C.REC_RATE * q,
-                           random_seed=seed)
-    ts = msprime.sim_mutations(ts, rate=C.MU * q, random_seed=seed + 1,
-                               keep=True)
+    # Prefer the rates the recipe actually ran with over the config defaults, so
+    # a sensitivity arm that overrides R or MU on the command line is recapitated
+    # and mutated consistently instead of silently reverting to the default.
+    n_anc = float(meta.get("n_anc", C.N_ANC))
+    rec = float(meta.get("rec_rate", C.REC_RATE))
+    mu = float(meta.get("mu", C.MU))
+
+    n_anc_q = max(2, int(round(n_anc / q)))
+    # The forward sim's time unit is rescaled generations (SLiM 5 "ticks"), so
+    # ancestral_Ne and the rates are all in those same rescaled units. msprime's
+    # ticks-vs-generations TimeUnitsMismatchWarning is therefore expected.
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ts = pyslim.recapitate(ts, ancestral_Ne=n_anc_q,
+                               recombination_rate=rec * q, random_seed=seed)
+        ts = msprime.sim_mutations(ts, rate=mu * q, random_seed=seed + 1,
+                                   keep=True)
     return ts, meta
 
 
@@ -145,7 +157,8 @@ def summarize(trees_path: str, q: float, seed: int) -> dict:
     # mu is scaled because the tree sequence is in scaled generations; the RATIOS
     # are unaffected, and the absolute levels come out on the real per-site scale
     # because mu*Q against times/Q cancels.
-    out = arrangement_stats(ts, i_nodes, s_nodes, interval, C.MU * q)
+    mu = float(meta.get("mu", C.MU))
+    out = arrangement_stats(ts, i_nodes, s_nodes, interval, mu * q)
 
     sfs_i = folded_sfs_shape(ts, i_all, interval, C.SFS_PROJ)
     sfs_s = folded_sfs_shape(ts, s_all, interval, C.SFS_PROJ)

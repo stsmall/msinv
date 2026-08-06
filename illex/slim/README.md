@@ -194,18 +194,35 @@ inversion's LD block would corrupt the fit. The six length-matched autosomes giv
 2.467–2.594e-9, so r is effectively known rather than free, and is held fixed.
 `config.REC_RATE_BRACKET` has the male/female bracket for a sensitivity arm.
 
-**A chr2-specific mask and ReLERNN map are being built.** When they land, set
-`config.CHR2_RMAP` and `config.CHR2_MASK_BED` rather than editing `REC_RATE` by
-hand, so the provenance stays visible. `config.rec_rate_for_inversion()` will
-then return the length-weighted mean across the inversion body instead of the
-autosomal proxy. Note a positional map cannot be applied to a 100 kb stand-in for
-a 20 Mb inversion, so what the chr2 map buys is the correct **scalar** mean (and,
-if wanted later, a heterogeneity sensitivity arm) — not per-window rates.
-Likewise a chr2 mask improves the **observed** absolute levels
-(`observed_targets.py`) and the accessible-fraction correction; it cannot be
-applied positionally to the rescaled simulation, so the shape statistics continue
-to assume masking is not diversity-biased. That assumption is worth checking once
-the mask exists.
+**A chr2-specific mask and a chr2 ReLERNN run are being built.** When they land:
+
+```bash
+.venv/bin/python -m illex.slim.chr2_rmap_report --rmap /path/to/chr2...PREDICT.BSCORRECTED.txt
+```
+
+then set `config.CHR2_RMAP` / `config.CHR2_MASK_BED` — do not edit `REC_RATE` by
+hand, so provenance stays visible.
+
+**The interior windows are not the simulation's `r`.** ReLERNN reads recombination
+off LD decay, and the inversion elevates LD across 60–80 Mb in heterokaryotypes,
+so interior windows report a downward-biased rate — they measure the realized
+barrier. SLiM already imposes that barrier, so using them would suppress
+recombination twice. Hence two separate functions:
+
+- `rec_rate_for_inversion()` → chr2 **collinear** regions (±2 Mb buffer). This is
+  the simulation's `r`.
+- `rec_rate_inversion_interior()` → inside the inversion. **Validation target
+  only**: the fitted model predicts a realized interior LD level, so this is an
+  independent check — one of few left, since Fst is redundant and absolute levels
+  need a nuisance scale. Confounded by the arrangement's altered Ne as well as by
+  LD, so treat it as order-of-magnitude.
+
+A positional map still cannot be applied to a 100 kb stand-in for 20 Mb, so what
+the map buys is the correct **scalar** mean plus (optionally) a heterogeneity
+sensitivity arm. Same for the mask: it improves the **observed** absolute levels
+and the accessible-fraction correction, but cannot be applied positionally to the
+rescaled simulation, so the shape statistics keep assuming masking is not
+diversity-biased — worth checking once the mask exists.
 
 ## Known limitations
 

@@ -37,26 +37,80 @@ CHR2_RMAP = None            # e.g. ".../chr2.kept.PREDICT.BSCORRECTED.txt"
 CHR2_MASK_BED = None        # e.g. ".../chr2_accessible.bed"
 
 
-def rec_rate_for_inversion(rmap_path: str | None = None) -> float:
-    """Mean recombination rate inside the inversion body.
-
-    Falls back to the autosomal proxy REC_RATE when no chr2 map is available.
-    Once a chr2 map exists, this returns the length-weighted mean across the
-    inversion body, which is the right scalar for the rescaled proxy inversion
-    (a positional map cannot be applied to a 100 kb stand-in for 20 Mb).
-    """
+def _load_chr2_rmap(rmap_path: str | None = None):
+    import pandas as pd
     path = rmap_path or CHR2_RMAP
     if path is None:
-        return REC_RATE
-    import pandas as pd
+        return None
     d = pd.read_csv(path, sep="\t")
     d["chrom"] = d["chrom"].astype(str).str.replace(r"^b'|'$", "", regex=True)
-    d = d[d.chrom == "2"]
+    d = d[d.chrom == "2"].copy()
+    if d.empty:
+        raise ValueError(f"no chr2 rows in {path}")
+    return d
+
+
+def _weighted_mean(d) -> float:
+    w = (d.end - d.start).to_numpy(dtype=float)
+    return float((d.recombRate.to_numpy(dtype=float) * w).sum() / w.sum())
+
+
+def rec_rate_for_inversion(rmap_path: str | None = None,
+                           margin: int = 2_000_000) -> float:
+    """Meiotic recombination rate to give the SIMULATION.
+
+    Taken from chr2's COLLINEAR regions, NOT from inside the inversion.
+
+    This is the important subtlety in using a chr2 ReLERNN map. ReLERNN infers
+    recombination from LD decay, and the inversion elevates LD across 60-80 Mb in
+    heterokaryotypes, so the interior windows report a **downward-biased** rate:
+    they measure the realized barrier, not the underlying meiotic rate. The SLiM
+    model already imposes the barrier structurally, so feeding it the interior
+    estimate would suppress recombination TWICE.
+
+    (This is also why chr2 was excluded from the original genome-wide run --
+    ``build_persex_vcf.sh``: "autosomes (excl chr2 inv, chr42, chrZ)".)
+
+    ``margin`` excludes a buffer either side of the breakpoints, since LD spills
+    beyond them and the differentiated extent is itself narrower than the nominal
+    span (NOTES sec 4.2).
+    """
+    d = _load_chr2_rmap(rmap_path)
+    if d is None:
+        return REC_RATE
+    coll = d[(d.end < INV_START_REAL - margin)
+             | (d.start > INV_STOP_REAL + margin)]
+    if coll.empty:
+        raise ValueError(
+            f"no collinear chr2 windows outside the inversion +/-{margin:,} bp; "
+            "cannot derive an unbiased meiotic rate from this map")
+    return _weighted_mean(coll)
+
+
+def rec_rate_inversion_interior(rmap_path: str | None = None) -> float | None:
+    """ReLERNN's rate INSIDE the inversion -- a validation target, not an input.
+
+    Deliberately a separate function so it can never be mistaken for the
+    simulation's ``r``. Its value is that the simulation PREDICTS it: a fitted
+    (t_inv, p_start, s) with the barrier produces some realized LD inside the
+    inversion, which maps to an apparent recombination rate. Comparing that to
+    this number is an independent check on the barrier's strength -- and it is one
+    of the few genuinely independent constraints left (NOTES sec 9), since Fst is
+    algebraically redundant and absolute levels need a nuisance scale.
+
+    Caveat that must travel with it: within an arrangement the local effective
+    population size is also altered (pi_I/pi_S = 0.744), and ReLERNN's training
+    assumes a genome-wide demography, so the interior estimate is confounded by
+    Ne as well as by LD. Treat it as an order-of-magnitude check, not a precise
+    target.
+    """
+    d = _load_chr2_rmap(rmap_path)
+    if d is None:
+        return None
     body = d[(d.start >= INV_START_REAL) & (d.end <= INV_STOP_REAL)]
     if body.empty:
-        raise ValueError(f"no chr2 windows inside the inversion body in {path}")
-    w = (body.end - body.start).to_numpy(dtype=float)
-    return float((body.recombRate.to_numpy(dtype=float) * w).sum() / w.sum())
+        raise ValueError("no chr2 windows inside the inversion body")
+    return _weighted_mean(body)
 
 # --- observed inversion ------------------------------------------------------
 P_INV_OBS = 0.626

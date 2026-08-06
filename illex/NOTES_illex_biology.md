@@ -335,11 +335,52 @@ designed to address by adding genuinely independent statistics (§9).
 
 **[M]** Both exist. An earlier conclusion that neither did was wrong.
 
-**In progress (as of 2026-08-05):** a chr2-specific accessibility mask and
-ReLERNN map are being built. Until they land, §8.1/§8.2 describe the proxy and
-the genome-wide mask actually in use. Hooks for the chr2 versions are
-`illex/slim/config.py::CHR2_RMAP` / `CHR2_MASK_BED` and
-`rec_rate_for_inversion()`.
+**In progress (as of 2026-08-06):** a chr2-specific accessibility mask and a
+ReLERNN run on chr2 are being built. Until they land, §8.1/§8.2 describe the
+proxy and the genome-wide mask actually in use. Hooks:
+`illex/slim/config.py::CHR2_RMAP` / `CHR2_MASK_BED`, and
+`illex/slim/chr2_rmap_report.py` for the summary.
+
+### 8.0 How to read a chr2 ReLERNN map — the interior is not the meiotic rate
+
+**The windows inside 60–80 Mb will be biased LOW and must not be used as the
+simulation's `r`.** ReLERNN infers recombination from LD decay; the inversion
+elevates LD across the region in heterokaryotypes; so the interior windows
+measure the *realized barrier*, not the underlying meiotic rate. This is why
+chr2 was excluded from the original genome-wide run in the first place
+(`build_persex_vcf.sh`: "autosomes (excl chr2 inv, chr42, chrZ)").
+
+Feeding the interior estimate to the forward model would **double-count** the
+barrier, because SLiM already suppresses recombination in heterokaryotypes
+structurally.
+
+The split that is correct:
+
+| Use | Region | Function |
+|---|---|---|
+| **Simulation `r`** | chr2 *collinear*, ±2 Mb buffer outside the breakpoints | `rec_rate_for_inversion()` |
+| **Validation target** | inside 60–80 Mb | `rec_rate_inversion_interior()` |
+
+The interior estimate is genuinely *useful* — as a prediction, not an input. A
+fitted `(t_inv, p_start, s)` with the barrier implies a realized LD level inside
+the inversion, which maps to an apparent recombination rate. That comparison is
+one of the few remaining independent constraints (§9), since Fst is algebraically
+redundant and absolute levels need a nuisance scale.
+
+Two caveats on using it that way: within an arrangement the local effective size
+is also altered (π_I/π_S = 0.744) while ReLERNN's training assumes a genome-wide
+demography, so the interior number is confounded by Ne as well as by LD — treat
+it as an order-of-magnitude check. And the buffer matters, because LD spills past
+the breakpoints and the differentiated extent is already narrower than the
+nominal span (§4.2).
+
+If the interior rate comes out at or *above* the collinear rate, either the run
+has a problem or the inversion is not suppressing recombination. Either way,
+resolve that before using the map.
+
+A per-karyotype run (AA-only, BB-only) partly avoids the LD problem, since
+recombination is unsuppressed within a homokaryotype — but it does not avoid the
+Ne confounder, and BB has only 95 individuals.
 
 ### 8.1 Recombination: ReLERNN, genome-wide, chr2 deliberately excluded
 

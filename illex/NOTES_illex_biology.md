@@ -282,7 +282,11 @@ model.
 **phenomenological** founding frequency, not a mechanistic count of founding
 haplotypes. Reaching it required relaxing the single-chromosome-origin premise.
 
-### 7.2 Current best point, and it is not yet a fit **[M]**
+### 7.2 The rising-logistic point — superseded by §7.5 **[M]**
+
+**Read §7.5 first.** This section records the best *rising-logistic* fit and its
+residual. That residual is now closed by the balancing-selection trajectory, and
+the diagnosis below ("a genuine model-shape problem") turned out to be correct.
 
 Growth arm, interval-restricted, γ ≈ 0, t_inv = 8e5, p_start = 0.15:
 
@@ -300,6 +304,110 @@ model-shape problem rather than a scaling error. Closing it is the ABC's job.
 **Age: ~750–800 ky (generations ≈ years).** Arm-specific — the constant-Ne arm
 gives ~350–500 ky at the same p_start and does **not** transfer. Since the null
 must carry the expansion, the growth-arm value is the one to report. **[M]**
+
+### 7.5 The balancing-selection fit — the residual closes, and the age holds **[M]**
+
+`illex/balancing.py`, `illex/scripts/fit_balancing.py`, results in
+`results/illex/fit_balancing.{csv,json}`. 1,728 sims, 96 reps/cell, growth arm,
+interval-restricted, L = 37 kb (ρ = 2000), r = 1.977e-9, γ ≈ 0, µ = 3e-9.
+
+**The model.** The inversion rises under overdominance to an *equilibrium* and
+is then held there, instead of still rising at the present moment. Fitness
+w_II = 1−s_I, w_IS = 1, w_SS = 1−s_het, with p* fixed at the observed 0.626,
+which forces s_I = s_het(1−p*)/p*. To first order the dynamics reduce to
+dp/dt = (s_het/p*)·p(1−p)(p*−p), integrated in closed form.
+
+**Result.** Both targets are met simultaneously:
+
+| plateau | t_inv | p_start | s_het | residual π_I/π_S | residual dxy/π_I |
+|---|---|---|---|---|---|
+| 0 | **727,301** | 0.0271 | 3.58e-5 | −0.00% | −0.00% |
+| 100,000 | **718,872** | 0.0222 | 4.24e-5 | +0.00% | +0.00% |
+
+against the rising logistic's **−9.4% / +6.5%**. The prediction stated in
+advance — that a plateau raises π_I, pushing the first ratio up and the second
+down, so both misses close *together* — held.
+
+**The age is identified; the other two parameters are not.** Across the one
+dimension that stays degenerate (plateau length 0 → 100,000 generations) the
+fitted age moves **1.2%** while p_start moves 22% and s_het 18%. dxy/π_I carries
+the age and is steep in it, π_I/π_S carries the founding frequency, and the two
+are close enough to orthogonal that the age survives. Local sensitivity:
+∂(dxy/π_I)/∂t_inv = 0.283 per 10⁵ generations, so a 1% error in the empirical
+target moves the age 6,500 generations and a 5% error moves it 33,000.
+
+**Age ≈ 720,000–730,000 generations ≈ 720–730 ky** (generations = years;
+inversely proportional to µ). Implied selection s_het ≈ 3.6–4.2e-5,
+s_I ≈ 2.1–2.5e-5 — minute per generation but N_e·s ≈ 240 at N₀, i.e. firmly
+deterministic.
+
+**The most important thing here is what did *not* change.** §7.2's
+rising-logistic age was 750–800 ky. Correcting a trajectory misspecification
+large enough to close a 9.4% residual moved the age by ~4%. The age estimate is
+therefore **not an artifact of the trajectory shape**, which is a far stronger
+claim than the fit itself.
+
+#### 7.5.1 Two of my predictions failed, and both are informative **[W]**
+
+1. **A fast rise does NOT rescue the single origin.** I predicted that because
+   selection shortens the rare phase, `p_start = 1/(2N(t_inv))` — one
+   chromosome — would become viable and the phenomenological founding frequency
+   could be retired. It cannot. At p_start = 9.1e-7, t_inv = 8e5 gives
+   (0.60, 2.71); reaching π_I/π_S = 0.744 needs t_inv ≈ 1.05e6, where dxy/π_I
+   ≈ 2.8, over 50% high. Strict monophyly caps π_I at 2µ·t_inv and that cap
+   binds. The fitted p_start ≈ 0.025 is 6× smaller than the old 0.15 but still
+   ~34,000 founding haplotypes at N(7.2e5) ≈ 6.4e5. **§7.1's caveat stands: the
+   origin is soft, and `p_start` remains phenomenological.**
+2. **s_het is not identifiable from its magnitude.** Over [1e-4, 1e-2] at fixed
+   t_inv the statistics are flat above ~1e-3 — 1e-3 and 1e-2 are
+   indistinguishable. Once the rise is fast relative to t_inv only its *timing*
+   matters. Quoting s_het as a point estimate without the plateau assumption
+   attached would be spurious precision.
+
+#### 7.5.2 π_I/π_S < 1 bounds how long the inversion has been at 0.626 **[M]**
+
+An unanticipated third consequence, which binds harder than either of the two
+the model was built around. A **long** plateau also suppresses π_S, because the
+standard arrangement is confined to 1−p* = 0.374 of the population for that
+whole period — and π_S is the denominator. So a long plateau drives π_I/π_S
+*above* 1: the model reaches 1.35 at t_inv = 3e6, and the equilibrium limit is
+p*/(1−p*) = 1.674.
+
+**Observed π_I/π_S = 0.744 < 1 is therefore direct evidence that the inversion
+has not been at 0.626 for long on a coalescent timescale.** The common
+arrangement carrying *less* diversity than the rare one is the signature of a
+recent rise, and it is what dates the event.
+
+#### 7.5.3 Neutrality is quantitatively excluded, without µ or a mask **[M]**
+
+`illex.balancing.neutral_hitting_time`. Exact diffusion result, verified against
+Wright-Fisher simulation (N = 200/500/1000, 1–2 M replicates: probabilities
+matched to 3%, conditional times to 0.7–3.0%, converging as N grows).
+
+Solving (p(1−p)/4N)·T″ = −p/x for the probability-weighted absorption time and
+dividing by the hitting probability p/x, as p → 0:
+
+```
+E[generations to reach x | it gets there] = (4N/x)·[x + (1−x)·ln(1−x)]
+                                          = 1.650 · N     at x = 0.626
+```
+
+| N_e | E[t | reaches 0.626] | P(ever reaching 0.626) |
+|---|---|---|
+| N_ANC = 547,928 | 903,893 | 1.46e-6 |
+| N(t = 7.2e5) = 644,381 | 1,063,007 | 1.24e-6 |
+| N₀ = 6,808,096 | 11,231,018 | 1.17e-7 |
+
+Against a fitted age of ~7.2e5 generations, **neutral drift cannot deliver the
+observed frequency in the time the divergence allows** — at the smallest N_e on
+the arm the rise alone would consume more than the whole age. The comparison is
+generous to neutrality three times over: it conditions on a ~10⁻⁶ event, uses
+the mean rather than a lower quantile, and evaluating at the smallest N_e
+understates the timescale since the rise mostly occurs at larger N.
+
+This is the cleanest non-neutrality statement available because it needs no
+mutation rate, no accessibility mask and no absolute diversity — only the
+observed frequency and the demography.
 
 ### 7.3 Rescaling is licensed **[M]**
 
@@ -326,8 +434,13 @@ Three parameters (t_inv, p_start, γ) against two ratios is **under-determined**
 expect a ridge, not a point. γ must be reported as a **bound**, never a point
 estimate. And per §5.3, Fst cannot break the degeneracy.
 
-This is the single biggest methodological obstacle, and it is what the ABC is
-designed to address by adding genuinely independent statistics (§9).
+**Partly resolved by §7.5.** Two things collapsed the ridge: γ was falsified
+independently by the spatial dxy profile (§6), and the balancing trajectory
+makes dxy/π_I steep in t_inv while π_I/π_S carries p_start, so the two are close
+to orthogonal. The **age** comes out identified to ~1% across the remaining
+degenerate dimension. What is *not* identified is the pair (p_start, s_het) —
+they trade off along a ridge, so both must be quoted as a joint range with the
+plateau assumption attached, never as point estimates.
 
 ---
 
@@ -511,6 +624,10 @@ independent hard bracket on the age from data that already exists
 ## 10. What is excluded, and what remains open
 
 **Excluded by evidence:**
+- Neutrality of the inversion — the frequency cannot be reached by drift in the
+  time the divergence allows (§7.5.3)
+- A long-established balanced polymorphism — a long plateau forces
+  π_I/π_S > 1 against the observed 0.744 (§7.5.2)
 - Multiple-merger (Beta) coalescent — every α fits worse than Kingman+growth (§3)
 - Constant Ne — 2× singleton deficit (§3)
 - Gene flux as an explanation of the divergence pattern — no spatial gradient (§6)
@@ -518,14 +635,23 @@ independent hard bracket on the age from data that already exists
 - Constant-p_inv / multi-background origin (k → ∞) — cannot go below 1.0 (§7.1)
 
 **Open:**
-- The −9.4% / +6.5% residual in opposite directions (§7.2) — a model-shape issue
-- Selection versus neutrality. Not yet properly tested: a genuinely neutral
-  single-founder trajectory is **not samplable** at Illex Ne (msinv's stochastic
-  samplers cap at N ≲ 10⁴), and P(a neutral mutation reaching p = 0.626) ≈ 1.1e-7,
-  so a forward rejection sampler yields zero survivors. This is exactly what the
-  forward SLiM model is for.
-- Why p_inv sits at an intermediate 0.626. Overdominance would explain a stable
-  intermediate frequency and is directly testable in a forward model.
+- ~~The −9.4% / +6.5% residual~~ — **closed** (§7.5). It was a model-shape
+  issue, as diagnosed: the trajectory was still rising when it should have been
+  settling into an equilibrium.
+- ~~Selection versus neutrality~~ — **settled analytically** (§7.5.3). Neutral
+  drift needs 1.650·N_e generations to reach 0.626 conditional on getting there,
+  i.e. 0.9–11 M generations, against a fitted age of ~7.2e5. No forward
+  simulation was required, and the argument is free of µ and of the mask. The
+  original obstacle (a neutral trajectory is not samplable at Illex N_e) was
+  real but was the wrong tool for the question.
+- Why p_inv sits at an intermediate 0.626. §7.5 *assumes* balancing selection
+  and shows it fits; it does not discriminate overdominance from associative
+  overdominance, frequency-dependent selection or antagonistic pleiotropy. What
+  the data constrain is the *shape* of p(t) — a rise settling into a plateau —
+  not the mechanism.
+- **(p_start, s_het) are jointly degenerate** (§7.5.1). Breaking this needs a
+  statistic sensitive to the founding haplotype count independently of mean π —
+  the within-arrangement SFS shape (§9).
 - Whether growth and mild sweepstakes act together (§3)
 - Absolute calibration: the 1.31× control-region offset (§8.3)
 - A usable control region for LD (§9)

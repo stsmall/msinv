@@ -35,9 +35,14 @@ PI_I_OVER_PI_S = 0.744
 # This is the second fitted target.
 DXY_OVER_PI_I = 1.846
 
-# --- held-out validation statistic, inversion body ---
-# Hudson Fst(AA, BB). Not used for fitting -- reserved to validate a fit
-# obtained from PI_I_OVER_PI_S and DXY_OVER_PI_I alone.
+# --- Hudson Fst(AA, BB): ALGEBRAICALLY REDUNDANT, not held-out ---
+# This was described here as a held-out validation statistic. It is not one,
+# and cannot be: with r = PI_I_OVER_PI_S and d = DXY_OVER_PI_I,
+#     Fst = 1 - (r + 1) / (2*d*r)
+# exactly -- verified to 2.2e-16 over 600 simulations, and it reproduces the
+# measured 0.3652 from the two ratios above to 4 dp. Any model matching both
+# ratios matches Fst automatically, so Fst can neither validate such a fit nor
+# break a parameter degeneracy. See NOTES sec 5.3 / spec amendment A15.
 FST = 0.3652
 
 # --- control-region values (chr2:10-30 Mb, collinear -- no inversion

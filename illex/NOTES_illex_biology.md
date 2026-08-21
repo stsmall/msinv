@@ -335,73 +335,93 @@ designed to address by adding genuinely independent statistics (§9).
 
 **[M]** Both exist. An earlier conclusion that neither did was wrong.
 
-**In progress (as of 2026-08-06):** a chr2-specific accessibility mask and a
-ReLERNN run on chr2 are being built. Until they land, §8.1/§8.2 describe the
-proxy and the genome-wide mask actually in use. Hooks:
-`illex/slim/config.py::CHR2_RMAP` / `CHR2_MASK_BED`, and
-`illex/slim/chr2_rmap_report.py` for the summary.
+**Both landed 2026-08-07** and are wired in (`config.CHR2_RMAP`,
+`config.CHR2_MASK_BED`). The recombination rate changed as a result; the
+accessibility numbers did not. §8.0 is the reading of the maps, §8.1 the adopted
+rate, §8.2 the mask.
 
-### 8.0 How to read a chr2 ReLERNN map — the interior is not the meiotic rate
+### 8.0 The chr2 maps landed, and they detect no barrier **[M]**
 
-**The windows inside 60–80 Mb will be biased LOW and must not be used as the
-simulation's `r`.** ReLERNN infers recombination from LD decay; the inversion
-elevates LD across the region in heterokaryotypes; so the interior windows
-measure the *realized barrier*, not the underlying meiotic rate. This is why
-chr2 was excluded from the original genome-wide run in the first place
-(`build_persex_vcf.sh`: "autosomes (excl chr2 inv, chr42, chrZ)").
+Four chr2 ReLERNN maps exist (2026-08-07, `analysis/steps/11_relernn`).
+Reproduce with `.venv/bin/python -m illex.slim.chr2_rmap_report`.
 
-Feeding the interior estimate to the forward model would **double-count** the
-barrier, because SLiM already suppresses recombination in heterokaryotypes
-structurally.
-
-The split that is correct:
-
-| Use | Region | Function |
-|---|---|---|
-| **Simulation `r`** | chr2 *collinear*, ±2 Mb buffer outside the breakpoints | `rec_rate_for_inversion()` |
-| **Validation target** | inside 60–80 Mb | `rec_rate_inversion_interior()` |
-
-The interior estimate is genuinely *useful* — as a prediction, not an input. A
-fitted `(t_inv, p_start, s)` with the barrier implies a realized LD level inside
-the inversion, which maps to an apparent recombination rate. That comparison is
-one of the few remaining independent constraints (§9), since Fst is algebraically
-redundant and absolute levels need a nuisance scale.
-
-Two caveats on using it that way: within an arrangement the local effective size
-is also altered (π_I/π_S = 0.744) while ReLERNN's training assumes a genome-wide
-demography, so the interior number is confounded by Ne as well as by LD — treat
-it as an order-of-magnitude check. And the buffer matters, because LD spills past
-the breakpoints and the differentiated extent is already narrower than the
-nominal span (§4.2).
-
-If the interior rate comes out at or *above* the collinear rate, either the run
-has a problem or the inversion is not suppressing recombination. Either way,
-resolve that before using the map.
-
-A per-karyotype run (AA-only, BB-only) partly avoids the LD problem, since
-recombination is unsuppressed within a homokaryotype — but it does not avoid the
-Ne confounder, and BB has only 95 individuals.
-
-### 8.1 Recombination: ReLERNN, genome-wide, chr2 deliberately excluded
-
-`analysis/steps/11_relernn/run_{male,female}_auto/proj/*.PREDICT.BSCORRECTED.txt`
-
-| | windows | modal window | genome-wide length-weighted mean r |
+| map | interior | collinear | **interior/collinear** |
 |---|---|---|---|
-| male | 114,328 | 9 kb | **2.148e-9** |
-| female | 116,081 | 18 kb | **2.892e-9** |
+| autonet **male** — *the simulation's r* | 1.967e-9 | **1.977e-9** | **0.995** |
+| autonet female | 2.265e-9 | 2.248e-9 | 1.008 |
+| all 633 pooled (own network) | 5.34e-10 | 4.78e-10 | 1.117 |
+| AA homokaryotypes only (own network) | 6.38e-10 | 7.19e-10 | 0.888 |
 
-- **Sex-averaged r = 2.52e-9** — confirms the 2.5e-9 the modelling already used.
-- Between-chromosome variation is tight: male per-chromosome IQR
-  [2.095, 2.186]e-9, female [2.871, 2.914]e-9 (43 chromosomes).
-- **chr2 is absent by design.** `build_persex_vcf.sh` line 3: *"autosomes (excl
-  chr2 inv, chr42, chrZ)"* — the inversion's LD block would corrupt a ReLERNN
-  fit. chr42 and chrZ likewise excluded.
-- **Proxy for chr2:** the six length-matched autosomes (1, 3, 6, 9, 4, 13; 93–105
-  Mb) give sex-averaged 2.467–2.594e-9. So r for chr2 is well constrained and is
-  effectively **known, not a free parameter** — a tight prior is justified.
-- Within-chromosome heterogeneity is real (male window-level 5–95%:
-  1.25–2.87e-9) and is available if a heterogeneous map is wanted.
+Absolute levels are not comparable across maps — the AA and pooled runs trained
+their own networks on chr2 subsets, so their calibration differs 3–4× from the
+autonet. **The statistic to read is each map's own interior/collinear ratio.**
+The spatial profiles are flat in all four; there is no U-shape anywhere.
+
+**[W] My prediction that the interior would read biased-LOW is falsified, and
+the failure is instructive.** Three maps show no suppression; the *pooled* map —
+the one containing every heterokaryotype, where a barrier signal must live —
+shows a slight *excess*; and the largest deficit is in the **AA-only** map,
+where recombination is not suppressed at all and the ratio should be 1.0. The
+ordering is inconsistent with a barrier.
+
+Nor is it a clean readout of local Ne, the other candidate explanation: AA
+diversity inside the inversion is **38%** of AA diversity in the collinear
+control (0.00273 vs 0.00713 per accessible bp), against an 11% ReLERNN deficit.
+The response is neither barrier-proportional nor Ne-proportional.
+
+**The reason is scale.** The barrier suppresses crossovers *between*
+arrangements across ~20 Mb. Within a 19 kb ReLERNN window, LD decay is governed
+by *within*-arrangement recombination, which the barrier does not touch. ReLERNN
+is measuring the right quantity — the meiotic rate — and is simply blind to the
+inversion. Detecting the barrier requires a long-range LD statistic.
+
+Two consequences:
+
+1. **Good news for the simulation input.** The collinear-vs-interior distinction
+   was a precaution against double-counting the barrier; it turns out not to
+   matter (0.995), so `r` is robust to the choice of region. `REC_RATE` is still
+   taken from the collinear regions on principle.
+2. **The interior rate is withdrawn as a validation target** (it was listed in
+   §9 as one of the few remaining independent constraints). It carries no
+   barrier signal, so a fitted model cannot be checked against it. This *removes*
+   an item from the evidence list. `rec_rate_inversion_interior()` is retained as
+   a documented diagnostic only.
+
+A third, weaker inference points the same way as everything else: if the two
+arrangements were deeply diverged, the pooled sample would carry enough
+long-range LD to drag even a 19 kb window's inference down. It does not. That is
+consistent with a **young** inversion (d = dxy/π_I = 1.846, i.e. modest
+divergence), though it is corroboration, not a measurement.
+
+### 8.1 Recombination: chr2 is measured, and it is lower than the proxy
+
+**Adopted: r = 1.977e-9** — chr2 collinear, **male** map (`config.REC_RATE`).
+Male rather than sex-averaged so this pipeline matches the `14_sweep_seqmodel`
+campaign, which also runs on the male map. Sex-averaged collinear is 2.113e-9
+and the female/male pair (1.977e-9, 2.248e-9) is the sensitivity bracket.
+
+**This supersedes the 2.52e-9 length-matched-autosome proxy, which ran 27% high.**
+chr2 recombines *less* than the genome-wide average in both sexes:
+
+| | genome-wide (43 chr) | chr2 collinear | chr2/genome |
+|---|---|---|---|
+| male | 2.148e-9 | **1.977e-9** | 0.92 |
+| female | 2.892e-9 | 2.248e-9 | 0.78 |
+| sex-averaged | 2.52e-9 | 2.113e-9 | 0.84 |
+
+The old proxy reasoning ("six length-matched autosomes give 2.467–2.594e-9, so
+chr2 is effectively known") was sound in method but landed 27% off, because chr2
+is not an average chromosome. Direct measurement was worth having. Effect on the
+model: ρ falls 27%, and the recombination escape length 1/(2·Ne·r) grows from
+29.4 bp to 37.4 bp — still ~63× smaller than the smallest simulated inversion
+body, so §7.3's L-invariance argument is unaffected.
+
+Genome-wide maps (`run_{male,female}_auto/proj/*.PREDICT.BSCORRECTED.txt`):
+male 114,328 windows at modal 9 kb, female 116,081 at modal 18 kb;
+between-chromosome variation tight (male per-chromosome IQR [2.095, 2.186]e-9,
+female [2.871, 2.914]e-9). Within-chromosome heterogeneity is real (male
+window-level 5–95%: 1.25–2.87e-9) and a heterogeneous map is available via the
+existing `harness/slim/relernn_to_slim_map.py`.
 
 ### 8.2 Accessibility: `degenotate_illex/accessible_sites.bed`
 
@@ -415,6 +435,19 @@ Ne confounder, and BB has only 95 individuals.
 
 Note `analysis/steps/11_relernn/acc_aut.bed` is **not** an Illex mask (different
 taxa) and has zero chr2 intervals — do not use it.
+
+**chr2 3-state mask** (`analysis/steps/03_karyotype/chr2_mask/chr2.mask.3state.bed`,
+`config.CHR2_MASK_BED`): 19.8 M intervals labelled `accessible_invariant` /
+`accessible_variant` / `inaccessible`. It reproduces the fractions above exactly
+(chr2 48.55%, inversion 47.908%), so it revises no number. Two things it adds:
+
+- **The accessibility deficit is in the control region, not the inversion.**
+  All chr2 collinear (±2 Mb) is **48.79%** accessible against 47.91% inside the
+  inversion — a ratio of 0.982. So the diversity deficit inside the inversion is
+  **not** a masking artifact. The chr2:10–30 Mb control's 60.69% is the outlier,
+  which is why per-accessible-bp normalisation is mandatory when comparing to it.
+- **The invariant/variant split gives the SFS zero class**, i.e. the denominator
+  needed to put the within-arrangement spectra of §9 on an absolute footing.
 
 ### 8.3 The absolute-diversity gap, half explained
 
@@ -452,6 +485,7 @@ the genuinely independent constraints are:
 | **Within-arrangement folded SFS shape** | **untapped, best candidate** | **yes** |
 | Absolute π_I, π_S, dxy | usable with a scale nuisance | no |
 | r²-vs-distance decay | **blocked**, see below | yes but length-dependent |
+| ~~ReLERNN interior rate~~ | **withdrawn** — no barrier signal (§8.0) | — |
 | *I. argentinus* presence/absence | not done — a hard age bracket | n/a |
 
 **The within-arrangement SFS shape is the recommended addition.** It is

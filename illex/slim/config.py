@@ -16,26 +16,44 @@ N_NOW = 6_808_096.0
 T_GROW = 769_519.0
 MU = 3e-9
 
-# --- fixed recombination (ReLERNN; NOTES sec 8.1) ---------------------------
-# Sex-averaged genome-wide length-weighted mean, male 2.148e-9 / female 2.892e-9.
-# chr2 is deliberately absent from the existing ReLERNN run (the inversion's LD
-# block would corrupt the fit), but the six length-matched autosomes span
-# 2.467-2.594e-9, so r is effectively KNOWN for chr2 rather than a free
-# parameter. Kept fixed; REC_RATE_BRACKET is the male/female sensitivity arm.
+# --- fixed recombination (ReLERNN chr2, MEASURED 2026-08-07; NOTES sec 8.1) ---
+# chr2 now has its own ReLERNN maps. Four of them (sec 8.0):
+#   run_chr2_AA    -- AA homokaryotypes only, own network
+#   run_chr2_all   -- all 633 samples, own network
+#   chr2_{male,female}.autonet.PREDICT.txt -- the GENOME-WIDE autosomal network
+#                     applied to chr2; the only maps on the same absolute
+#                     calibration as the genome-wide numbers below.
 #
-# NOTE the sweep recipes in 14_sweep_seqmodel default to 2.1e-9, which is the
-# MALE map only. This pipeline uses the sex-averaged value; the difference is
-# ~20% in rho and matters for the barrier's leakage scale.
-REC_RATE = 2.52e-9
-REC_RATE_BRACKET = (2.148e-9, 2.892e-9)
+# REC_RATE is the chr2 COLLINEAR rate from the MALE autonet map (+/-2 Mb buffer
+# outside the breakpoints). Male, not sex-averaged, so this pipeline matches the
+# 14_sweep_seqmodel campaign, which also runs on the male map.
+#   male   collinear 1.977e-9   interior 1.967e-9   (ratio 0.995)
+#   female collinear 2.248e-9   interior 2.265e-9   (ratio 1.008)
+#   sex-averaged collinear 2.113e-9 (recorded, not used)
+#
+# This SUPERSEDES the 2.52e-9 length-matched-autosome proxy, which ran 27% high
+# against the male map (2.52 vs 1.977). chr2 recombines less than the
+# genome-wide average: male chr2 collinear / male genome-wide = 1.977/2.148 =
+# 0.92, female 2.248/2.892 = 0.78.
+REC_RATE = 1.977e-9
+REC_RATE_BRACKET = (1.977e-9, 2.248e-9)   # chr2 collinear male, female
+REC_RATE_PROXY_OLD = 2.52e-9              # superseded; kept for provenance
 
-# A chr2-specific mask and ReLERNN map are being built. When they land, set these
-# and rerun -- do NOT edit REC_RATE by hand, so the provenance stays visible.
-# CHR2_RMAP is expected in ReLERNN PREDICT format (chrom/start/end/nSites/
-# recombRate/CI95LO/CI95HI, with chrom possibly a b'2' bytes-repr).
-CHR2_RMAP = None            # e.g. ".../chr2.kept.PREDICT.BSCORRECTED.txt"
-CHR2_MASK_BED = None        # e.g. ".../chr2_accessible.bed"
+# Measured chr2 maps. CHR2_RMAP is used by the report script and by
+# rec_rate_for_inversion(); REC_RATE above is already the number it returns, so
+# nothing silently changes if the path is unset.
+_RELERNN = ("/sietch_colab/data_share/illex/popgen_data/analysis/steps/"
+            "11_relernn")
+CHR2_RMAP = f"{_RELERNN}/chr2_autosomal_predict/chr2_male.autonet.PREDICT.txt"
+CHR2_RMAP_FEMALE = f"{_RELERNN}/chr2_autosomal_predict/chr2_female.autonet.PREDICT.txt"
+CHR2_RMAP_AA = f"{_RELERNN}/run_chr2_AA/proj/chr2_AA.kept.PREDICT.BSCORRECTED.txt"
+CHR2_RMAP_ALL = f"{_RELERNN}/run_chr2_all/proj/chr2_all.kept.PREDICT.BSCORRECTED.txt"
 
+# chr2-specific 3-state mask (accessible_invariant / accessible_variant /
+# inaccessible). Confirms ACC_FRAC_INV below to 4 dp, so it changes no number --
+# its new content is the invariant/variant split, which gives the SFS zero class.
+CHR2_MASK_BED = ("/sietch_colab/data_share/illex/popgen_data/analysis/steps/"
+                 "03_karyotype/chr2_mask/chr2.mask.3state.bed")
 
 def _load_chr2_rmap(rmap_path: str | None = None):
     import pandas as pd
@@ -59,21 +77,15 @@ def rec_rate_for_inversion(rmap_path: str | None = None,
                            margin: int = 2_000_000) -> float:
     """Meiotic recombination rate to give the SIMULATION.
 
-    Taken from chr2's COLLINEAR regions, NOT from inside the inversion.
+    Taken from chr2's COLLINEAR regions, ``margin`` bp outside the breakpoints.
 
-    This is the important subtlety in using a chr2 ReLERNN map. ReLERNN infers
-    recombination from LD decay, and the inversion elevates LD across 60-80 Mb in
-    heterokaryotypes, so the interior windows report a **downward-biased** rate:
-    they measure the realized barrier, not the underlying meiotic rate. The SLiM
-    model already imposes the barrier structurally, so feeding it the interior
-    estimate would suppress recombination TWICE.
-
-    (This is also why chr2 was excluded from the original genome-wide run --
-    ``build_persex_vcf.sh``: "autosomes (excl chr2 inv, chr42, chrZ)".)
-
-    ``margin`` excludes a buffer either side of the breakpoints, since LD spills
-    beyond them and the differentiated extent is itself narrower than the nominal
-    span (NOTES sec 4.2).
+    Using the collinear regions was originally a precaution: ReLERNN infers
+    recombination from LD decay, so the interior windows might have measured the
+    realized barrier rather than the meiotic rate, and feeding that to a model
+    that already imposes the barrier would suppress twice. The chr2 maps landed
+    on 2026-08-07 and the precaution turned out to be unnecessary -- interior and
+    collinear agree to 0.5% (NOTES sec 8.0). It is kept anyway because it is the
+    correct region on principle and costs nothing.
     """
     d = _load_chr2_rmap(rmap_path)
     if d is None:
@@ -88,21 +100,34 @@ def rec_rate_for_inversion(rmap_path: str | None = None,
 
 
 def rec_rate_inversion_interior(rmap_path: str | None = None) -> float | None:
-    """ReLERNN's rate INSIDE the inversion -- a validation target, not an input.
+    """ReLERNN's rate INSIDE the inversion. Diagnostic only -- NOT a target.
 
-    Deliberately a separate function so it can never be mistaken for the
-    simulation's ``r``. Its value is that the simulation PREDICTS it: a fitted
-    (t_inv, p_start, s) with the barrier produces some realized LD inside the
-    inversion, which maps to an apparent recombination rate. Comparing that to
-    this number is an independent check on the barrier's strength -- and it is one
-    of the few genuinely independent constraints left (NOTES sec 9), since Fst is
-    algebraically redundant and absolute levels need a nuisance scale.
+    **Withdrawn as a validation statistic (2026-08-07).** It was proposed as one
+    of the few remaining independent constraints: a fitted (t_inv, p_start, s)
+    with the barrier implies a realized LD level inside the inversion, which
+    would map to an apparent recombination rate. The chr2 maps falsify the
+    premise the idea rested on -- ReLERNN does not respond to the barrier at its
+    ~19 kb window scale:
 
-    Caveat that must travel with it: within an arrangement the local effective
-    population size is also altered (pi_I/pi_S = 0.744), and ReLERNN's training
-    assumes a genome-wide demography, so the interior estimate is confounded by
-    Ne as well as by LD. Treat it as an order-of-magnitude check, not a precise
-    target.
+        map              interior/collinear
+        autonet male              0.995
+        autonet female            1.008
+        all 633 pooled            1.117
+        AA homokaryotypes only    0.888
+
+    Three maps show no suppression, the pooled map (the one containing every
+    heterokaryotype) shows a slight EXCESS, and the largest deficit is in the
+    AA-only map, where recombination is not suppressed at all and the ratio
+    should be 1. The ordering is inconsistent with a barrier signal. It is not a
+    clean readout of local Ne either: AA diversity inside the inversion is 38%
+    of AA diversity in the collinear control, against an 11% ReLERNN deficit.
+
+    The reason is scale. The barrier suppresses crossovers BETWEEN arrangements
+    across ~20 Mb; within a 19 kb window, LD decay is governed by
+    within-arrangement recombination, which is unsuppressed. Detecting the
+    barrier needs a long-range LD statistic, not ReLERNN.
+
+    Kept as a diagnostic so the numbers stay reproducible from code.
     """
     d = _load_chr2_rmap(rmap_path)
     if d is None:
@@ -111,6 +136,7 @@ def rec_rate_inversion_interior(rmap_path: str | None = None) -> float | None:
     if body.empty:
         raise ValueError("no chr2 windows inside the inversion body")
     return _weighted_mean(body)
+
 
 # --- observed inversion ------------------------------------------------------
 P_INV_OBS = 0.626
@@ -122,7 +148,12 @@ INV_LEN_REAL = INV_STOP_REAL - INV_START_REAL
 ACCESSIBLE_BED = ("/sietch_colab/data_share/illex/popgen_data/"
                   "degenotate_illex/accessible_sites.bed")
 ACC_FRAC_INV = 0.4791
-ACC_FRAC_CONTROL = 0.6069
+ACC_FRAC_CONTROL = 0.6069     # chr2:10-30 Mb control region
+ACC_FRAC_COLLINEAR = 0.4879   # all chr2 collinear (+/-2 Mb); the
+#   control region is the outlier, not the inversion: 0.4791 inside vs
+#   0.4879 collinear is a ratio of 0.982, so the diversity deficit inside
+#   the inversion is NOT a masking artifact. Verified on the chr2 3-state
+#   mask 2026-08-07.
 
 # --- simulation geometry -----------------------------------------------------
 # The inversion is simulated far shorter than 20 Mb. Licensed by the verified

@@ -21,8 +21,17 @@ used by ``illex/scripts/empirical_windowed.py``'s core/edge analysis.
 
 from __future__ import annotations
 
-# --- primary fitted statistics, inversion body (chr2:60-80 Mb) ---
-# pi_I / pi_S = pi(AA) / pi(BB). This is the ratio the design fits first.
+# --- primary fitted statistics, FULL NOMINAL SPAN (chr2:60-80 Mb) ---
+# These are the historical targets, measured over the full nominal span. They
+# are reproduced to 4 dp by illex/scripts/empirical_jackknife.py (0.7439 /
+# 1.8464), which also supplies the standard errors they never had.
+#
+# For fitting, prefer the *_BODY values below: the simulations are
+# interval-restricted to the inversion body, so the body values are the
+# like-for-like comparison and the nominal ones are diluted by two collinear
+# flanking windows (NOTES sec 4.2).
+#
+# pi_I / pi_S = pi(AA) / pi(BB).
 PI_I_OVER_PI_S = 0.744
 
 # dxy / pi_I = dxy(AA,BB) / pi(AA) -- normalised by the INVERTED class's own
@@ -34,6 +43,27 @@ PI_I_OVER_PI_S = 0.744
 # constitute dxy, partly dividing dxy by itself (see progress.md Task 6).
 # This is the second fitted target.
 DXY_OVER_PI_I = 1.846
+
+# --- like-for-like targets: the empirically DIFFERENTIATED body ---
+# Fst > 0.15 selects 189 of 200 100-kb windows, spanning 60.5-79.5 Mb. The
+# excluded windows are collinear flanking sequence with control-like Fst
+# (NOTES sec 4.2), and including them dilutes dxy/pi_I downward by 1.8%.
+# Since the model integrates only the inversion body, these are the values a
+# fit should target.
+#
+# Standard errors are delete-one-block jackknife over 1 Mb blocks (n = 20),
+# from illex/scripts/empirical_jackknife.py; see NOTES sec 5.4 for why 1 Mb is
+# the right block size and why these SEs are a LOWER bound on the uncertainty
+# that should be propagated into an age.
+PI_I_OVER_PI_S_BODY = 0.7368
+PI_I_OVER_PI_S_BODY_SE = 0.0263
+DXY_OVER_PI_I_BODY = 1.8794
+DXY_OVER_PI_I_BODY_SE = 0.0503
+
+# Same estimator applied to the full nominal span, for comparability with the
+# historical targets above.
+PI_I_OVER_PI_S_SE = 0.0262
+DXY_OVER_PI_I_SE = 0.0534
 
 # --- Hudson Fst(AA, BB): ALGEBRAICALLY REDUNDANT, not held-out ---
 # This was described here as a held-out validation statistic. It is not one,

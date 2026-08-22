@@ -1,0 +1,48 @@
+Block-jackknife SEs on the fitted empirical targets
+
+==========================================================================
+NOMINAL SPAN 60.0-80.0 Mb (what illex.empirical quotes)
+==========================================================================
+windows: 200  span 60,000,000-80,000,000  variants 1,372,654
+point estimates:  pi_I/pi_S = 0.7439   dxy/pi_I = 1.8464   (pi_AA 0.001288  pi_BB 0.001732  dxy 0.002379)
+
+    block  n_blk              pi_I/pi_S               dxy/pi_I
+    0.25M     80     0.7438 +- 0.0181 ( 2.4%)     1.8459 +- 0.0389 ( 2.1%)
+    0.50M     40     0.7437 +- 0.0219 ( 2.9%)     1.8457 +- 0.0455 ( 2.5%)
+    1.00M     20     0.7437 +- 0.0262 ( 3.5%)     1.8455 +- 0.0534 ( 2.9%)
+    2.00M     10     0.7437 +- 0.0297 ( 4.0%)     1.8463 +- 0.0478 ( 2.6%)
+    4.00M      5     0.7440 +- 0.0382 ( 5.1%)     1.8443 +- 0.0569 ( 3.1%)
+
+==========================================================================
+DIFFERENTIATED BODY (Fst > 0.15) -- the model's interval
+==========================================================================
+windows: 189  span 60,500,000-79,500,000  variants 1,333,184
+point estimates:  pi_I/pi_S = 0.7368   dxy/pi_I = 1.8794   (pi_AA 0.001311  pi_BB 0.001779  dxy 0.002463)
+
+    block  n_blk              pi_I/pi_S               dxy/pi_I
+    0.25M     76     0.7367 +- 0.0181 ( 2.5%)     1.8787 +- 0.0368 ( 2.0%)
+    0.50M     38     0.7367 +- 0.0220 ( 3.0%)     1.8784 +- 0.0424 ( 2.3%)
+    1.00M     20     0.7367 +- 0.0263 ( 3.6%)     1.8780 +- 0.0503 ( 2.7%)
+    2.00M     10     0.7369 +- 0.0303 ( 4.1%)     1.8780 +- 0.0457 ( 2.4%)
+    4.00M      5     0.7370 +- 0.0380 ( 5.2%)     1.8769 +- 0.0513 ( 2.7%)
+
+==========================================================================
+WHAT THIS MEANS FOR THE AGE
+==========================================================================
+Age sensitivity from the fit: d(dxy/pi_I)/d(t_inv) = 0.283 per 1e5 generations.
+
+nominal span (4 Mb blocks, n=5):
+  dxy/pi_I = 1.8443 +- 0.0569  -> +-20,118 generations (measurement only)
+  pi_I/pi_S = 0.7440 +- 0.0382
+
+differentiated body (4 Mb blocks, n=5):
+  dxy/pi_I = 1.8769 +- 0.0513  -> +-18,121 generations (measurement only)
+  pi_I/pi_S = 0.7370 +- 0.0380
+
+This is a LOWER bound on the age uncertainty: blocks inside a non-recombining
+inversion share one origin, so they are not independent replicates of the
+process. The per-replicate model SD is the larger term -- see the header.
+
+Interval choice moves dxy/pi_I by +0.0330 (+1.8%), i.e. +11,669 generations of age.
+The simulations are interval-restricted to the inversion body, so the
+differentiated-body value is the like-for-like target.

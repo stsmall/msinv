@@ -205,6 +205,57 @@ single origin the derived arrangement passes through a bottleneck of one (or few
 haplotypes, so π_I < π_S is the *expected direction*, and the ratio is
 informative about age: young → small ratio, old → ratio approaching 1.
 
+### 5.4 The targets now have error bars, and the interval matters **[M]**
+
+`illex/scripts/empirical_jackknife.py`, results in
+`results/illex/empirical_jackknife.{txt,csv}`. Delete-one-block jackknife on
+100 kb base windows grouped into blocks, 1,372,654 variants × 698 haplotypes
+(AA 508, BB 190 chromosomes).
+
+Both targets are **ratios of region-wide sums**, so blocks are deleted from
+numerator and denominator together and the ratio recomputed — averaging
+per-window ratios is a different and biased estimator. Accessibility cancels
+(π_AA, π_BB and dxy share a denominator), so no mask is needed.
+
+The estimator reproduces the historical targets to 4 dp — 0.7439 / 1.8464
+against the published 0.744 / 1.846 — which validates it before anything is
+read off it.
+
+| block | n | π_I/π_S | dxy/π_I |
+|---|---|---|---|
+| 250 kb | 80 | 0.7438 ± 0.0181 | 1.8459 ± 0.0389 |
+| 500 kb | 40 | 0.7437 ± 0.0219 | 1.8457 ± 0.0455 |
+| **1 Mb** | **20** | **0.7437 ± 0.0262** | **1.8455 ± 0.0534** |
+| 2 Mb | 10 | 0.7437 ± 0.0297 | 1.8463 ± 0.0478 |
+| 4 Mb | 5 | 0.7440 ± 0.0382 | 1.8443 ± 0.0569 |
+
+**1 Mb is the block size to quote.** dxy/π_I's SE plateaus from 1 Mb up
+(0.048–0.057); π_I/π_S's keeps climbing, which is expected rather than
+alarming — π declines toward the breakpoints, so a real spatial gradient makes
+larger blocks differ systematically and the jackknife correctly absorbs that
+into the SE. Beyond 1 Mb there are too few blocks (n ≤ 10) for the SE itself to
+be stable.
+
+So the targets are known to **≈3%**, not to the four figures they were quoted
+to.
+
+#### 5.4.1 The like-for-like target is the differentiated body **[M]**
+
+Restricting to the empirically differentiated extent (Fst > 0.15: 189 of 200
+windows, 60.5–79.5 Mb) shifts both targets:
+
+| | nominal 60–80 Mb | differentiated body | shift |
+|---|---|---|---|
+| π_I/π_S | 0.7439 ± 0.0262 | **0.7368 ± 0.0263** | −0.95% |
+| dxy/π_I | 1.8464 ± 0.0534 | **1.8794 ± 0.0503** | **+1.8%** |
+
+The two excluded windows are collinear flanking sequence, so including them
+dilutes dxy/π_I downward — the same flank-dilution effect §11 warns about on
+the *simulated* side, appearing here on the empirical side. **The simulations
+are interval-restricted to the inversion body, so the body values are the
+correct targets** and the nominal ones were a mild apples-to-oranges
+comparison. Both are now in `illex.empirical`.
+
 ### 5.2 Three normalisations exist and must not be conflated **[M]**
 
 - **dxy/π_I** = dxy/π(AA) — the fitted target, **1.846**
@@ -336,10 +387,42 @@ are close enough to orthogonal that the age survives. Local sensitivity:
 ∂(dxy/π_I)/∂t_inv = 0.283 per 10⁵ generations, so a 1% error in the empirical
 target moves the age 6,500 generations and a 5% error moves it 33,000.
 
-**Age ≈ 720,000–730,000 generations ≈ 720–730 ky** (generations = years;
+**Age ≈ 730,000–740,000 generations ≈ 730–740 ky** (generations = years;
 inversely proportional to µ). Implied selection s_het ≈ 3.6–4.2e-5,
 s_I ≈ 2.1–2.5e-5 — minute per generation but N_e·s ≈ 240 at N₀, i.e. firmly
 deterministic.
+
+Refit against the like-for-like body targets of §5.4.1 (0.7368 / 1.8794)
+rather than the nominal-span ones, on the same grid:
+
+| plateau | targets | t_inv | p_start |
+|---|---|---|---|
+| 0 | nominal | 727,396 | 0.0271 |
+| 100,000 | nominal | 718,972 | 0.0222 |
+| 0 | **body** | **737,003** | 0.0268 |
+| 100,000 | **body** | **728,861** | 0.0220 |
+
+#### 7.5.4 Uncertainty budget for the age **[M]**
+
+Ordered by size. The last term dominates and no amount of simulation touches it.
+
+| source | effect on t_inv | note |
+|---|---|---|
+| **µ = 3e-9** | **∝ 1/µ** | age scales inversely; ±30% on µ is ±220,000 gen. The weakest external input in the chain (§2) |
+| measurement (1 Mb jackknife on dxy/π_I, ±0.0534) | **±18,900 gen** | §5.4; the 1σ statistical error |
+| interval definition | +9,600 gen | nominal → body; now **resolved** by using the body |
+| plateau degeneracy | ±8,100 gen | §7.5, the dimension that stays degenerate |
+| model process variance | negligible | per-replicate SD 0.0371 at L = 37 kb, but §7.3 verified SD ∝ 1/√L over a 25× range, so at 20 Mb this is sub-1,000 gen |
+
+Direct check by refitting at d ± 1 SE: 1.8260 → t_inv 703,309;
+1.9328 → beyond the grid's 750,000 ceiling, consistent with the ±18,900
+linear extrapolation.
+
+**Quote the age as ≈ 730–740 ky, ±19 ky (1σ, statistical), conditional on
+µ = 3e-9.** Any statement tighter than that is false precision, and the
+µ-conditionality must travel with the number.
+
+
 
 **The most important thing here is what did *not* change.** §7.2's
 rising-logistic age was 750–800 ky. Correcting a trajectory misspecification

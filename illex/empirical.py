@@ -65,6 +65,22 @@ DXY_OVER_PI_I_BODY_SE = 0.0503
 PI_I_OVER_PI_S_SE = 0.0262
 DXY_OVER_PI_I_SE = 0.0534
 
+# --- mu-free scale: arrangement divergence vs the coindetii species split ---
+# R = dxy(AA,BB) / div(illecebrosus, coindetii), counted over
+# illecebrosus-accessible AND coindetii-comparable bases (8,849,184 bp in the
+# differentiated body). Free of mu, of the accessibility mask and of the
+# generation time, because both terms are 2*mu*T. 1 Mb block jackknife.
+#
+# Its use: given an independent calibration T_cal for the illecebrosus-coindetii
+# split, t_inv = R * (T_cal + T_anc_spp) - 2*N_ANC, with mu nowhere in it. This
+# is the only identified route to an age that does not inherit mu's uncertainty
+# (NOTES sec 5.5).
+MU_FREE_R_BODY = 0.5137
+MU_FREE_R_BODY_SE = 0.0146
+MU_FREE_R_BODY_JC = 0.5102        # Jukes-Cantor corrected for multiple hits
+MU_FREE_R_NOMINAL = 0.5019
+MU_FREE_R_NOMINAL_SE = 0.0171
+
 # --- Hudson Fst(AA, BB): ALGEBRAICALLY REDUNDANT, not held-out ---
 # This was described here as a held-out validation statistic. It is not one,
 # and cannot be: with r = PI_I_OVER_PI_S and d = DXY_OVER_PI_I,

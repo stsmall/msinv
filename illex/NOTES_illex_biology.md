@@ -256,6 +256,68 @@ are interval-restricted to the inversion body, so the body values are the
 correct targets** and the nominal ones were a mild apples-to-oranges
 comparison. Both are now in `illex.empirical`.
 
+### 5.5 A µ-free scale for the age **[M]**
+
+`illex/scripts/mu_free_ratio.py`, results in
+`results/illex/mu_free_ratio.{txt,json}`.
+
+The age is ~735 ky ± 19 ky statistical, but it scales as 1/µ and µ = 3e-9 is the
+weakest input in the chain (§2, §7.5.4). **No amount of simulation can improve
+it.** Both of these quantities are 2µT for some T, so their ratio removes µ,
+the accessibility mask and the generation time at once:
+
+```
+R = dxy(AA,BB) / div(illecebrosus, coindetii) = (t_inv + T_anc_ill)/(T_split + T_anc_spp)
+```
+
+| interval | R (1 Mb blocks) | Jukes-Cantor corrected |
+|---|---|---|
+| nominal span 60–80 Mb | 0.5019 ± 0.0171 | 0.4985 |
+| **differentiated body** (the like-for-like one) | **0.5137 ± 0.0146** | 0.5102 |
+
+**The arrangements' divergence is 51.4% ± 1.5% of the illecebrosus–coindetii
+divergence.** The SE plateaus from 250 kb blocks upward, so this is stable.
+Per shared bp: dxy(AA,BB) = 0.005146, div(ill,coin) = 0.010019.
+
+Read in the useful direction: given any independent calibration `T_cal` for the
+illecebrosus–coindetii split — a fossil, a vicariance date, a published
+cephalopod substitution rate — the inversion's age follows with **µ nowhere in
+it**:
+
+```
+t_inv = R · (T_cal + T_anc_spp) − 2·N_ANC
+```
+
+Going the other way, and this direction *is* model-dependent because it needs
+the fitted t_inv and the model's ancestral coalescent depth: R implies
+T_split(coindetii) ≈ **2.47 M generations**.
+
+#### 5.5.1 Two denominator traps, both of which I fell into **[W]**
+
+Worth recording because either one silently turns a ratio of *times* into a
+ratio of *denominators*.
+
+1. **`2.callable.bed` does not mean "aligned".** It means aligned **and
+   identical to the reference** — it is perfectly disjoint from `2.snps.vcf.gz`
+   (0 of 216,739 SNP positions inside it), which is the layout est-sfs wants.
+   Treating it as the aligned span excludes every substitution and drives the
+   numerator to exactly zero. The comparable span is
+   `callable ∪ SNP positions` = 18,307,768 bp (91.75% of the region). The script
+   now asserts the disjointness so this cannot come back quietly.
+2. **A first pass got R = 0.227, which was wrong by 2.3×.** dxy came from pg_gpu
+   normalised by *nominal window span* while its real denominator is the
+   illecebrosus-accessible subset (47.9%); the coindetii rate's real denominator
+   is the comparable span (91.8%). Dividing both by nominal span compares two
+   different base sets. Fixed by intersecting to
+   `accessible ∩ comparable` = 8,849,184 bp and forming the ratio **as a ratio
+   of counts**, so no per-base rate is ever built and no accessibility fraction
+   can leak in.
+
+Both known biases now run the same way and are small: the illecebrosus callset's
+MAF/quality filtering removes some real low-frequency variants (dxy low), and
+multiple hits at ~1% divergence cost another 0.7% (JC column). So R is a mild
+**under**estimate.
+
 ### 5.2 Three normalisations exist and must not be conflated **[M]**
 
 - **dxy/π_I** = dxy/π(AA) — the fitted target, **1.846**
@@ -682,7 +744,7 @@ the genuinely independent constraints are:
 | Absolute π_I, π_S, dxy | usable with a scale nuisance | no |
 | r²-vs-distance decay | **blocked**, see below | yes but length-dependent |
 | ~~ReLERNN interior rate~~ | **withdrawn** — no barrier signal (§8.0) | — |
-| *I. argentinus* presence/absence | not done — a hard age bracket | n/a |
+| *I. argentinus* presence/absence | **blocked by coverage, not by biology** — see below | n/a |
 
 **The within-arrangement SFS shape is the recommended addition.** It is
 normalized, so it needs no accessibility mask, and it responds to t_inv and
@@ -697,10 +759,31 @@ wrong *shape* of evidence, not merely underpowered, and the density distribution
 is bimodal so the count is threshold-insensitive. **A differently located or
 substantially larger control region is required.**
 
-***I. argentinus* is the cheapest big win available.** If argentinus lacks the
-inversion, t_inv < the species split; if it shares it, t_inv > split. That is an
-independent hard bracket on the age from data that already exists
-(`analysis/steps/08_argentinus`).
+***I. argentinus*: potentially the most informative comparison available, and
+blocked only by sequencing depth.** If argentinus lacks the inversion,
+t_inv < the species split; if it shares it, t_inv > split. **[W]** Two earlier
+statements about it were wrong and are corrected here:
+
+- `analysis/steps/08_argentinus` is an **empty scaffold** (a bare `logs/`). The
+  data is in `polarize/argentinus_input/` and `mkado_illex/inputs/`, 10 samples.
+- I claimed the argentinus split was ≳2 My, ~2.7× the inversion's age, hence
+  the bracket could not bite. That rested on a coindetii split of ~7 My, which
+  was itself wrong by 2.7× because of the denominator error in §5.5.1. Corrected,
+  the coindetii split is ~2.47 M generations, and scaling by CDS divergence
+  (argentinus ≈0.38× coindetii) puts the argentinus split **plausibly at or
+  below the inversion's age** — which is exactly the regime where the bracket is
+  most informative. The timescale objection is **withdrawn**.
+
+What actually blocks it is coverage. Across the 20 Mb region the whole-genome
+argentinus callset has 169,043 records but each sample calls only ~30,000 of
+them (~18%), and the overlap is negligible: **102 sites have ≥8 of 10 samples
+called**, and 43 have ≥5 in the CDS subset. That is not enough to karyotype
+argentinus, run a regional PCA, or measure arrangement-specific divergence.
+
+So this is a **data-acquisition recommendation, not a dead end**: moderate-depth
+resequencing of a modest argentinus panel would deliver a hard, µ-free bracket
+on the inversion's age, and it is the only identified route to one besides a
+better µ.
 
 ---
 

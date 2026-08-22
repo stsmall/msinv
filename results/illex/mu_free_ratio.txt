@@ -1,0 +1,58 @@
+
+==========================================================================
+NOMINAL SPAN 60.0-80.0 Mb
+==========================================================================
+windows 199   shared bp 9,218,509
+  dxy(AA,BB)   per shared bp = 0.005043   (46,488.9 expected differences)
+  div(ill,coin) per shared bp = 0.010050   (92,650 substitutions)
+  div, Jukes-Cantor corrected  = 0.010118  (+0.68%)
+
+      block     n            R = dxy/div    R (JC)
+      0.25M    80       0.5017 +- 0.0117 ( 2.3%)    0.4983
+      0.50M    40       0.5018 +- 0.0146 ( 2.9%)    0.4984
+      1.00M    20       0.5019 +- 0.0171 ( 3.4%)    0.4985
+      2.00M    10       0.5024 +- 0.0179 ( 3.6%)    0.4990
+      4.00M     5       0.5027 +- 0.0214 ( 4.3%)    0.4993
+
+  R = 0.5019 +- 0.0171  (1 Mb blocks) -- mu-free, mask-free
+  i.e. the arrangements' divergence is 50.2% +- 1.7% of the
+  illecebrosus-coindetii divergence.
+
+  Converting to a split time REQUIRES the model's ancestral coalescent depth,
+  so this step is no longer assumption-free:
+    t_inv + 2N_ANC = 1,832,859 generations (fitted, NOTES 7.5)
+    => T_split + T_anc_spp = 3,652,025 generations
+    => T_split ~ 2,556,169 generations if the ancestral Ne matched N_ANC
+
+  READ IN THE USEFUL DIRECTION: given an independent calibration T_cal for the
+  illecebrosus-coindetii split, the inversion's age follows WITHOUT mu:
+    t_inv = 0.5019 * (T_cal + T_anc_spp) - 1,095,856
+
+==========================================================================
+DIFFERENTIATED BODY (Fst > 0.15)
+==========================================================================
+windows 188   shared bp 8,849,184
+  dxy(AA,BB)   per shared bp = 0.005146   (45,541.8 expected differences)
+  div(ill,coin) per shared bp = 0.010019   (88,660 substitutions)
+  div, Jukes-Cantor corrected  = 0.010087  (+0.67%)
+
+      block     n            R = dxy/div    R (JC)
+      0.25M    76       0.5136 +- 0.0105 ( 2.0%)    0.5101
+      0.50M    38       0.5136 +- 0.0120 ( 2.3%)    0.5102
+      1.00M    20       0.5137 +- 0.0146 ( 2.8%)    0.5102
+      2.00M    10       0.5142 +- 0.0126 ( 2.5%)    0.5108
+      4.00M     5       0.5147 +- 0.0167 ( 3.2%)    0.5112
+
+  R = 0.5137 +- 0.0146  (1 Mb blocks) -- mu-free, mask-free
+  i.e. the arrangements' divergence is 51.4% +- 1.5% of the
+  illecebrosus-coindetii divergence.
+
+  Converting to a split time REQUIRES the model's ancestral coalescent depth,
+  so this step is no longer assumption-free:
+    t_inv + 2N_ANC = 1,832,859 generations (fitted, NOTES 7.5)
+    => T_split + T_anc_spp = 3,568,183 generations
+    => T_split ~ 2,472,327 generations if the ancestral Ne matched N_ANC
+
+  READ IN THE USEFUL DIRECTION: given an independent calibration T_cal for the
+  illecebrosus-coindetii split, the inversion's age follows WITHOUT mu:
+    t_inv = 0.5137 * (T_cal + T_anc_spp) - 1,095,856

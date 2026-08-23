@@ -1,0 +1,61 @@
+Per-karyotype SFS shape from ANGSD genotype likelihoods, projected to n = 20
+SAFs from steps/04_angsd_chr2 (AA 254, BB 95 individuals), realSFS -fold 0 by region
+
+==============================================================================
+GATE. COLLINEAR CONTROL 2:10-30 Mb -- must pass before reading anything else
+==============================================================================
+  bin                    1       2       3       4       5       6       7       8       9      10
+  MODEL no-inv      0.5254  0.1518  0.0796  0.0545  0.0430  0.0368  0.0331  0.0310  0.0299  0.0148
+  ANGSD AA          0.5885  0.1572  0.0765  0.0476  0.0339  0.0265  0.0223  0.0198  0.0185  0.0091
+  ANGSD BB          0.5980  0.1530  0.0748  0.0465  0.0332  0.0260  0.0219  0.0195  0.0182  0.0089
+
+  (a) AA vs BB in the control  L1 = 0.0189   (exchangeable outside the inversion, so this must be ~0)
+  (b) AA vs model no-inversion L1 = 0.1370
+      BB vs model no-inversion L1 = 0.1474
+  For reference, the CALLED-GENOTYPE version failed (b) at L1 = 0.61 / 0.59,
+  which is what made it unusable.
+
+==============================================================================
+INVERSION BODY 2:60.5-79.5 Mb
+==============================================================================
+  bin                    1       2       3       4       5       6       7       8       9      10
+  ANGSD AA          0.6024  0.1411  0.0688  0.0450  0.0341  0.0283  0.0249  0.0229  0.0218  0.0107
+  ANGSD BB          0.4973  0.1600  0.0882  0.0605  0.0465  0.0386  0.0338  0.0310  0.0295  0.0145
+  ridge_plateaAA  0.5640  0.1595  0.0764  0.0481  0.0357  0.0297  0.0264  0.0247  0.0238  0.0117
+  ridge_plateaBB  0.4299  0.1585  0.0940  0.0683  0.0554  0.0482  0.0440  0.0415  0.0402  0.0199
+  ridge_plateaAA  0.5648  0.1594  0.0765  0.0481  0.0357  0.0296  0.0263  0.0244  0.0235  0.0116
+  ridge_plateaBB  0.4287  0.1585  0.0939  0.0683  0.0555  0.0484  0.0442  0.0418  0.0406  0.0201
+  control_risiAA  0.5406  0.1531  0.0775  0.0518  0.0404  0.0345  0.0311  0.0291  0.0280  0.0138
+  control_risiBB  0.4465  0.1654  0.0945  0.0662  0.0523  0.0445  0.0399  0.0372  0.0358  0.0177
+  control_singAA  0.6617  0.1721  0.0712  0.0363  0.0209  0.0133  0.0091  0.0069  0.0057  0.0027
+  control_singBB  0.4311  0.1585  0.0936  0.0682  0.0555  0.0482  0.0439  0.0413  0.0399  0.0197
+
+  point                       L1 vs AA(I)  L1 vs BB(S)
+  ridge_plateau_0                  0.0768       0.1377
+  ridge_plateau_100k               0.0752       0.1403
+  control_rising_logistic          0.1236       0.1016
+  control_single_origin            0.1854       0.1354
+
+==============================================================================
+BODY MINUS CONTROL, per class -- the inversion's own effect
+==============================================================================
+  A class whose spectrum is unchanged from the collinear background has not
+  had its genealogy reshaped by the arrangement's frequency history.
+  AA: L1(body, control) = 0.0526   f1 0.5885 -> 0.6024
+  BB: L1(body, control) = 0.2013   f1 0.5980 -> 0.4973
+
+==============================================================================
+CONTRAST: inverted vs standard inside the inversion
+==============================================================================
+  point                        f1(I)   f1(S)   ratio  L1(I-S profile)
+  ANGSD EMPIRICAL             0.6024  0.4973   1.211               --
+  ridge_plateau_0             0.5640  0.4299   1.312           0.1013
+  ridge_plateau_100k          0.5648  0.4287   1.318           0.1057
+  control_rising_logistic     0.5406  0.4465   1.211           0.0221
+  control_single_origin       0.6617  0.4311   1.535           0.3161
+
+  sites contributing (realSFS expected polymorphic counts):
+    AA/body          1,538,013
+    BB/body            841,330
+    AA/control       4,117,984
+    BB/control       3,018,373

@@ -737,7 +737,13 @@ calibration-free and stay primary.
 
 ---
 
-## 8.4 The within-arrangement SFS shape does not work on this callset **[M]**
+## 8.4 The within-arrangement SFS shape — the called-genotype version fails **[M]**
+
+> **Superseded in part by §8.5.** The diagnosis below is correct and the
+> called-genotype estimator really is unusable, but the recommended replacement
+> (a per-karyotype ANGSD/GL spectrum) has now been run and it **works**. Read
+> §8.5 for the result; this section is the post-mortem on why the VCF route
+> failed.
 
 `illex/scripts/sfs_shape.py`, results in `results/illex/sfs_shape.txt`.
 §9 named this "untapped, best candidate" for breaking the identification
@@ -790,6 +796,110 @@ spectrum collapses in the high bins). So the statistic *would* have power agains
 a hard bottleneck if the data supported it — the failure above is a data
 limitation, not a lack of sensitivity to the parameter that matters.
 
+## 8.5 The ANGSD/GL redo works, and it adds a new constraint **[M]**
+
+`illex/scripts/sfs_shape_angsd.py`, results in
+`results/illex/sfs_shape_angsd.txt`. **No new ANGSD run was needed** — 
+`steps/04_angsd_chr2` already built per-karyotype SAFs for all of chr2
+(2026-07-04; AA 254, AB 284, BB 95 individuals, `-GL 1`, `-minQ 20 -minMapQ 20`,
+`-remove_bads -only_proper_pairs`, restricted to `chr2.accessible.sites`). Only
+`realSFS -r` over the intervals was required: 6 minutes, four runs.
+
+`-fold 0` deliberately: the SAFs use `-anc $REF`, so the unfolded spectrum is the
+reference-polarised ALT-count spectrum. Projecting that exactly and folding only
+at n = 20 is the identical transform applied to the model side, so
+mis-polarisation cancels.
+
+### 8.5.1 The gate passes, which is why anything below it can be read
+
+| check | result | called-genotype version |
+|---|---|---|
+| AA vs BB in the **collinear control** (must be ~0; they are exchangeable there) | **L1 = 0.019** | — |
+| collinear AA vs model no-inversion baseline | **L1 = 0.137** | 0.61 |
+| collinear BB vs model no-inversion baseline | **L1 = 0.147** | 0.59 |
+
+The internal consistency check is essentially perfect, and the baseline gap
+shrinks **4×**. It is not zero — the empirical collinear spectrum is more
+singleton-skewed than the neutral model (f₁ 0.588 vs 0.525), the direction
+expected if purifying selection at linked sites is missing (§8b's gap). But the
+residual is now smaller than the inversion effect, which is the condition the
+called-genotype version failed.
+
+### 8.5.2 The result: the STANDARD arrangement is the one that was reshaped
+
+Comparing each class inside the inversion against *itself* in the collinear
+control — so region-level confounders (gene density, mutation rate, BGS) cancel:
+
+| class | L1(body, control) | singleton fraction |
+|---|---|---|
+| **AA** (inverted, p = 0.626) | **0.053** | 0.5885 → 0.6024 |
+| **BB** (standard, 1−p = 0.374) | **0.201** | 0.5980 → **0.4973** |
+
+**The inverted arrangement's spectrum is barely changed from the collinear
+background; the standard arrangement's is strongly changed — a 4× larger
+effect.** Both classes sit in the same 19 Mb, so anything about the region
+affects them equally; an arrangement-specific difference of this size can only
+come from the arrangement's own frequency history.
+
+**This is direct confirmation of §7.5.2's mechanism, by a statistic that was
+never fitted.** §7.5.2 inferred from π_I/π_S < 1 that confining the standard
+class to 0.374 suppresses *its* diversity. The spectrum now shows exactly that:
+the smaller class coalesces faster, which erodes the expansion's singleton excess
+and shifts weight to intermediate frequencies. The common arrangement, being
+close to the whole population, is nearly untouched.
+
+### 8.5.3 Model comparison: the soft origin is confirmed, and a tension appears
+
+Against the inverted class (where the baseline residual is smallest):
+
+| model point | L1 vs AA (inverted) |
+|---|---|
+| ridge, plateau 0 | **0.0768** |
+| ridge, plateau 100 ky | **0.0752** |
+| rising logistic (superseded) | 0.1236 |
+| **single origin** | **0.1854** |
+
+The fitted balancing points win, and the **single origin is worst by 2.5×** —
+an independent confirmation of §7.5.1's conclusion by a statistic not used to
+reach it. Worth having: that was previously supported only by the two ratios.
+
+**But the demography-cancelling contrast disagrees with the fit.** Taking the
+inverted-minus-standard profile, which cancels any misfit that moves both
+classes together:
+
+| point | f₁(I) | f₁(S) | ratio | L1(I−S profile) |
+|---|---|---|---|---|
+| **ANGSD empirical** | 0.6024 | 0.4973 | **1.211** | — |
+| ridge, plateau 0 | 0.5640 | 0.4299 | 1.312 | 0.101 |
+| ridge, plateau 100 ky | 0.5648 | 0.4287 | 1.318 | 0.106 |
+| rising logistic | 0.5406 | 0.4465 | **1.211** | **0.022** |
+| single origin | 0.6617 | 0.4311 | 1.535 | 0.316 |
+
+The ridge points **over-predict** the inverted-vs-standard skew difference by
+~8%; the superseded rising-logistic trajectory reproduces it. So the two fitted
+ratios and the SFS contrast prefer different trajectories, and **no point in this
+family satisfies both.**
+
+The direction is interpretable rather than merely awkward: the model
+over-restricts the standard class, i.e. it keeps BB confined to 0.374 for too
+long. That points the same way as §7.5.2 — **the inversion reached 0.626 more
+recently than the fitted trajectory implies.** The `plateau` parameterisation
+could not express this well, because of the trap documented in
+`illex/balancing.py`: the overdominance curve decelerates into p*, so it has been
+within a few percent of 0.626 for ~10⁵ generations even at "plateau = 0".
+
+**So the third statistic finally does something the first two could not** — it
+constrains the arrival time, and it says "later". Testing that properly needs a
+trajectory family with an explicit, adjustable arrival time rather than one
+inherited from the overdominance ODE. That is the next modelling step.
+
+### 8.5.4 What it still does not do
+
+It does **not** break the (p_start, plateau) ridge. The two ridge points differ
+by 0.0016 in L1 against the inverted class and 0.004 in the contrast — at the
+Monte Carlo noise level (model-side per-bin separation 1.1–1.4 SE, §8.4). The
+ridge stands; both parameters remain a joint range.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),
@@ -799,8 +909,8 @@ the genuinely independent constraints are:
 |---|---|---|
 | π_I/π_S, dxy/π_I | fitted targets | yes |
 | Windowed spatial dxy profile | **spent** — used to kill flux (§6) | yes |
-| ~~Within-arrangement folded SFS shape~~ | **tried, FAILS on this callset** (§8.4) | yes but unusable |
-| Per-karyotype ANGSD/GL SFS | **the replacement** — not yet run (§8.4) | yes |
+| ~~Within-arrangement SFS from called genotypes~~ | **fails** — depth-driven (§8.4) | unusable |
+| **Per-karyotype ANGSD/GL SFS** | **WORKS** (§8.5): confirms the soft origin, confirms the §7.5.2 mechanism, and constrains the arrival time | **yes** |
 | Absolute π_I, π_S, dxy | usable with a scale nuisance | no |
 | r²-vs-distance decay | **blocked**, see below | yes but length-dependent |
 | ~~ReLERNN interior rate~~ | **withdrawn** — no barrier signal (§8.0) | — |
@@ -811,8 +921,10 @@ not work.** The reasoning was sound — normalized, mask-free, and sensitive to
 p_start differently from mean π — but the estimator is defeated by the callset's
 variable depth, and the neutral baseline misses the collinear spectrum by more
 than the inversion signal. Full post-mortem in §8.4. The replacement is a
-per-karyotype ANGSD/GL spectrum off the BAMs; until that exists, **the
-(p_start, plateau) ridge stands and both must be quoted as a joint range.**
+per-karyotype ANGSD/GL spectrum off the BAMs, **which has now been run — see
+§8.5.** It works, and it independently confirms the soft origin and the §7.5.2
+mechanism, but it still does not break the (p_start, plateau) ridge, so both
+must be quoted as a joint range.
 
 **The r² comparison is blocked.** Only 5 of 40 control windows density-match the
 inversion body, and all 5 sit in a single ~2.5 Mb span, which cannot contain

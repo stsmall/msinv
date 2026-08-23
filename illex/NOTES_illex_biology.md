@@ -731,6 +731,59 @@ calibration-free and stay primary.
 
 ---
 
+## 8.4 The within-arrangement SFS shape does not work on this callset **[M]**
+
+`illex/scripts/sfs_shape.py`, results in `results/illex/sfs_shape.txt`.
+§9 named this "untapped, best candidate" for breaking the identification
+problem. It has now been tapped. **It fails, for three independent reasons, and
+none of them is about the inversion model.**
+
+**1. The empirical estimate is not identified.** Per-site called chromosomes run
+from 20 to 508 (AA) and 20 to 190 (BB), and at low called-n a rare variant is
+often not sampled at all, so low-n sites are ascertainment-depleted of rare
+variants. The projected spectrum therefore depends on the floor imposed on
+called-n far more strongly than on anything biological — and the
+inverted-vs-standard contrast, the quantity of interest, **changes sign**:
+
+| floor (AA, BB) | sites | f₁(AA) | f₁(BB) | ratio |
+|---|---|---|---|---|
+| 200, 100 | 931,997 | 0.639 | 0.542 | **1.18** |
+| 300, 150 | 479,196 | 0.759 | 0.785 | **0.97** |
+| 400, 170 | 25,066 | 0.907 | 0.879 | 1.03 |
+
+Both floors are defensible; they disagree about whether the inverted arrangement
+is *more* or *less* singleton-skewed than the standard one. There is no estimate
+here to compare a model against.
+
+**2. The neutral baseline is off by more than the effect.** This is the decisive
+one. In the *collinear* control region there is no inversion, so the panmictic
+model should be right. It is not: model f₁ = 0.525 against empirical 0.829 (AA)
+and 0.819 (BB), an L1 of **0.61 and 0.59** — *larger* than the inversion-body
+gaps (0.39 AA, 0.71 BB). Whatever the neutral coalescent is missing dominates
+any inversion signal. This is almost certainly the project manuscript's §8b
+gap — real per-window diversity variation (mutation-rate heterogeneity, BGS/DFE)
+that flat uniform-θ sims do not reproduce — surfacing in the SFS.
+
+**3. It lacks the resolution anyway.** Model-internally, at 96 replicates the two
+ridge points differ by at most **1.1–1.4 SE** in every bin (L1 0.0020 inverted,
+0.0027 standard). Even with a perfect empirical target it could not separate the
+(p_start, plateau) ridge it was recruited to break.
+
+**The fix is a different estimator, not more simulation.** An SFS from called
+genotypes on a variants-only, variable-depth callset is measuring the depth
+structure. The project already avoids this everywhere else — diversity comes from
+**ANGSD/GL off the BAMs** precisely because the VCF is variants-only. A
+per-karyotype ANGSD SAF (AA-only and BB-only sample lists, same 349 individuals)
+would give a properly depth-aware within-arrangement spectrum, and is the only
+version of this statistic worth attempting.
+
+**One model-side result is worth keeping** even though it cannot be tested here:
+the single-origin point is grossly different from the ridge points in spectrum
+shape (I/S singleton ratio 1.54 versus 1.31, and it is the only point whose
+spectrum collapses in the high bins). So the statistic *would* have power against
+a hard bottleneck if the data supported it — the failure above is a data
+limitation, not a lack of sensitivity to the parameter that matters.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),
@@ -740,17 +793,20 @@ the genuinely independent constraints are:
 |---|---|---|
 | π_I/π_S, dxy/π_I | fitted targets | yes |
 | Windowed spatial dxy profile | **spent** — used to kill flux (§6) | yes |
-| **Within-arrangement folded SFS shape** | **untapped, best candidate** | **yes** |
+| ~~Within-arrangement folded SFS shape~~ | **tried, FAILS on this callset** (§8.4) | yes but unusable |
+| Per-karyotype ANGSD/GL SFS | **the replacement** — not yet run (§8.4) | yes |
 | Absolute π_I, π_S, dxy | usable with a scale nuisance | no |
 | r²-vs-distance decay | **blocked**, see below | yes but length-dependent |
 | ~~ReLERNN interior rate~~ | **withdrawn** — no barrier signal (§8.0) | — |
 | *I. argentinus* presence/absence | **blocked by coverage, not by biology** — see below | n/a |
 
-**The within-arrangement SFS shape is the recommended addition.** It is
-normalized, so it needs no accessibility mask, and it responds to t_inv and
-p_start *differently* from mean π: a young inversion founded by few haplotypes
-leaves a different within-I spectrum than an old one founded by many, even at
-matched π_I/π_S. The machinery already exists from §3.
+**[W] The within-arrangement SFS shape was the recommended addition, and it does
+not work.** The reasoning was sound — normalized, mask-free, and sensitive to
+p_start differently from mean π — but the estimator is defeated by the callset's
+variable depth, and the neutral baseline misses the collinear spectrum by more
+than the inversion signal. Full post-mortem in §8.4. The replacement is a
+per-karyotype ANGSD/GL spectrum off the BAMs; until that exists, **the
+(p_start, plateau) ridge stands and both must be quoted as a joint range.**
 
 **The r² comparison is blocked.** Only 5 of 40 control windows density-match the
 inversion body, and all 5 sit in a single ~2.5 Mb span, which cannot contain

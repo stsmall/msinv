@@ -607,31 +607,37 @@ Reproduce with `.venv/bin/python -m illex.slim.chr2_rmap_report`.
 |---|---|---|---|
 | autonet **male** — *the simulation's r* | 1.967e-9 | **1.977e-9** | **0.995** |
 | autonet female | 2.265e-9 | 2.248e-9 | 1.008 |
-| all 633 pooled (own network) | 5.34e-10 | 4.78e-10 | 1.117 |
-| AA homokaryotypes only (own network) | 6.38e-10 | 7.19e-10 | 0.888 |
+| all 633 pooled (own network) — **`forceDiploid` artifact, do not quote** | 5.34e-10 | 4.78e-10 | 1.117 |
+| AA homokaryotypes only (own network) — **`forceDiploid` artifact, do not quote** | 6.38e-10 | 7.19e-10 | 0.888 |
 
 Absolute levels are not comparable across maps — the AA and pooled runs trained
 their own networks on chr2 subsets, so their calibration differs 3–4× from the
 autonet. **The statistic to read is each map's own interior/collinear ratio.**
 The spatial profiles are flat in all four; there is no U-shape anywhere.
 
-**[W] My prediction that the interior would read biased-LOW is falsified, and
-the failure is instructive.** Three maps show no suppression; the *pooled* map —
-the one containing every heterokaryotype, where a barrier signal must live —
-shows a slight *excess*; and the largest deficit is in the **AA-only** map,
-where recombination is not suppressed at all and the ratio should be 1.0. The
-ordering is inconsistent with a barrier.
+**[W] My prediction that the interior would read biased-LOW is falsified.** Both
+autonet maps — the only two on a valid absolute calibration — show no
+suppression (0.995, 1.008) and flat interior profiles.
 
-Nor is it a clean readout of local Ne, the other candidate explanation: AA
-diversity inside the inversion is **38%** of AA diversity in the collinear
-control (0.00273 vs 0.00713 per accessible bp), against an 11% ReLERNN deficit.
-The response is neither barrier-proportional nor Ne-proportional.
+**[W] And my first reading of *why* leaned on two maps I should not have used.**
+I argued that the ordering was incoherent for a barrier because the AA-only map
+showed the largest deficit (0.888) while the pooled map showed an excess (1.117).
+**The AA and all-samples runs are `--forceDiploid` artifacts** — the project
+manuscript §3 records them as ~3× too low in absolute terms and says they must
+not be quoted, and a karyotype-stratified rerun without `forceDiploid` is
+deferred. Their interior/collinear *ratios* may or may not survive that rerun;
+either way they cannot carry an argument. The conclusion is unchanged and rests
+on the autonet maps alone, but the supporting argument was built on sand and is
+withdrawn.
 
-**The reason is scale.** The barrier suppresses crossovers *between*
-arrangements across ~20 Mb. Within a 19 kb ReLERNN window, LD decay is governed
-by *within*-arrangement recombination, which the barrier does not touch. ReLERNN
-is measuring the right quantity — the meiotic rate — and is simply blind to the
-inversion. Detecting the barrier requires a long-range LD statistic.
+The remaining explanation is the one that does not need those maps, and it is
+sufficient on its own: **scale.**
+
+The barrier suppresses crossovers *between* arrangements across ~20 Mb. Within a
+19 kb ReLERNN window, LD decay is governed by *within*-arrangement
+recombination, which the barrier does not touch. ReLERNN is measuring the right
+quantity — the meiotic rate — and is simply blind to the inversion. Detecting the
+barrier requires a long-range LD statistic.
 
 Two consequences:
 

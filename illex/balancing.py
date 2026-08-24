@@ -532,3 +532,189 @@ def build_arrival_sim(*, seq_length, t_inv, t_arrive, t_rise,
         inversions=[spec],
         seed=seed,
     )
+
+
+# =====================================================================
+# Drifting dormancy
+# =====================================================================
+# ``arrival_curve`` holds the dormancy phase at a CONSTANT frequency. That was
+# flagged as the strongest assumption in the family, and the scale check says it
+# is not a small one: over a 650,000-generation dormancy on the growth arm the
+# neutral drift standard deviation at p = 0.32 is **0.275** -- comparable to the
+# frequency itself. A real standing variant wanders that far.
+#
+# It also matters in a specific, one-directional way. The coalescent rate inside
+# the inverted class is 1/(2 N(t) p(t)), so what π_I integrates is
+# ∫ dt / (2 N p). Because the integrand goes as 1/p it is dominated by whatever
+# time the path spends at LOW frequency, and by Jensen's inequality a wandering
+# path accumulates strictly more coalescence than a constant path at the same
+# mean frequency. So drift should SQUEEZE the inverted class harder, and the fit
+# should respond by wanting a higher handoff frequency, a shorter dormancy, or
+# both. That prediction is stated here before it is run.
+#
+# WHAT THIS BUYS BACK: a genuine single origin becomes expressible again. The
+# fixed-frequency family could not start from one chromosome, because a constant
+# p = 1/(2N) for hundreds of thousands of generations annihilates π_I. A drifting
+# path can start at one copy and climb, so ``p_origin`` defaults to 1/(2 N(t_inv))
+# and the soft-origin conclusion of NOTES sec 7.5.1 can be re-examined rather
+# than assumed.
+#
+# THE APPROXIMATION, STATED PLAINLY
+# ---------------------------------
+# This is a **guided (Durham-Gallant modified) diffusion bridge**, not an exact
+# Wright-Fisher bridge: the volatility is the WF one, sqrt(p(1-p)/(2N(t))), but
+# the drift is the Brownian bridge's linear guiding term (p_hand - p)/(T - tau),
+# which is exact for Brownian motion and standard practice for state-dependent
+# volatility. It reproduces the right endpoints and the right order of variance;
+# it does not reproduce the exact law of the conditioned ancestral frequency
+# process. Doing that properly means the WF bridge's true conditioned drift,
+# which is not worth it here given that ``p_hand`` and ``t_arrive`` are being
+# fitted anyway.
+#
+# Two further choices worth seeing:
+#   * The path is floored at 1/(2 N(t)) -- one copy. Below that the arrangement
+#     is lost, and it is not lost, so conditioning on non-loss is correct rather
+#     than optional.
+#   * Every replicate draws its OWN path, so the simulated ensemble carries the
+#     drift variance instead of averaging it away into a single mean trajectory.
+
+
+def dormancy_bridge(t_inv: float, t_hand: float, p_hand: float,
+                    rng, p_origin: float | None = None,
+                    n_steps: int = 800):
+    """Drifting dormancy path, as (backward times, freqs), oldest last.
+
+    Guided WF diffusion bridge in forward time from ``p_origin`` at ``t_inv``
+    to ``p_hand`` at ``t_hand`` (both are BACKWARD times, so
+    ``t_inv > t_hand``). See the module notes above for the approximation.
+
+    ``p_origin=None`` means a genuine single origin, 1/(2 N(t_inv)).
+    """
+    T = float(t_inv) - float(t_hand)
+    if T <= 0:
+        raise ValueError(
+            f"dormancy length must be > 0; t_inv={t_inv!r} t_hand={t_hand!r}")
+    if p_origin is None:
+        p_origin = 1.0 / (2.0 * float(N_growth(t_inv)))
+
+    k = max(50, int(n_steps))
+    dt = T / k
+    p = float(p_origin)
+    taus = [0.0]
+    ps = [p]
+    for i in range(k):
+        tau = i * dt
+        remaining = T - tau
+        t_back = t_inv - tau
+        n_e = float(N_growth(t_back))
+        floor = 1.0 / (2.0 * n_e)
+        guide = (p_hand - p) / remaining * dt
+        sd = float(np.sqrt(max(p * (1.0 - p), 0.0) / (2.0 * n_e) * dt))
+        p = p + guide + sd * float(rng.standard_normal())
+        p = min(max(p, floor), 1.0 - floor)
+        taus.append(tau + dt)
+        ps.append(p)
+    ps[-1] = float(p_hand)          # land exactly on the handoff
+    # forward tau since t_inv -> backward time before present
+    times = [t_inv - x for x in taus]
+    return times, ps
+
+
+def arrival_curve_drift(t_inv: float, t_arrive: float, t_rise: float,
+                        p_hand: float, rng, p_star: float = P_I_DEFAULT,
+                        p_origin: float | None = None,
+                        n_rise: int = 300, n_dorm: int = 800,
+                        tol: float = ARRIVAL_TOL):
+    """As ``arrival_curve`` but with a DRIFTING dormancy phase.
+
+    ``p_hand`` is the frequency at which the sweep takes over -- the drifting
+    analogue of ``arrival_curve``'s ``p_start``. Returns
+    ``(times, freqs, s_het)`` with ``times`` increasing from 0 (present) to
+    ``t_inv``.
+    """
+    if not 0.0 < p_hand < p_star:
+        raise ValueError(
+            f"p_hand ({p_hand!r}) must lie in (0, p_star={p_star!r})")
+    t_hand = t_arrive + t_rise
+    if t_hand > t_inv:
+        raise ValueError(
+            f"t_arrive ({t_arrive!r}) + t_rise ({t_rise!r}) exceeds t_inv "
+            f"({t_inv!r})")
+
+    s_het = s_het_for_rise(t_rise, p_hand, p_star, tol)
+    p_arrive = p_star * (1.0 - tol)
+
+    # plateau, then the rise (geometric in p, as in arrival_curve)
+    p_grid = np.geomspace(p_hand, p_arrive, n_rise)
+    t_fwd = _time_to_reach(p_grid, p_hand, s_het, p_star)
+    t_back_rise = t_arrive + (t_rise - t_fwd)
+    order = np.argsort(t_back_rise)
+
+    times = [0.0, t_arrive]
+    freqs = [p_arrive, p_arrive]
+    times.extend(t_back_rise[order].tolist())
+    freqs.extend(p_grid[order].tolist())
+
+    if t_inv - t_hand > 0:
+        d_times, d_freqs = dormancy_bridge(
+            t_inv, t_hand, p_hand, rng, p_origin=p_origin, n_steps=n_dorm)
+        # dormancy_bridge returns oldest-last in backward time; it starts at
+        # t_inv and ends at t_hand, so reverse it to keep times increasing.
+        times.extend(d_times[::-1])
+        freqs.extend(d_freqs[::-1])
+
+    times = np.asarray(times, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+    srt = np.argsort(times, kind="stable")
+    times, freqs = times[srt], freqs[srt]
+    keep = np.concatenate([[True], np.diff(times) > 1e-9])
+    times, freqs = times[keep], freqs[keep]
+    times = np.clip(times, 0.0, t_inv)
+    return times.tolist(), freqs.tolist(), s_het
+
+
+def build_arrival_drift_sim(*, seq_length, t_inv, t_arrive, t_rise, p_hand,
+                            drift_seed, p_star=P_I_DEFAULT, p_origin=None,
+                            gamma=1e-15, n_i=100, n_s=100, seed=None,
+                            recomb_rate=None, n_rise=300, n_dorm=800):
+    """Three-phase sim with a DRIFTING dormancy phase.
+
+    ``drift_seed`` is separate from ``seed`` on purpose: the coalescent seed and
+    the trajectory seed are different sources of randomness, and keeping them
+    separate makes it possible to hold one fixed while varying the other.
+    """
+    if recomb_rate is None:
+        from .slim.config import REC_RATE
+        recomb_rate = REC_RATE
+
+    margin = seq_length * MARGIN_FRACTION
+    bp_left, bp_right = margin, seq_length - margin
+    tract_length = max(1.0, (bp_right - bp_left) * TRACT_FRACTION)
+
+    rng = np.random.default_rng(drift_seed)
+    times, freqs, _s = arrival_curve_drift(
+        t_inv, t_arrive, t_rise, p_hand, rng, p_star=p_star,
+        p_origin=p_origin, n_rise=n_rise, n_dorm=n_dorm)
+    spec = InversionSpec(
+        bp_left=bp_left,
+        bp_right=bp_right,
+        gene_conversion_rate=gamma,
+        mean_tract_length=tract_length,
+        tract_distribution="geometric",
+        trajectory={
+            "type": "precomputed",
+            "times": times,
+            "freqs": [freqs],
+            "n_e": [float(N_growth(t_inv))],
+            "t_inv": [float(t_inv)],
+        },
+    )
+    return HullSimulator(
+        n_std=n_s, n_inv=n_i,
+        population_size=PRESENT_NE_GROWTH,
+        demography=growth_demography(),
+        sequence_length=seq_length,
+        recombination_rate=recomb_rate,
+        inversions=[spec],
+        seed=seed,
+    )

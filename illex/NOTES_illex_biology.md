@@ -982,7 +982,9 @@ So the age should now be quoted as a range across trajectory families:
 
 **t_inv ≈ 730–950 ky**, with the upper end preferred because it is the only value
 that fits all three statistics, and all of it still conditional on µ = 3e-9
-(which remains the dominant term: ±30% on µ is ±220–290 ky).
+(which remains the dominant term: ±30% on µ is ±220–290 ky). **[Narrowed by
+§8.7.4: with a drifting dormancy — the better-fitting and more defensible
+family — the age is ~800 ky and the spread across families is 730–900 ky.]**
 
 ### 8.6.5 Caveats, strongest first
 
@@ -999,6 +1001,103 @@ that fits all three statistics, and all of it still conditional on µ = 3e-9
    here. The contrast cancels a *shared* shift, not a differential one.
 4. p* is still asserted at 0.626, not inferred.
 5. No error bars on (t_inv, t_arrive, p_start) yet — only a grid.
+
+## 8.7 Drifting dormancy — the strongest caveat, removed **[M]**
+
+§8.6.5 flagged the constant-frequency dormancy as the family's strongest
+assumption. It is now replaced by a drifting one
+(`illex.balancing.dormancy_bridge`, `arrival_curve_drift`,
+`build_arrival_drift_sim`; scans `results/illex/scan_arrival_drift_*.{csv,txt}`).
+
+**It was not a small assumption.** Over a 650,000-generation dormancy on the
+growth arm the neutral drift standard deviation at p = 0.32 is **0.275** —
+comparable to the frequency itself.
+
+**The implementation** is a guided (Durham–Gallant modified) diffusion bridge:
+WF volatility √(p(1−p)/2N(t)) with the Brownian bridge's linear guiding drift,
+floored at one copy (below that the arrangement is lost, and it is not). Each
+replicate draws its own path, so the ensemble carries the drift variance instead
+of averaging it into a single mean trajectory. It is **not** an exact WF bridge —
+the true conditioned drift is not used — and that is stated in the code.
+
+### 8.7.1 Drift squeezes the inverted class harder, exactly as predicted
+
+The prediction was recorded before running: the coalescent rate inside the
+inverted class is 1/(2N(t)p(t)), so π_I integrates ∫dt/(2Np); because the
+integrand goes as 1/p it is dominated by time spent at LOW frequency, and by
+Jensen a wandering path accumulates strictly more coalescence than a constant
+path at the same mean. At matched parameters (t_inv 900 ky, t_arrive 200 ky,
+p = 0.32):
+
+| statistic | constant dormancy | drifting | change |
+|---|---|---|---|
+| π_I/π_S | 0.7647 | 0.7052 | **−7.8%** |
+| dxy/π_I | 1.9276 | 2.1678 | **+12.5%** |
+| f₁(I)/f₁(S) | 1.200 | 1.247 | +3.9% |
+
+All three moved in the predicted direction and by a material amount.
+
+### 8.7.2 The drifting model fits BEST, and it moves the age down
+
+3,000+ additional sims, 48–64 reps/cell.
+
+| | π_I/π_S | dxy/π_I | f₁ ratio | score |
+|---|---|---|---|---|
+| target | 0.7368 | 1.8794 | 1.211 | — |
+| **drifting: t_inv 800 ky, t_arrive 200 ky, p_hand 0.28** | **0.7277 (−1.2%)** | **1.9208 (+2.2%)** | **1.222 (+0.9%)** | **0.00072** |
+| constant: t_inv 900 ky, t_arrive 200 ky, p 0.32 | 0.7647 (+3.8%) | 1.9276 (+2.6%) | 1.200 (−0.9%) | 0.00218 |
+
+**All three parameters are interior optima**, not boundary artifacts: t_inv 800 ky
+sits between 750 ky (0.0015) and 850 ky (0.0083); t_arrive 200 ky between 150 ky
+(0.0039) and 250 ky (0.0010); p_hand 0.28 between 0.24 (0.0362) and 0.32
+(0.0128).
+
+The drifting version needs a **shorter dormancy and a lower handoff frequency**
+than the constant one — 550 ky at p ≈ 0.28 rather than 650 ky at 0.32 — which is
+the expected compensation for drift supplying extra squeeze on its own.
+
+### 8.7.3 A genuine single origin is now decisively excluded
+
+The drifting family can express what the constant one could not: start at one
+chromosome at t_inv and climb. So §7.5.1's soft-origin conclusion can be
+re-tested rather than assumed, and it survives emphatically. Best single-origin
+cell over t_inv ∈ [900 ky, 1.4 My]: **score 0.67**, against 0.00072 — roughly
+**900× worse**, with π_I/π_S 0.34–0.54 (target 0.737) and dxy/π_I 3.1–5.0
+(target 1.879) everywhere. The 1/p integrand near the origin enforces monophyly
+at t_inv and π_I collapses.
+
+This matters because the earlier exclusion could be dismissed as an artifact of
+holding p constant at a low value. It cannot: under a proper drifting model from
+a single chromosome the fit is far worse still. **The origin is soft.**
+
+### 8.7.4 Where the age now stands
+
+| model | targets fitted | age |
+|---|---|---|
+| two-phase, rise to equilibrium | 2 (π ratio, dxy ratio) | 730–740 ky |
+| three-phase, constant dormancy | 3 (+ SFS contrast) | ~900 ky |
+| **three-phase, drifting dormancy** | 3 | **~800 ky** |
+| three-phase, drifting, single origin | 3 | excluded |
+
+**Quote ~800 ky, with 730–900 ky as the spread across defensible trajectory
+families** — narrower than §8.6.4's 730–950 ky, because the best-fitting and
+most defensible family lands in the middle. Still conditional on µ = 3e-9, which
+remains the dominant term (±30% on µ is ±240 ky, an order of magnitude larger
+than the trajectory-family spread).
+
+**Current best picture:** the inversion arose ~800 ky ago, drifted as a standing
+polymorphism around ~28% for ~550 ky, swept to 0.626 about 200 ky ago, and has
+been held there since.
+
+### 8.7.5 What is still assumed
+
+1. The bridge is guided, not an exact WF bridge (§8.7 above).
+2. Dormancy is **neutral**. If the inversion was under weak selection while
+   standing, the path law changes. Untested.
+3. `t_rise` fixed at 50 ky; its degeneracy with `t_arrive` unexplored.
+4. The contrast target still inherits the §8.5.1 baseline residual (L1
+   0.137/0.147), so the 1.211 target carries unquantified systematic error.
+5. p* asserted at 0.626. No error bars on the three parameters — grid only.
 
 ## 9. Where identification has to come from
 

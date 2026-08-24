@@ -71,14 +71,24 @@ def _one(job):
     from illex.demography import PRESENT_NE_GROWTH
     from illex.slim.config import REC_RATE
 
-    t_inv, t_arrive, p_start, rep = job
+    t_inv, t_arrive, p_start, rep, drift, p_origin_mode = job
     L = int(round(2000.0 / (4.0 * PRESENT_NE_GROWTH * REC_RATE)))
     seed = (8_000_000 + 100_000 * int(t_inv / 1e4)
             + 1_000 * int(t_arrive / 1e4) + 10 * int(p_start * 100) + rep)
     t0 = time.time()
-    sim = B.build_arrival_sim(
-        seq_length=L, t_inv=t_inv, t_arrive=t_arrive, t_rise=T_RISE,
-        p_start=p_start, seed=seed)
+    if drift:
+        # p_origin=None is a genuine single origin, 1/(2N(t_inv)); "hand" starts
+        # the drift at the handoff frequency itself, i.e. no net trend, which is
+        # the nearest drifting analogue of the fixed-frequency family.
+        p_org = None if p_origin_mode == "single" else p_start
+        sim = B.build_arrival_drift_sim(
+            seq_length=L, t_inv=t_inv, t_arrive=t_arrive, t_rise=T_RISE,
+            p_hand=p_start, drift_seed=seed + 777_000, p_origin=p_org,
+            seed=seed)
+    else:
+        sim = B.build_arrival_sim(
+            seq_length=L, t_inv=t_inv, t_arrive=t_arrive, t_rise=T_RISE,
+            p_start=p_start, seed=seed)
     ts = sim.simulate()
     i_nodes, s_nodes = S.sample_nodes_by_karyotype(sim, ts)
     left, right = M.inversion_interval(sim)
@@ -110,6 +120,13 @@ def main() -> None:
     ap.add_argument("--t-arrive", help="comma-separated t_arrive grid")
     ap.add_argument("--p-start", help="comma-separated p_start grid")
     ap.add_argument("--tag", default="", help="suffix for the output files")
+    ap.add_argument("--drift", action="store_true",
+                    help="drifting dormancy (guided WF bridge) instead of a "
+                         "constant-frequency dormancy")
+    ap.add_argument("--p-origin", choices=["single", "hand"], default="single",
+                    help="with --drift: 'single' = one chromosome at t_inv "
+                         "(genuine single origin); 'hand' = start the drift at "
+                         "the handoff frequency (no net trend)")
     args = ap.parse_args()
 
     global T_INV, T_ARRIVE, P_START
@@ -129,7 +146,7 @@ def main() -> None:
     os_ = os_ / os_.sum()
     target_ratio = oi[0] / os_[0]
 
-    jobs = [(ti, ta, p0, r)
+    jobs = [(ti, ta, p0, r, args.drift, args.p_origin)
             for ti, ta, p0 in itertools.product(T_INV, T_ARRIVE, P_START)
             if ta + T_RISE <= ti
             for r in range(args.reps)]
@@ -146,7 +163,9 @@ def main() -> None:
         print(s, flush=True)
         lines.append(s)
 
-    emit(f"Explicit-arrival family: t_rise={T_RISE:,.0f}, "
+    mode = (f"DRIFTING dormancy (guided WF bridge, p_origin={args.p_origin})"
+            if args.drift else "CONSTANT-frequency dormancy")
+    emit(f"Explicit-arrival family, {mode}: t_rise={T_RISE:,.0f}, "
          f"{args.reps} reps/cell")
     emit(f"targets: pi_I/pi_S={TARGET_R:.4f}  dxy/pi_I={TARGET_D:.4f}  "
          f"ANGSD f1(I)/f1(S)={target_ratio:.3f}")

@@ -1284,10 +1284,82 @@ independent positions. That is *consistent with* the metabolic reading in §3i
 and worth stating as such, but it does **not** turn that scenario from story into
 result, which is what §3i hoped it would do. The scenario remains interpretation.
 
-Two things would help and neither is a GO test: the InterProScan domain
-assignments for those five genes (`gene_family/InterProScan/interpro_results.tsv`)
-to confirm the acyl-CoA synthetase identification, and whether any of them fall
-in the §8e sweep-candidate set.
+Both suggested follow-ups were run; see §8.10. Neither survives, and the
+five-gene "lipid thread" shrinks further under proper annotation.
+
+## 8.10 What those five genes actually are — the lipid thread shrinks to two **[M][W]**
+
+§8.9.4 proposed two follow-ups. Both were run. One is impossible and the other
+weakens the story further.
+
+### 8.10.1 The InterProScan run does not cover the proteome
+
+`gene_family/InterProScan/interpro_results.tsv` has **101 protein rows total**
+(90 `LOC_`, 10 `novel_model_`, 1 `temp_model_`) — it is a small targeted run, not
+a genome-wide annotation. Only LOC_00005301 of the five is in it. My §8.9.4
+recommendation assumed a proteome-wide InterProScan existed; it does not.
+
+The information is available elsewhere, and is better: `entap_results.tsv`
+carries the best similarity hit, EggNOG orthology and KEGG KO for every gene.
+
+### 8.10.2 The five genes, properly identified
+
+| gene | pos (Mb) | best hit | id / cov | KEGG | what it actually is |
+|---|---|---|---|---|---|
+| LOC_00005301 | 61.39 | Lon protease homolog 2, peroxisomal (*O. bimaculoides*) | 80.5% / 100% | K01338 | peroxisomal matrix **protease** — organelle quality control, not β-oxidation |
+| LOC_00005339 | 69.07 | malonyl-CoA-ACP transacylase, mitochondrial (*O. vulgaris*) | 65.4% / 75% | K00645 | mitochondrial fatty-acid **synthesis** (mtFAS) — not catabolism |
+| LOC_00005375 | 78.39 | **PRKCD**, protein kinase C delta (*S. pharaonis*) | 98.1% / 100% | K06068 | **signalling kinase — not a metabolic enzyme at all** |
+| LOC_00005376 | 78.64 | acyl-CoA amino acid N-acyltransferase 1-like (*O. vulgaris*) | 43.5% / 100% | K00659, K01068 | acyl-CoA **thioesterase / N-acyltransferase** (BAAT/ACNAT family) |
+| LOC_00005384 | 79.31 | *S. pharaonis*; EggNOG "acyl-CoA oxidase activity" | 76.5% / 100% | **K00232 (ACOX1)** | **ACOX1 — the rate-limiting enzyme of peroxisomal β-oxidation** |
+
+**[W] Three corrections to §8.9.3, all of them mine:**
+
+1. **My "bile acid = acyl-CoA synthetase" call was directionally right, specifically
+   wrong.** LOC_00005376 is BAAT/ACNAT family — an N-acyltransferase/thioesterase,
+   not a ligase. Both handle acyl-CoA, but they are different reactions. The
+   broader point stands: cephalopods make no bile acids, so the literal term is
+   meaningless and the gene is fatty-acyl-CoA machinery.
+2. **Two of the five are not lipid-catabolism genes at all.** PRKCD is a
+   signalling kinase whose "regulation of lipid catabolic process" GO is a
+   regulatory annotation transferred from human PKCδ's role in lipolysis
+   signalling; LONP2 is a protease that is peroxisomal but not metabolic. And
+   MCAT is fatty-acid **synthesis**, so the "fatty acid β-oxidation" GO attached
+   to it looks mis-transferred. The strongest-annotated gene in the whole set
+   (PRKCD, 98.1% identity, E = 0) is the one with no metabolic role.
+3. **They are not well spread.** §8.9.3 said "~4 independent positions". At the
+   200 kb clustering threshold that is true, but biologically three of the five
+   (78.39, 78.64, 79.31 Mb) sit within a **~900 kb window** at one end of the
+   inversion. The independence was overstated.
+
+**So the coherent core is two genes, not five:** ACOX1 (79.31 Mb, genuine
+peroxisomal β-oxidation, rate-limiting) and ACNAT (78.64 Mb, acyl-CoA handling),
+670 kb apart. LONP2 at 61.39 Mb adds a second *peroxisomal* gene at the opposite
+end, which is the only reason "peroxisome" recurs at all.
+
+### 8.10.3 The sweep-candidate check is unanswerable, not negative
+
+**chr2 was never scanned.** `results/empirical_scan_fullsfs/genome.preds` contains
+**zero chr2 windows**, and chr2 is absent from the candidate chromosome list
+(1, 3–39, 41, 43–45 — no 2, 40, 42 or Z). Almost certainly the same deliberate
+exclusion as the ReLERNN run, since the inversion's structure would confound a
+sweep classifier trained on panmictic sims. So "no sweep candidates in the
+inversion" is an **absence of data**, not evidence, and must not be reported as
+a negative result.
+
+### 8.10.4 Bottom line: the gene content does not support the scenario
+
+With **30 annotated genes** in the body, finding one or two in any given pathway
+is exactly what chance produces. There is one specific, interesting candidate —
+ACOX1, the rate-limiting step of peroxisomal β-oxidation, which in marine
+invertebrates handles the very-long-chain and branched fatty acids abundant in a
+zooplankton-based diet — and a second peroxisomal gene at the far end. That is a
+**hypothesis worth naming, not evidence**.
+
+**§3i's environmental scenario therefore stands or falls on other grounds.** The
+gene-content route was proposed (§3i), tested (§8.9), refined (§8.10), and does
+not deliver at any stage. It should be reported as a named candidate gene plus an
+explicit statement that the region's gene content carries no statistical signal —
+not as support.
 
 ## 9. Where identification has to come from
 

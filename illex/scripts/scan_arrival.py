@@ -71,12 +71,21 @@ def _one(job):
     from illex.demography import PRESENT_NE_GROWTH
     from illex.slim.config import REC_RATE
 
-    t_inv, t_arrive, p_start, rep, drift, p_origin_mode = job
+    t_inv, t_arrive, p_start, rep, drift, p_origin_mode, s_dorm = job
     L = int(round(2000.0 / (4.0 * PRESENT_NE_GROWTH * REC_RATE)))
     seed = (8_000_000 + 100_000 * int(t_inv / 1e4)
             + 1_000 * int(t_arrive / 1e4) + 10 * int(p_start * 100) + rep)
     t0 = time.time()
-    if drift:
+    if s_dorm is not None:
+        # Non-neutral dormancy: balanced at p_eq = p_hand. One-parameter
+        # interpolation between the drifting (s_dorm->0) and constant
+        # (s_dorm->large) arms; needs no bridge because a diffusion with a
+        # stationary measure is reversible.
+        sim = B.build_arrival_balanced_sim(
+            seq_length=L, t_inv=t_inv, t_arrive=t_arrive, t_rise=T_RISE,
+            p_hand=p_start, s_dorm=s_dorm, drift_seed=seed + 777_000,
+            seed=seed)
+    elif drift:
         # p_origin=None is a genuine single origin, 1/(2N(t_inv)); "hand" starts
         # the drift at the handoff frequency itself, i.e. no net trend, which is
         # the nearest drifting analogue of the fixed-frequency family.
@@ -99,6 +108,7 @@ def _one(job):
         "wall_s": round(time.time() - t0, 2),
         "pi_i_over_pi_s": st["pi_i_over_pi_s"],
         "dxy_over_pi_i": st["dxy_over_pi_i"],
+        "s_dorm": -1.0 if s_dorm is None else s_dorm,
     }
     for tag, nodes in (("I", i_nodes), ("S", s_nodes)):
         n = len(nodes)
@@ -123,6 +133,9 @@ def main() -> None:
     ap.add_argument("--drift", action="store_true",
                     help="drifting dormancy (guided WF bridge) instead of a "
                          "constant-frequency dormancy")
+    ap.add_argument("--s-dorm",
+                    help="comma-separated dormancy selection strengths; "
+                         "enables the BALANCED-dormancy arm (overrides --drift)")
     ap.add_argument("--p-origin", choices=["single", "hand"], default="single",
                     help="with --drift: 'single' = one chromosome at t_inv "
                          "(genuine single origin); 'hand' = start the drift at "
@@ -146,8 +159,11 @@ def main() -> None:
     os_ = os_ / os_.sum()
     target_ratio = oi[0] / os_[0]
 
-    jobs = [(ti, ta, p0, r, args.drift, args.p_origin)
-            for ti, ta, p0 in itertools.product(T_INV, T_ARRIVE, P_START)
+    s_dorms = ([float(x) for x in args.s_dorm.split(",")]
+               if args.s_dorm else [None])
+    jobs = [(ti, ta, p0, r, args.drift, args.p_origin, sd)
+            for ti, ta, p0, sd in itertools.product(T_INV, T_ARRIVE, P_START,
+                                                    s_dorms)
             if ta + T_RISE <= ti
             for r in range(args.reps)]
     print(f"{len(jobs):,} sims  (t_rise={T_RISE:,.0f}, "
@@ -163,22 +179,28 @@ def main() -> None:
         print(s, flush=True)
         lines.append(s)
 
-    mode = (f"DRIFTING dormancy (guided WF bridge, p_origin={args.p_origin})"
-            if args.drift else "CONSTANT-frequency dormancy")
+    if args.s_dorm:
+        mode = (f"BALANCED dormancy (s_dorm={args.s_dorm}, mean-reverting, "
+                "no bridge needed)")
+    elif args.drift:
+        mode = f"DRIFTING dormancy (guided WF bridge, p_origin={args.p_origin})"
+    else:
+        mode = "CONSTANT-frequency dormancy"
     emit(f"Explicit-arrival family, {mode}: t_rise={T_RISE:,.0f}, "
          f"{args.reps} reps/cell")
     emit(f"targets: pi_I/pi_S={TARGET_R:.4f}  dxy/pi_I={TARGET_D:.4f}  "
          f"ANGSD f1(I)/f1(S)={target_ratio:.3f}")
     emit()
-    emit(f"{'t_inv':>9s} {'t_arrive':>9s} {'p_start':>7s} {'pi_I/pi_S':>10s} "
-         f"{'dxy/pi_I':>9s} {'ratio':>7s} {'miss_r':>7s} {'miss_d':>7s} "
-         f"{'miss_rat':>8s} {'score':>7s}")
+    emit(f"{'t_inv':>9s} {'t_arrive':>9s} {'p_hand':>7s} {'s_dorm':>9s} "
+         f"{'pi_I/pi_S':>10s} {'dxy/pi_I':>9s} {'ratio':>7s} {'miss_r':>7s} "
+         f"{'miss_d':>7s} {'miss_rat':>8s} {'score':>7s}")
     out_rows = []
     from illex import balancing as B
     best = None
-    for ti, ta, p0 in itertools.product(T_INV, T_ARRIVE, P_START):
+    for ti, ta, p0, sd in itertools.product(T_INV, T_ARRIVE, P_START, s_dorms):
+        sdk = -1.0 if sd is None else sd
         sub = [x for x in rows if x["t_inv"] == ti and x["t_arrive"] == ta
-               and x["p_start"] == p0]
+               and x["p_start"] == p0 and x["s_dorm"] == sdk]
         if not sub:
             continue
         r = float(np.mean([x["pi_i_over_pi_s"] for x in sub]))
@@ -200,24 +222,27 @@ def main() -> None:
         mt = (ratio - target_ratio) / target_ratio
         score = mr * mr + md * md + mt * mt
         if best is None or score < best[0]:
-            best = (score, ti, ta, p0, r, d, ratio)
-        emit(f"{ti:9,.0f} {ta:9,.0f} {p0:7.3f} {r:10.4f} {d:9.4f} "
-             f"{ratio:7.3f} {100 * mr:+6.1f}% {100 * md:+6.1f}% "
+            best = (score, ti, ta, p0, r, d, ratio, sd)
+        sd_txt = "  neutral" if sd is None else f"{sd:9.1e}"
+        emit(f"{ti:9,.0f} {ta:9,.0f} {p0:7.3f} {sd_txt:>9s} {r:10.4f} "
+             f"{d:9.4f} {ratio:7.3f} {100 * mr:+6.1f}% {100 * md:+6.1f}% "
              f"{100 * mt:+7.1f}% {score:7.4f}")
         out_rows.append({
             "t_arrive": ta, "p_start": p0, "t_inv": ti, "t_rise": T_RISE,
+            "s_dorm": -1.0 if sd is None else sd,
             "s_het": s_het, "pi_i_over_pi_s": r, "dxy_over_pi_i": d,
             "f1_I": float(spec["I"][0]), "f1_S": float(spec["S"][0]),
             "ratio": float(ratio), "l1_contrast": l1c,
             "n": len(sub),
         })
-    emit(f"{'TARGET':>9s} {'':>9s} {'':>7s} {TARGET_R:10.4f} {TARGET_D:9.4f} "
-         f"{target_ratio:7.3f}")
+    emit(f"{'TARGET':>9s} {'':>9s} {'':>7s} {'':>9s} {TARGET_R:10.4f} "
+         f"{TARGET_D:9.4f} {target_ratio:7.3f}")
     if best:
         emit()
+        sdb = "neutral" if best[7] is None else f"{best[7]:.1e}"
         emit(f"BEST CELL  t_inv={best[1]:,.0f}  t_arrive={best[2]:,.0f}  "
-             f"p_start={best[3]:.3f}  ->  {best[4]:.4f} / {best[5]:.4f} / "
-             f"{best[6]:.3f}  (score {best[0]:.5f})")
+             f"p_hand={best[3]:.3f}  s_dorm={sdb}  ->  {best[4]:.4f} / "
+             f"{best[5]:.4f} / {best[6]:.3f}  (score {best[0]:.5f})")
     emit()
     emit("Reference -- the two-phase family at its fitted point: "
          "ratio 1.312, L1(I-S) 0.101.")

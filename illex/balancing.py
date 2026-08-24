@@ -718,3 +718,173 @@ def build_arrival_drift_sim(*, seq_length, t_inv, t_arrive, t_rise, p_hand,
         inversions=[spec],
         seed=seed,
     )
+
+
+# =====================================================================
+# Non-neutral dormancy: a balanced polymorphism before the sweep
+# =====================================================================
+# The drifting dormancy above assumes the inversion was NEUTRAL while standing.
+# That was the last live assumption in the family. The biologically natural
+# alternative is that it was ALREADY balanced, at a lower equilibrium, and that
+# an environmental change moved the equilibrium to 0.626 -- which is what the
+# sweep phase then tracks.
+#
+# This is a clean test because it is a ONE-PARAMETER INTERPOLATION between the
+# two arms already run:
+#
+#     s_dorm -> 0     no restoring force  -> free drift        (NOTES 8.7)
+#     s_dorm -> large pinned at p_eq      -> constant frequency (NOTES 8.6)
+#
+# so both limits are known in advance and the only question is which strength
+# the data prefer.
+#
+# Same functional form as the rise, with the equilibrium at ``p_eq`` instead of
+# p*: dp/dt = (s_dorm/p_eq)·p(1-p)(p_eq - p), plus WF noise
+# sqrt(p(1-p)/(2N(t))). Near p_eq that linearises to a restoring rate
+# k = s_dorm(1 - p_eq) against diffusion D = p_eq(1-p_eq)/(2N), giving a
+# stationary standard deviation
+#
+#     SD = sqrt(p_eq / (4 N s_dorm))
+#
+# which is the scale to compare against the free-drift SD over the same window
+# (0.227 at p_eq = 0.28 over 550 ky). The informative range is therefore
+# s_dorm ~ 1e-6 to 1e-4; below that it is indistinguishable from neutral, above
+# it from constant.
+#
+# WHY THIS NEEDS NO BRIDGE, AND IS THEREFORE MORE RIGOROUS THAN THE NEUTRAL ARM
+# ---------------------------------------------------------------------------
+# With a restoring force the diffusion has a stationary distribution, and every
+# 1-D diffusion is reversible with respect to its stationary measure. So the
+# backward-time path obeys the SAME SDE, and it can be simulated directly from
+# the handoff frequency without any guiding term. The Durham-Gallant
+# approximation that the neutral arm needed simply does not arise here.
+#
+# The ``s_dorm = 0`` case is the exception and is NOT rigorous in this function:
+# neutral WF has absorbing boundaries, no stationary measure, and no
+# reversibility, so running it backward unconditioned is an approximation. Use
+# ``dormancy_bridge`` for the properly conditioned neutral case; ``s_dorm = 0``
+# here is only for continuity of the limit.
+
+
+def dormancy_balanced(t_inv: float, t_hand: float, p_eq: float,
+                      s_dorm: float, rng, n_steps: int = 800):
+    """Dormancy under balancing selection, as (backward times, freqs).
+
+    Simulated directly backward from ``p_eq`` at ``t_hand`` to ``t_inv``; see
+    the module notes for why no bridge is needed when ``s_dorm > 0``.
+    Returns oldest-last.
+    """
+    T = float(t_inv) - float(t_hand)
+    if T <= 0:
+        raise ValueError(
+            f"dormancy length must be > 0; t_inv={t_inv!r} t_hand={t_hand!r}")
+    if s_dorm < 0:
+        raise ValueError(f"s_dorm must be >= 0, got {s_dorm!r}")
+
+    k = max(50, int(n_steps))
+    dt = T / k
+    c = (s_dorm / p_eq) if s_dorm > 0 else 0.0
+    p = float(p_eq)
+    times = [float(t_hand)]
+    freqs = [p]
+    for i in range(k):
+        t_back = t_hand + i * dt
+        n_e = float(N_growth(t_back))
+        floor = 1.0 / (2.0 * n_e)
+        drift = c * p * (1.0 - p) * (p_eq - p) * dt
+        sd = float(np.sqrt(max(p * (1.0 - p), 0.0) / (2.0 * n_e) * dt))
+        p = p + drift + sd * float(rng.standard_normal())
+        p = min(max(p, floor), 1.0 - floor)
+        times.append(t_back + dt)
+        freqs.append(p)
+    return times, freqs
+
+
+def stationary_sd(p_eq: float, s_dorm: float, n_e: float) -> float:
+    """SD of a balanced polymorphism at equilibrium ``p_eq``: sqrt(p/(4 N s))."""
+    if s_dorm <= 0:
+        return float("inf")
+    return float(np.sqrt(p_eq / (4.0 * n_e * s_dorm)))
+
+
+def arrival_curve_balanced(t_inv: float, t_arrive: float, t_rise: float,
+                           p_hand: float, s_dorm: float, rng,
+                           p_star: float = P_I_DEFAULT, n_rise: int = 300,
+                           n_dorm: int = 800, tol: float = ARRIVAL_TOL):
+    """Three-phase curve with dormancy under balancing selection at ``p_hand``."""
+    if not 0.0 < p_hand < p_star:
+        raise ValueError(
+            f"p_hand ({p_hand!r}) must lie in (0, p_star={p_star!r})")
+    t_hand = t_arrive + t_rise
+    if t_hand > t_inv:
+        raise ValueError(
+            f"t_arrive + t_rise exceeds t_inv ({t_inv!r})")
+
+    s_het = s_het_for_rise(t_rise, p_hand, p_star, tol)
+    p_arrive = p_star * (1.0 - tol)
+
+    p_grid = np.geomspace(p_hand, p_arrive, n_rise)
+    t_fwd = _time_to_reach(p_grid, p_hand, s_het, p_star)
+    t_back_rise = t_arrive + (t_rise - t_fwd)
+    order = np.argsort(t_back_rise)
+
+    times = [0.0, t_arrive]
+    freqs = [p_arrive, p_arrive]
+    times.extend(t_back_rise[order].tolist())
+    freqs.extend(p_grid[order].tolist())
+
+    if t_inv - t_hand > 0:
+        d_t, d_f = dormancy_balanced(t_inv, t_hand, p_hand, s_dorm, rng,
+                                     n_steps=n_dorm)
+        times.extend(d_t)
+        freqs.extend(d_f)
+
+    times = np.asarray(times, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+    srt = np.argsort(times, kind="stable")
+    times, freqs = times[srt], freqs[srt]
+    keep = np.concatenate([[True], np.diff(times) > 1e-9])
+    times, freqs = times[keep], freqs[keep]
+    return np.clip(times, 0.0, t_inv).tolist(), freqs.tolist(), s_het
+
+
+def build_arrival_balanced_sim(*, seq_length, t_inv, t_arrive, t_rise, p_hand,
+                               s_dorm, drift_seed, p_star=P_I_DEFAULT,
+                               gamma=1e-15, n_i=100, n_s=100, seed=None,
+                               recomb_rate=None, n_rise=300, n_dorm=800):
+    """Three-phase sim with a BALANCED (non-neutral) dormancy phase."""
+    if recomb_rate is None:
+        from .slim.config import REC_RATE
+        recomb_rate = REC_RATE
+
+    margin = seq_length * MARGIN_FRACTION
+    bp_left, bp_right = margin, seq_length - margin
+    tract_length = max(1.0, (bp_right - bp_left) * TRACT_FRACTION)
+
+    rng = np.random.default_rng(drift_seed)
+    times, freqs, _s = arrival_curve_balanced(
+        t_inv, t_arrive, t_rise, p_hand, s_dorm, rng, p_star=p_star,
+        n_rise=n_rise, n_dorm=n_dorm)
+    spec = InversionSpec(
+        bp_left=bp_left,
+        bp_right=bp_right,
+        gene_conversion_rate=gamma,
+        mean_tract_length=tract_length,
+        tract_distribution="geometric",
+        trajectory={
+            "type": "precomputed",
+            "times": times,
+            "freqs": [freqs],
+            "n_e": [float(N_growth(t_inv))],
+            "t_inv": [float(t_inv)],
+        },
+    )
+    return HullSimulator(
+        n_std=n_s, n_inv=n_i,
+        population_size=PRESENT_NE_GROWTH,
+        demography=growth_demography(),
+        sequence_length=seq_length,
+        recombination_rate=recomb_rate,
+        inversions=[spec],
+        seed=seed,
+    )

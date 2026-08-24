@@ -1099,6 +1099,99 @@ been held there since.
    0.137/0.147), so the 1.211 target carries unquantified systematic error.
 5. p* asserted at 0.626. No error bars on the three parameters — grid only.
 
+## 8.8 Non-neutral dormancy — it fits best, and the inversion was ALREADY balanced **[M]**
+
+`illex.balancing.dormancy_balanced` / `arrival_curve_balanced` /
+`build_arrival_balanced_sim`; scan `results/illex/scan_arrival_sdorm.{csv,txt}`.
+§8.7.5 listed "dormancy is neutral" as the last live assumption. Removed.
+
+**The model.** During dormancy the inversion is a balanced polymorphism at
+equilibrium p_eq = p_hand, with the same overdominance form as the rise:
+dp/dt = (s_dorm/p_eq)·p(1−p)(p_eq−p) plus WF noise. It is a **one-parameter
+interpolation between the two arms already run** — s_dorm → 0 recovers free
+drift (§8.7), s_dorm → large recovers the constant frequency (§8.6) — so both
+limits were known before running and the only question was which strength the
+data prefer.
+
+**It needs no bridge, which makes it the most rigorous arm.** With a restoring
+force the diffusion has a stationary measure, and every 1-D diffusion is
+reversible with respect to its stationary measure, so the backward path obeys
+the same SDE and can be simulated directly from the handoff frequency. The
+Durham–Gallant approximation that §8.7 required does not arise. (The s_dorm = 0
+row in the scan is the exception — neutral WF has absorbing boundaries and no
+stationary measure, so that row is approximate; use `dormancy_bridge` for the
+properly conditioned neutral case.)
+
+Validated against the analytic stationary SD √(p_eq/4N·s_dorm): observed/predicted
+0.97–1.32 over s_dorm ∈ [3e-6, 1e-4], with the 1e-6 case running low (0.66)
+because its SD is large enough to be truncated by the boundaries.
+
+### 8.8.1 The fit, and an interior optimum in s_dorm
+
+| dormancy model | π_I/π_S | dxy/π_I | f₁ ratio | score |
+|---|---|---|---|---|
+| target | 0.7368 | 1.8794 | 1.211 | — |
+| **balanced, s_dorm = 3e-5** | **0.7289 (−1.1%)** | **1.8603 (−1.0%)** | **1.213 (+0.1%)** | **0.00022** |
+| free drift (§8.7) | 0.7277 (−1.2%) | 1.9208 (+2.2%) | 1.222 (+0.9%) | 0.00072 |
+| constant frequency (§8.6) | 0.7647 (+3.8%) | 1.9276 (+2.6%) | 1.200 (−0.9%) | 0.00218 |
+
+All three residuals are ~1% or better — the best fit obtained for this system.
+And s_dorm is **interior**, at t_inv 800 ky / t_arrive 200 ky / p_hand 0.28:
+
+| s_dorm | 0 | 1e-6 | 3e-6 | 1e-5 | **3e-5** | 1e-4 |
+|---|---|---|---|---|---|---|
+| score | 0.0122 | 0.0127 | 0.0123 | 0.0074 | **0.0002** | 0.0016 |
+
+Both limits are worse. **The data prefer a specific dormancy selection strength,
+not merely "more" or "less" than neutral.** Identification is real but soft: the
+optimum is sharp at the grid point yet the neighbouring cells differ by
+residuals of only 2–3%, so read it as **s_dorm ≈ 1e-5 to 1e-4 preferred over
+both limits**, not as a point estimate.
+
+### 8.8.2 What it means: the sweep was an equilibrium SHIFT, not the onset of selection
+
+At the optimum, N·s_dorm ≈ **40** — selection ~40× stronger than drift, so the
+standing phase was unambiguously non-neutral, with the frequency held within
+about ±0.04 of 0.28 (stationary SD 0.042).
+
+**So the inversion was already a balanced polymorphism before it swept.** It was
+not a neutral standing variant that happened to become useful; it was an adaptive
+polymorphism whose *optimum moved*. Selection strengthened ~**15×** across the
+transition, from s_dorm ≈ 3e-5 maintaining p ≈ 0.28 to s_het ≈ 4.6e-4 driving the
+50 ky rise to 0.626.
+
+This also matters for reading §7.5.3's non-neutrality result: that argument
+excluded neutral drift as a route to the *present* frequency. This one goes
+further and says the arrangement was under selection for most of its history.
+
+### 8.8.3 The age is now stable across dormancy models
+
+t_inv = **800 ky** at the optimum — identical to §8.7's drifting fit, and the
+improvement from 0.00072 to 0.00022 came entirely from s_dorm, t_arrive and
+p_hand being better resolved. So the age stopped moving as the dormancy model
+improved, having gone 730 ky (2 targets) → 900 ky (3 targets, constant dormancy)
+→ 800 ky (drifting) → **800 ky (balanced)**.
+
+**Quote ~800 ky, spread 730–900 ky across families**, unchanged from §8.7.4 and
+now supported by the two best-fitting models agreeing. µ still dominates
+(±30% = ±240 ky).
+
+**Best current picture:** the inversion arose ~800 ka as the population began its
+12.4× expansion, was maintained as a balanced polymorphism near 28% for ~550 ky
+(N·s ≈ 40), its equilibrium shifted ~250 ka, it swept to 0.626 over ~50 ky with
+selection ~15× stronger, and has been held there for ~200 ky.
+
+### 8.8.4 Still assumed
+
+1. p_eq during dormancy is set equal to p_hand — the standing equilibrium and the
+   handoff frequency are the same number by construction, not independently
+   fitted.
+2. The equilibrium shift is instantaneous at the start of the rise.
+3. `t_rise` fixed at 50 ky; its degeneracy with `t_arrive` still unexplored.
+4. The contrast target inherits the §8.5.1 baseline residual (L1 0.137/0.147).
+5. p* asserted at 0.626; overdominance is one of several mechanisms that would
+   give the same p(t) shape (§7.5, caveat 2). No error bars — grid only.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),

@@ -1,0 +1,46 @@
+differentiated body 60,500,000-79,500,000 (19.0 Mb): 30 annotated genes
+nominal span        60,040,617-79,995,597: 36 annotated genes
+  (the published set of 102 uses the nominal span and includes genes outside
+   the breakpoints entirely)
+
+window null: 2,000 random 19.0 Mb windows from 45 sequences (chr2 excluded)
+  genes per null window: median 50, 5-95% 18-90   (inversion body: 30)
+
+505 terms with >=2 genes in the body
+  p_window_raw < 0.05:        37
+  p_window_clustered < 0.05:  44
+  FDR (clustered) < 0.10:     4
+
+top 30 by the clustered window p (k_raw -> k_clustered shows how much of the
+signal is tandem duplication):
+  cat                 term                                                   k  kc   null   p_raw  p_clus     FDR
+  biological_process  obsolete DNA demethylation                             2   2   0.04  0.0000  0.0000  0.0631
+  biological_process  bone cell development                                  2   2   0.10  0.0000  0.0000  0.0631
+  biological_process  megakaryocyte development                              2   2   0.06  0.0000  0.0000  0.0631
+  biological_process  bile acid biosynthetic process                         2   2   0.06  0.0055  0.0000  0.0631
+  biological_process  bile acid metabolic process                            2   2   0.11  0.0105  0.0050  0.3703
+  biological_process  regulation of lipid catabolic process                  2   2   0.17  0.0060  0.0060  0.3703
+  biological_process  protein localization to peroxisome                     2   2   0.25  0.0080  0.0080  0.3703
+  biological_process  protein targeting to peroxisome                        2   2   0.25  0.0080  0.0080  0.3703
+  biological_process  establishment of protein localization to peroxisome    2   2   0.25  0.0080  0.0080  0.3703
+  biological_process  dopaminergic neuron differentiation                    2   2   0.14  0.0080  0.0080  0.3703
+  biological_process  megakaryocyte differentiation                          2   2   0.08  0.0090  0.0090  0.3703
+  biological_process  deoxyribonucleotide catabolic process                  2   2   0.08  0.0110  0.0110  0.3703
+  biological_process  deoxyribose phosphate catabolic process                2   2   0.07  0.0110  0.0110  0.3703
+  biological_process  deoxyribose phosphate metabolic process                2   2   0.13  0.0110  0.0110  0.3703
+  biological_process  2'-deoxyribonucleotide metabolic process               2   2   0.13  0.0110  0.0110  0.3703
+  biological_process  DNA dealkylation                                       2   2   0.09  0.0140  0.0135  0.3733
+  cellular_component  peroxisomal matrix                                     2   2   0.21  0.0140  0.0140  0.3733
+  cellular_component  microbody lumen                                        2   2   0.21  0.0140  0.0140  0.3733
+  biological_process  deoxyribonucleotide metabolic process                  2   2   0.16  0.0170  0.0170  0.3733
+  biological_process  immune response-regulating cell surface receptor sig   2   2   0.21  0.0170  0.0170  0.3733
+  biological_process  Fc receptor mediated stimulatory signaling pathway     2   2   0.21  0.0170  0.0170  0.3733
+  biological_process  Fc-gamma receptor signaling pathway involved in phag   2   2   0.21  0.0170  0.0170  0.3733
+  biological_process  Fc-gamma receptor signaling pathway                    2   2   0.21  0.0170  0.0170  0.3733
+  biological_process  peroxisomal transport                                  2   2   0.26  0.0190  0.0190  0.3787
+  biological_process  myeloid cell development                               2   2   0.22  0.0195  0.0195  0.3787
+  biological_process  Fc receptor signaling pathway                          2   2   0.31  0.0205  0.0205  0.3787
+  biological_process  peroxisome organization                                2   2   0.29  0.0210  0.0210  0.3787
+  cellular_component  ciliary plasm                                          3   3   0.71  0.0550  0.0230  0.3787
+  biological_process  obsolete DNA methylation or demethylation              2   2   0.25  0.0240  0.0235  0.3787
+  biological_process  carboxylic acid biosynthetic process                   4   4   1.19  0.0535  0.0235  0.3787

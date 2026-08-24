@@ -1192,6 +1192,103 @@ selection ~15× stronger, and has been held there for ~200 ky.
 5. p* asserted at 0.626; overdominance is one of several mechanisms that would
    give the same p(t) shape (§7.5, caveat 2). No error bars — grid only.
 
+## 8.9 The GO content of the inversion — the published enrichment does not hold **[M][W]**
+
+`illex/scripts/go_inversion.py`, results in `results/illex/go_inversion.{tsv,txt}`.
+§8.8/§3i named the "102 metabolism-enriched genes" as the mechanistic handle and
+the cheapest way to turn the environmental scenario from story into result. It
+was checked. **The enrichment does not survive a null that respects linkage, and
+the headline number is a miscount.**
+
+### 8.9.1 Two errors in how the region's gene content is described
+
+1. **"102 metabolism-enriched genes" conflates two things.** 102 is the *total*
+   gene count in the nominal span. Only **36** of those carry any GO annotation
+   at all, and only **30** lie in the Fst-defined differentiated body — many of
+   the rest are literally "function unknown". No reading of the data supports
+   102 metabolism genes.
+2. **The gene set uses the nominal span and spills outside it.** It runs
+   60,013,280–79,998,501, so it starts *before* the 60,040,617 breakpoint, and
+   the outermost ~500 kb at each end is collinear flanking sequence with
+   control-like Fst (§4.2).
+
+And a third fact worth having: the inversion is **gene-poor**, not gene-rich —
+30 annotated genes against a median of 50 in random 19 Mb windows (5–95%: 18–90).
+
+### 8.9.2 Why the published test was the wrong test
+
+`steps/06_gene_content/go_enrichment.py` uses a hypergeometric test against a
+genome-wide gene background. That null assumes the genes are a random *sample of
+genes*. They are one contiguous block inherited as a unit, so two things break:
+tandem duplicates count as independent observations, and gene families cluster,
+which makes *any* contiguous window look enriched for whatever sits in it.
+
+Replacing it with a **window null** — the same count in 2,000 random contiguous
+19 Mb windows elsewhere in the genome, plus collapsing genes within 200 kb that
+share a term — dissolves the result:
+
+| term | published p | published FDR | window p (clustered) | window FDR |
+|---|---|---|---|---|
+| fructose-bisphosphate aldolase activity | 3.4e-5 | 0.019 | **not testable** | — |
+| fatty acid binding | 3.1e-4 | 0.019 | **not testable** | — |
+| aldehyde-lyase activity | 3.2e-4 | 0.019 | **not testable** | — |
+| carboxylic acid biosynthetic process | 1.7e-4 | 0.019 | 0.024 | 0.38 |
+| monocarboxylic acid biosynthetic process | 2.4e-4 | 0.019 | 0.032 | 0.43 |
+| carboxylic acid metabolic process | 2.8e-4 | 0.019 | 0.184 | 0.99 |
+
+"Not testable" means **fewer than two of those genes are in the differentiated
+body at all**. The single most significant published term, FBPA, is
+LOC_00005292 and LOC_00005293 — 33 kb apart, so one duplication event scored
+twice, and *both sit in the collinear flank* at 60.12 and 60.17 Mb, outside the
+Fst-defined body. The headline result came from a tandem pair in sequence that
+is not part of the inversion.
+
+Across all 505 testable terms, 4 reach FDR < 0.10 and all four sit at 0.063 —
+and two of them ("bone cell development", "megakaryocyte development") are
+vertebrate-specific terms in a squid, i.e. GO transferred from human/mouse
+orthologs rather than biology.
+
+### 8.9.3 What is actually there: a real but statistically unsupported lipid thread
+
+Five genes in the differentiated body carry peroxisomal / fatty-acid /
+lipid-catabolism annotation, and unlike the FBPA pair they are **spread across
+the region at ~4 independent locations**:
+
+| gene | position | annotation thread |
+|---|---|---|
+| LOC_00005301 | 61.39 Mb | peroxisomal protein import |
+| LOC_00005339 | 69.07 Mb | fatty acid β-oxidation / metabolism |
+| LOC_00005375 | 78.39 Mb | regulation of lipid & phospholipid catabolism |
+| LOC_00005376 | 78.64 Mb | "bile acid" biosynthesis/conjugation, fatty acid metabolism |
+| LOC_00005384 | 79.31 Mb | "bile acid", peroxisomal import, fatty acid β-oxidation |
+
+The peroxisome terms recur through the top-30 (protein targeting to peroxisome,
+peroxisomal matrix, microbody lumen, peroxisomal transport, peroxisome
+organisation) — but they are the *same two genes* under nested GO terms, not
+independent evidence. **Read "bile acid" with caution**: cephalopods do not make
+bile acids, so those terms are almost certainly bile-acid-CoA-ligase homologs
+that are really acyl-CoA synthetases — fatty-acid activation. That *strengthens*
+the lipid reading while making the literal annotation meaningless.
+
+### 8.9.4 The honest verdict, and what it does to §3i
+
+**A 19 Mb region with 30 annotated genes cannot support a GO enrichment
+analysis.** With terms requiring k ≥ 2 the test has almost no power, so the
+absence of significance here is weak evidence of absence — but the presence of
+significance in the published version was an artifact of the null, not a
+discovery.
+
+So the correct output is a **gene list, not an enrichment claim**: the inversion
+carries a handful of peroxisomal / fatty-acid-oxidation genes at several
+independent positions. That is *consistent with* the metabolic reading in §3i
+and worth stating as such, but it does **not** turn that scenario from story into
+result, which is what §3i hoped it would do. The scenario remains interpretation.
+
+Two things would help and neither is a GO test: the InterProScan domain
+assignments for those five genes (`gene_family/InterProScan/interpro_results.tsv`)
+to confirm the acyl-CoA synthetase identification, and whether any of them fall
+in the §8e sweep-candidate set.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),

@@ -1,0 +1,506 @@
+go_id	cat	term	k_raw	k_clustered	null_mean_raw	p_window_raw	p_window_clustered	fdr_clustered
+GO:0080111	biological_process	obsolete DNA demethylation	2	2	0.037	0.0	0.0	0.063125
+GO:0098751	biological_process	bone cell development	2	2	0.097	0.0	0.0	0.063125
+GO:0035855	biological_process	megakaryocyte development	2	2	0.0585	0.0	0.0	0.063125
+GO:0006699	biological_process	bile acid biosynthetic process	2	2	0.063	0.0055	0.0	0.063125
+GO:0008206	biological_process	bile acid metabolic process	2	2	0.1135	0.0105	0.005	0.3703333333333333
+GO:0050994	biological_process	regulation of lipid catabolic process	2	2	0.1735	0.006	0.006	0.3703333333333333
+GO:0072662	biological_process	protein localization to peroxisome	2	2	0.2475	0.008	0.008	0.3703333333333333
+GO:0006625	biological_process	protein targeting to peroxisome	2	2	0.2475	0.008	0.008	0.3703333333333333
+GO:0072663	biological_process	establishment of protein localization to peroxisome	2	2	0.2475	0.008	0.008	0.3703333333333333
+GO:0071542	biological_process	dopaminergic neuron differentiation	2	2	0.141	0.008	0.008	0.3703333333333333
+GO:0030219	biological_process	megakaryocyte differentiation	2	2	0.0785	0.009	0.009	0.3703333333333333
+GO:0009264	biological_process	deoxyribonucleotide catabolic process	2	2	0.079	0.011	0.011	0.3703333333333333
+GO:0046386	biological_process	deoxyribose phosphate catabolic process	2	2	0.0715	0.011	0.011	0.3703333333333333
+GO:0019692	biological_process	deoxyribose phosphate metabolic process	2	2	0.13	0.011	0.011	0.3703333333333333
+GO:0009394	biological_process	2'-deoxyribonucleotide metabolic process	2	2	0.13	0.011	0.011	0.3703333333333333
+GO:0035510	biological_process	DNA dealkylation	2	2	0.091	0.014	0.0135	0.3732608695652174
+GO:0005782	cellular_component	peroxisomal matrix	2	2	0.208	0.014	0.014	0.3732608695652174
+GO:0031907	cellular_component	microbody lumen	2	2	0.208	0.014	0.014	0.3732608695652174
+GO:0009262	biological_process	deoxyribonucleotide metabolic process	2	2	0.159	0.017	0.017	0.3732608695652174
+GO:0002433	biological_process	immune response-regulating cell surface receptor signaling pathway involved in phagocytosis	2	2	0.213	0.017	0.017	0.3732608695652174
+GO:0002431	biological_process	Fc receptor mediated stimulatory signaling pathway	2	2	0.213	0.017	0.017	0.3732608695652174
+GO:0038096	biological_process	Fc-gamma receptor signaling pathway involved in phagocytosis	2	2	0.213	0.017	0.017	0.3732608695652174
+GO:0038094	biological_process	Fc-gamma receptor signaling pathway	2	2	0.213	0.017	0.017	0.3732608695652174
+GO:0043574	biological_process	peroxisomal transport	2	2	0.261	0.019	0.019	0.37875
+GO:0061515	biological_process	myeloid cell development	2	2	0.2215	0.0195	0.0195	0.37875
+GO:0038093	biological_process	Fc receptor signaling pathway	2	2	0.311	0.0205	0.0205	0.37875
+GO:0007031	biological_process	peroxisome organization	2	2	0.29	0.021	0.021	0.37875
+GO:0097014	cellular_component	ciliary plasm	3	3	0.714	0.055	0.023	0.37875
+GO:0044728	biological_process	obsolete DNA methylation or demethylation	2	2	0.252	0.024	0.0235	0.37875
+GO:0046394	biological_process	carboxylic acid biosynthetic process	4	4	1.1935	0.0535	0.0235	0.37875
+GO:0016053	biological_process	organic acid biosynthetic process	4	4	1.1935	0.0535	0.0235	0.37875
+GO:0070988	biological_process	demethylation	2	2	0.2005	0.034	0.024	0.37875
+GO:0007599	biological_process	hemostasis	3	3	0.657	0.041	0.0255	0.37875
+GO:0005930	cellular_component	axoneme	3	3	0.709	0.0515	0.0255	0.37875
+GO:0005777	cellular_component	peroxisome	3	3	0.599	0.041	0.03	0.4208333333333333
+GO:0042579	cellular_component	microbody	3	3	0.599	0.041	0.03	0.4208333333333333
+GO:0006635	biological_process	fatty acid beta-oxidation	2	2	0.2425	0.041	0.0315	0.42526315789473684
+GO:0072330	biological_process	monocarboxylic acid biosynthetic process	3	3	0.7585	0.0475	0.032	0.42526315789473684
+GO:0032838	cellular_component	plasma membrane bounded cell projection cytoplasm	3	3	0.9115	0.079	0.034	0.4402564102564103
+GO:0044447	cellular_component	obsolete axoneme part	2	2	0.335	0.0795	0.0395	0.48151162790697677
+GO:0060326	biological_process	cell chemotaxis	2	2	0.3025	0.0535	0.041	0.48151162790697677
+GO:0034440	biological_process	lipid oxidation	2	2	0.323	0.0625	0.041	0.48151162790697677
+GO:0019395	biological_process	fatty acid oxidation	2	2	0.3155	0.0625	0.041	0.48151162790697677
+GO:1990542	biological_process	mitochondrial transmembrane transport	2	2	0.3095	0.048	0.048	0.5509090909090909
+GO:0003333	biological_process	amino acid transmembrane transport	2	2	0.398	0.075	0.05	0.5611111111111111
+GO:0044439	cellular_component	obsolete peroxisomal part	2	2	0.39	0.065	0.053	0.5628645833333333
+GO:0044438	cellular_component	obsolete microbody part	2	2	0.39	0.065	0.053	0.5628645833333333
+GO:0006694	biological_process	steroid biosynthetic process	2	2	0.35	0.0655	0.0535	0.5628645833333333
+GO:0001889	biological_process	liver development	3	3	0.9165	0.0875	0.0575	0.5926020408163266
+GO:0061008	biological_process	hepaticobiliary system development	3	3	0.94	0.0885	0.0595	0.60095
+GO:0006304	biological_process	DNA modification	2	2	0.354	0.062	0.061	0.6040196078431372
+GO:0042133	biological_process	obsolete neurotransmitter metabolic process	2	2	0.4115	0.0725	0.0635	0.6125462962962963
+GO:0009166	biological_process	nucleotide catabolic process	2	2	0.431	0.077	0.065	0.6125462962962963
+GO:0044283	biological_process	small molecule biosynthetic process	6	5	2.2185	0.052	0.0655	0.6125462962962963
+GO:1901292	biological_process	nucleoside phosphate catabolic process	2	2	0.452	0.077	0.068	0.6243636363636365
+GO:0032091	biological_process	negative regulation of protein binding	2	2	0.37	0.0765	0.0695	0.6267410714285715
+GO:0006865	biological_process	amino acid transport	2	2	0.5045	0.101	0.076	0.6733333333333333
+GO:0009062	biological_process	fatty acid catabolic process	2	2	0.4025	0.0975	0.0785	0.6834913793103448
+GO:0044282	biological_process	small molecule catabolic process	4	4	1.4975	0.105	0.081	0.6933050847457627
+GO:0072329	biological_process	monocarboxylic acid catabolic process	2	2	0.4785	0.1085	0.091	0.7659166666666667
+GO:0072529	biological_process	pyrimidine-containing compound catabolic process	2	1	0.096	0.0	0.096	0.7947540983606558
+GO:0002429	biological_process	immune response-activating cell surface receptor signaling pathway	2	2	0.524	0.1035	0.1035	0.8430241935483871
+GO:0060348	biological_process	bone development	2	2	0.5955	0.113	0.1125	0.8887999999999999
+GO:0006631	biological_process	fatty acid metabolic process	3	3	1.189	0.1595	0.1135	0.8887999999999999
+GO:0002768	biological_process	immune response-regulating cell surface receptor signaling pathway	2	2	0.572	0.1205	0.1175	0.8887999999999999
+GO:1901617	biological_process	organic hydroxy compound biosynthetic process	2	2	0.572	0.126	0.1205	0.8887999999999999
+GO:0051100	biological_process	negative regulation of binding	2	2	0.6195	0.132	0.1205	0.8887999999999999
+GO:0046434	biological_process	organophosphate catabolic process	2	2	0.574	0.1305	0.122	0.8887999999999999
+GO:1901136	biological_process	carbohydrate derivative catabolic process	3	2	0.7205	0.041	0.127	0.8887999999999999
+GO:0016747	molecular_function	acyltransferase activity, transferring groups other than amino-acyl groups	2	2	0.6305	0.1425	0.1275	0.8887999999999999
+GO:0008202	biological_process	steroid metabolic process	2	2	0.656	0.149	0.1285	0.8887999999999999
+GO:1905039	biological_process	carboxylic acid transmembrane transport	2	2	0.734	0.1655	0.131	0.8887999999999999
+GO:1903825	biological_process	organic acid transmembrane transport	2	2	0.734	0.1655	0.131	0.8887999999999999
+GO:0006605	biological_process	protein targeting	3	3	1.427	0.1755	0.131	0.8887999999999999
+GO:1901657	biological_process	glycosyl compound metabolic process	2	2	0.6515	0.145	0.132	0.8887999999999999
+GO:0006520	biological_process	amino acid metabolic process	3	3	1.2985	0.1725	0.1395	0.9269407894736843
+GO:0050878	biological_process	regulation of body fluid levels	3	3	1.337	0.169	0.148	0.965253164556962
+GO:0034404	biological_process	nucleobase-containing small molecule biosynthetic process	2	2	0.6165	0.166	0.1505	0.965253164556962
+GO:0044782	biological_process	cilium organization	4	4	2.046	0.1835	0.151	0.965253164556962
+GO:0008015	biological_process	blood circulation	3	3	1.412	0.163	0.153	0.9658125
+GO:0030258	biological_process	lipid modification	2	2	0.802	0.2095	0.159	0.9765361445783132
+GO:0043177	molecular_function	organic acid binding	2	2	0.747	0.1795	0.16	0.9765361445783132
+GO:0016746	molecular_function	acyltransferase activity	2	2	0.7325	0.18	0.1605	0.9765361445783132
+GO:0044242	biological_process	obsolete cellular lipid catabolic process	2	2	0.6895	0.1875	0.1625	0.9769345238095238
+GO:0003682	molecular_function	chromatin binding	4	4	2.423	0.226	0.165	0.9802941176470589
+GO:0003013	biological_process	circulatory system process	3	3	1.4715	0.183	0.173	0.99
+GO:0002757	biological_process	immune response-activating signaling pathway	2	2	0.7415	0.182	0.1755	0.99
+GO:0002764	biological_process	immune response-regulating signaling pathway	2	2	0.7835	0.1885	0.182	0.99
+GO:0006909	biological_process	phagocytosis	2	2	0.756	0.1945	0.1825	0.99
+GO:0019752	biological_process	carboxylic acid metabolic process	5	5	3.386	0.2635	0.1835	0.99
+GO:0016042	biological_process	lipid catabolic process	2	2	0.814	0.224	0.1845	0.99
+GO:0050821	biological_process	protein stabilization	2	2	0.8225	0.201	0.189	0.99
+GO:0032787	biological_process	monocarboxylic acid metabolic process	3	3	1.8115	0.244	0.1915	0.99
+GO:0006839	biological_process	mitochondrial transport	2	2	0.847	0.206	0.2	0.99
+GO:0072594	biological_process	establishment of protein localization to organelle	3	3	1.816	0.2715	0.2105	0.99
+GO:0030099	biological_process	myeloid cell differentiation	2	2	0.8595	0.2185	0.2125	0.99
+GO:0016788	molecular_function	hydrolase activity, acting on ester bonds	4	4	2.5075	0.2515	0.2195	0.99
+GO:0043436	biological_process	oxoacid metabolic process	5	5	3.6475	0.308	0.2275	0.99
+GO:0006082	biological_process	organic acid metabolic process	5	5	3.6885	0.314	0.2285	0.99
+GO:0002253	biological_process	activation of immune response	2	2	0.8635	0.238	0.229	0.99
+GO:0043393	biological_process	regulation of protein binding	2	2	0.937	0.254	0.236	0.99
+GO:0072527	biological_process	pyrimidine-containing compound metabolic process	2	1	0.3005	0.055	0.242	0.99
+GO:0006281	biological_process	DNA repair	4	3	1.9565	0.1565	0.2545	0.99
+GO:0016054	biological_process	organic acid catabolic process	2	2	0.9935	0.269	0.255	0.99
+GO:0046395	biological_process	carboxylic acid catabolic process	2	2	0.9935	0.269	0.255	0.99
+GO:0015849	biological_process	organic acid transport	2	2	1.132	0.2975	0.263	0.99
+GO:0046942	biological_process	carboxylic acid transport	2	2	1.132	0.2975	0.263	0.99
+GO:0005815	cellular_component	microtubule organizing center	4	4	2.8865	0.34	0.265	0.99
+GO:0098798	cellular_component	mitochondrial protein-containing complex	2	2	1.142	0.3005	0.2765	0.99
+GO:0005874	cellular_component	microtubule	2	2	1.014	0.283	0.278	0.99
+GO:0060271	biological_process	cilium assembly	3	3	1.991	0.317	0.279	0.99
+GO:0098656	biological_process	monoatomic anion transmembrane transport	2	2	1.37	0.336	0.2945	0.99
+GO:0008610	biological_process	lipid biosynthetic process	3	3	2.1525	0.3505	0.295	0.99
+GO:0044441	cellular_component	obsolete ciliary part	3	3	2.1105	0.365	0.3	0.99
+GO:0044255	biological_process	obsolete cellular lipid metabolic process	4	4	3.3365	0.3805	0.3125	0.99
+GO:0042578	molecular_function	phosphoric ester hydrolase activity	2	2	1.178	0.329	0.3165	0.99
+GO:0019637	biological_process	organophosphate metabolic process	5	5	4.058	0.395	0.3175	0.99
+GO:0006259	biological_process	DNA metabolic process	5	4	3.28	0.266	0.322	0.99
+GO:0001228	molecular_function	DNA-binding transcription activator activity, RNA polymerase II-specific	2	2	1.205	0.343	0.326	0.99
+GO:0120031	biological_process	plasma membrane bounded cell projection assembly	3	3	2.274	0.3805	0.326	0.99
+GO:0033365	biological_process	protein localization to organelle	4	4	3.303	0.404	0.326	0.99
+GO:0030031	biological_process	cell projection assembly	3	3	2.336	0.391	0.3375	0.99
+GO:0031647	biological_process	regulation of protein stability	2	2	1.258	0.352	0.3385	0.99
+GO:1901135	biological_process	carbohydrate derivative metabolic process	6	5	4.541	0.304	0.3605	0.99
+GO:0044281	biological_process	small molecule metabolic process	8	7	6.8895	0.391	0.3605	0.99
+GO:0007018	biological_process	microtubule-based movement	2	2	1.4545	0.3885	0.361	0.99
+GO:0051098	biological_process	regulation of binding	2	2	1.5145	0.4025	0.391	0.99
+GO:0099513	cellular_component	polymeric cytoskeletal fiber	2	2	1.405	0.4	0.397	0.99
+GO:0016570	biological_process	obsolete histone modification	2	2	1.47	0.4225	0.4025	0.99
+GO:0016569	biological_process	obsolete covalent chromatin modification	2	2	1.485	0.426	0.406	0.99
+GO:0009117	biological_process	nucleotide metabolic process	3	3	2.5025	0.4515	0.4075	0.99
+GO:0000978	molecular_function	RNA polymerase II cis-regulatory region sequence-specific DNA binding	2	2	1.497	0.4245	0.414	0.99
+GO:0006629	biological_process	lipid metabolic process	4	4	3.8705	0.4775	0.414	0.99
+GO:0048732	biological_process	gland development	3	3	2.6325	0.4495	0.4145	0.99
+GO:0001501	biological_process	skeletal system development	2	2	1.6055	0.426	0.4155	0.99
+GO:1901615	biological_process	organic hydroxy compound metabolic process	2	2	1.587	0.427	0.4165	0.99
+GO:0006753	biological_process	nucleoside phosphate metabolic process	3	3	2.535	0.454	0.4175	0.99
+GO:0000987	molecular_function	cis-regulatory region sequence-specific DNA binding	2	2	1.552	0.431	0.42	0.99
+GO:0099568	cellular_component	cytoplasmic region	3	3	2.691	0.4755	0.422	0.99
+GO:0015711	biological_process	organic anion transport	2	2	1.66	0.4495	0.4225	0.99
+GO:0050778	biological_process	positive regulation of immune response	2	2	1.461	0.429	0.423	0.99
+GO:0016887	molecular_function	ATP hydrolysis activity	3	2	1.8215	0.268	0.4425	0.99
+GO:1901362	biological_process	obsolete organic cyclic compound biosynthetic process	8	6	6.1515	0.3125	0.444	0.99
+GO:0005524	molecular_function	ATP binding	2	2	1.648	0.4595	0.444	0.99
+GO:0005911	cellular_component	cell-cell junction	2	2	1.5805	0.451	0.4445	0.99
+GO:0005929	cellular_component	cilium	3	3	2.688	0.5035	0.4505	0.99
+GO:0006935	biological_process	chemotaxis	4	3	2.601	0.292	0.451	0.99
+GO:0044430	cellular_component	obsolete cytoskeletal part	5	5	5.3935	0.577	0.4515	0.99
+GO:0019216	biological_process	regulation of lipid metabolic process	2	2	1.5765	0.463	0.452	0.99
+GO:0006974	biological_process	DNA damage response	4	3	3.103	0.344	0.461	0.99
+GO:0006820	biological_process	monoatomic anion transport	2	2	1.961	0.4925	0.4615	0.99
+GO:0019901	molecular_function	protein kinase binding	3	3	2.736	0.4975	0.4685	0.99
+GO:0051052	biological_process	regulation of DNA metabolic process	2	2	1.7595	0.4915	0.471	0.99
+GO:0006468	biological_process	protein phosphorylation	3	3	2.7245	0.4955	0.4745	0.99
+GO:0034655	biological_process	nucleobase-containing compound catabolic process	3	2	1.892	0.3105	0.479	0.99
+GO:0006163	biological_process	purine nucleotide metabolic process	2	2	1.8995	0.5135	0.481	0.99
+GO:0055086	biological_process	nucleobase-containing small molecule metabolic process	4	3	2.899	0.3525	0.483	0.99
+GO:0001505	biological_process	obsolete regulation of neurotransmitter levels	2	2	1.831	0.503	0.484	0.99
+GO:0042330	biological_process	taxis	4	3	2.895	0.342	0.491	0.99
+GO:0005102	molecular_function	signaling receptor binding	5	4	4.1645	0.3805	0.498	0.99
+GO:0072521	biological_process	purine-containing compound metabolic process	2	2	2.0445	0.5315	0.499	0.99
+GO:0019904	molecular_function	protein domain specific binding	3	3	3.0235	0.5495	0.505	0.99
+GO:0015630	cellular_component	microtubule cytoskeleton	4	4	4.5865	0.589	0.5055	0.99
+GO:0003690	molecular_function	double-stranded DNA binding	3	3	3.061	0.5465	0.508	0.99
+GO:0044270	biological_process	obsolete cellular nitrogen compound catabolic process	3	2	2.107	0.3455	0.517	0.99
+GO:0046700	biological_process	obsolete heterocycle catabolic process	3	2	2.106	0.357	0.5205	0.99
+GO:0019900	molecular_function	kinase binding	3	3	3.0295	0.5475	0.521	0.99
+GO:0019439	biological_process	obsolete aromatic compound catabolic process	3	2	2.1115	0.3475	0.523	0.99
+GO:0006897	biological_process	endocytosis	2	2	2.1355	0.543	0.529	0.99
+GO:0006796	biological_process	phosphate-containing compound metabolic process	8	6	7.265	0.4455	0.5305	0.99
+GO:1901361	biological_process	obsolete organic cyclic compound catabolic process	3	2	2.1925	0.369	0.5345	0.99
+GO:0005759	cellular_component	mitochondrial matrix	2	2	1.96	0.548	0.536	0.99
+GO:0006793	biological_process	phosphorus metabolic process	8	6	7.3785	0.4565	0.539	0.99
+GO:0006886	biological_process	intracellular protein transport	3	3	3.5125	0.5875	0.543	0.99
+GO:0002684	biological_process	positive regulation of immune system process	2	2	2.155	0.556	0.5455	0.99
+GO:0031099	biological_process	regeneration	2	1	1.0045	0.2395	0.561	0.99
+GO:0090304	biological_process	nucleic acid metabolic process	8	7	9.9305	0.626	0.561	0.99
+GO:0055114	biological_process	obsolete oxidation-reduction process	3	3	3.3475	0.6115	0.5625	0.99
+GO:0009617	biological_process	response to bacterium	2	2	2.114	0.5805	0.564	0.99
+GO:0000977	molecular_function	RNA polymerase II transcription regulatory region sequence-specific DNA binding	2	2	2.166	0.5905	0.5715	0.99
+GO:0050776	biological_process	regulation of immune response	2	2	2.243	0.59	0.582	0.99
+GO:0005813	cellular_component	centrosome	2	2	2.2205	0.608	0.5855	0.99
+GO:0008289	molecular_function	lipid binding	2	2	2.07	0.601	0.588	0.99
+GO:1901575	biological_process	obsolete organic substance catabolic process	6	5	6.5135	0.556	0.5905	0.99
+GO:0099512	cellular_component	supramolecular fiber	3	2	2.384	0.4175	0.593	0.99
+GO:0071345	biological_process	cellular response to cytokine stimulus	2	2	2.3625	0.614	0.5935	0.99
+GO:1990904	cellular_component	ribonucleoprotein complex	3	3	3.75	0.6325	0.5945	0.99
+GO:0030097	biological_process	hemopoiesis	2	2	2.376	0.6105	0.595	0.99
+GO:0016773	molecular_function	phosphotransferase activity, alcohol group as acceptor	2	2	2.133	0.607	0.598	0.99
+GO:0099081	cellular_component	supramolecular polymer	3	2	2.4055	0.425	0.599	0.99
+GO:0006325	biological_process	chromatin organization	2	2	3.072	0.6195	0.599	0.99
+GO:0005856	cellular_component	cytoskeleton	5	5	6.5645	0.7015	0.605	0.99
+GO:0051336	biological_process	regulation of hydrolase activity	3	3	3.8635	0.6485	0.606	0.99
+GO:0099080	cellular_component	supramolecular complex	3	2	2.475	0.4505	0.6105	0.99
+GO:0007017	biological_process	microtubule-based process	3	3	3.7455	0.6625	0.613	0.99
+GO:0055085	biological_process	transmembrane transport	4	3	3.979	0.5015	0.6145	0.99
+GO:0000976	molecular_function	transcription cis-regulatory region binding	2	2	2.3985	0.6395	0.6215	0.99
+GO:0005654	cellular_component	nucleoplasm	8	8	13.053	0.791	0.622	0.99
+GO:0098657	biological_process	import into cell	2	2	2.419	0.641	0.6225	0.99
+GO:0070013	cellular_component	intracellular organelle lumen	12	10	18.8955	0.7755	0.6225	0.99
+GO:0043233	cellular_component	organelle lumen	12	10	18.946	0.7765	0.624	0.99
+GO:0031974	cellular_component	membrane-enclosed lumen	12	10	18.9535	0.7765	0.624	0.99
+GO:0006915	biological_process	apoptotic process	2	2	2.4085	0.6415	0.626	0.99
+GO:0016301	molecular_function	kinase activity	2	2	2.3435	0.6395	0.627	0.99
+GO:0120036	biological_process	plasma membrane bounded cell projection organization	5	5	6.533	0.668	0.627	0.99
+GO:0030030	biological_process	cell projection organization	5	5	6.576	0.6705	0.6275	0.99
+GO:0051345	biological_process	positive regulation of hydrolase activity	2	2	2.464	0.648	0.6285	0.99
+GO:0005694	cellular_component	chromosome	3	3	4.69	0.663	0.6325	0.99
+GO:0044429	cellular_component	obsolete mitochondrial part	3	3	3.9505	0.653	0.633	0.99
+GO:0016310	biological_process	phosphorylation	3	3	3.8795	0.6625	0.6335	0.99
+GO:0070925	biological_process	organelle assembly	3	3	3.9975	0.7085	0.6405	0.99
+GO:0034654	biological_process	nucleobase-containing compound biosynthetic process	5	4	5.3205	0.5555	0.644	0.99
+GO:0048534	biological_process	hematopoietic or lymphoid organ development	2	2	2.652	0.661	0.644	0.99
+GO:0034097	biological_process	response to cytokine	2	2	2.642	0.6635	0.647	0.99
+GO:0009056	biological_process	catabolic process	6	5	7.3085	0.6175	0.6515	0.99
+GO:0006928	biological_process	obsolete movement of cell or subcellular component	5	5	6.746	0.703	0.659	0.99
+GO:1990837	molecular_function	sequence-specific double-stranded DNA binding	2	2	2.6465	0.6725	0.6595	0.99
+GO:0043168	molecular_function	anion binding	4	4	5.191	0.689	0.6625	0.99
+GO:0034220	biological_process	monoatomic ion transmembrane transport	2	2	3.1675	0.6785	0.663	0.99
+GO:0071705	biological_process	nitrogen compound transport	6	4	5.9365	0.509	0.664	0.99
+GO:0030054	cellular_component	cell junction	2	2	2.498	0.676	0.665	0.99
+GO:0002520	biological_process	immune system development	2	2	2.7705	0.68	0.666	0.99
+GO:0016477	biological_process	cell migration	3	3	3.8825	0.688	0.6665	0.99
+GO:0018130	biological_process	obsolete heterocycle biosynthetic process	6	4	5.732	0.463	0.669	0.99
+GO:0010942	biological_process	obsolete positive regulation of cell death	2	2	2.795	0.697	0.672	0.99
+GO:0044451	cellular_component	obsolete nucleoplasm part	3	3	4.4005	0.7	0.672	0.99
+GO:0043232	cellular_component	intracellular membraneless organelle	10	8	14.8765	0.741	0.6735	0.99
+GO:0043228	cellular_component	membraneless organelle	10	8	14.8765	0.741	0.6735	0.99
+GO:1901360	biological_process	obsolete organic cyclic compound metabolic process	12	8	14.153	0.6015	0.674	0.99
+GO:0044249	biological_process	obsolete cellular biosynthetic process	9	7	12.1815	0.6755	0.674	0.99
+GO:0006366	biological_process	transcription by RNA polymerase II	2	2	2.681	0.6895	0.675	0.99
+GO:1901576	biological_process	obsolete organic substance biosynthetic process	9	7	12.282	0.687	0.6775	0.99
+GO:0016787	molecular_function	hydrolase activity	9	5	7.942	0.388	0.682	0.99
+GO:0005739	cellular_component	mitochondrion	4	4	5.98	0.7315	0.6845	0.99
+GO:0036094	molecular_function	small molecule binding	3	3	4.263	0.718	0.686	0.99
+GO:0006996	biological_process	organelle organization	11	8	14.8465	0.6915	0.687	0.99
+GO:0009058	biological_process	biosynthetic process	9	7	12.4765	0.693	0.687	0.99
+GO:0045944	biological_process	positive regulation of transcription by RNA polymerase II	3	3	4.1945	0.707	0.6885	0.99
+GO:0015031	biological_process	protein transport	3	3	4.587	0.7215	0.6885	0.99
+GO:0031981	cellular_component	nuclear lumen	8	8	15.272	0.8425	0.6885	0.99
+GO:0019438	biological_process	obsolete aromatic compound biosynthetic process	5	4	5.754	0.61	0.689	0.99
+GO:0044446	cellular_component	obsolete intracellular organelle part	16	12	30.3435	0.8625	0.689	0.99
+GO:0016604	cellular_component	nuclear body	2	2	2.8675	0.7015	0.6945	0.99
+GO:0012501	biological_process	programmed cell death	2	2	2.83	0.7075	0.6965	0.99
+GO:0015833	biological_process	peptide transport	3	3	4.67	0.7305	0.6975	0.99
+GO:0042886	biological_process	amide transport	3	3	4.7695	0.7415	0.704	0.99
+GO:0006139	biological_process	nucleobase-containing compound metabolic process	11	7	12.647	0.587	0.7075	0.99
+GO:0001067	molecular_function	transcription regulatory region nucleic acid binding	2	2	2.8655	0.729	0.7075	0.99
+GO:0044422	cellular_component	obsolete organelle part	17	12	31.1155	0.8565	0.7075	0.99
+GO:0018193	biological_process	peptidyl-amino acid modification	2	2	2.9105	0.728	0.7095	0.99
+GO:0016772	molecular_function	transferase activity, transferring phosphorus-containing groups	2	2	2.972	0.727	0.7105	0.99
+GO:0000166	molecular_function	nucleotide binding	2	2	3.0735	0.7485	0.715	0.99
+GO:1901265	molecular_function	nucleoside phosphate binding	2	2	3.0735	0.7485	0.715	0.99
+GO:0008219	biological_process	cell death	2	2	2.9465	0.731	0.72	0.99
+GO:0007507	biological_process	heart development	2	2	2.9505	0.744	0.722	0.99
+GO:0046483	biological_process	obsolete heterocycle metabolic process	11	7	13.3895	0.624	0.7315	0.99
+GO:0070727	biological_process	cellular macromolecule localization	4	4	6.617	0.7865	0.7315	0.99
+GO:0045184	biological_process	establishment of protein localization	3	3	5.055	0.768	0.7325	0.99
+GO:0044248	biological_process	cellular catabolic process	5	4	6.8585	0.692	0.733	0.99
+GO:0043207	biological_process	response to external biotic stimulus	2	2	3.0535	0.751	0.7355	0.99
+GO:0051707	biological_process	response to other organism	2	2	3.0535	0.751	0.7355	0.99
+GO:0005829	cellular_component	cytosol	10	8	17.416	0.788	0.7365	0.99
+GO:0044428	cellular_component	obsolete nuclear part	8	8	16.7175	0.881	0.739	0.99
+GO:0003676	molecular_function	nucleic acid binding	5	5	9.16	0.7965	0.7395	0.99
+GO:0140110	molecular_function	transcription regulator activity	3	3	5.071	0.78	0.7425	0.99
+GO:0048870	biological_process	cell motility	3	3	4.495	0.7615	0.743	0.99
+GO:0051674	biological_process	localization of cell	3	3	4.5125	0.7615	0.743	0.99
+GO:0002252	biological_process	immune effector process	2	2	3.0955	0.759	0.7455	0.99
+GO:0006725	biological_process	obsolete cellular aromatic compound metabolic process	11	7	13.6585	0.6325	0.746	0.99
+GO:0043565	molecular_function	sequence-specific DNA binding	2	2	3.3365	0.762	0.746	0.99
+GO:0061024	biological_process	membrane organization	2	2	3.201	0.766	0.746	0.99
+GO:0009607	biological_process	response to biotic stimulus	2	2	3.166	0.769	0.7465	0.99
+GO:0008283	biological_process	cell population proliferation	2	2	3.38	0.758	0.7545	0.99
+GO:0071702	biological_process	obsolete organic substance transport	6	4	7.1175	0.639	0.755	0.99
+GO:0099503	cellular_component	secretory vesicle	2	2	3.4715	0.772	0.7565	0.99
+GO:1902494	cellular_component	catalytic complex	3	3	6.018	0.789	0.7565	0.99
+GO:0051276	biological_process	chromosome organization	2	2	4.683	0.775	0.7605	0.99
+GO:0030182	biological_process	neuron differentiation	4	4	6.454	0.7775	0.762	0.99
+GO:0005730	cellular_component	nucleolus	2	2	3.446	0.7705	0.763	0.99
+GO:0043412	biological_process	macromolecule modification	8	6	10.775	0.7	0.7635	0.99
+GO:0000981	molecular_function	DNA-binding transcription factor activity, RNA polymerase II-specific	2	2	3.348	0.783	0.764	0.99
+GO:0006351	biological_process	DNA-templated transcription	2	2	3.2185	0.775	0.7645	0.99
+GO:0097659	biological_process	obsolete nucleic acid-templated transcription	2	2	3.2185	0.775	0.7645	0.99
+GO:0032774	biological_process	RNA biosynthetic process	2	2	3.2425	0.7755	0.765	0.99
+GO:0031329	biological_process	obsolete regulation of cellular catabolic process	2	2	3.447	0.795	0.768	0.99
+GO:0140096	molecular_function	catalytic activity, acting on a protein	4	4	7.0455	0.804	0.7685	0.99
+GO:0033554	biological_process	cellular response to stress	5	4	7.0455	0.7135	0.7705	0.99
+GO:0019899	molecular_function	enzyme binding	5	5	8.648	0.8215	0.7715	0.99
+GO:0044092	biological_process	negative regulation of molecular function	2	2	3.537	0.7905	0.7775	0.99
+GO:0040011	biological_process	locomotion	5	4	6.423	0.709	0.7795	0.99
+GO:1901363	molecular_function	heterocyclic compound binding	6	6	12.185	0.872	0.783	0.99
+GO:0044444	cellular_component	obsolete cytoplasmic part	18	11	31.1825	0.829	0.7835	0.99
+GO:0044271	biological_process	obsolete cellular nitrogen compound biosynthetic process	6	4	7.7205	0.682	0.785	0.99
+GO:0034641	biological_process	obsolete cellular nitrogen compound metabolic process	11	7	15.3165	0.707	0.785	0.99
+GO:1901565	biological_process	obsolete organonitrogen compound catabolic process	3	2	4.0105	0.6595	0.7855	0.99
+GO:0003723	molecular_function	RNA binding	2	2	3.7735	0.8015	0.7855	0.99
+GO:0051649	biological_process	establishment of localization in cell	5	4	7.8925	0.7675	0.788	0.99
+GO:0002376	biological_process	immune system process	4	4	7.2645	0.8265	0.789	0.99
+GO:0016043	biological_process	cellular component organization	13	10	22.3315	0.8385	0.7905	0.99
+GO:0048667	biological_process	cell morphogenesis involved in neuron differentiation	2	2	3.4815	0.802	0.7915	0.99
+GO:0016740	molecular_function	transferase activity	5	4	7.8035	0.7735	0.7935	0.99
+GO:0006357	biological_process	regulation of transcription by RNA polymerase II	4	4	7.726	0.825	0.7935	0.99
+GO:0002682	biological_process	regulation of immune system process	2	2	3.8655	0.826	0.7945	0.99
+GO:0097159	molecular_function	organic cyclic compound binding	6	6	12.442	0.8775	0.7955	0.99
+GO:0005634	cellular_component	nucleus	14	9	22.883	0.7955	0.796	0.99
+GO:0014070	biological_process	response to organic cyclic compound	2	2	3.9495	0.832	0.8005	0.99
+GO:0009894	biological_process	regulation of catabolic process	2	2	3.845	0.8245	0.801	0.99
+GO:0045893	biological_process	positive regulation of DNA-templated transcription	3	3	5.322	0.8255	0.801	0.99
+GO:0071840	biological_process	cellular component organization or biogenesis	13	10	23.236	0.852	0.803	0.99
+GO:0003677	molecular_function	DNA binding	3	3	6.14	0.8315	0.804	0.99
+GO:0007420	biological_process	brain development	2	2	3.55	0.8205	0.8085	0.99
+GO:1901701	biological_process	cellular response to oxygen-containing compound	2	2	3.7005	0.815	0.8105	0.99
+GO:0048812	biological_process	neuron projection morphogenesis	2	2	3.647	0.824	0.811	0.99
+GO:0007163	biological_process	establishment or maintenance of cell polarity	2	1	1.8865	0.527	0.8125	0.99
+GO:0003824	molecular_function	catalytic activity	15	8	18.8535	0.6595	0.814	0.99
+GO:0120039	biological_process	plasma membrane bounded cell projection morphogenesis	2	2	3.663	0.8275	0.8145	0.99
+GO:0048858	biological_process	cell projection morphogenesis	2	2	3.6655	0.8275	0.8145	0.99
+GO:1902680	biological_process	positive regulation of RNA biosynthetic process	3	3	5.6205	0.8415	0.815	0.99
+GO:1903508	biological_process	obsolete positive regulation of nucleic acid-templated transcription	3	3	5.613	0.8415	0.815	0.99
+GO:1901564	biological_process	obsolete organonitrogen compound metabolic process	13	8	18.876	0.728	0.8165	0.99
+GO:0043170	biological_process	macromolecule metabolic process	13	9	22.1	0.82	0.8165	0.99
+GO:0051050	biological_process	positive regulation of transport	2	2	4.0165	0.823	0.8175	0.99
+GO:0006811	biological_process	monoatomic ion transport	2	2	4.249	0.8305	0.8185	0.99
+GO:0003700	molecular_function	DNA-binding transcription factor activity	2	2	3.899	0.8365	0.8185	0.99
+GO:0044237	biological_process	obsolete cellular metabolic process	19	10	27.7685	0.758	0.819	0.99
+GO:0046907	biological_process	intracellular transport	4	3	6.6745	0.769	0.8205	0.99
+GO:0045202	cellular_component	synapse	2	2	3.842	0.826	0.821	0.99
+GO:0008104	biological_process	protein localization	4	4	8.0315	0.85	0.821	0.99
+GO:0006508	biological_process	proteolysis	2	2	4.3215	0.8315	0.8235	0.99
+GO:0044238	biological_process	primary metabolic process	20	10	26.751	0.6855	0.824	0.99
+GO:0042803	molecular_function	protein homodimerization activity	2	2	3.747	0.831	0.8255	0.99
+GO:0032990	biological_process	obsolete cell part morphogenesis	2	2	3.79	0.842	0.8265	0.99
+GO:0071704	biological_process	obsolete organic substance metabolic process	20	10	28.2215	0.731	0.827	0.99
+GO:0000904	biological_process	obsolete cell morphogenesis involved in differentiation	2	2	3.9875	0.835	0.827	0.99
+GO:0007399	biological_process	nervous system development	7	6	12.2365	0.8165	0.833	0.99
+GO:0008152	biological_process	metabolic process	20	10	29.3085	0.76	0.834	0.99
+GO:0060322	biological_process	head development	2	2	3.776	0.841	0.834	0.99
+GO:0010467	biological_process	gene expression	4	4	8.786	0.8755	0.8345	0.99
+GO:0051254	biological_process	positive regulation of RNA metabolic process	3	3	5.9475	0.8615	0.836	0.99
+GO:0022607	biological_process	cellular component assembly	6	5	11.557	0.8495	0.839	0.99
+GO:0072359	biological_process	circulatory system development	2	2	3.934	0.854	0.843	0.99
+GO:0009987	biological_process	cellular process	27	13	43.7775	0.8165	0.846	0.99
+GO:0031175	biological_process	neuron projection development	2	2	4.4305	0.8575	0.8515	0.99
+GO:0048468	biological_process	cell development	5	5	10.5705	0.8765	0.853	0.99
+GO:0043167	molecular_function	ion binding	5	4	8.6985	0.8235	0.8535	0.99
+GO:0048699	biological_process	generation of neurons	4	4	8.566	0.877	0.8565	0.99
+GO:0043085	biological_process	positive regulation of catalytic activity	2	2	4.596	0.8655	0.8615	0.99
+GO:0033036	biological_process	macromolecule localization	5	4	9.243	0.846	0.863	0.99
+GO:0017111	molecular_function	ribonucleoside triphosphate phosphatase activity	2	1	2.678	0.6305	0.8635	0.99
+GO:0009887	biological_process	animal organ morphogenesis	3	3	6.564	0.874	0.8645	0.99
+GO:0044260	biological_process	obsolete cellular macromolecule metabolic process	11	7	18.771	0.815	0.865	0.99
+GO:0006807	biological_process	obsolete nitrogen compound metabolic process	18	9	25.896	0.735	0.8655	0.99
+GO:0043229	cellular_component	intracellular organelle	25	11	38.047	0.785	0.866	0.99
+GO:0044085	biological_process	cellular component biogenesis	6	5	12.6675	0.871	0.8675	0.99
+GO:0005576	cellular_component	extracellular region	2	2	5.356	0.873	0.8695	0.99
+GO:0031328	biological_process	obsolete positive regulation of cellular biosynthetic process	3	3	7.0605	0.8955	0.87	0.99
+GO:0009605	biological_process	response to external stimulus	5	4	8.631	0.829	0.8715	0.99
+GO:0010557	biological_process	positive regulation of macromolecule biosynthetic process	3	3	6.6815	0.8955	0.8725	0.99
+GO:0005737	cellular_component	cytoplasm	21	10	35.2715	0.8155	0.873	0.99
+GO:0045935	biological_process	positive regulation of nucleobase-containing compound metabolic process	3	3	6.771	0.893	0.8735	0.99
+GO:0032991	cellular_component	protein-containing complex	8	6	19.3025	0.8925	0.874	0.99
+GO:0034645	biological_process	obsolete cellular macromolecule biosynthetic process	3	3	7.7285	0.8965	0.875	0.99
+GO:0080134	biological_process	regulation of response to stress	2	2	4.8725	0.8825	0.876	0.99
+GO:0120038	cellular_component	obsolete plasma membrane bounded cell projection part	3	3	6.248	0.901	0.876	0.99
+GO:0044463	cellular_component	obsolete cell projection part	3	3	6.248	0.901	0.876	0.99
+GO:0009891	biological_process	positive regulation of biosynthetic process	3	3	7.1515	0.902	0.8765	0.99
+GO:0005886	cellular_component	plasma membrane	7	6	13.983	0.8815	0.877	0.99
+GO:0043226	cellular_component	organelle	25	11	38.6325	0.7925	0.8775	0.99
+GO:0050790	biological_process	regulation of catalytic activity	3	3	7.2215	0.8875	0.8775	0.99
+GO:0022008	biological_process	neurogenesis	4	4	8.952	0.889	0.8775	0.99
+GO:0048584	biological_process	positive regulation of response to stimulus	3	3	7.2165	0.894	0.878	0.99
+GO:0051641	biological_process	cellular localization	6	4	10.5775	0.831	0.8805	0.99
+GO:0009653	biological_process	anatomical structure morphogenesis	6	5	12.525	0.875	0.8805	0.99
+GO:0006355	biological_process	regulation of DNA-templated transcription	4	4	10.1385	0.904	0.8805	0.99
+GO:0044424	cellular_component	obsolete intracellular part	25	11	42.48	0.834	0.8825	0.99
+GO:0019538	biological_process	protein metabolic process	7	5	14.2285	0.8575	0.8825	0.99
+GO:0006810	biological_process	transport	8	5	14.5825	0.8395	0.883	0.99
+GO:0016817	molecular_function	hydrolase activity, acting on acid anhydrides	2	1	2.8465	0.6495	0.8835	0.99
+GO:0016818	molecular_function	hydrolase activity, acting on acid anhydrides, in phosphorus-containing anhydrides	2	1	2.8465	0.6495	0.8835	0.99
+GO:0016462	molecular_function	pyrophosphatase activity	2	1	2.827	0.6495	0.8835	0.99
+GO:0009059	biological_process	macromolecule biosynthetic process	3	3	7.9305	0.9045	0.8835	0.99
+GO:0016070	biological_process	RNA metabolic process	3	3	7.509	0.904	0.885	0.99
+GO:0005622	cellular_component	intracellular anatomical structure	25	11	42.5915	0.8365	0.8855	0.99
+GO:0071944	cellular_component	cell periphery	8	6	14.6585	0.847	0.8855	0.99
+GO:1903506	biological_process	obsolete regulation of nucleic acid-templated transcription	4	4	10.327	0.9105	0.887	0.99
+GO:2001141	biological_process	regulation of RNA biosynthetic process	4	4	10.338	0.9105	0.887	0.99
+GO:0003008	biological_process	system process	3	3	6.4455	0.902	0.8875	0.99
+GO:0010628	biological_process	positive regulation of gene expression	3	3	6.9465	0.9095	0.8875	0.99
+GO:0048471	cellular_component	perinuclear region of cytoplasm	2	1	2.949	0.712	0.889	0.99
+GO:0051234	biological_process	establishment of localization	8	5	15.197	0.8525	0.889	0.99
+GO:0000902	biological_process	cell morphogenesis	2	2	4.7035	0.8965	0.8895	0.99
+GO:0031226	cellular_component	obsolete intrinsic component of plasma membrane	2	2	5.8435	0.8975	0.8895	0.99
+GO:0036211	biological_process	protein modification process	6	4	9.9995	0.7975	0.892	0.99
+GO:0048646	biological_process	anatomical structure formation involved in morphogenesis	2	2	5.3415	0.91	0.897	0.99
+GO:0005623	cellular_component	obsolete cell	27	12	46.9335	0.851	0.899	0.99
+GO:0044464	cellular_component	obsolete cell part	27	12	46.9335	0.851	0.899	0.99
+GO:0035556	biological_process	intracellular signal transduction	2	2	5.0265	0.8995	0.899	0.99
+GO:0009968	biological_process	negative regulation of signal transduction	2	2	5.1975	0.9015	0.901	0.99
+GO:0048666	biological_process	neuron development	2	2	5.495	0.911	0.9035	0.99
+GO:0050896	biological_process	response to stimulus	13	9	24.5665	0.885	0.904	0.99
+GO:0046983	molecular_function	protein dimerization activity	2	2	4.9785	0.9075	0.905	0.99
+GO:0044093	biological_process	positive regulation of molecular function	2	2	5.6515	0.915	0.905	0.99
+GO:0051640	biological_process	organelle localization	2	1	3.4005	0.7495	0.9055	0.99
+GO:0051240	biological_process	positive regulation of multicellular organismal process	2	2	6.335	0.9075	0.9055	0.99
+GO:0065003	biological_process	protein-containing complex assembly	2	2	6.763	0.9105	0.9055	0.99
+GO:0051252	biological_process	regulation of RNA metabolic process	4	4	11.242	0.9325	0.9055	0.99
+GO:0007417	biological_process	central nervous system development	3	2	4.745	0.7835	0.906	0.99
+GO:0016192	biological_process	vesicle-mediated transport	2	2	6.597	0.9125	0.9065	0.99
+GO:0051716	biological_process	cellular response to stimulus	10	7	18.211	0.861	0.907	0.99
+GO:0032989	biological_process	cellular anatomical entity morphogenesis	2	2	5.408	0.9165	0.909	0.99
+GO:0051130	biological_process	positive regulation of cellular component organization	2	2	5.556	0.914	0.911	0.99
+GO:2000112	biological_process	obsolete regulation of cellular macromolecule biosynthetic process	5	4	11.935	0.8895	0.9125	0.99
+GO:0043231	cellular_component	intracellular membrane-bounded organelle	20	9	33.559	0.819	0.914	0.99
+GO:0051179	biological_process	localization	10	6	19.6075	0.8645	0.9175	0.99
+GO:0031326	biological_process	obsolete regulation of cellular biosynthetic process	5	4	12.839	0.909	0.918	0.99
+GO:0048513	biological_process	animal organ development	7	5	14.395	0.888	0.9185	0.99
+GO:0007276	biological_process	gamete generation	2	2	6.2115	0.926	0.9205	0.99
+GO:0048731	biological_process	system development	9	6	19.2875	0.9	0.925	0.99
+GO:0010556	biological_process	regulation of macromolecule biosynthetic process	5	4	12.354	0.909	0.926	0.99
+GO:0048585	biological_process	negative regulation of response to stimulus	2	2	6.2855	0.9265	0.926	0.99
+GO:0019219	biological_process	regulation of nucleobase-containing compound metabolic process	5	4	12.2805	0.9175	0.9285	0.99
+GO:0043227	cellular_component	membrane-bounded organelle	21	9	35.436	0.827	0.929	0.99
+GO:0006950	biological_process	response to stress	5	4	12.777	0.9255	0.9295	0.99
+GO:0003002	biological_process	regionalization	2	1	3.7085	0.8015	0.93	0.99
+GO:0009889	biological_process	regulation of biosynthetic process	5	4	13.0815	0.915	0.93	0.99
+GO:0016020	cellular_component	membrane	9	7	21.872	0.9285	0.93	0.99
+GO:0044459	cellular_component	obsolete plasma membrane part	3	3	9.0005	0.9415	0.9305	0.99
+GO:0010648	biological_process	negative regulation of cell communication	2	2	5.7495	0.931	0.931	0.99
+GO:0023057	biological_process	negative regulation of signaling	2	2	5.763	0.931	0.931	0.99
+GO:0065008	biological_process	regulation of biological quality	7	5	14.8675	0.887	0.9315	0.99
+GO:0046872	molecular_function	metal ion binding	2	1	4.431	0.8425	0.932	0.99
+GO:0010468	biological_process	regulation of gene expression	4	4	14.201	0.9555	0.9325	0.99
+GO:0023052	biological_process	signaling	5	5	14.5275	0.9505	0.933	0.99
+GO:0007166	biological_process	cell surface receptor signaling pathway	2	2	5.966	0.945	0.9335	0.99
+GO:0031224	cellular_component	obsolete intrinsic component of membrane	3	3	9.144	0.942	0.934	0.99
+GO:0009888	biological_process	tissue development	4	3	9.633	0.8985	0.9345	0.99
+GO:1901700	biological_process	response to oxygen-containing compound	2	2	6.1065	0.94	0.9345	0.99
+GO:0030154	biological_process	cell differentiation	5	5	15.106	0.949	0.935	0.99
+GO:0043933	biological_process	protein-containing complex organization	2	2	7.9645	0.9385	0.9355	0.99
+GO:0043169	molecular_function	cation binding	2	1	4.786	0.852	0.936	0.99
+GO:0007275	biological_process	multicellular organism development	9	6	22.343	0.932	0.936	0.99
+GO:0048869	biological_process	cellular developmental process	5	5	15.4605	0.951	0.9365	0.99
+GO:0044425	cellular_component	obsolete membrane part	5	5	14.9395	0.9575	0.9365	0.99
+GO:0051049	biological_process	regulation of transport	2	2	6.645	0.9375	0.9375	0.99
+GO:0065009	biological_process	regulation of molecular function	3	3	9.6605	0.943	0.938	0.99
+GO:0042221	biological_process	response to chemical	7	4	14.0455	0.888	0.939	0.99
+GO:0007154	biological_process	cell communication	5	5	15.083	0.9565	0.939	0.99
+GO:0031410	cellular_component	cytoplasmic vesicle	2	2	7.381	0.949	0.94	0.99
+GO:0097708	cellular_component	intracellular vesicle	2	2	7.403	0.949	0.94	0.99
+GO:0050793	biological_process	regulation of developmental process	3	3	10.254	0.9495	0.9415	0.99
+GO:0042802	molecular_function	identical protein binding	3	2	6.933	0.889	0.942	0.99
+GO:0050794	biological_process	regulation of cellular process	10	8	30.632	0.9665	0.9425	0.99
+GO:0010941	biological_process	obsolete regulation of cell death	2	2	6.762	0.9465	0.944	0.99
+GO:0007389	biological_process	pattern specification process	2	1	4.3285	0.8455	0.945	0.99
+GO:0010033	biological_process	obsolete response to organic substance	3	3	9.955	0.9515	0.945	0.99
+GO:0050789	biological_process	regulation of biological process	10	8	32.6295	0.9685	0.945	0.99
+GO:0031982	cellular_component	vesicle	2	2	7.8	0.952	0.9455	0.99
+GO:0120025	cellular_component	plasma membrane bounded cell projection	3	3	8.507	0.953	0.9455	0.99
+GO:0022402	biological_process	cell cycle process	2	1	4.787	0.869	0.946	0.99
+GO:0031323	biological_process	obsolete regulation of cellular metabolic process	6	5	19.0355	0.9475	0.946	0.99
+GO:0042995	cellular_component	cell projection	3	3	8.589	0.9535	0.946	0.99
+GO:0048522	biological_process	positive regulation of cellular process	5	5	17.9835	0.9635	0.946	0.99
+GO:0080090	biological_process	regulation of primary metabolic process	6	5	18.3625	0.948	0.947	0.99
+GO:0005488	molecular_function	binding	17	8	31.9955	0.872	0.9475	0.99
+GO:0019953	biological_process	sexual reproduction	2	2	7.079	0.9525	0.9475	0.99
+GO:0051173	biological_process	obsolete positive regulation of nitrogen compound metabolic process	3	3	10.8295	0.9665	0.9475	0.99
+GO:0048518	biological_process	positive regulation of biological process	5	5	19.7135	0.9685	0.9485	0.99
+GO:0048856	biological_process	anatomical structure development	9	6	23.854	0.9405	0.949	0.99
+GO:0065007	biological_process	biological regulation	13	8	34.854	0.945	0.949	0.99
+GO:0051704	biological_process	obsolete multi-organism process	3	3	10.711	0.9575	0.949	0.99
+GO:0031325	biological_process	obsolete positive regulation of cellular metabolic process	3	3	11.2895	0.9645	0.9495	0.99
+GO:0032502	biological_process	developmental process	9	6	24.6425	0.944	0.9515	0.99
+GO:0005515	molecular_function	protein binding	11	6	23.6725	0.8945	0.9525	0.99
+GO:0044703	biological_process	multi-organism reproductive process	2	2	7.535	0.9575	0.953	0.99
+GO:0007165	biological_process	signal transduction	4	4	12.112	0.964	0.9535	0.99
+GO:0010604	biological_process	positive regulation of macromolecule metabolic process	3	3	11.3145	0.973	0.956	0.99
+GO:0007049	biological_process	cell cycle	2	1	5.1435	0.8845	0.9565	0.99
+GO:0009893	biological_process	positive regulation of metabolic process	3	3	11.988	0.974	0.957	0.99
+GO:0019222	biological_process	regulation of metabolic process	6	5	20.8695	0.959	0.958	0.99
+GO:2000026	biological_process	regulation of multicellular organismal development	2	2	8.3685	0.972	0.9585	0.99
+GO:0032501	biological_process	multicellular organismal process	10	6	26.7115	0.9505	0.9595	0.99
+GO:0071310	biological_process	obsolete cellular response to organic substance	2	2	7.396	0.9625	0.961	0.99
+GO:0097458	cellular_component	obsolete neuron part	2	2	7.048	0.966	0.961	0.99
+GO:0048609	biological_process	multicellular organismal reproductive process	2	2	7.52	0.967	0.965	0.99
+GO:0032504	biological_process	obsolete multicellular organism reproduction	2	2	7.7075	0.967	0.965	0.99
+GO:0051239	biological_process	regulation of multicellular organismal process	3	3	11.7675	0.974	0.967	0.99
+GO:0048583	biological_process	regulation of response to stimulus	4	3	13.041	0.9515	0.968	0.99
+GO:0051171	biological_process	obsolete regulation of nitrogen compound metabolic process	5	4	17.72	0.9715	0.969	0.99
+GO:0060255	biological_process	regulation of macromolecule metabolic process	5	4	19.145	0.9755	0.97	0.99
+GO:0070887	biological_process	cellular response to chemical stimulus	4	2	8.964	0.887	0.9705	0.99
+GO:0032879	biological_process	regulation of localization	2	2	9.727	0.973	0.973	0.99
+GO:0051172	biological_process	obsolete negative regulation of nitrogen compound metabolic process	2	2	7.9565	0.979	0.9735	0.99
+GO:0051128	biological_process	regulation of cellular component organization	2	2	10.745	0.9765	0.975	0.99
+GO:0009966	biological_process	regulation of signal transduction	2	2	10.4415	0.9765	0.9765	0.99
+GO:0022414	biological_process	reproductive process	3	2	10.0215	0.9595	0.9795	0.99
+GO:0031324	biological_process	obsolete negative regulation of cellular metabolic process	2	2	8.692	0.9855	0.98	0.99
+GO:0023051	biological_process	regulation of signaling	2	2	12.006	0.9825	0.9825	0.99
+GO:0010646	biological_process	regulation of cell communication	2	2	11.898	0.9825	0.9825	0.99
+GO:0000003	biological_process	obsolete reproduction	3	2	10.3955	0.963	0.983	0.99
+GO:0010605	biological_process	negative regulation of macromolecule metabolic process	2	2	9.3905	0.9865	0.983	0.99
+GO:0009892	biological_process	negative regulation of metabolic process	2	2	10.2535	0.988	0.9845	0.99
+GO:0012505	cellular_component	endomembrane system	3	3	13.9705	0.9875	0.9865	0.99
+GO:0048523	biological_process	negative regulation of cellular process	3	3	16.282	0.9905	0.9885	0.99
+GO:0048519	biological_process	negative regulation of biological process	3	3	18.1975	0.991	0.989	0.99
+GO:0060429	biological_process	epithelium development	2	1	7.919	0.962	0.99	0.99

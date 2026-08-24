@@ -450,7 +450,9 @@ are close enough to orthogonal that the age survives. Local sensitivity:
 target moves the age 6,500 generations and a 5% error moves it 33,000.
 
 **Age ≈ 730,000–740,000 generations ≈ 730–740 ky** (generations = years;
-inversely proportional to µ). Implied selection s_het ≈ 3.6–4.2e-5,
+inversely proportional to µ). **[Superseded in scope by §8.6: a family with an
+explicit arrival time, fitted to all three statistics, gives ~900 ky. Quote
+730–950 ky across families.]** Implied selection s_het ≈ 3.6–4.2e-5,
 s_I ≈ 2.1–2.5e-5 — minute per generation but N_e·s ≈ 240 at N₀, i.e. firmly
 deterministic.
 
@@ -899,6 +901,104 @@ It does **not** break the (p_start, plateau) ridge. The two ridge points differ
 by 0.0016 in L1 against the inverted class and 0.004 in the contrast — at the
 Monte Carlo noise level (model-side per-bin separation 1.1–1.4 SE, §8.4). The
 ridge stands; both parameters remain a joint range.
+
+## 8.6 A trajectory family with an explicit arrival time — all three statistics fit **[M]**
+
+`illex.balancing.arrival_curve` / `build_arrival_sim`,
+`illex/scripts/scan_arrival.py`, results in
+`results/illex/scan_arrival{,_tinv,_refine}.{csv,txt}`.
+
+### 8.6.1 Why the old family could not be rescued by re-tuning
+
+Its rise obeys dp/dt = (s_het/p*)·p(1−p)(p*−p), whose approach to p* is
+exponential at a rate set by the *same* s_het that sets the take-off. Measured on
+the curve: **70.3% of the rise is spent between 0.90 p* and arrival, and that
+fraction is invariant in s_het** (checked at 3.58e-5, 1e-4, 1e-3). At the fitted
+s_het the frequency is above 0.563 for 511,600 of 727,600 generations. So
+"plateau = 0" was never "no plateau", and no value of s_het makes the arrival
+recent. That is exactly the shape §8.5.3 rejects.
+
+### 8.6.2 The family
+
+Three phases, arrival time explicit:
+
+```
+[t_inv, t_arrive+t_rise]    dormant   p = p_start
+[t_arrive+t_rise, t_arrive] rise      p_start -> p*   (overdominance ODE)
+[t_arrive, 0]               plateau   p = p*
+```
+
+`t_rise` is now *given* and s_het *derived* from it (`s_het_for_rise`) — the
+inverse of the old parameterisation, which is the point: the rise can be made
+fast and late instead of slow and early. Mechanistically a soft sweep from
+standing variation: the inversion segregated at low frequency, became
+advantageous, swept to a balanced equilibrium. It **nests** the old family at
+t_arrive = 0, t_rise = t_inv (verified: curves agree to 1.1e-3).
+
+Validation that the new axis does what it exists to do — fraction of history
+above 0.90 p*, at t_inv = 730 ky:
+
+| t_arrive | t_rise | above 0.9 p* |
+|---|---|---|
+| 0 | 727,600 (= old family) | **70.1%** |
+| 0 | 50,000 | ~5% |
+| 100,000 | 50,000 | **18.5%** |
+| 400,000 | 50,000 | 59.6% |
+
+### 8.6.3 All three statistics fit simultaneously — the first time
+
+2,736 sims over three scans, 48 reps/cell, t_rise = 50 ky.
+
+| | π_I/π_S | dxy/π_I | ANGSD f₁(I)/f₁(S) |
+|---|---|---|---|
+| target | 0.7368 | 1.8794 | 1.211 |
+| **t_inv 900 ky, t_arrive 200 ky, p_start 0.32** | **0.7647 (+3.8%)** | **1.9276 (+2.6%)** | **1.200 (−0.9%)** |
+| two-phase family at its fitted point | 0.737 (fitted) | 1.879 (fitted) | 1.312 (**+8.3%**) |
+
+`p_start = 0.32` is an **interior** optimum (0.38 and 0.44 are worse in every
+cell), and the solution region is t_inv ≈ 900–950 ky, t_arrive ≈ 150–250 ky.
+The new axis is powerful: across the first scan the f₁ ratio spans **0.93–1.78**,
+against a two-phase family effectively pinned at 1.31.
+
+**The story it tells is qualitatively different.** Not "rose slowly to
+equilibrium over 730 ky" but: **arose ~900 ky ago, sat at ~32% for ~650 ky, swept
+to 0.626 about 200 ky ago, and has been held there since.**
+
+**Why p_start must be large:** dormancy at a low standing frequency squeezes the
+inverted class hard. At p_start = 0.027 with t_arrive = 0 the model gives
+π_I/π_S = 0.151 and dxy/π_I = 7.84 — π_I collapses. The standing frequency is
+the parameter the dormancy phase pushes hardest.
+
+### 8.6.4 **[W] This corrects my "the age is robust to trajectory shape" claim**
+
+§7.5 reported that correcting the trajectory moved the age only ~4% (750–800 →
+719–737 ky) and concluded the age "is not an artifact of the trajectory shape".
+That was **scoped too broadly**. It is robust *within* a family — across the
+two-phase family's degenerate plateau dimension the age moves 1.2%. It is **not**
+robust *across* families: adding a third phase and fitting the SFS contrast moves
+it to ~900 ky, a **+23%** shift.
+
+So the age should now be quoted as a range across trajectory families:
+
+**t_inv ≈ 730–950 ky**, with the upper end preferred because it is the only value
+that fits all three statistics, and all of it still conditional on µ = 3e-9
+(which remains the dominant term: ±30% on µ is ±220–290 ky).
+
+### 8.6.5 Caveats, strongest first
+
+1. **Dormancy is held at a constant frequency, not drifting.** A real standing
+   variant would wander; holding it fixed gives the inverted class a constant
+   coalescent size 2·N(t)·p_start throughout dormancy. This is the strongest
+   assumption in the family and it is doing real work, since it is what forces
+   p_start up to 0.32.
+2. **t_rise is fixed at 50 ky, not fitted.** Chosen so arrival is sharp. The
+   (t_rise, t_arrive) pair is likely partly degenerate and has not been explored.
+3. **The contrast target inherits the baseline residual.** The ANGSD collinear
+   spectra still miss the neutral model by L1 0.137/0.147 (§8.5.1), so the
+   target ratio 1.211 carries a systematic uncertainty that is not quantified
+   here. The contrast cancels a *shared* shift, not a differential one.
+4. p* is still asserted at 0.626, not inferred.
+5. No error bars on (t_inv, t_arrive, p_start) yet — only a grid.
 
 ## 9. Where identification has to come from
 

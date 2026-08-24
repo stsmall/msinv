@@ -361,3 +361,174 @@ def neutral_hitting_time(p_star: float = P_I_DEFAULT,
     n_e = PRESENT_NE_GROWTH if n_e is None else n_e
     return float((4.0 * n_e / p_star)
                  * (p_star + (1.0 - p_star) * np.log(1.0 - p_star)))
+
+
+# =====================================================================
+# Three-phase family with an EXPLICIT arrival time
+# =====================================================================
+# WHY THIS EXISTS
+# ---------------
+# The two-phase family above cannot express "arrived recently". Its rise obeys
+# dp/dt = (s_het/p*) p(1-p)(p*-p), whose approach to p* is exponential with rate
+# proportional to s_het -- the same s_het that sets the take-off. So a rise slow
+# enough to span t_inv is also an approach slow enough to crawl: measured on this
+# curve, **70.3% of the rise is spent between 0.90 p* and arrival, and that
+# fraction is scale-invariant in s_het**. At the fitted s_het = 3.58e-5 the
+# frequency is above 0.563 for 511,600 of its 727,600 generations. "plateau = 0"
+# is therefore not "no plateau"; the trajectory has effectively been at
+# equilibrium for most of its history no matter what that parameter says.
+#
+# That is the shape the ANGSD/GL spectrum rejects (NOTES sec 8.5.3): the fitted
+# points over-predict the inverted-vs-standard singleton skew (ratio 1.31 against
+# an observed 1.211) because they keep the standard arrangement confined to
+# 1 - p* = 0.374 for too long. The data want the confinement to be more recent.
+#
+# THE FAMILY
+# ----------
+# Three phases, with the arrival time as a free parameter rather than a
+# consequence of s_het:
+#
+#     [t_inv, t_arrive + t_rise]   dormant   p = p_start
+#     [t_arrive + t_rise, t_arrive] rise      p_start -> p*   (overdominance ODE)
+#     [t_arrive, 0]                plateau   p = p*
+#
+# so ``t_arrive`` is exactly what it says: generations before the present at
+# which the inversion reached its equilibrium frequency. ``t_rise`` is given
+# directly and s_het is *derived* from it, which is the inversion of the old
+# parameterisation and the whole point -- the rise can now be made fast and late
+# instead of slow and early.
+#
+# Mechanistically this is a soft sweep from standing variation: the inversion
+# segregated at low frequency, then became advantageous and swept to a new
+# balanced equilibrium. It nests the old family as the special case
+# t_arrive = 0, t_rise = t_inv.
+#
+# WHY IT SHOULD RESOLVE THE TENSION
+# ---------------------------------
+# The three statistics separate onto the three parameters much more cleanly than
+# before, which is what makes this worth doing rather than just re-parameterising
+# again:
+#   dxy/pi_I          <- t_inv       (between-class lineages cannot coalesce
+#                                     before the origin, whatever p did after)
+#   pi_I/pi_S         <- p_start and the dormancy length (the squeeze on the
+#                                     inverted class while it was rare)
+#   SFS I-S contrast  <- t_arrive    (how long the standard class has been
+#                                     confined to 0.374)
+#
+# CAVEATS
+# -------
+# 1. **Dormancy is held at a constant frequency, not drifting.** A real standing
+#    variant would wander. Holding it fixed gives the inverted class a constant
+#    coalescent size 2 N(t) p_start during dormancy, which for p_start = 0.025 is
+#    a real and possibly strong squeeze -- long dormancy will depress pi_I hard.
+#    That is a modelling choice, and it is the parameter the fit is most likely
+#    to push against.
+# 2. The corners are sharp. msinv's PrecomputedTrajectory interpolates linearly
+#    between samples, so ``arrival_curve`` places points densely on the rise and
+#    pins both corners exactly; a uniform time grid would round them off and
+#    quietly reintroduce the smearing this family exists to remove.
+# 3. p* is still asserted at the observed 0.626, not inferred.
+
+
+def s_het_for_rise(t_rise: float, p_start: float,
+                   p_star: float = P_I_DEFAULT,
+                   tol: float = ARRIVAL_TOL) -> float:
+    """s_het whose overdominance rise from ``p_start`` takes ``t_rise``.
+
+    The inverse of ``rise_time``, which is monotone decreasing in s_het.
+    """
+    from scipy import optimize
+    if t_rise <= 0:
+        raise ValueError(f"t_rise must be > 0, got {t_rise!r}")
+    return float(optimize.brentq(
+        lambda s: rise_time(p_start, s, p_star, tol) - t_rise,
+        1e-9, 10.0, rtol=1e-12))
+
+
+def arrival_curve(t_inv: float, t_arrive: float, t_rise: float,
+                  p_start: float, p_star: float = P_I_DEFAULT,
+                  n_rise: int = 300, tol: float = ARRIVAL_TOL):
+    """(times, freqs) in BACKWARD time on [0, t_inv], three phases.
+
+    ``t_arrive``: generations before present at which p* is reached.
+    ``t_rise``:   duration of the sweep from ``p_start`` to p*.
+    Requires ``t_arrive + t_rise <= t_inv``; the remainder is dormancy at
+    ``p_start``.
+    """
+    if not 0.0 < p_start < p_star:
+        raise ValueError(
+            f"p_start ({p_start!r}) must lie in (0, p_star={p_star!r})")
+    if t_arrive < 0:
+        raise ValueError(f"t_arrive must be >= 0, got {t_arrive!r}")
+    t_dorm = t_inv - t_arrive - t_rise
+    if t_dorm < 0:
+        raise ValueError(
+            f"t_arrive ({t_arrive!r}) + t_rise ({t_rise!r}) exceeds t_inv "
+            f"({t_inv!r}): the rise cannot start before the inversion exists")
+
+    s_het = s_het_for_rise(t_rise, p_start, p_star, tol)
+    p_arrive = p_star * (1.0 - tol)
+
+    # Rise sampled geometrically in p: dense where p is small and moving fast in
+    # relative terms, which is where the bottleneck on the inverted class is set.
+    p_grid = np.geomspace(p_start, p_arrive, n_rise)
+    t_fwd = _time_to_reach(p_grid, p_start, s_het, p_star)   # 0 .. t_rise
+    t_back_rise = t_arrive + (t_rise - t_fwd)                # t_arrive .. +t_rise
+
+    times = [0.0, t_arrive]
+    freqs = [p_arrive, p_arrive]
+    order = np.argsort(t_back_rise)
+    times.extend(t_back_rise[order].tolist())
+    freqs.extend(p_grid[order].tolist())
+    if t_dorm > 0:
+        times.append(t_inv)
+        freqs.append(p_start)
+
+    times = np.asarray(times, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+    # Strictly increasing times: msinv rejects duplicates, and the corners can
+    # collide when t_arrive == 0 or t_rise is tiny.
+    keep = np.concatenate([[True], np.diff(times) > 1e-9])
+    times, freqs = times[keep], freqs[keep]
+    times = np.clip(times, 0.0, t_inv)
+    return times.tolist(), freqs.tolist(), s_het
+
+
+def build_arrival_sim(*, seq_length, t_inv, t_arrive, t_rise,
+                      p_start, p_star=P_I_DEFAULT, gamma=1e-15,
+                      n_i=100, n_s=100, seed=None, recomb_rate=None,
+                      n_rise=300):
+    """Growth-arm sim with the three-phase explicit-arrival trajectory."""
+    if recomb_rate is None:
+        from .slim.config import REC_RATE
+        recomb_rate = REC_RATE
+
+    margin = seq_length * MARGIN_FRACTION
+    bp_left, bp_right = margin, seq_length - margin
+    tract_length = max(1.0, (bp_right - bp_left) * TRACT_FRACTION)
+
+    times, freqs, _s = arrival_curve(t_inv, t_arrive, t_rise, p_start,
+                                     p_star, n_rise=n_rise)
+    spec = InversionSpec(
+        bp_left=bp_left,
+        bp_right=bp_right,
+        gene_conversion_rate=gamma,
+        mean_tract_length=tract_length,
+        tract_distribution="geometric",
+        trajectory={
+            "type": "precomputed",
+            "times": times,
+            "freqs": [freqs],
+            "n_e": [float(N_growth(t_inv))],
+            "t_inv": [float(t_inv)],
+        },
+    )
+    return HullSimulator(
+        n_std=n_s, n_inv=n_i,
+        population_size=PRESENT_NE_GROWTH,
+        demography=growth_demography(),
+        sequence_length=seq_length,
+        recombination_rate=recomb_rate,
+        inversions=[spec],
+        seed=seed,
+    )

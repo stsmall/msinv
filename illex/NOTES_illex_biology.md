@@ -1339,12 +1339,29 @@ end, which is the only reason "peroxisome" recurs at all.
 ### 8.10.3 The sweep-candidate check is unanswerable, not negative
 
 **chr2 was never scanned.** `results/empirical_scan_fullsfs/genome.preds` contains
-**zero chr2 windows**, and chr2 is absent from the candidate chromosome list
-(1, 3–39, 41, 43–45 — no 2, 40, 42 or Z). Almost certainly the same deliberate
-exclusion as the ReLERNN run, since the inversion's structure would confound a
-sweep classifier trained on panmictic sims. So "no sweep candidates in the
-inversion" is an **absence of data**, not evidence, and must not be reported as
-a negative result.
+**zero chr2 windows**. The not-scanned set is exactly **{chr2, chr42, chrZ}**,
+matching `build_persex_vcf.sh`'s "autosomes (excl chr2 inv, chr42, chrZ)"; those
+three are also the three missing from `11_relernn/genome.sizes` (43 of 46
+sequences), so they were dropped upstream in the shared prep rather than by the
+scan. **[M] Confirmed by the user 2026-08-24: not run. A run is in progress.**
+
+**[W] Two errors in an earlier version of this paragraph.**
+
+1. I wrote the missing set as "no 2, 40, 42 or Z". **chr40 was scanned** — 240
+   windows in `genome.preds`, and it simply produced no outlier regions. Lumping
+   it with the unscanned chromosomes conflated "scanned, no hits" with "never
+   looked at", which is precisely the distinction the rest of this section is
+   about.
+2. Listing chr42 next to chrZ implied it was excluded for the same reason.
+   **chr42 is an autosome** — 47,554,665 bp, larger than chr40 or chr45 — and
+   §1 of the project manuscript records that as **[ESTABLISHED]** (chrZ is the
+   sex chromosome; chr42 is not). Its exclusion is a legacy of an earlier
+   misidentification, not a property of the chromosome, which means chr42 is
+   missing from both the recombination map and the sweep scan for **no valid
+   reason** and should be added back.
+
+So "no sweep candidates in the inversion" is an **absence of data**, not
+evidence, and must not be reported as a negative result.
 
 ### 8.10.4 Bottom line: the gene content does not support the scenario
 

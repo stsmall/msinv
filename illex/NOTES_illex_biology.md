@@ -1343,7 +1343,8 @@ end, which is the only reason "peroxisome" recurs at all.
 matching `build_persex_vcf.sh`'s "autosomes (excl chr2 inv, chr42, chrZ)"; those
 three are also the three missing from `11_relernn/genome.sizes` (43 of 46
 sequences), so they were dropped upstream in the shared prep rather than by the
-scan. **[M] Confirmed by the user 2026-08-24: not run. A run is in progress.**
+scan. **[M] Confirmed by the user 2026-08-24: not run. Re-run completed 2026-08-25 —
+results in §8.11.**
 
 **[W] Two errors in an earlier version of this paragraph.**
 
@@ -1377,6 +1378,96 @@ gene-content route was proposed (§3i), tested (§8.9), refined (§8.10), and do
 not deliver at any stage. It should be reported as a named candidate gene plus an
 explicit statement that the region's gene content carries no statistical signal —
 not as support.
+
+## 8.11 chr2 sweep scan, and a genome-wide test for polygenic architecture **[M]**
+
+### 8.11.1 The inversion is not a sweep outlier — and the composition flips
+
+chr2 and chr42 were re-run 2026-08-25 (1,050 and 126 windows). Comparing within
+chr2, so the classifier's known genome-wide over-call (§8b of the project
+manuscript) cancels:
+
+| | n | soft | hard | mean S |
+|---|---|---|---|---|
+| inversion body | 184 | 5.4% | **0.5%** | 0.072 |
+| chr2 collinear | 832 | 3.4% | **5.5%** | 0.094 |
+
+**Fewer sweep calls inside the inversion than outside it**, and the composition
+inverts: hard calls are depleted **11-fold** inside while soft calls are mildly
+enriched. That is what a maintained two-class polymorphism should look like to
+this classifier — two haplotype backgrounds read as "soft", while the
+single-haplotype, low-diversity signature of a hard sweep is absent. It is an
+independent line of support for balancing selection over a classic sweep, from a
+method that shares nothing with the coalescent modelling.
+
+None of the 11 sweep-called windows in the body contains any of the five
+annotated lipid-pathway genes; the nearest miss is 68.9–69.0 Mb against MCAT at
+69.07 Mb. **ACOX1 (79.31 Mb) is not in a sweep-called window.**
+
+chr42, the autosome excluded for no valid reason (§8.10.3), behaves like an
+ordinary chromosome: 4.0% soft, 3.2% hard, mean S 0.074.
+
+### 8.11.2 Is the supergene part of a larger co-adapted complex? No.
+
+`illex/scripts/karyotype_fst_scan.py`, results in
+`results/illex/karyotype_fst_scan.{tsv,txt}`. Hudson Fst(AA, BB) per 100 kb
+window, genome-wide, as a ratio of sums; 34,398 windows, 149 AA and 53 BB
+individuals (the overlap with the clean-350 callset).
+
+Inside the inversion every locus is linked to karyotype by construction — that
+*is* the supergene. The testable question is whether anything **outside** it
+covaries with the arrangement, which would indicate epistatic partners or
+co-adapted alleles the inversion does not physically contain.
+
+| set | n | median Fst | p99 | max |
+|---|---|---|---|---|
+| **inversion body** | 199 | **0.3962** | 0.5823 | 0.6030 |
+| chr2 collinear | 955 | 0.0137 | 0.2323 | 0.3549 |
+| all other chromosomes | 33,204 | 0.0132 | 0.2372 | 0.6387 |
+
+**The tail is exactly what chance produces.** Above the background's own 99.9th
+percentile: 35 windows observed against 34.2 expected by construction (ratio
+1.02). Above the 99.99th: 4 against 3.4 (ratio 1.17). **There is no excess at
+all.**
+
+**And every apparent outlier is a callability artifact.** Fst rises sharply as
+window information falls:
+
+| sites/window | n windows | median Fst | max |
+|---|---|---|---|
+| <500 | 456 | **0.1909** | 0.6387 |
+| 500–2k | 921 | 0.1029 | 0.5017 |
+| 2k–5k | 2,019 | 0.0156 | 0.3719 |
+| 5k–20k | 30,747 | **0.0129** | 0.2249 |
+| >20k | 16 | 0.0097 | 0.0226 |
+
+corr(log₁₀ n_sites, Fst) = **−0.648**; the top-20 background windows have a
+median of 202 sites against a background median of 9,858. The apparent
+"region" on chr36 at 64.5–65.1 Mb is a dropout, not a locus: Fst is 0.01–0.02
+where the window holds ~10,000 sites and jumps to 0.36–0.62 exactly where the
+count collapses to 57–642.
+
+### 8.11.3 The negative is bounded, not merely underpowered
+
+The scan recovers the inversion at median Fst **0.3962** against a published
+0.3652 (different sample subset), so it plainly detects real differentiation of
+that magnitude. In the **90% of the genome that is well covered** (≥5,000
+sites/window) the maximum Fst anywhere is **0.2249** and the median is 0.0129.
+
+**So co-adapted partners differentiated above ~56% of the inversion's own value
+are excluded across 90% of the genome.** The supergene is self-contained. This
+also corroborates the project manuscript's §2 windowed-PCA result ("structure
+only inside the inversion", η² 0.748 vs 0.003) at per-window resolution, by a
+different statistic.
+
+### 8.11.4 The temporal method is not available here
+
+The polygenic framework that motivated the question — decomposing the variance
+in allele-frequency change into drift versus linked selection, using LD among
+loci — requires **allele frequencies across consecutive generations** plus a
+fitness proxy. Illex has a single time point, so it cannot be run. The
+genome-wide Fst scan above is the single-timepoint analogue of the same
+question, and it answers it negatively.
 
 ## 9. Where identification has to come from
 

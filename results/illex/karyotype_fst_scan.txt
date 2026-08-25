@@ -1,0 +1,17 @@
+windows: 34,398 total | inversion 199 | chr2 collinear 955 | rest of genome 33,204
+
+set                          n   median     mean      p99      max
+INVERSION body             199   0.3962   0.3831   0.5823   0.6030
+chr2 collinear             955   0.0137   0.0205   0.2323   0.3549
+all other chromosomes    33204   0.0132   0.0224   0.2372   0.6387
+
+background (everything outside the inversion +/-2 Mb): 99.99th percentile = 0.5612
+windows above it: 4
+   chrom       window  n_sites      fst  neighbours>p999
+      37   63,300,000       96   0.6387  1
+      36   64,600,000      153   0.6247  0
+      36   65,100,000       57   0.6196  0
+      27   33,300,000       79   0.5675  1
+
+A real co-adapted locus should show SEVERAL adjacent elevated windows (linkage),
+not one isolated spike. The neighbours column is that check.

@@ -1447,6 +1447,34 @@ median of 202 sites against a background median of 9,858. The apparent
 where the window holds ~10,000 sites and jumps to 0.36–0.62 exactly where the
 count collapses to 57–642.
 
+### 8.11.2a What is in the chr36 dropout: nothing **[M]**
+
+Asked directly, since a callability dropout can itself be meaningful (a
+segmental duplication, a paralog array). It is not. chr36:63.9–65.2 Mb contains:
+
+* **1.1% accessible sequence** — 14,135 bp of 1.3 Mb, against 26.5% chr36-wide.
+  A **24-fold depletion**.
+* **Two annotated features, both ~100 bp**: LOC_00002817 (98 bp) and
+  LOC_00002818 (119 bp), each a single exon, each `Name= function unknown`,
+  encoding ~32 and ~39 residues. These are annotation noise, not genes.
+* Gene density **1.5/Mb against 5.4/Mb** chromosome-wide.
+
+So the region is inaccessible, gene-poor, near-certainly repetitive or
+heterochromatic sequence, and its elevated Fst is computed from 57–642 SNPs in
+windows where ~1% of the sequence is callable at all. There is no locus there.
+
+**And the same holds for every remaining candidate.** Among the well-covered
+windows (n ≥ 5,000), the ten highest-Fst windows genome-wide contain **zero
+annotated genes between them**, and all ten sit at the low end of the
+well-covered range (5,180–8,241 sites against a median of 9,858) — the
+coverage-noise relationship persists even inside the "well-covered" set.
+
+*Method note:* `MIN_SITES = 50` in the scan was too permissive; an
+accessible-fraction filter would be the better gate. The headline conclusion is
+unaffected, because §8.11.3's bound was already computed on the well-covered
+subset — but the "top outliers" table in the first pass was polluted by dropouts
+and should not be read as a candidate list.
+
 ### 8.11.3 The negative is bounded, not merely underpowered
 
 The scan recovers the inversion at median Fst **0.3962** against a published

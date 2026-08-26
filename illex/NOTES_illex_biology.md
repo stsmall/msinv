@@ -1497,6 +1497,83 @@ fitness proxy. Illex has a single time point, so it cannot be run. The
 genome-wide Fst scan above is the single-timepoint analogue of the same
 question, and it answers it negatively.
 
+## 8.12 The argentinus equidistance test — dead, and the reference is why **[M][W]**
+
+`illex/scripts/argentinus_equidistance.py`, results in
+`results/illex/argentinus_equidistance.txt`.
+
+### 8.12.1 The design, which was sound
+
+If the inversion **predates** the illecebrosus/argentinus split, the arrangement
+classes were already separate lineages when argentinus diverged and argentinus
+should sit closer to one of them. If it **postdates** the split, AA and BB
+lineages are exchangeable before the split and E[dxy(AA,arg)] = E[dxy(BB,arg)]
+exactly. So the statistic is
+
+    dxy(AA,arg) − dxy(BB,arg) = Σ (p_AA − p_BB)(1 − 2q)
+
+with the collinear region as a built-in control where it must be zero.
+
+Two features made this look ideal: sites where AA and BB agree cancel exactly,
+so the variants-only illecebrosus callset suffices; and no argentinus karyotypes
+are needed, only allele frequencies, which genotype likelihoods estimate well at
+0.6× — which is why it replaced the (wrong) resequencing recommendation of
+§8.10.
+
+### 8.12.2 It fails its own control, twice
+
+| run | allele handling | control z (must be ~0) | body z |
+|---|---|---|---|
+| 1 | ANGSD-inferred minor, kept if it matched the VCF ALT (36%) | **+4.44** | −1.97 |
+| 2 | VCF REF/ALT forced via `-doMajorMinor 3` + sites file | **+3.13** | +7.21 |
+
+Run 1 also carried a selection artifact of its own — keeping only sites where
+ANGSD's inferred minor equalled the VCF ALT selects on argentinus carrying that
+allele — which is why the sign of the body statistic flips between runs. Run 2
+removes it, and the body statistic still flips sign *across frequency classes*
+(−0.34 at MAF 0.02–0.05, **+0.19** at MAF > 0.10), so the aggregate is not
+estimating a single quantity.
+
+### 8.12.3 **[W] The cause: the reference genome carries BB, and I claimed it could not matter**
+
+I asserted in the design that reference mapping bias could not fake a signal,
+because it depresses q identically in both terms and a common shift cancels.
+**That is wrong**, and it is wrong for a reason specific to inversions: inside
+the inversion the reference is not neutral between the arrangements — it *is*
+one of them. Measured, with p = frequency of the NON-reference allele at
+arrangement-diagnostic sites (MAF > 0.10):
+
+| region | p_AA | p_BB | difference |
+|---|---|---|---|
+| **inversion body** | 0.5149 | 0.2165 | **+0.2984** |
+| collinear control | 0.3029 | 0.2874 | +0.0156 |
+
+BB matches the reference inside the inversion; outside it the two arrangements
+are equivalent. Argentinus reads are mapped to that reference, and reads
+matching the reference map and call more readily, so **argentinus is pulled
+toward BB precisely at the diagnostic sites inside the inversion and nowhere
+else** — the exact direction, magnitude and location of the apparent signal. The
+collinear control is clean for the same reason it must be: no arrangement
+structure, no asymmetric reference.
+
+### 8.12.4 What this means for the argentinus question
+
+**Deeper argentinus sequencing would not fix it.** The bias is in the reference,
+not the coverage — which corrects the framing in §8.10 as well as the original
+resequencing recommendation. Both were wrong, for different reasons.
+
+The fix is to map both species to a **third genome** so neither arrangement is
+privileged. *I. coindetii* is assembled (GCA_977009265.1) and already aligned to
+illecebrosus (§5.5), so the ingredients exist, but re-mapping and re-calling both
+species against it is a project, not a re-run.
+
+**A general lesson worth carrying:** any between-species comparison *inside* an
+inversion inherits the reference's arrangement. Every statistic in §5–§8 that
+compares AA against BB is safe, because the bias is common to both when they are
+compared to each other. It is only comparisons to an **outgroup mapped on the
+same reference** that break — which is exactly the µ-free calibration of §5.5,
+and that number should now be treated as suspect inside the inversion.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),

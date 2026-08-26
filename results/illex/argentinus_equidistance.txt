@@ -1,0 +1,56 @@
+Argentinus equidistance test: dxy(AA,arg) vs dxy(BB,arg)
+argentinus q from ANGSD -doMaf (GL, 10 BAMs); min 3 individuals per site
+
+  WARNING: only 93.8% allele-matched -- the sites file did not take effect
+==========================================================================
+inversion body  (60,500,000-79,500,000)
+==========================================================================
+  VCF sites 1,336,347 | argentinus sites 433,432 | used 433,432 (93.8% allele-matched)
+  mean |p_AA - p_BB| = 0.0311   mean q(arg) = 0.0446
+  dxy(AA,arg) = 0.045363   dxy(BB,arg) = 0.044153
+  MAF bin              n  standardised
+  <0.02          389,335       -0.1404
+  0.02-0.05       17,773       -0.3399
+  0.05-0.10        8,123       -0.3106
+  >0.10           18,201       +0.1925
+
+  difference   = +0.001209 +/- 0.000170   (z = +7.11, 20 blocks)
+  standardised = +0.0389 +/- 0.0054   (z = +7.21)
+    standardised = sum(d_AA-d_BB)/sum|p_AA-p_BB|, in [-1,1]; negative = argentinus
+    leans toward the AA (inverted) allele, positive = toward BB.
+
+  WARNING: only 87.8% allele-matched -- the sites file did not take effect
+==========================================================================
+collinear control  (10,000,000-30,000,000)
+==========================================================================
+  VCF sites 3,468,696 | argentinus sites 835,411 | used 835,411 (87.8% allele-matched)
+  mean |p_AA - p_BB| = 0.0079   mean q(arg) = 0.0551
+  dxy(AA,arg) = 0.055484   dxy(BB,arg) = 0.055448
+  MAF bin              n  standardised
+  <0.02          732,761       -0.0082
+  0.02-0.05       51,584       +0.0166
+  0.05-0.10       22,589       +0.0391
+  >0.10           28,473       +0.0188
+
+  difference   = +0.000036 +/- 0.000011   (z = +3.14, 20 blocks)
+  standardised = +0.0045 +/- 0.0014   (z = +3.13)
+    standardised = sum(d_AA-d_BB)/sum|p_AA-p_BB|, in [-1,1]; negative = argentinus
+    leans toward the AA (inverted) allele, positive = toward BB.
+
+==========================================================================
+VERDICT
+==========================================================================
+  control  standardised +0.0045 +/- 0.0014  (z +3.13)  <- must be ~0
+  BODY     standardised +0.0389 +/- 0.0054  (z +7.21)
+  BODY - CONTROL +0.0344 +/- 0.0056  (z +6.15)
+
+  NOTE ON THE ERROR BARS. Inside a non-recombining inversion the 1 Mb
+  jackknife blocks are NOT independent -- every block shares the same
+  arrangement genealogy -- so the body's SE is optimistic by an
+  unknown factor. The control's blocks DO recombine and its SE is
+  sound. Treat the body's z as an upper bound on the evidence.
+
+  CONTROL FAILS: the collinear region shows asymmetry it cannot
+  legitimately have, so something is wrong upstream (allele
+  matching, mapping bias that differs between arrangements, or
+  residual structure). Do not interpret the body.

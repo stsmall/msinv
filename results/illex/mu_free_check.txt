@@ -1,0 +1,22 @@
+Is div(illecebrosus, coindetii) the same inside the inversion as in collinear sequence?
+Both terms per COMPARABLE bp = illecebrosus-accessible AND coindetii-comparable
+(callable UNION substitutions), the same construction as NOTES sec 5.5.
+
+region                        shared bp       subs     div/bp         JC
+inversion body                8,868,619     88,963   0.010031   0.010099
+collinear chr2:10-30 Mb       7,738,580    263,395   0.034037   0.034833
+collinear chr2:85-115 Mb     12,755,858    256,364   0.020098   0.020372
+
+inversion / collinear = 0.3706  (-62.9%)
+
+==========================================================================
+EFFECT ON R
+==========================================================================
+  numerator dxy(AA,BB) = 0.005146 (within-illecebrosus, unaffected)
+  R with the inversion-internal denominator  = 0.5130   (published 0.5137)
+  R with the collinear denominator           = 0.1901
+  shift = -62.9%
+
+  R MOVES. Use the collinear denominator: the species divergence
+  is a genome-wide quantity and should not be estimated from
+  sequence where the reference carries one arrangement.

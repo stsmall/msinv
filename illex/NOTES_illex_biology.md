@@ -1574,6 +1574,96 @@ compared to each other. It is only comparisons to an **outgroup mapped on the
 same reference** that break — which is exactly the µ-free calibration of §5.5,
 and that number should now be treated as suspect inside the inversion.
 
+## 8.13 Direct chr2-to-coindetii alignment: R withdrawn, inversion confirmed, polarization questioned **[M][W]**
+
+`.tmp/mmcoin/run.sh` (minimap2 `-x asm10`, three chr2 regions against the
+coindetii assembly, 8 min); check script `illex/scripts/mu_free_check.py`,
+results in `results/illex/mu_free_check.txt`.
+
+### 8.13.1 R is withdrawn — the denominator is not a stable quantity
+
+R = dxy(AA,BB)/div(illecebrosus,coindetii) was computed with both terms inside
+the inversion. The numerator is safe (a within-illecebrosus contrast). The
+denominator is not, and not for the reason §8.12 suggested. Measured three ways:
+
+| source | inversion body | collinear 10–30 Mb | collinear 85–115 Mb |
+|---|---|---|---|
+| AnchorWave substitutions/comparable bp | 0.0100 | **0.0340** | **0.0201** |
+| direct minimap2, gap-compressed `de` | 0.0128 | **0.0361** | **0.0242** |
+| aligned fraction of the query | **95.4%** | 69.6% | 87.9% |
+
+**The two collinear controls disagree with each other by 70%.** Local divergence
+to coindetii varies 2–3× along a single chromosome by either method, so it
+cannot serve as a precise denominator anywhere.
+
+| R computed with… | value |
+|---|---|
+| AnchorWave, inversion-internal (**published**) | 0.5137 |
+| direct alignment, inversion region | 0.4032 |
+| direct alignment, collinear | **0.1709** |
+
+A **3× spread**. **R = 0.514 ± 0.015 is withdrawn.** The idea is still sound —
+a ratio of two 2µT quantities removes µ — but it needs a divergence estimate
+stable enough to divide by, and this one is not.
+
+**[W] And my ascertainment explanation for it was wrong.** I proposed that the
+inversion's low divergence came from alignment ascertainment (substitutions only
+counted where alignment succeeds, alignment succeeding where divergence is low).
+The direct alignment refutes it: the inversion aligns **better** than either
+control (95.4% against 69.6% and 87.9%) and is *still* the least diverged. The
+low divergence inside the inversion is real, not an alignment artifact. Why it
+is low is unexplained.
+
+### 8.13.2 The inversion is confirmed structurally, on a shared scaffold
+
+All three query regions align overwhelmingly to the **same** coindetii scaffold
+OZ346549.1 (99.7%, 99.2%, 99.9% of aligned bp), so scaffold orientation is
+shared and strand is interpretable:
+
+| region | aligned to OZ346549.1 | orientation |
+|---|---|---|
+| **inversion body** | 18,084,220 bp | **100.0% minus** |
+| collinear 10–30 Mb | 13,835,158 bp | 94.2% plus |
+| collinear 85–115 Mb | 26,376,254 bp | 99.8% plus |
+
+**18.1 Mb aligning in the opposite orientation to its own flanks, on one
+scaffold.** This is the cleanest structural confirmation of the inversion in the
+project — direct assembly-to-assembly evidence, independent of PCA, LD, karyotype
+clustering and Fst.
+
+### 8.13.3 **[W] It also puts the polarization in question — flag, not a correction**
+
+The manuscript records **AA = derived (inverted), BB = ancestral** as
+**[ESTABLISHED]** (AnchorWave coindetii↔illex MAF). Two observations now point
+the other way:
+
+1. The illecebrosus **reference** is inverted relative to coindetii across this
+   region (§8.13.2), so the reference carries the *derived* orientation if
+   coindetii is ancestral.
+2. §8.12 found the reference leans **BB**-like inside the inversion
+   (non-reference allele frequency at diagnostic sites: p_AA 0.515 vs
+   p_BB 0.217).
+
+Together those imply **BB is derived**, not AA.
+
+**This is deliberately flagged rather than acted on**, because point 2 is weak:
+a mean allele-frequency lean is not a clean arrangement assignment. If the
+reference were cleanly AA we would expect mean p_AA ≈ 0 and p_BB ≈ 1 at
+fixed-different sites; the observed 0.515/0.217 is a lean, not an assignment.
+
+**Why it matters enormously if true.** §11 warns that getting the arrangement
+labels backwards flips π_I/π_S from 0.744 to 1.344 "and reverses the conclusion,
+silently". Every result in §7 and §8.6–8.8 assumes the derived arrangement is
+the one at frequency 0.626 with *lower* diversity. If instead the derived
+arrangement is at 0.374 with *higher* diversity, the entire model — the diversity
+deficit, the recent-rise argument, the age — must be rebuilt. **No downstream
+result should be revised until this is settled.**
+
+**The clean test exists and is cheap:** `polarize/` holds est-sfs output with
+inferred ancestral alleles. Ask which arrangement carries more ancestral states
+at the arrangement-diagnostic sites. That is a direct answer and does not depend
+on inferring what the reference individual's karyotype was.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),

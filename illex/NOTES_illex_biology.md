@@ -1664,7 +1664,17 @@ inferred ancestral alleles. Ask which arrangement carries more ancestral states
 at the arrangement-diagnostic sites. That is a direct answer and does not depend
 on inferring what the reference individual's karyotype was.
 
-## 8.14 Polarization confirmed, and the region carries TWO inversion events **[M]**
+## 8.14 **[W][RETRACTED]** Polarization "confirmed" — the test was CIRCULAR
+
+> **This entire section is wrong. See §8.15.** The parsimony polarization it
+> relies on used the illecebrosus REFERENCE base as the ancestral state wherever
+> coindetii had no SNP — which is 69.2% of diagnostic sites. Since the reference
+> haplotype IS one of the two arrangements, that scores "the reference's own
+> arrangement is ancestral" by construction. The conclusion below is an artifact
+> of that circularity, and so is the "two inversion events" result built on it.
+> Retained only as a record of the error.
+
+## 8.14 (retracted) Polarization confirmed, and the region carries TWO inversion events **[W]**
 
 `illex/scripts/polarization_check.py`, results in
 `results/illex/polarization_check.txt`. §8.13.3 raised a doubt about the
@@ -1735,6 +1745,109 @@ argument, the age and the balancing-selection fit are unaffected.
 
 What it adds is a new structural result (§8.14.3), and it removes a live risk
 from the record.
+
+## 8.15 **THE ARRANGEMENT LABELS ARE BACKWARDS** — BB is the inverted, derived one **[M][W]**
+
+Raised by the user 2026-08-27 as the parsimonious alternative to §8.14's two
+inversions, and confirmed on testing. **The recorded polarization is wrong, my
+"confirmation" of it was circular, and every fit in §7 and §8.6–8.8 is built on
+inverted targets.**
+
+### 8.15.1 The circularity
+
+§8.14 called a "coindetii parsimony" polarization non-circular. It was not.
+Ancestral was taken as coindetii's base, and coindetii's base was taken as the
+illecebrosus **REF** wherever coindetii had no SNP record. At diagnostic sites:
+
+| | n | share |
+|---|---|---|
+| coindetii has a SNP (differs from the illex REF) | 4,318 | 30.8% |
+| **coindetii matches the illex REF** | **9,680** | **69.2%** |
+
+For that 69.2%, "ancestral = REF" is identical to "ancestral = whatever the
+reference haplotype carries". The reference carries BB (§8.14.2, 86.5% at
+fixed-different sites — that measurement stands), so the test scored BB as
+ancestral **by construction**. est-sfs inherits the same outgroup alignment and
+the same problem.
+
+### 8.15.2 The non-circular test reverses the answer
+
+Restricting to sites where coindetii carries the illecebrosus **ALT** allele —
+so the ancestral state is defined without reference to the reference's own base
+(n = 4,175, |p_AA − p_BB| ≥ 0.7):
+
+| arrangement | carries the ancestral allele |
+|---|---|
+| **AA** | **63.0%** (2,631) |
+| BB | 37.0% (1,544) |
+
+**AA is ancestral; BB is derived.**
+
+### 8.15.3 One inversion, and everything is consistent
+
+The user's reading, now supported: the reference was assembled from an
+**inverted** individual, so the reference itself is in the inverted orientation.
+Then
+
+* the reference carries BB (§8.14.2) ⇒ **BB is the inverted arrangement**
+* AA carries ancestral alleles (§8.15.2) ⇒ **AA is the standard arrangement**
+* the reference aligns 100% minus to coindetii (§8.13.2) ⇒ **because the
+  reference is the inverted one**
+* coindetii is non-inverted ancestral
+
+**One inversion event.** §8.14.3's "chr2:60–80 Mb has inverted at least twice /
+inversion hotspot" is **withdrawn** — it was an artifact of the circular
+polarization. The 18.1 Mb orientation result itself stands and is still the
+cleanest structural confirmation of the inversion; only its interpretation
+changes.
+
+### 8.15.4 The corrected targets, and what they do to the story
+
+Ratios are mask-free, so these follow directly from the measured π and dxy with
+the labels swapped (I = BB inverted, S = AA standard):
+
+| | as fitted | **corrected** |
+|---|---|---|
+| p_inverted | 0.626 | **0.374** |
+| π_I/π_S | 0.7368 ± 0.0263 | **1.357 ± ~0.048** |
+| dxy/π_I | 1.8794 ± 0.0503 | **1.385 ± ~0.037** |
+| equilibrium p/(1−p) | 1.674 | **0.597** |
+
+**The central observation flips sign.** It was "the common arrangement carries
+2.25× LESS diversity than equilibrium warrants" — a deficit, read as a recent
+rise. It is now "**the rare derived arrangement carries 2.3× MORE diversity than
+its frequency warrants**" — an excess. A rare, derived arrangement that is
+*more* diverse than its frequency allows is the signature of an **old**
+polymorphism, possibly one that was formerly commoner, not a recent sweep.
+
+### 8.15.5 What is invalidated
+
+**Invalid as they stand** — all fitted to (0.744, 1.846) at p = 0.626:
+§7.2, §7.5 (age ~730 ky), §8.6 (explicit arrival, ~900 ky), §8.7 (drifting
+dormancy, ~800 ky), §8.8 (balanced dormancy, s_dorm ≈ 3e-5). The age, the
+trajectory family, the arrival time and the dormancy selection all have to be
+refitted against the corrected targets.
+
+**Probably survives, but must be redone rather than assumed:** §7.5.3's
+neutrality exclusion. At x = 0.374 the conditional hitting time is
+(4N/x)[x + (1−x)ln(1−x)] = **0.864·N** rather than 1.650·N — about half, but
+still 0.5–5.9 M generations, so drift remains excluded on any plausible age.
+
+**Unaffected:** the ANGSD/GL machinery (§8.5), the sweep-scan comparison
+(§8.11.1, which is symmetric in labels), the genome-wide Fst scan (§8.11.2), the
+gene content (§8.9–8.10), and the coalescent-model test (§3).
+
+### 8.15.6 Two decisions needed before any rebuild
+
+1. **Does the project's own polarization carry the same circularity?** The
+   recorded "AA = derived" came from an AnchorWave coindetii↔illex MAF pipeline.
+   If that pipeline also used the reference base as the ancestral state where the
+   outgroup matched, it has the identical flaw, and §4's [ESTABLISHED] tag should
+   come off.
+2. **Swap the cluster labels, or only their interpretation?** Every downstream
+   file keys off `AA_samples.txt` / `BB_samples.txt`. Renaming is invasive;
+   keeping the names and inverting the interpretation is safer but is exactly
+   the setup §11 warns silently reverses conclusions.
 
 ## 9. Where identification has to come from
 

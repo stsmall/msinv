@@ -527,6 +527,11 @@ recent rise, and it is what dates the event.
 
 #### 7.5.3 Neutrality is quantitatively excluded, without µ or a mask **[M]**
 
+> **Superseded by §8.17** (rerun at the corrected frequency), and **one claim
+> below is an overstatement**: "excluded by an order of magnitude" quotes the
+> largest-Ne case. The *binding* case — the smallest Ne on the arm — gave a
+> margin of only **1.26×**, then and now.
+
 `illex.balancing.neutral_hitting_time`. Exact diffusion result, verified against
 Wright-Fisher simulation (N = 200/500/1000, 1–2 M replicates: probabilities
 matched to 3%, conditional times to 0.7–3.0%, converging as N grows).
@@ -1951,6 +1956,84 @@ the recent dynamics — the arrangement is on its way down, not up.
    and overdominance-with-a-moving-optimum is one of several processes that
    would produce it.
 5. µ still scales every age inversely and remains the dominant uncertainty.
+
+## 8.17 Neutrality rerun at the corrected frequency **[M][W]**
+
+`illex/scripts/neutrality_check.py`, results in
+`results/illex/neutrality_check.txt`. §7.5.3 excluded drift using p = 0.626. The
+polarization is reversed and the refit (§8.16) says the arrangement did not rise
+to its present 0.374 — it **declined to it from p_hist ≈ 0.70 over ~100 ky
+ending ~175 ka**. That changes the argument's structure, and splits it in two.
+
+### 8.17.1 Attainment — could drift reach the frequency it actually attained?
+
+The target is the **highest** frequency inferred, 0.70, not the present 0.374: a
+neutral allele has to get up there before it can come back down.
+
+| Ne | E[t \| reach 0.374] | E[t \| reach 0.70] |
+|---|---|---|
+| N_ANC = 547,928 | 473,378 | **1,060,814** |
+| N(275 ka) = 2.77 M | 2,390,251 | 5,356,424 |
+| N₀ = 6,808,096 | 5,881,796 | 13,180,791 |
+
+Coefficients: **0.864·N** at x = 0.374, **1.936·N** at x = 0.70 (1.650·N at the
+old, wrong 0.626). P(a new neutral inversion ever reaching 0.70) = 1.3e-6 to
+1.1e-7.
+
+Against a fitted age of 850 ky, the binding case — smallest Ne — needs
+**1.25× the entire lifetime of the inversion**, widening to 16× at N₀.
+
+### 8.17.2 The decline — a test that did not exist before
+
+Under the old reading the arrangement was rising, so its current frequency was
+the only thing to test. Now there is a second, independent constraint: a fall of
+**0.326** in ~100 ky, against the neutral drift SD over that window
+(N = 2.77–3.84 M):
+
+| assumed t_fall | drift SD | observed fall |
+|---|---|---|
+| **100 ky** (the fitted value) | 0.0569 | **5.7 SD** |
+| 200 ky | 0.0879 | 3.7 SD |
+| 500 ky | 0.1860 | **1.8 SD** |
+
+**This is where the argument is soft.** `t_fall` was **fixed** at 100 ky in the
+refit, not estimated. At 100 ky drift is excluded comfortably; at 500 ky the
+fall is 1.8 SD, which drift produces ~4% of the time. The decline test is
+decisive only if the fall was fast, and nothing yet establishes that it was.
+
+### 8.17.3 **[W] §7.5.3 overstated the margin, and the polarization is not why**
+
+§7.5.3 said drift was excluded "by an order of magnitude". That figure came from
+the **largest**-Ne case. The binding case is the smallest Ne, and there:
+
+| | hitting time at N_ANC | fitted age | margin |
+|---|---|---|---|
+| old reading (x = 0.626) | 903,893 | 720,000 | **1.26×** |
+| corrected (x = 0.70) | 1,060,814 | 850,000 | **1.25×** |
+
+**The margin is unchanged.** Per unit Ne the requirement rose (1.936·N vs
+1.650·N, since the arrangement reached a higher frequency), but the fitted age
+rose too, and the two nearly cancel. So the attainment test is neither stronger
+nor weaker than it was — it was simply always narrower than §7.5.3 implied.
+
+### 8.17.4 Verdict
+
+**Neutrality is still excluded, on two independent and calibration-free grounds
+— but not by an order of magnitude, and that should be stated plainly.**
+
+* attainment: 1.25× the inversion's lifetime at the most favourable Ne, up to
+  16× at the least favourable
+* decline: 5.7 SD at the fitted t_fall, but only 1.8 SD if the fall took 500 ky
+
+Neither uses µ, the accessibility mask, or a simulation, which is their value.
+Both are diffusion results for an unlinked neutral allele: they bound **drift**,
+not selection at linked sites, and they take the fitted p_hist and t_fall as
+given.
+
+**The cheapest way to firm this up is to fit t_fall** instead of fixing it. If
+the data prefer a fast fall the decline test becomes the strongest argument in
+the analysis; if they tolerate a slow one, the case rests on attainment alone at
+a 1.25× margin.
 
 ## 9. Where identification has to come from
 

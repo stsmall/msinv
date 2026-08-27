@@ -1,0 +1,79 @@
+Neutrality under the CORRECTED polarization (inverted = BB, p_now = 0.374)
+fitted history: arose ~850 ka, held near p_hist = 0.7, fell to 0.374 over ~100 ky ending ~175 ka
+
+==========================================================================
+1. ATTAINMENT -- could drift take it to the frequency it reached?
+==========================================================================
+  The relevant target is the HIGHEST frequency inferred, p_hist, not
+  the present one: a neutral allele has to get up there before it can
+  come back down.
+
+  Ne                              x=0.374 (now)    x=0.70 (p_hist)
+  N_ANC = 547,928                       473,378          1,060,814
+  N(t=850 ka)                           473,378          1,060,814
+  N(t=275 ka)                         2,390,251          5,356,424
+  N0 = 6,808,096                      5,881,796         13,180,791
+
+  coefficients: E[t|reach x] = 0.864*N at x=0.374, 1.936*N at x=0.70
+  (the old, wrong reading used x=0.626: 1.650*N)
+
+  Reaching p_hist = 0.70 by drift takes 1,060,814-13,180,791 generations,
+  against a fitted total age of 850,000.
+  The BINDING case is the smallest Ne on the arm (N_ANC), which needs 1.25x
+  the entire lifetime of the inversion -- a real but NARROW margin.
+  It widens fast with Ne: the arrangement arose at 850 ka when N was
+  N_ANC, but N grows 12.4x from there, so any rise happening later
+  than the origin faces up to 16x the available time.
+
+  P(a new neutral inversion ever reaching 0.70) = 1.30e-06 to 1.05e-07
+
+  Per unit Ne the requirement went UP, since the corrected history
+  has the arrangement reaching a higher frequency than the old reading
+  (0.70 vs 0.626) and the hitting time rises with x: 1.17x.
+  But the fitted AGE rose too (850 ky vs 720 ky), and the two nearly
+  cancel: the binding margin was 1.26x before and is 1.25x now. The
+  attainment test is neither stronger nor weaker than it ever was --
+  and sec 7.5.3's 'excluded by an order of magnitude' was an
+  overstatement even then, taken from the largest-Ne case rather than
+  the binding one.
+
+==========================================================================
+2. THE DECLINE -- a test that did not exist under the old reading
+==========================================================================
+  observed fall: 0.7 -> 0.374, i.e. 0.326, over 100,000 generations
+  N over that window: 2,766,682 to 3,838,532
+  neutral drift SD over the same window: 0.0569
+  => the observed fall is 5.7 standard deviations of pure drift
+
+    if the fall took   100 ky instead: SD 0.0569, observed fall =   5.7 SD
+    if the fall took   200 ky instead: SD 0.0879, observed fall =   3.7 SD
+    if the fall took   500 ky instead: SD 0.1860, observed fall =   1.8 SD
+
+  **This is where the argument is soft.** t_fall was FIXED at 100 ky
+  in the refit, not estimated. At 100 ky the fall is 5.7 SD and drift
+  is excluded comfortably; at 500 ky it is 1.8 SD, which drift can
+  produce about 4% of the time. So the decline test is decisive only
+  if the fall was fast, and nothing yet establishes that it was.
+
+==========================================================================
+VERDICT
+==========================================================================
+  Neutrality remains excluded, on two independent grounds -- but the
+  margins are NARROWER than under the old, wrong polarization, and
+  that should be stated rather than buried:
+
+    attainment: needs 1.25x the inversion's lifetime at the most
+                favourable Ne, up to 16x at the least favourable
+    decline:    5.7 SD if the fall took 100 ky, but only 1.8 SD
+                if it took 500 ky -- and t_fall was fixed, not fitted
+
+  Neither argument uses mu, the accessibility mask, or a simulation,
+  which is their value. Note that sec 7.5.3's 'excluded by an order of
+  magnitude' was always an overstatement: it quoted the largest-Ne
+  case, whereas the BINDING margin was 1.26x then and is 1.25x now.
+
+  Caveat carried from sec 7.5.3: these are diffusion results for an
+  unlinked neutral allele. They bound DRIFT, not selection on linked
+  sites, and they take the fitted p_hist and t_fall as given -- t_fall
+  in particular was fixed at 100 ky in the refit, not estimated, which
+  is why the sensitivity to it is tabulated above rather than assumed.

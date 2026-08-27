@@ -47,7 +47,20 @@ ALPHA = np.log(N0 / N_ANC) / T_GROW
 
 MU = 3e-9
 NE_CONST = 775_000.0          # pi / (4 mu), reproduces observed genome-wide pi
-P_I_DEFAULT = 0.626           # derived/inverted arrangement frequency
+# Frequency of the DERIVED/INVERTED arrangement.
+#
+# **This was 0.626 and it was wrong.** The polarization is reversed (NOTES
+# sec 8.15): the reference genome was assembled from an inverted individual, so
+# the arrangement the reference carries -- the BB cluster -- is the INVERTED,
+# derived one, and it sits at 0.374. AA at 0.626 is the standard/ancestral
+# arrangement. The cluster LABELS are kept as-is; only the interpretation is
+# swapped, per the 2026-08-27 decision.
+#
+# So throughout this package: I (inverted) == the BB cluster, S (standard) ==
+# the AA cluster. Section 11 warns that getting this backwards silently reverses
+# every conclusion, and it did; the fits in sec 7 and 8.6-8.8 predate the
+# correction and are invalid.
+P_I_DEFAULT = 0.374
 
 
 def N_growth(t):

@@ -153,9 +153,12 @@ def main() -> None:
     out_txt = OUT / f"scan_arrival{args.tag}.txt"
 
     ang = json.loads(ANGSD_JSON.read_text())
-    oi = np.array(ang["AA_body"], float)
+    # I = BB (inverted, derived, p = 0.374) and S = AA. The polarization is
+    # reversed from the project's long-standing record; see NOTES sec 8.15.
+    # Before 2026-08-27 these two were the other way round.
+    oi = np.array(ang["BB_body"], float)
     oi = oi / oi.sum()
-    os_ = np.array(ang["BB_body"], float)
+    os_ = np.array(ang["AA_body"], float)
     os_ = os_ / os_.sum()
     target_ratio = oi[0] / os_[0]
 

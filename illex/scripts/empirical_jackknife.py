@@ -103,9 +103,18 @@ def windowed() -> pd.DataFrame:
 
 
 def ratios(sub: pd.DataFrame) -> tuple[float, float]:
-    """(pi_I/pi_S, dxy/pi_I) from a set of windows, as ratios of sums."""
-    pi_i = sub.pi_AA.mean()
-    pi_s = sub.pi_BB.mean()
+    """(pi_I/pi_S, dxy/pi_I) from a set of windows, as ratios of sums.
+
+    **I = the BB cluster, S = the AA cluster.** The polarization is reversed
+    from what this project recorded for most of its history: the reference
+    genome was assembled from an inverted individual, so the arrangement it
+    carries -- BB -- is the inverted, derived one, at frequency 0.374
+    (NOTES sec 8.15). The cluster labels are unchanged; only the interpretation
+    is swapped. Before 2026-08-27 this function had pi_i = pi_AA, which is why
+    every fit in sec 7 and 8.6-8.8 is invalid.
+    """
+    pi_i = sub.pi_BB.mean()
+    pi_s = sub.pi_AA.mean()
     dxy = sub.dxy.mean()
     return float(pi_i / pi_s), float(dxy / pi_i)
 
@@ -134,7 +143,7 @@ def report(df: pd.DataFrame, label: str, fh) -> dict:
          f"variants {int(df.n_variants.sum()):,}")
     r, d = ratios(df)
     emit(f"point estimates:  pi_I/pi_S = {r:.4f}   dxy/pi_I = {d:.4f}   "
-         f"(pi_AA {df.pi_AA.mean():.6f}  pi_BB {df.pi_BB.mean():.6f}  "
+         f"(pi_I=pi_BB {df.pi_BB.mean():.6f}  pi_S=pi_AA {df.pi_AA.mean():.6f}  "
          f"dxy {df.dxy.mean():.6f})")
     emit("")
     emit(f"{'block':>9s} {'n_blk':>6s} {'pi_I/pi_S':>22s} {'dxy/pi_I':>22s}")

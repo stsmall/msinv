@@ -1849,6 +1849,109 @@ gene content (§8.9–8.10), and the coalescent-model test (§3).
    keeping the names and inverting the interpretation is safer but is exactly
    the setup §11 warns silently reverses conclusions.
 
+## 8.16 REFIT under the corrected polarization — a formerly common arrangement in decline **[M]**
+
+`illex.balancing.decline_curve` / `build_decline_sim`,
+`illex/scripts/refit_decline.py`, results in
+`results/illex/refit_decline_*.{csv,txt,json}`. Decision of 2026-08-27: keep the
+cluster labels, swap the interpretation, refit everything.
+
+### 8.16.1 Corrected targets
+
+Re-derived with I = BB (differentiated body, 1 Mb block jackknife):
+
+| | old (wrong) | **corrected** |
+|---|---|---|
+| p_inverted | 0.626 | **0.374** |
+| π_I/π_S | 0.7368 ± 0.0263 | **1.3556 ± 0.0481** |
+| dxy/π_I | 1.8794 ± 0.0503 | **1.3848 ± 0.0214** |
+| ANGSD f₁(I)/f₁(S) | 1.211 | **0.8256** |
+
+### 8.16.2 Why every earlier trajectory family is structurally incapable
+
+Two analytic facts, established before running anything:
+
+1. A long-standing balanced polymorphism at p = 0.374 gives π_I/π_S → p/(1−p)
+   = 0.597. Observed is **1.356 — 2.27× higher.** The inverted class carries far
+   more diversity than its *current* frequency can sustain, so it must have been
+   **commoner in the past**. A constant frequency reproducing 1.356 is p = 0.576.
+2. Every family in §8.6–§8.8 rises to an equilibrium and stays. None can place
+   the inverted class *above* its equilibrium diversity, because in none of them
+   was it ever commoner than now.
+
+Hence a **decline** family: held at `p_hist`, then falling to 0.374. The fall
+reuses the same overdominance ODE run toward a *lower* equilibrium, so it is the
+mirror of the rise rather than a new mechanism — an environmental shift moving
+the optimum down instead of up.
+
+**[W] One analytic step of mine was wrong and the simulation caught it.** I
+argued dxy/π_I ≥ 1 + T_anc/t_inv, hence t_inv ≥ 2.85 My. That treats π_I as
+growing like 2µ·t_inv, but π_I *saturates* at the inverted class's own
+equilibrium, after which extra t_inv only inflates dxy. The pilot showed
+dxy/π_I *rising* with t_inv (3.84 at 3 My, 6.67 at 6 My) — the opposite of the
+predicted direction. The bound was inverted; the informative range is
+t_inv ≈ 10⁵–10⁶, not ≥ 2.85 My.
+
+### 8.16.3 The fit
+
+3,000+ sims, 48–64 reps/cell, t_fall fixed at 100 ky.
+
+| | π_I/π_S | dxy/π_I | f₁ ratio | score |
+|---|---|---|---|---|
+| target | 1.3556 | 1.3848 | 0.8256 | — |
+| **t_inv 850 ky, p_hist 0.70, t_decline 175 ky** | **1.3160 (−2.9%)** | **1.4087 (+1.7%)** | **0.8269 (+0.2%)** | **0.00115** |
+| t_inv 800 ky, p_hist 0.74, t_decline 175 ky | 1.3868 (+2.3%) | 1.3435 (−3.0%) | 0.8165 (−1.1%) | 0.00150 |
+
+All three statistics inside 3%. `p_hist` is an **interior** optimum (0.66 → 0.0101,
+0.70 → 0.0012, 0.74 → 0.0039); `t_inv` sits at the upper edge of the final grid,
+though the wider scan shows 1 My is clearly worse (0.0177), so the optimum lies
+between.
+
+**Current best picture: the inversion arose ~850 ka, was maintained near
+p ≈ 0.70 for most of its history, and has been declining since ~175 ka, reaching
+0.374 today.**
+
+### 8.16.4 The age survived the reversal, and there is a reason
+
+t_inv ≈ 800–850 ky — **essentially identical to every pre-correction fit**
+(§8.7, §8.8 both gave 800 ky), despite the story inverting completely.
+
+That is not luck. **dxy(AA,BB) is label-symmetric** — it is the divergence
+*between* the two classes and does not care which is called inverted — and dxy
+is what carries t_inv. The reversal changed only its normalisation (dividing by
+π_BB instead of π_AA). So the age was always the best-determined quantity here,
+and it is the one result that survives the polarization error intact.
+
+### 8.16.5 What the story is now, versus what it was
+
+| | before (wrong polarization) | **after** |
+|---|---|---|
+| derived arrangement | AA, common (0.626) | **BB, rare (0.374)** |
+| its diversity | 2.25× *deficit* vs equilibrium | **2.27× *excess*** |
+| reading | young, recently swept up, bottlenecked | **formerly common (~0.70), now declining** |
+| t_decline / t_arrive | arrived ~200 ka | **decline began ~175 ka** |
+| age | ~800 ky | ~800–850 ky (unchanged) |
+
+The balancing-selection interpretation is if anything **strengthened**: an
+850 ky polymorphism sitting at intermediate frequency for most of its history is
+far too old and too stable to be drifting. What has changed is the direction of
+the recent dynamics — the arrangement is on its way down, not up.
+
+### 8.16.6 Caveats
+
+1. `t_fall` is fixed at 100 ky, not fitted, and is likely degenerate with
+   `t_decline`.
+2. Three parameters against three targets — exactly identified, so no residual
+   degrees of freedom test the model, and there are no error bars yet.
+3. §7.5.3's neutrality argument must be redone at x = 0.374, where the
+   conditional hitting time is **0.864·N** rather than 1.650·N. Still 0.5–5.9 M
+   generations, so drift is very likely still excluded, but it has not been
+   rerun.
+4. The decline is a phenomenological trajectory shape; no mechanism is fitted,
+   and overdominance-with-a-moving-optimum is one of several processes that
+   would produce it.
+5. µ still scales every age inversely and remains the dominant uncertainty.
+
 ## 9. Where identification has to come from
 
 Given §5.3 (Fst redundant) and §8.3 (absolute levels need a nuisance parameter),

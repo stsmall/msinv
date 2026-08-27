@@ -21,6 +21,25 @@ used by ``illex/scripts/empirical_windowed.py``'s core/edge analysis.
 
 from __future__ import annotations
 
+# =====================================================================
+# POLARIZATION REVERSED 2026-08-27 -- READ THIS BEFORE USING ANY CONSTANT
+# =====================================================================
+# I (inverted, DERIVED) == the BB cluster, at frequency 0.374.
+# S (standard, ANCESTRAL) == the AA cluster, at 0.626.
+#
+# For most of this project's history the opposite was recorded. The reference
+# genome was assembled from an inverted individual, so the arrangement it
+# carries -- BB -- is the derived one; a polarization test that appeared to
+# confirm "AA = derived" turned out to use the reference's own base as the
+# ancestral state at 69.2% of sites (NOTES sec 8.15). The cluster LABELS are
+# unchanged; only the interpretation is swapped.
+#
+# Consequence: every constant below whose name contains I or S changed meaning,
+# and every fit in NOTES sec 7 and 8.6-8.8 was made against the old values and
+# is invalid.
+
+P_INV = 0.374                 # frequency of the INVERTED (BB) arrangement
+
 # --- primary fitted statistics, FULL NOMINAL SPAN (chr2:60-80 Mb) ---
 # These are the historical targets, measured over the full nominal span. They
 # are reproduced to 4 dp by illex/scripts/empirical_jackknife.py (0.7439 /
@@ -32,7 +51,7 @@ from __future__ import annotations
 # flanking windows (NOTES sec 4.2).
 #
 # pi_I / pi_S = pi(AA) / pi(BB).
-PI_I_OVER_PI_S = 0.744
+PI_I_OVER_PI_S = 1.3429      # was 0.744 under the reversed polarization
 
 # dxy / pi_I = dxy(AA,BB) / pi(AA) -- normalised by the INVERTED class's own
 # pi specifically. Unlike the windowed spatial analysis in
@@ -42,7 +61,7 @@ PI_I_OVER_PI_S = 0.744
 # rejected as wrong: it contains the between-arrangement differences that
 # constitute dxy, partly dividing dxy by itself (see progress.md Task 6).
 # This is the second fitted target.
-DXY_OVER_PI_I = 1.846
+DXY_OVER_PI_I = 1.3738       # was 1.846 under the reversed polarization
 
 # --- like-for-like targets: the empirically DIFFERENTIATED body ---
 # Fst > 0.15 selects 189 of 200 100-kb windows, spanning 60.5-79.5 Mb. The
@@ -55,15 +74,15 @@ DXY_OVER_PI_I = 1.846
 # from illex/scripts/empirical_jackknife.py; see NOTES sec 5.4 for why 1 Mb is
 # the right block size and why these SEs are a LOWER bound on the uncertainty
 # that should be propagated into an age.
-PI_I_OVER_PI_S_BODY = 0.7368
-PI_I_OVER_PI_S_BODY_SE = 0.0263
-DXY_OVER_PI_I_BODY = 1.8794
-DXY_OVER_PI_I_BODY_SE = 0.0503
+PI_I_OVER_PI_S_BODY = 1.3556
+PI_I_OVER_PI_S_BODY_SE = 0.0481
+DXY_OVER_PI_I_BODY = 1.3848
+DXY_OVER_PI_I_BODY_SE = 0.0214
 
 # Same estimator applied to the full nominal span, for comparability with the
 # historical targets above.
-PI_I_OVER_PI_S_SE = 0.0262
-DXY_OVER_PI_I_SE = 0.0534
+PI_I_OVER_PI_S_SE = 0.0471
+DXY_OVER_PI_I_SE = 0.0227
 
 # --- mu-free scale: arrangement divergence vs the coindetii species split ---
 # R = dxy(AA,BB) / div(illecebrosus, coindetii), counted over
@@ -75,6 +94,8 @@ DXY_OVER_PI_I_SE = 0.0534
 # split, t_inv = R * (T_cal + T_anc_spp) - 2*N_ANC, with mu nowhere in it. This
 # is the only identified route to an age that does not inherit mu's uncertainty
 # (NOTES sec 5.5).
+# WITHDRAWN (NOTES sec 8.13.1): the denominator is not a stable quantity --
+# two collinear controls disagree by 70% and R spans 3x across methods.
 MU_FREE_R_BODY = 0.5137
 MU_FREE_R_BODY_SE = 0.0146
 MU_FREE_R_BODY_JC = 0.5102        # Jukes-Cantor corrected for multiple hits
@@ -99,3 +120,10 @@ PI_AA_CONTROL = 0.004324
 PI_BB_CONTROL = 0.004374
 DXY_CONTROL = 0.004364
 FST_CONTROL = 0.0035
+
+
+# --- ANGSD/GL within-arrangement SFS contrast (NOTES sec 8.5) ---
+# Singleton-fraction ratio f1(I)/f1(S) with I = BB, from
+# results/illex/sfs_shape_angsd.json. Was quoted as 1.211 with the labels the
+# other way round.
+SFS_F1_RATIO_BODY = 0.8256

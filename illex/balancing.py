@@ -171,8 +171,12 @@ def _time_to_reach(p, p_start: float, s_het: float,
     d = 1.0 / (p_star * (1.0 - p_star))
 
     def F(x):
+        # abs() in the last log is the analytic continuation for x > p_star,
+        # which the DECLINE family needs (approaching p* from above, where
+        # p_star - x < 0). For x < p_star it is identical to the original form,
+        # so the rise families are unaffected.
         return (a * np.log(x) + b * np.log(1.0 - x)
-                - d * np.log(p_star - x))
+                - d * np.log(np.abs(p_star - x)))
 
     return (F(p) - F(p_start)) / c
 
@@ -887,4 +891,122 @@ def build_arrival_balanced_sim(*, seq_length, t_inv, t_arrive, t_rise, p_hand,
         recombination_rate=recomb_rate,
         inversions=[spec],
         seed=seed,
+    )
+
+
+# =====================================================================
+# Decline family: formerly common, recently reduced
+# =====================================================================
+# Required by the corrected polarization (NOTES sec 8.15). With I = BB at
+# p = 0.374, the two targets say something the rise-then-plateau families above
+# structurally cannot produce:
+#
+#   * pi_I/pi_S = 1.356 against an equilibrium p/(1-p) of 0.597 -- the inverted
+#     class carries 2.27x MORE diversity than its CURRENT frequency can sustain.
+#     A constant frequency reproducing 1.356 would be p = 0.576. So the inverted
+#     arrangement was formerly COMMONER and has declined.
+#   * dxy/pi_I = 1.385. Single origin caps pi_I at 2*mu*t_inv, and
+#     dxy = 2*mu*(t_inv + T_anc), so dxy/pi_I >= 1 + T_anc/t_inv. With
+#     T_anc = 2*N_ANC = 1.096e6 that forces **t_inv >= 2.85 My** -- 3.6x older
+#     than every pre-correction fit.
+#
+# Every family above rises to p* and stays; none can put the inverted class
+# above its equilibrium diversity, because none ever has it commoner than now.
+#
+#     [t_inv, t_decline]   held at p_hist   (balanced at the OLD equilibrium)
+#     [t_decline, 0]       decline p_hist -> p_now = 0.374
+#
+# The decline uses the same overdominance ODE, run toward the new lower
+# equilibrium, so it is the mirror of the rise rather than a new mechanism: an
+# environmental shift moved the optimum DOWN instead of up.
+#
+# Note this makes the "balancing selection" reading stronger, not weaker. A
+# 2.85 My polymorphism at intermediate frequency is far too old to be drifting
+# neutrally -- see neutral_hitting_time, which at x = 0.374 gives 0.864*N.
+
+
+def decline_curve(t_inv: float, t_decline: float, t_fall: float,
+                  p_hist: float, p_now: float = P_I_DEFAULT,
+                  n_fall: int = 300, n_hist: int = 100,
+                  tol: float = ARRIVAL_TOL):
+    """(times, freqs) backward on [0, t_inv] for a formerly-commoner inversion.
+
+    ``p_hist`` is the old equilibrium, ``p_now`` the present frequency,
+    ``t_decline`` when the fall finished, ``t_fall`` how long it took.
+    Requires ``p_now < p_hist`` and ``t_decline + t_fall <= t_inv``.
+    """
+    if not 0.0 < p_now < p_hist < 1.0:
+        raise ValueError(
+            f"need 0 < p_now ({p_now!r}) < p_hist ({p_hist!r}) < 1; this family "
+            "describes a DECLINE, so the historical frequency must be higher")
+    if t_decline + t_fall > t_inv:
+        raise ValueError(
+            f"t_decline ({t_decline!r}) + t_fall ({t_fall!r}) exceeds t_inv "
+            f"({t_inv!r})")
+
+    # Fall from p_hist down to p_now, driven toward the new equilibrium p_now.
+    # Solve the strength so the fall takes t_fall, mirroring s_het_for_rise:
+    # the ODE dp/dt = (s/p*)p(1-p)(p*-p) is run with p* = p_now from ABOVE, so
+    # p decreases toward it.
+    from scipy import optimize
+
+    def _fall_time(s):
+        p_end = p_now * (1.0 + tol)
+        return float(_time_to_reach(p_end, p_hist, s, p_now)) - t_fall
+
+    # _time_to_reach is signed and works from either side of p*; bracket wide.
+    s_fall = float(optimize.brentq(_fall_time, 1e-9, 10.0, rtol=1e-12))
+    p_grid = np.geomspace(p_hist, p_now * (1.0 + tol), n_fall)
+    t_fwd = _time_to_reach(p_grid, p_hist, s_fall, p_now)
+    t_back = t_decline + (t_fall - t_fwd)
+
+    times = [0.0]
+    freqs = [p_now]
+    order = np.argsort(t_back)
+    times.extend(t_back[order].tolist())
+    freqs.extend(p_grid[order].tolist())
+    hist = t_inv - t_decline - t_fall
+    if hist > 0:
+        for f in np.linspace(0.0, 1.0, n_hist)[1:]:
+            times.append(t_decline + t_fall + f * hist)
+            freqs.append(p_hist)
+
+    times = np.asarray(times, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
+    srt = np.argsort(times, kind="stable")
+    times, freqs = times[srt], freqs[srt]
+    keep = np.concatenate([[True], np.diff(times) > 1e-9])
+    times, freqs = times[keep], freqs[keep]
+    return np.clip(times, 0.0, t_inv).tolist(), freqs.tolist(), s_fall
+
+
+def build_decline_sim(*, seq_length, t_inv, t_decline, t_fall, p_hist,
+                      p_now=P_I_DEFAULT, gamma=1e-15, n_i=100, n_s=100,
+                      seed=None, recomb_rate=None):
+    """Growth-arm sim for an inversion that was commoner and has declined."""
+    if recomb_rate is None:
+        from .slim.config import REC_RATE
+        recomb_rate = REC_RATE
+    margin = seq_length * MARGIN_FRACTION
+    bp_left, bp_right = margin, seq_length - margin
+    tract_length = max(1.0, (bp_right - bp_left) * TRACT_FRACTION)
+    times, freqs, _s = decline_curve(t_inv, t_decline, t_fall, p_hist, p_now)
+    spec = InversionSpec(
+        bp_left=bp_left, bp_right=bp_right,
+        gene_conversion_rate=gamma, mean_tract_length=tract_length,
+        tract_distribution="geometric",
+        trajectory={
+            "type": "precomputed",
+            "times": times, "freqs": [freqs],
+            "n_e": [float(N_growth(t_inv))],
+            "t_inv": [float(t_inv)],
+        },
+    )
+    return HullSimulator(
+        n_std=n_s, n_inv=n_i,
+        population_size=PRESENT_NE_GROWTH,
+        demography=growth_demography(),
+        sequence_length=seq_length,
+        recombination_rate=recomb_rate,
+        inversions=[spec], seed=seed,
     )

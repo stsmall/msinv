@@ -84,7 +84,7 @@ from msinv import HullSimulator, InversionSpec
 
 from .demography import (PRESENT_NE_CONST, PRESENT_NE_GROWTH,
                          constant_demography, growth_demography)
-from .theory import N_ANC
+from .theory import N_ANC, P_I_DEFAULT
 
 TRACT_FRACTION = 1e-4
 MARGIN_FRACTION = 0.1        # collinear flank on each side of the inversion
@@ -144,7 +144,8 @@ def _derive_s(p_final: float, p_start: float, t_inv: float) -> float:
     return float((logit_final - logit_start) / t_inv)
 
 
-def build_inversion_sim(*, arm, seq_length, t_inv, gamma, p_inv=0.626,
+def build_inversion_sim(*, arm, seq_length, t_inv, gamma,
+                        p_inv=P_I_DEFAULT,
                         p_start=None,
                         n_i=100, n_s=100, seed=None, recomb_rate=2.5e-9):
     demog, present_ne = _arm_parts(arm)
@@ -229,7 +230,7 @@ def build_control_sim(*, arm, seq_length, n_i=100, n_s=100, seed=None,
     demog, present_ne = _arm_parts(arm)
     spec = InversionSpec(
         bp_left=1.0, bp_right=2.0,
-        p_inv=0.626, t_inv=1.0e6,
+        p_inv=P_I_DEFAULT, t_inv=1.0e6,
         gene_conversion_rate=1e-15,
         mean_tract_length=1.0,
     )

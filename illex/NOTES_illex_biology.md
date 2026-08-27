@@ -1904,7 +1904,8 @@ t_inv ≈ 10⁵–10⁶, not ≥ 2.85 My.
 | | π_I/π_S | dxy/π_I | f₁ ratio | score |
 |---|---|---|---|---|
 | target | 1.3556 | 1.3848 | 0.8256 | — |
-| **t_inv 850 ky, p_hist 0.70, t_decline 175 ky** | **1.3160 (−2.9%)** | **1.4087 (+1.7%)** | **0.8269 (+0.2%)** | **0.00115** |
+| t_inv 850 ky, p_hist 0.70, t_decline 175 ky (t_fall fixed 100 ky) | 1.3160 (−2.9%) | 1.4087 (+1.7%) | 0.8269 (+0.2%) | 0.00115 |
+| **+ t_fall fitted at 50 ky (§8.18)** | **1.3396 (−1.2%)** | **1.3992 (+1.0%)** | **0.8465 (+2.5%)** | **0.00089** |
 | t_inv 800 ky, p_hist 0.74, t_decline 175 ky | 1.3868 (+2.3%) | 1.3435 (−3.0%) | 0.8165 (−1.1%) | 0.00150 |
 
 All three statistics inside 3%. `p_hist` is an **interior** optimum (0.66 → 0.0101,
@@ -1996,10 +1997,9 @@ the only thing to test. Now there is a second, independent constraint: a fall of
 | 200 ky | 0.0879 | 3.7 SD |
 | 500 ky | 0.1860 | **1.8 SD** |
 
-**This is where the argument is soft.** `t_fall` was **fixed** at 100 ky in the
-refit, not estimated. At 100 ky drift is excluded comfortably; at 500 ky the
-fall is 1.8 SD, which drift produces ~4% of the time. The decline test is
-decisive only if the fall was fast, and nothing yet establishes that it was.
+~~**This is where the argument is soft.**~~ **RESOLVED in §8.18** — `t_fall` has
+now been fitted, and the data exclude the slow fall that would have let drift
+work. Across the well-fitting range the decline is **5.7–12.2 SD**.
 
 ### 8.17.3 **[W] §7.5.3 overstated the margin, and the polarization is not why**
 
@@ -2034,6 +2034,76 @@ given.
 the data prefer a fast fall the decline test becomes the strongest argument in
 the analysis; if they tolerate a slow one, the case rests on attainment alone at
 a 1.25× margin.
+
+## 8.18 t_fall fitted, not fixed — the decline test survives **[M]**
+
+`illex/scripts/refit_decline.py --t-fall ...`, results in
+`results/illex/refit_decline_tfall.{csv,txt,json}`. §8.17.2 flagged the decline
+test as resting on a `t_fall` that had been **fixed** at 100 ky rather than
+estimated: the fall is 5.7 SD of drift at 100 ky but only 1.8 SD at 500 ky,
+which drift produces ~4% of the time. So `t_fall` was scanned.
+
+### 8.18.1 It can only be profiled, and that is stated up front
+
+Four parameters (t_inv, p_hist, t_decline, t_fall) against three targets, so
+`t_fall` is not point-identified. What the scan delivers is a **profile**: the
+best achievable fit at each `t_fall` with the other three re-optimised.
+4,320 sims, 48 reps/cell.
+
+Scores are converted to a χ² using the jackknife SEs on the two ratios (the
+ANGSD f₁ ratio has no SE and is reported separately):
+
+| t_fall | χ² (2 df) | Δχ² | f₁ miss | drift SD of the fall | |
+|---|---|---|---|---|---|
+| 25,000 | 0.20 | 0.00 | +4.2% | **12.2 SD** | best χ² |
+| **50,000** | 0.56 | 0.36 | +2.5% | **8.5 SD** | **best combined** |
+| 100,000 | 1.88 | 1.68 | +0.1% | **5.7 SD** | ok |
+| 200,000 | 3.14 | 2.93 | −1.1% | 4.9 SD | disfavoured |
+| 400,000 | 10.84 | 10.64 | −5.2% | 2.9 SD | **excluded** |
+
+The two ratios pull toward a fast fall and the SFS shape toward ~100 ky; 50 ky
+is the compromise and wins on the combined score.
+
+### 8.18.2 The answer: the data require a fast fall
+
+**Well-fitting range (Δχ² < 2): t_fall = 25–100 ky**, over which the decline is
+**5.7–12.2 SD** of pure drift. The 400 ky case — the one where the decline test
+collapsed to 1.8 SD and drift became viable — is **excluded at Δχ² = 10.6**
+(~2.5σ+), and 200 ky is already disfavoured.
+
+**So §8.17.2's soft spot is closed.** The decline test does not rest on an
+assumption: the data themselves rule out a fall slow enough for drift to
+produce. It is now the **strongest** of the two neutrality arguments, since the
+attainment test sits at only a 1.25× margin at the binding Ne.
+
+### 8.18.3 Updated best fit and the implied selection
+
+**t_inv = 850 ky, p_hist = 0.70, t_decline = 175 ky, t_fall ≈ 50 ky**
+→ π_I/π_S 1.3396 (−1.2%), dxy/π_I 1.3992 (+1.0%), f₁ ratio 0.8465 (+2.5%).
+
+The fall implies a selection coefficient against the inverted arrangement of
+
+| t_fall | s_fall | Ne·s at mid-fall |
+|---|---|---|
+| 25 ky | 5.7e-4 | 2,109 |
+| **50 ky** | **2.9e-4** | **1,012** |
+| 100 ky | 1.4e-4 | 466 |
+
+Ne·s of order 10³ — strong, unambiguous selection, and 6–20× the s_het ≈ 3–4e-5
+that the (superseded) pre-correction fits inferred for the rise. The arrangement
+is not drifting down; it is being removed.
+
+### 8.18.4 The picture, and what is still assumed
+
+**The inversion arose ~850 ka, was maintained near p ≈ 0.70 for ~600 ky, and
+then fell sharply to 0.374 in roughly 50 ky ending ~175 ka, under selection of
+order Ne·s ~ 10³.** A long-balanced polymorphism whose equilibrium moved, and
+which is still on its way down.
+
+Still assumed: `t_decline` and `t_fall` are partly degenerate (the 200 ky row
+re-optimises to a different t_decline and p_hist); the decline shape is
+phenomenological, with no mechanism fitted; there are still no joint error bars;
+and µ scales every age inversely.
 
 ## 9. Where identification has to come from
 

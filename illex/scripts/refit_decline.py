@@ -25,24 +25,34 @@ Two analytic facts settle the shape before any simulation runs:
    inverted class carries far more diversity than its current frequency can
    sustain. A CONSTANT frequency reproducing 1.356 would be p = 0.576. So the
    inverted arrangement was formerly COMMONER and has declined.
-2. Single origin caps pi_I at 2*mu*t_inv, and dxy = 2*mu*(t_inv + T_anc), so
-   dxy/pi_I >= 1 + T_anc/t_inv. With T_anc = 2*N_ANC = 1.096e6 the observed
-   1.3848 forces **t_inv >= 2.85 My** -- 3.6x older than every pre-correction
-   fit.
+2. **[W] A second analytic argument of mine was wrong here, and the pilot
+   caught it.** I claimed dxy/pi_I >= 1 + T_anc/t_inv, hence t_inv >= 2.85 My.
+   That treats pi_I as growing like 2*mu*t_inv, but pi_I SATURATES at the
+   inverted class's own equilibrium, after which extra t_inv only inflates dxy.
+   The pilot showed dxy/pi_I RISING with t_inv (3.84 at 3 My, 6.67 at 6 My) --
+   the opposite of the predicted direction. The informative range is
+   t_inv ~ 1e5-1e6, not >= 2.85 My.
 
 Every family in NOTES sec 8.6-8.8 rises to its equilibrium and stays there, so
 none can put the inverted class ABOVE its equilibrium diversity. Hence
 ``illex.balancing.decline_curve``: held at ``p_hist`` for most of its history,
 then declining to 0.374.
 
-THE STORY THIS TESTS, STATED BEFORE RUNNING
--------------------------------------------
-An OLD inversion (>= 2.85 My), long maintained at an intermediate frequency
-around ~0.58, which has declined relatively recently to 0.374. That is the
-mirror image of the pre-correction reading (a young inversion that recently
-rose), and it makes the balancing-selection interpretation stronger rather than
-weaker: a polymorphism of that age at intermediate frequency is far too old to
-be drifting.
+WHAT THE FIT FOUND, AND WHAT t_fall IS FOR
+------------------------------------------
+Arose ~850 ka, held near p_hist ~ 0.70 for most of its history, declining since
+~175 ka to 0.374 today -- the mirror image of the pre-correction reading. All
+three statistics land inside 3%.
+
+``t_fall``, the duration of the decline, was initially FIXED at 100 ky. It is now
+scanned, because the neutrality argument turns on it (NOTES sec 8.17.2): a fall
+of 0.326 is 5.7 SD of drift if it took 100 ky but only 1.8 SD if it took 500 ky,
+which drift produces ~4% of the time. With four parameters against three targets
+t_fall cannot be point-identified, so the script reports a PROFILE -- the best
+achievable score at each t_fall with the other three re-optimised. A profile that
+rises steeply with t_fall means the data REQUIRE a fast fall and the decline is
+genuinely too fast for drift; a flat profile means they merely tolerate one and
+the decline test cannot carry weight alone.
 """
 from __future__ import annotations
 
@@ -60,8 +70,15 @@ from illex import empirical
 from illex.scripts.sfs_shape import PROJ, project_unfolded
 
 OUT = Path("results/illex")
-T_FALL = 100_000.0
 GAMMA = 1e-15
+
+# t_fall is now SCANNED, not fixed. With four parameters against three targets
+# it cannot be uniquely determined; what the scan delivers is a PROFILE -- the
+# best achievable score at each t_fall, with the other three re-optimised. That
+# is the quantity the neutrality argument needs (NOTES sec 8.17.2): the decline
+# test is decisive only if the data REQUIRE a fast fall, and a flat profile
+# would mean they merely tolerate one.
+T_FALL = [25_000.0, 50_000.0, 100_000.0, 200_000.0, 400_000.0]
 
 T_INV = [3.0e6, 4.0e6, 6.0e6]
 P_HIST = [0.50, 0.58, 0.66]
@@ -79,19 +96,20 @@ def _one(job):
     from illex.demography import PRESENT_NE_GROWTH
     from illex.slim.config import REC_RATE
 
-    t_inv, p_hist, t_dec, rep = job
+    t_inv, p_hist, t_dec, t_fall, rep = job
     L = int(round(2000.0 / (4.0 * PRESENT_NE_GROWTH * REC_RATE)))
-    seed = (9_000_000 + 1000 * int(t_inv / 1e5) + 100 * int(p_hist * 100)
-            + int(t_dec / 1e4) + rep)
+    seed = (9_000_000 + 100_000 * int(t_inv / 1e5) + 1000 * int(p_hist * 100)
+            + 10 * int(t_dec / 1e4) + int(t_fall / 1e4) + rep)
     t0 = time.time()
     sim = B.build_decline_sim(seq_length=L, t_inv=t_inv, t_decline=t_dec,
-                              t_fall=T_FALL, p_hist=p_hist, gamma=GAMMA,
+                              t_fall=t_fall, p_hist=p_hist, gamma=GAMMA,
                               seed=seed)
     ts = sim.simulate()
     i_nodes, s_nodes = S.sample_nodes_by_karyotype(sim, ts)
     left, right = M.inversion_interval(sim)
     st = S.arrangement_stats(ts, i_nodes, s_nodes, interval=(left, right))
-    row = {"t_inv": t_inv, "p_hist": p_hist, "t_decline": t_dec, "rep": rep,
+    row = {"t_inv": t_inv, "p_hist": p_hist, "t_decline": t_dec,
+           "t_fall": t_fall, "rep": rep,
            "seed": seed, "wall_s": round(time.time() - t0, 2),
            "pi_i_over_pi_s": st["pi_i_over_pi_s"],
            "dxy_over_pi_i": st["dxy_over_pi_i"]}
@@ -114,21 +132,26 @@ def main() -> None:
     ap.add_argument("--t-inv")
     ap.add_argument("--p-hist")
     ap.add_argument("--t-decline")
+    ap.add_argument("--t-fall")
     ap.add_argument("--tag", default="")
     a = ap.parse_args()
-    global T_INV, P_HIST, T_DECLINE
+    global T_INV, P_HIST, T_DECLINE, T_FALL
     if a.t_inv:
         T_INV = [float(x) for x in a.t_inv.split(",")]
     if a.p_hist:
         P_HIST = [float(x) for x in a.p_hist.split(",")]
     if a.t_decline:
         T_DECLINE = [float(x) for x in a.t_decline.split(",")]
+    if a.t_fall:
+        T_FALL = [float(x) for x in a.t_fall.split(",")]
 
-    jobs = [(t, p, d, r)
-            for t, p, d in itertools.product(T_INV, P_HIST, T_DECLINE)
+    jobs = [(t, p, d, f, r)
+            for t, p, d, f in itertools.product(T_INV, P_HIST, T_DECLINE,
+                                                T_FALL)
+            if d + f <= t
             for r in range(a.reps)]
-    print(f"{len(jobs):,} sims  (t_fall={T_FALL:,.0f}, p_now="
-          f"{empirical.P_INV})", flush=True)
+    print(f"{len(jobs):,} sims  (p_now={empirical.P_INV}, "
+          f"{len(T_FALL)} t_fall values)", flush=True)
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
         rows = list(ex.map(_one, jobs, chunksize=1))
@@ -144,14 +167,14 @@ def main() -> None:
     emit(f"targets: pi_I/pi_S={TARGET_R:.4f}  dxy/pi_I={TARGET_D:.4f}  "
          f"f1(I)/f1(S)={TARGET_F:.4f}")
     emit()
-    emit(f"{'t_inv':>9s} {'p_hist':>7s} {'t_decl':>9s} {'pi_I/pi_S':>10s} "
-         f"{'dxy/pi_I':>9s} {'f1ratio':>8s} {'miss_r':>7s} {'miss_d':>7s} "
-         f"{'miss_f':>7s} {'score':>7s}")
+    emit(f"{'t_inv':>9s} {'p_hist':>7s} {'t_decl':>9s} {'t_fall':>8s} "
+         f"{'pi_I/pi_S':>10s} {'dxy/pi_I':>9s} {'f1ratio':>8s} "
+         f"{'miss_r':>7s} {'miss_d':>7s} {'miss_f':>7s} {'score':>7s}")
     best = None
     out_rows = []
-    for t, p, d in itertools.product(T_INV, P_HIST, T_DECLINE):
+    for t, p, d, tf in itertools.product(T_INV, P_HIST, T_DECLINE, T_FALL):
         sub = [x for x in rows if x["t_inv"] == t and x["p_hist"] == p
-               and x["t_decline"] == d]
+               and x["t_decline"] == d and x["t_fall"] == tf]
         if not sub:
             continue
         r = float(np.mean([x["pi_i_over_pi_s"] for x in sub]))
@@ -171,21 +194,51 @@ def main() -> None:
         mf = (f1 - TARGET_F) / TARGET_F
         score = mr * mr + md * md + mf * mf
         if best is None or score < best[0]:
-            best = (score, t, p, d, r, dd, f1)
-        emit(f"{t:9,.0f} {p:7.3f} {d:9,.0f} {r:10.4f} {dd:9.4f} {f1:8.4f} "
-             f"{100 * mr:+6.1f}% {100 * md:+6.1f}% {100 * mf:+6.1f}% "
-             f"{score:7.4f}")
+            best = (score, t, p, d, r, dd, f1, tf)
+        emit(f"{t:9,.0f} {p:7.3f} {d:9,.0f} {tf:8,.0f} {r:10.4f} {dd:9.4f} "
+             f"{f1:8.4f} {100 * mr:+6.1f}% {100 * md:+6.1f}% "
+             f"{100 * mf:+6.1f}% {score:7.4f}")
         out_rows.append({"t_inv": t, "p_hist": p, "t_decline": d,
-                         "t_fall": T_FALL, "pi_i_over_pi_s": r,
+                         "t_fall": tf, "pi_i_over_pi_s": r,
                          "dxy_over_pi_i": dd, "f1_ratio": f1,
                          "score": score, "n": len(sub)})
-    emit(f"{'TARGET':>9s} {'':>7s} {'':>9s} {TARGET_R:10.4f} {TARGET_D:9.4f} "
-         f"{TARGET_F:8.4f}")
+    emit(f"{'TARGET':>9s} {'':>7s} {'':>9s} {'':>8s} {TARGET_R:10.4f} "
+         f"{TARGET_D:9.4f} {TARGET_F:8.4f}")
     if best:
         emit()
         emit(f"BEST  t_inv={best[1]:,.0f}  p_hist={best[2]:.3f}  "
-             f"t_decline={best[3]:,.0f}  ->  {best[4]:.4f} / {best[5]:.4f} / "
-             f"{best[6]:.4f}  (score {best[0]:.5f})")
+             f"t_decline={best[3]:,.0f}  t_fall={best[7]:,.0f}  ->  "
+             f"{best[4]:.4f} / {best[5]:.4f} / {best[6]:.4f}  "
+             f"(score {best[0]:.5f})")
+
+    # PROFILE over t_fall: best achievable score at each value, the other
+    # three parameters re-optimised. This is the output the neutrality
+    # argument needs.
+    emit()
+    emit("=" * 74)
+    emit("PROFILE over t_fall (best score at each value, others re-optimised)")
+    emit("=" * 74)
+    emit(f"  {'t_fall':>9s} {'best score':>11s} {'at t_inv':>10s} "
+         f"{'p_hist':>7s} {'t_decl':>9s}   drift SD of the implied fall")
+    from illex.theory import N_growth
+    for tf in T_FALL:
+        cells = [x for x in out_rows if x["t_fall"] == tf]
+        if not cells:
+            continue
+        b = min(cells, key=lambda x: x["score"])
+        tt = np.linspace(b["t_decline"], b["t_decline"] + tf, 5000)
+        ph = b["p_hist"]
+        sd = float(np.sqrt(ph * (1 - ph)
+                           * np.trapezoid(1.0 / (2.0 * N_growth(tt)), tt)))
+        fall = ph - empirical.P_INV
+        emit(f"  {tf:9,.0f} {b['score']:11.5f} {b['t_inv']:10,.0f} "
+             f"{ph:7.3f} {b['t_decline']:9,.0f}   "
+             f"{fall:.3f} / {sd:.4f} = {fall / sd:5.1f} SD")
+    emit()
+    emit("  A profile that RISES steeply with t_fall means the data require a")
+    emit("  fast fall, and the decline is then too fast for drift. A FLAT")
+    emit("  profile means t_fall is unidentified and the decline test cannot")
+    emit("  carry weight on its own (NOTES sec 8.17.2).")
 
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / f"refit_decline{a.tag}.csv").open("w", newline="") as fh:

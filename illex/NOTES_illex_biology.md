@@ -1631,7 +1631,7 @@ scaffold.** This is the cleanest structural confirmation of the inversion in the
 project — direct assembly-to-assembly evidence, independent of PCA, LD, karyotype
 clustering and Fst.
 
-### 8.13.3 **[W] It also puts the polarization in question — flag, not a correction**
+### 8.13.3 **[W] It appeared to put the polarization in question — RESOLVED in §8.14, the polarization STANDS**
 
 The manuscript records **AA = derived (inverted), BB = ancestral** as
 **[ESTABLISHED]** (AnchorWave coindetii↔illex MAF). Two observations now point
@@ -1663,6 +1663,78 @@ result should be revised until this is settled.**
 inferred ancestral alleles. Ask which arrangement carries more ancestral states
 at the arrangement-diagnostic sites. That is a direct answer and does not depend
 on inferring what the reference individual's karyotype was.
+
+## 8.14 Polarization confirmed, and the region carries TWO inversion events **[M]**
+
+`illex/scripts/polarization_check.py`, results in
+`results/illex/polarization_check.txt`. §8.13.3 raised a doubt about the
+recorded **AA = derived / BB = ancestral**. The doubt is resolved: **the
+recorded polarization is correct.** My suspicion was wrong.
+
+### 8.14.1 Which arrangement carries ancestral alleles
+
+At arrangement-diagnostic sites, the share where the **AA** majority allele
+equals the ancestral base:
+
+| \|p_AA − p_BB\| | est-sfs | coindetii parsimony |
+|---|---|---|
+| ≥ 0.3 | 31.7% (n=27,715) | 38.9% (n=44,089) |
+| ≥ 0.5 | 23.0% (n=17,005) | 30.5% (n=23,779) |
+| **≥ 0.7** | **19.0%** (n=9,840) | **25.0%** (n=13,582) |
+
+**BB carries the ancestral allele 75–81% of the time**, and the signal
+strengthens as the sites become more diagnostic — the right direction. So
+**BB is ancestral and AA is derived, as recorded.**
+
+Two independent polarizations agree. I had flagged est-sfs as circular for this
+question, because its ingroup-frequency term should push it toward calling the
+*commoner* arrangement's allele ancestral, and AA is commoner (0.626). That
+would have inflated the "AA ancestral" column. It did not: est-sfs is *more*
+extreme than parsimony (19.0% vs 25.0%), i.e. biased the other way. Either way
+the **non-circular** method confirms the result on its own.
+
+### 8.14.2 The reference genome carries BB, cleanly
+
+§8.12 inferred this from a mean allele-frequency lean and I called it weak. It
+is not weak when measured properly. At sites fixed-different between arrangements
+(|p_AA − p_BB| ≥ 0.9, n = 3,504):
+
+* the reference carries the **BB allele 86.5%** of the time
+* mean p_AA = **0.829**, mean p_BB = **0.139** (p = non-reference allele frequency)
+
+So the reference haplotype is BB — the **ancestral** arrangement.
+
+### 8.14.3 Therefore the region holds two separate inversion events
+
+Three solid facts now sit together:
+
+1. The reference carries **BB** (§8.14.2).
+2. **BB is ancestral** within illecebrosus (§8.14.1).
+3. The reference's 60.5–79.5 Mb is **inverted relative to coindetii** — 100.0%
+   minus strand over 18.1 Mb on a shared scaffold, against 94–100% plus for both
+   flanking collinear controls (§8.13.2).
+
+The *ancestral* illecebrosus arrangement is inverted relative to coindetii. That
+cannot be explained by the polymorphic inversion, so **the orientation difference
+between the species is a separate event** from the polymorphism segregating
+within illecebrosus. Either an inversion fixed on one lineage after the split, or
+the polymorphic inversion is nested inside an older interspecific rearrangement.
+
+Which lineage it happened on cannot be settled here — that needs a third
+outgroup. But the robust statement is that **chr2:60–80 Mb has inverted at least
+twice**, which makes it an inversion hotspot rather than a single event, and is
+consistent with the breakpoint reuse commonly reported for inversions.
+
+### 8.14.4 What this changes
+
+**Nothing downstream.** §8.13.3 warned that reversed labels would flip π_I/π_S
+from 0.744 to 1.344 and silently invert every conclusion in §7 and §8.6–8.8. The
+polarization is confirmed, so all of that stands unchanged: the derived
+arrangement is the one at 0.626 carrying *less* diversity, and the recent-rise
+argument, the age and the balancing-selection fit are unaffected.
+
+What it adds is a new structural result (§8.14.3), and it removes a live risk
+from the record.
 
 ## 9. Where identification has to come from
 

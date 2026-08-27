@@ -1,0 +1,33 @@
+Which arrangement carries the ANCESTRAL allele at arrangement-diagnostic sites?
+Two polarizations: est-sfs (circular here -- see the module note) and
+coindetii parsimony (outgroup only, not circular).
+
+============================================================================
+inversion body  (60,500,000-79,500,000)   1,336,347 sites
+============================================================================
+  |p_AA-p_BB|        n    est-sfs: AA anc  parsimony: AA anc
+       >= 0.3   39,422    31.7%  (n=27,715)  38.9%  (n=44,089)
+       >= 0.5   24,480    23.0%  (n=17,005)  30.5%  (n=23,779)
+       >= 0.7   13,998    19.0%  (n=9,840)  25.0%  (n=13,582)
+
+============================================================================
+collinear control  (10,000,000-30,000,000)   3,468,696 sites
+============================================================================
+  |p_AA-p_BB|        n    est-sfs: AA anc  parsimony: AA anc
+       >= 0.3        0   (too few sites)
+       >= 0.5        0   (too few sites)
+       >= 0.7        0   (too few sites)
+
+============================================================================
+READING IT
+============================================================================
+  'AA anc' is the share of diagnostic sites where the AA majority
+  allele equals the ancestral base. >50% means AA carries ancestral
+  states more often, i.e. AA is the ANCESTRAL arrangement and BB is
+  derived -- the OPPOSITE of the recorded polarization. <50% supports
+  the recorded 'AA = derived'.
+  In the collinear control both columns must sit at ~50%; if they do
+  not, the estimator is biased and neither region can be read.
+  Where the two methods disagree, trust PARSIMONY: est-sfs's ingroup
+  frequency term pushes it toward calling the commoner arrangement's
+  allele ancestral, and AA is the commoner arrangement (0.626).

@@ -2312,3 +2312,34 @@ the way to a lower target". So the profile answers **"how recently could the
 fall have ended"**, not "is p changing now". A profile that localises t_decline
 away from 0 says the fall is over; a flat one says we cannot date its end.
 Whether p is changing today is answered by (2), not by this run.
+
+## 8.21 The sweep scan is karyotype-agnostic -- a withdrawal (2026-08-28)
+
+Asked whether selection was ever examined without reference to karyotype. It
+was, in one place, and I had read too much into it.
+
+**What is stratified:** pg_gpu diversity/dxy/FST (sec 8.3), the ANGSD SAFs and
+within-arrangement SFS (sec 8.5), the genome-wide FST(AA,BB) scan, the f1
+jackknife (sec 8.19). All per-arrangement by construction.
+
+**What is not:** the diploSHIC/RAiSD sweep scan -- pooled n = 350, no
+arrangement stratification. The manuscript's sec 8 already flagged "chr2 ...
+its calls are inversion-confounded", but sec 3l never said what the confound
+was.
+
+**The confound.** Inside the inversion the pooled sample is a MIXTURE of two
+classes at FST = 0.365. That mechanically inflates pi, pushes Tajima's D up,
+and presents two haplotype backgrounds. So sec 3l(a)'s "hard depleted 11-fold,
+soft mildly enriched" is largely what pooling two divergent arrangements looks
+like -- the same structure FST already reports -- **not** the "independent
+support for balancing selection from a method sharing nothing with the
+coalescent modelling" I wrote. **Withdrawn.** What survives: no hard-sweep
+signature in the pooled data, one-sided, since a sweep confined to one
+arrangement would be diluted by the other.
+
+**The gap this exposes.** Selection WITHIN each arrangement has never been
+scanned. That is where a supergene's adaptive content would appear, and it is
+the only thing a sweep scan could add beyond the FST scan. Cost: diploSHIC's
+theta_W/D/dist* features are sample-size dependent (the reason chrZ needed its
+own n = 330 model), so this needs models retrained at n = 254 (AA) and n = 95
+(BB); whether n = 95 suffices for the CNN is untested. chrZ is the precedent.

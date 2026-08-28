@@ -126,4 +126,19 @@ FST_CONTROL = 0.0035
 # Singleton-fraction ratio f1(I)/f1(S) with I = BB, from
 # results/illex/sfs_shape_angsd.json. Was quoted as 1.211 with the labels the
 # other way round.
-SFS_F1_RATIO_BODY = 0.8256
+# CALIBRATED against the collinear control (NOTES sec 8.19). The raw body
+# ratio is 0.8256 +- 0.0076, but the control ratio -- where AA and BB are
+# exchangeable and it must be 1 -- comes out at 1.0161 +- 0.0011, i.e. 15 SE
+# from 1. That offset is near-identical in every 1 Mb block, so it is a
+# systematic property of the two sample sets (n = 254 vs 95, so realSFS's EM
+# estimates the two source spectra with different bias), not of the genome.
+# The model side has n_i = n_s = 100 and carries no such asymmetry, so the
+# empirical ratio is divided by the control ratio to cancel it.
+#
+#   raw body 0.8256 / control 1.0161 = 0.8125
+#
+# Fits scored before 2026-08-28 used the uncalibrated 0.8256.
+SFS_F1_RATIO_BODY = 0.8125
+SFS_F1_RATIO_BODY_SE = 0.0076
+SFS_F1_RATIO_BODY_RAW = 0.8256
+SFS_F1_RATIO_CONTROL = 1.0161

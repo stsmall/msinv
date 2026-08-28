@@ -2219,3 +2219,96 @@ better µ.
   `/home/ssmall/inversion_sims/files`.
 - **Generations ≈ years** for this species, so ages need no conversion.
 - Every absolute age is inversely proportional to µ = 3e-9; state µ with any age.
+
+## 8.19 An error bar on f1 -- and the control fails its own check (2026-08-28)
+
+**Why.** The decline fit is scored against three statistics. Two carry 1 Mb
+block-jackknife SEs (3.5% on pi_I/pi_S, 1.5% on dxy/pi_I). The third, the ANGSD
+singleton ratio f1(I)/f1(S) = 0.8256, had none. That gap became binding because
+the question "is the decline still ongoing?" is answered almost entirely by f1:
+across the grid, moving t_decline 175 -> 100 ka moves pi_I/pi_S by +2.5% but f1
+by +4.6%. A delta-chi-square on t_decline is uninterpretable without a variance
+on f1.
+
+**Method.** `realSFS -r` takes one contiguous region, so a true leave-one-out
+(span minus a hole) cannot be requested. Instead each 1 Mb block was run
+separately off the existing chr2 SAFs (78 runs, ~25 min) and delete-one-block
+spectra formed by summing the others. realSFS optimises by EM over its whole
+region, so per-block estimates need not sum to the global one -- this is GATED
+in `sfs_f1_jackknife.py` and the script refuses to report an SE if they
+disagree by >2%. **Gate passed, worst 0.06%.**
+
+**Result.**
+
+| arm | f1(BB) | f1(AA) | ratio f1(I)/f1(S) |
+|---|---|---|---|
+| body 60.5-79.5 Mb | 0.4973 +- 0.0030 | 0.6022 +- 0.0070 | **0.8256 +- 0.0076** (0.9%) |
+| collinear control | 0.5983 +- 0.0034 | 0.5888 +- 0.0035 | **1.0161 +- 0.0011** |
+
+**THE CONTROL FAILS.** AA and BB are exchangeable outside the inversion, so the
+control ratio must be 1. It is 1.6% off -- small, but the jackknife SE is
+smaller still, so it sits **15 SE from 1**. The offset is near-identical in
+every block, which is exactly why a spatial jackknife cannot see it: it is a
+systematic property of the two SAMPLE SETS, not of the genome. Prime candidate
+is n = 254 vs 95, so realSFS's EM estimates the two source spectra with
+different bias before either is projected to n = 20; coverage differences
+between the bamlists would do the same. **Not diagnosed** -- confirming it needs
+an AA SAF rebuilt at n = 95 over the control region, a new ANGSD run.
+
+**The fix does not require the diagnosis.** The model side has n_i = n_s = 100
+and carries no class-size asymmetry; the empirical ratio carries one. Dividing
+body by control cancels any class-level systematic shared across regions,
+whatever its cause -- the same logic already used for the per-class
+body-vs-control comparison in sec 8.5.
+
+    calibrated target = 0.8256 / 1.0161 = **0.8125 +- 0.0076**
+
+The assumption doing the work is that the offset is the same in both regions
+(same individuals, same bamlists, same n). Plausible, but an assumption.
+`empirical.SFS_F1_RATIO_BODY` updated 0.8256 -> 0.8125. Per-class
+body-vs-control L1 values are unaffected -- they compare each class to itself,
+so the systematic already cancels there.
+
+**Consequence for the fit.** Rescoring the ~130 existing decline cells against
+the calibrated target (no new sims -- the statistics are stored) moves the best
+fit from `t_inv 850 ka / p_hist 0.70 / t_decline 175 ka / t_fall 50 ky`
+(score 0.00089) to `800 ka / 0.74 / 100 ka / 200 ky` (score 0.00084). **The
+improvement is negligible and the top five cells span t_inv 800-850 ka, p_hist
+0.70-0.74, t_decline 100-175 ka, t_fall 100-200 ky.** So the calibration moves
+the point estimate *within an already-flat ridge* rather than relocating the
+fit. The age is stable at ~800-850 ka; (t_decline, t_fall) remain unidentified.
+
+## 8.20 Can we test whether the decline is still ongoing? (2026-08-28)
+
+Three routes, only one of which is a new computation.
+
+**1. Temporal sampling -- dead.** At the fitted s ~ 2.9e-4 the frequency drops
+0.0034 per 50 generations (Illex is annual/semelparous, so generations =
+years), against a sampling SE of 0.0136 at n = 633. A two-sample test needs
+**~570 years** of separation. Decadal archives and fishery time series have no
+power. Do not pursue.
+
+**2. The transit window -- free, and most of the answer.** At the fitted s the
+arrangement crosses p in [0.30, 0.45] in **2,230 generations = 0.26% of its
+850-ky history**, and runs 0.70 -> 0.05 in **13 ky**. Catching it mid-fall is
+~1-in-400. For the observation to be unremarkable (>=5-10% of the history in
+that band) the decline would need s <= 8e-6 - 1.5e-5, i.e. **Ne*s ~ 50-100
+rather than 10^3, a 20-100x weaker process**. Put differently: an ongoing
+decline at the FITTED rate implies p ~ 0.999 only 25 ky ago, irreconcilable
+with a 0.70 plateau. So the strong selection that produced the fall is excluded
+as an ongoing process. A slow decline is not excluded -- and one that slow is
+close to indistinguishable from drift.
+
+**3. The t_decline profile -- queued 2026-08-28 19:00, 72 cells, ~4 h.**
+t_decline over {0, 25, 50, 100, 175, 250} ka with t_inv, p_hist and t_fall all
+free to re-optimise at each value (`.tmp/queue_tdecline.sh`).
+
+**WHAT IT DOES AND DOES NOT TEST -- a correction to what I first proposed.** I
+claimed a t_decline -> 0 profile would bound the ongoing case from the steep
+side. It does not. `decline_curve` drives p toward p* = p_now, so it ASYMPTOTES
+onto 0.374: even at t_decline = 0 the frequency is 0.377 at 50 ka and flat
+across the last 25 ky. The family cannot express "p passing THROUGH 0.374 on
+the way to a lower target". So the profile answers **"how recently could the
+fall have ended"**, not "is p changing now". A profile that localises t_decline
+away from 0 says the fall is over; a flat one says we cannot date its end.
+Whether p is changing today is answered by (2), not by this run.

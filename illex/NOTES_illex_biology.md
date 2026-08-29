@@ -2575,3 +2575,59 @@ nothing in the gene content explains this inversion, inside or out. The block is
 differentiated as a UNIT, which is what suppressed recombination does, and no
 individual locus carries excess signal. That is a real and consistent finding,
 not an absence of analysis.
+
+## 8.27 The karyotype-stratified sweep scan -- done, and negative (2026-08-29)
+
+Closes the gap sec 8.21 identified. `sweep_within_karyotype.py`.
+
+**No diploSHIC retrain was needed, and retraining would have been the wrong
+move.** I first said this required models at n = 254 and n = 95 because
+diploSHIC's features are sample-size dependent. True, but it would also have to
+be trained on a genome-wide neutral demography, whereas the derived class INSIDE
+the inversion has its own coalescent (class size ~2Np plus a single-origin cap).
+Training on the wrong null is how the pooled scan went wrong in the first place.
+The per-karyotype ANGSD thetas from 2026-07-05 (AA/AB/BB pi, theta_W, Tajima's D
+in 50 kb windows across chr2) avoid both problems: each class is compared to ITS
+OWN chr2 background, so no external null is needed. Unphased data forces SFS
+statistics anyway.
+
+**Structural background (median over 50 kb windows, >= 5,000 callable sites):**
+
+| | pi(AA) | pi(BB) | D(AA) | D(BB) | n win |
+|---|---|---|---|---|---|
+| inversion body | 0.005966 | 0.007720 | -2.372 | -2.028 | 1994 |
+| collinear control | 0.013991 | 0.013785 | -2.097 | -2.034 | 2000 |
+
+Control passes (the classes are indistinguishable there). Both classes lose ~55%
+of their diversity inside the inversion, so a SHARED dip carries no information
+and the scan keys on class ASYMMETRY.
+
+**The first pass looked positive and was wrong.** Standardising each class
+against the collinear control flagged **44 AA-specific windows (2.2%) and 0
+BB-specific**, with 0 in the control. But pi_AA sits ~23% below pi_BB throughout
+the block -- that IS pi_I/pi_S = 1.356 with I = BB, the project's central
+observation -- so any control-standardised test flags AA across the whole
+inversion.
+
+**Retested against the block's own distribution, it is a clean null:**
+
+    pi_AA/pi_BB over 1994 body windows: median 0.787, sd 0.195
+    windows > 2 SD below that median: 3 of 1994 (0.2%) -- 2.3% expected if Normal
+
+The block is **light**-tailed. Only **2 of the 44** candidates survive, and they
+spread over 17 distinct 0.5 Mb bins across 64.1-79.3 Mb -- not one focal region.
+**No within-arrangement sweep signal in either class.**
+
+**The direction matters.** ZERO BB-specific windows by any criterion, and BB
+carries HIGHER pi than AA throughout. The derived arrangement -- where a
+supergene's adaptive variant would sit -- shows no sweep signature at all.
+
+**POWER CAVEAT.** 50 kb windows, SFS statistics only, BB n = 95. A weak or old
+sweep would be missed, and one predating the inversion would be shared by both
+classes and invisible to an asymmetry test. This is "no detectable sweep", not
+"no selection".
+
+**Fifth consecutive null on gene-level/locus-level selection** (sec 8.10 GO,
+8.21 pooled scan, 8.25 FST ranking, 8.26 per-transcript dxy, now this). The
+consistent picture: the block behaves as a UNIT under frequency-level selection,
+with nothing localised inside it.

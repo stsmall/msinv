@@ -2744,3 +2744,59 @@ proportion to sequence. That is what a linked block does, and it gives no
 positive evidence that the extragenic signal is concentrated in unannotated
 genes. But it does not exclude it, and the ISOSEQ/sq3 novel transcript set has
 not been checked against these regions.
+
+## 8.30 ISOSEQ/transcript evidence vs the high-differentiation regions (2026-08-29)
+
+stsmall asked whether the high-differentiation regions with no annotated genes
+(sec 8.29: 85.2% of near-fixed sites fall outside any gene model) might just be
+missing annotation. Tested against the independent transcript evidence.
+
+**First: the ISOSEQ transcripts are ALREADY in the annotation.** The curated GFF
+is `...func.fix.sq3.FINAL.v2...` -- sq3 = SQANTI3, already merged. chr2 carries
+751 standard LOC genes + 27 SQ (isoseq/novel); in the inversion body it is
+**99 standard + 2 SQ = 101**, exactly the count in `Illex.genes.bed`. So the
+14.3% coverage figure already includes them, and SQ adds 2 genes. lncRNA adds
+nothing either -- 3 in the body, 197 kb, already inside the same 14.3%.
+
+**Second: the independent StringTie assembly (RNA-seq + ISOSEQ) covers LESS, not
+more.**
+
+| set | union bp in the body | % of block |
+|---|---|---|
+| curated genes + lncRNA | 2,850,534 | **14.3%** |
+| StringTie transcript spans | 1,217,583 | 6.1% |
+| StringTie exons | 103,774 | 0.5% |
+
+**Third, and decisive -- the direct intersection:**
+
+| | all sites | dp>=0.8 | dp>=0.9 |
+|---|---|---|---|
+| in curated gene model | 16.24% | 14.79% | 17.20% |
+| in StringTie/ISOSEQ transcript | 7.09% | 3.64% | 3.47% |
+| in EITHER | 16.65% | 14.83% | 17.28% |
+
+Of the **8,299** near-fixed (dp >= 0.8) sites outside any curated gene, **3 fall
+in a StringTie/ISOSEQ transcript. Three.** That is **0.07x** the background rate
+of StringTie coverage in extragenic sequence -- **depleted, not enriched.**
+StringTie adds only 0.4 percentage points beyond the curated models (16.65% vs
+16.24%), so the annotation is effectively saturated against this evidence.
+
+**VERDICT: the missing-annotation hypothesis gets no support.** The
+high-differentiation extragenic sequence is not merely unannotated -- it has no
+transcript evidence from either source, and less than random extragenic
+sequence does.
+
+**What this does NOT rule out.**
+1. **Tissue/stage coverage.** StringTie reflects the tissues and stages actually
+   sequenced. A gene expressed only in an unsampled context is invisible to both
+   the curated models and this test. This bounds "transcribed in what was
+   sampled", not "functional".
+2. **Regulatory sequence.** Enhancers and other cis-regulatory elements are not
+   transcripts and are invisible to every analysis in this project. The
+   differentiation could be regulatory and we would not see it.
+3. Note these sites are inside the ACCESSIBILITY MASK, so they are mappable
+   sequence -- not simply collapsed repeats.
+
+So sec 8.29's framing stands but sharpens: the gene-level nulls apply to ~14% of
+the block, and the other 86% is not hiding genes -- it is sequence with no
+transcriptional evidence at all, in a gene-poor block.

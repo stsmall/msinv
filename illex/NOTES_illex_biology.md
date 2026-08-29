@@ -2470,3 +2470,55 @@ genes the near-fixed sites are in. That needs per-site output
 (`realSFS fst print`) intersected with degenotate. Natural follow-on, and the
 only route to the gene/codon half of the original question that has a control
 behind it.
+
+## 8.25 Per-site GL FST x degenotate: the GL route works, the FST STATISTIC does not (2026-08-29)
+
+Ran `realSFS fst index/print` off the n=40 SAFs and the unfolded 2D SFS, then
+intersected with degenotate. `fst_persite_degen.py`.
+
+**The data are sound this time.** Region FST body **0.3228** vs control
+**0.0053** -- the control passes outright, unlike the called-VCF attempt in sec
+8.23. 9,128,070 body sites and 12,027,890 control sites with FST defined.
+
+**But the statistic is not.** Hudson FST = sum(A)/sum(B), and at a
+near-monomorphic site both go to ~0 while the numerator carries the negative
+sampling corrections -p(1-p)/(n-1). The ratio is therefore dragged toward 0
+wherever diversity is low -- and CDS is mostly constrained.
+
+**How it was caught.** Transcripts reading FST ~ 0.012 sit inside 100 kb windows
+at FST 0.37-0.46. That cannot happen in a non-recombining block. corr(transcript
+FST, window FST) is only +0.20 (Spearman +0.16).
+
+**Confirmed:**
+
+    Spearman corr(per-transcript FST, polymorphism per site) = +0.694
+    Q1 least polymorphic  median FST 0.0199
+    Q2                                0.1534
+    Q3                                0.2741
+    Q4 most polymorphic               0.2942
+
+**Both answers are therefore withdrawn:**
+* **The gene ranking is invalid** -- it orders transcripts by how polymorphic
+  they are. (For the record, the ranking it produced was cytochrome P450 4X1,
+  cysteine-rich venom protein, PNPLA-domain phospholipases, malonyl-CoA-ACP
+  transacylase -- a lipid/metabolism flavour that echoes the sec 8.10 GO story,
+  which was ALSO a null artifact. Do not cite either.)
+* **The 0-fold depletion in the high-FST tail is the same artifact from the
+  other side** (OR 0.18-0.41, p ~ 1e-34): 0-fold sites are constrained, hence
+  less polymorphic, hence pushed out of the tail. **The CONTROL shows the same
+  direction** (OR 0.44-0.81, p 4e-05), which settles it as generic.
+
+**Conditioning does not rescue it.** At B >= 0.25 the bias is gone but only 220
+coding sites remain in the body and 5 in the control -- no test, and zero
+transcripts with enough sites. The block is gene-poor (95 scored transcripts),
+CDS is mostly constrained, and n = 40/class is a small subsample.
+
+**One positional worry ruled out:** the top transcripts are NOT a linkage
+cluster. They span 60.91-79.31 Mb of the 19 Mb block and corr(FST, position) is
+-0.03. The consecutive LOC_000053xx IDs just reflect gene numbering along the
+chromosome.
+
+**RECOMMENDED FOLLOW-ON: per-transcript dxy, not FST.** dxy is an absolute
+divergence rather than a ratio, so it has no small-denominator pathology. It
+needs no new ANGSD run. Until then, **the gene/codon half of the question is
+unanswered.**

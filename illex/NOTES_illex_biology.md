@@ -2631,3 +2631,58 @@ classes and invisible to an asymmetry test. This is "no detectable sweep", not
 8.21 pooled scan, 8.25 FST ranking, 8.26 per-transcript dxy, now this). The
 consistent picture: the block behaves as a UNIT under frequency-level selection,
 with nothing localised inside it.
+
+## 8.28 Protein-level differences between arrangements -- few, and purifying (2026-08-29)
+
+`protein_diff_karyotype.py`. Per-site allele frequencies per karyotype from
+ANGSD genotype likelihoods (`-doMajorMinor 4` pins the major allele to the
+reference for both groups so |dp| compares the same allele site by site), body
+and collinear control, AA n=254 / BB n=95.
+
+**THE CONTROL IS PERFECT -- the first time this question has had a working
+instrument.**
+
+| dp >= | body | control |
+|---|---|---|
+| 0.5 | -- | **0 of 8,009,993** |
+| 0.8 | 0.1349% | **0.0000%** |
+| 0.9 | 0.0450% | **0.0000%** |
+| 0.95 | 0.0090% | **0.0000%** |
+
+Zero sites anywhere in 8 M collinear sites reach dp = 0.5. Compare sec 8.23,
+where the called VCF gave 267 apparent FIXED differences in the same region, and
+a body/control ratio of only ~3x where FST differs 100-fold.
+
+**THE ANSWER: protein-level differences exist but are strikingly FEW, and their
+composition says purifying selection, not adaptation.**
+
+* **13 unique near-fixed nonsynonymous positions** (dp >= 0.8, 0-fold) across
+  the whole 19 Mb block, in ~12 transcripts. (The raw count of 16 double-counts
+  positions covered by overlapping transcripts in different frames -- e.g.
+  69.0906 Mb appears 3x.)
+* **The differentiated tail is ~4x DEPLETED for nonsynonymous sites:**
+
+      dp >= 0.5:  (0-fold/4-fold) tail 0.644  vs baseline 4.892  -> ratio 0.132
+      dp >= 0.8:  (0-fold/4-fold) tail 1.143  vs baseline 4.892  -> ratio 0.234
+
+  A dN/dS-like value of **0.13-0.23**. Between-arrangement differentiation is
+  overwhelmingly SYNONYMOUS. That is what neutral accumulation behind a
+  recombination barrier looks like while purifying selection keeps acting within
+  both arrangements -- **no signature of adaptive protein divergence**.
+
+**Two apparent stop-gains (S->*, E->*) in the AA arrangement at 68.089 and
+71.895 Mb. TREAT AS ARTIFACTS UNTIL CHECKED.** The gene models were built on the
+reference, which is a BB haplotype (sec 8.15), so codon frames are defined by BB
+sequence. Applying that frame to a divergent AA haplotype inside the inversion
+is exactly where spurious premature stops appear. Also, LOC_00005340
+("acidic repeat-containing protein") contributes 5 of the 16 raw hits, and
+repeat-containing genes are alignment-error prone.
+
+**CAVEAT THAT SURVIVES A CLEAN RESULT.** Recombination is suppressed across the
+whole block, so a near-fixed nonsynonymous site is a PASSENGER on the
+arrangement's haplotype unless something independent implicates it. This counts
+protein-level differences; it cannot identify a causal one -- and the five
+preceding analyses (sec 8.10, 8.21, 8.25, 8.26, 8.27) found nothing localised.
+
+**Sixth null on locus-level causation, but the FIRST positive characterisation
+of the coding divergence itself:** it is sparse and constrained.

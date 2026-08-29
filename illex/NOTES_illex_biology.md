@@ -2343,3 +2343,63 @@ the only thing a sweep scan could add beyond the FST scan. Cost: diploSHIC's
 theta_W/D/dist* features are sample-size dependent (the reason chrZ needed its
 own n = 330 model), so this needs models retrained at n = 254 (AA) and n = 95
 (BB); whether n = 95 suffices for the CNN is untested. chrZ is the precedent.
+
+## 8.22 The t_decline profile: the fall is OVER (2026-08-28, 72 cells)
+
+Ran `.tmp/queue_tdecline.sh` -- t_decline over {0, 25, 50, 100, 175, 250} ka
+with t_inv, p_hist and t_fall all free to re-optimise at each value.
+
+**Scored properly for the first time.** All three targets now have SEs (sec
+8.19 gave f1 its first), so the fit is a weighted chi-square rather than the
+unweighted sum-of-squared-relative-misses used until now:
+
+    pi_I/pi_S  1.3556 +- 0.0481  (3.55%)
+    dxy/pi_I   1.3848 +- 0.0214  (1.55%)
+    f1(I)/f1(S) 0.8125 +- 0.0076 (0.94%)   <- much the tightest, so it dominates
+
+Weighting changes the answer: the unweighted score picked
+`800 ka / 0.74 / 250 ka / 50 ky`, the weighted chi-square picks
+**`t_inv 850 ka / p_hist 0.74 / t_decline 175 ka / t_fall 100 ky`, chi2 = 2.62**
+(pi +1.4 SE, dxy +0.5 SE, f1 -0.6 SE). Note p_hist = 0.74 is now preferred over
+0.70 -- it appears in 7 of the 8 cells within chi2_min + 2.
+
+**THE PROFILE.**
+
+| t_decline | min chi2 | delta chi2 | at |
+|---|---|---|---|
+| **0 (fall ends now)** | 38.07 | **+35.45** | 850 ka / 0.74 / 200 ky |
+| 25 ka | 19.70 | +17.08 | 850 ka / 0.74 / 200 ky |
+| 50 ka | 5.79 | +3.17 | 850 ka / 0.74 / 200 ky |
+| 100 ka | 3.40 | +0.78 | 800 ka / 0.74 / 200 ky |
+| **175 ka** | **2.62** | **0.00** | 850 ka / 0.74 / 100 ky |
+| 250 ka | 3.47 | +0.85 | 800 ka / 0.74 / 50 ky |
+
+**The fall ended >= ~50-100 ka. "It ended now" is excluded at delta chi2 = 35.**
+The profile is flat from 100 to 250 ka -- we cannot date the end more precisely
+than that -- but it rises steeply toward 0. This is the outcome sec 8.20 called
+the informative one: t_decline is localised well away from 0.
+
+**Robustness, because f1 does most of the work.** The f1 SE is a MEASUREMENT
+error and a lower bound (blocks inside a non-recombining inversion share one
+origin), so the profile was recomputed with it inflated:
+
+| f1 SE x | 0 | 25 ka | 50 ka | 100 ka | 175 ka | 250 ka |
+|---|---|---|---|---|---|---|
+| 1 (0.0076) | 35.4 | 17.1 | 3.2 | 0.8 | 0 | 0.9 |
+| 2 (0.0152) | 10.8 | 6.8 | 3.0 | 0.5 | 0 | 0.5 |
+| 3 (0.0228) | 4.1 | 2.5 | 1.0 | 0.6 | 0 | 0.4 |
+| 5 (0.0380) | 0.7 | 0.4 | 0.0 | 0.6 | 0 | 0.4 |
+
+**The conclusion survives a 2x inflation, weakens at 3x, and dies at 5x.** So it
+holds unless the true uncertainty on f1 is >= 3x its measurement SE. It is also
+not purely an f1 result: at the best t_decline = 0 cell the pi ratio is +2.8 SE
+off on its own (vs +1.4 SE at the optimum), so ~6 units of the delta chi2 come
+from pi alone.
+
+**WHAT THIS DOES AND DOES NOT SAY -- carried forward from sec 8.20.** It says
+the fall finished long ago, not that the frequency is static today.
+`decline_curve` asymptotes onto p_now, so even t_decline = 0 means "just
+arrived", not "still falling"; the family cannot express p passing THROUGH
+0.374. Whether p is changing now is answered by the transit-window bound in sec
+8.20 (an ongoing decline must be 20-100x weaker than the fitted one), not by
+this profile. The two agree: the strong fall is over.

@@ -2522,3 +2522,56 @@ chromosome.
 divergence rather than a ratio, so it has no small-denominator pathology. It
 needs no new ANGSD run. Until then, **the gene/codon half of the question is
 unanswered.**
+
+## 8.26 Per-transcript dxy: no gene stands out (2026-08-29)
+
+The sec 8.25 fix, run. `dxy_per_transcript.py`. B (the Hudson denominator from
+`fst print`) is proportional to between-class dxy on ANGSD's own scale -- 3.9x
+(body) and 3.1x (control) the pg_gpu value, and NOT a constant factor between
+regions -- so it is used only in WITHIN-region ratios and no absolute dxy is
+quoted from it.
+
+**Normalisation.** Raw per-transcript dxy confounds barrier age (wanted) with
+constraint (not wanted). Each transcript is divided by the mean B of its own
+100 kb window, which shares the local mutation rate and the same barrier age.
+The collinear control -- no barrier, so only constraint plus noise -- sets the
+bar for what "unremarkable" looks like.
+
+**The statistic behaves far better than FST.**
+
+| | corr(transcript, window) | Spearman |
+|---|---|---|
+| dxy, control | +0.620 | **+0.851** |
+| dxy, body | +0.310 | +0.408 |
+| FST (sec 8.25) | +0.20 | +0.16 |
+
+**THE RESULT IS NULL.**
+
+| ratio transcript/window | n | median | p90 | p95 | max |
+|---|---|---|---|---|---|
+| control | 63 | 0.444 | 2.042 | 2.548 | 4.554 |
+| body | 95 | 0.351 | 1.633 | 2.687 | 6.102 |
+
+Body transcripts above the control's 95th percentile: **5 of 95 = 5.3%, against
+5% expected by chance.** The body's spread is no wider than the control's. **No
+gene in the inversion is unusually diverged between arrangements relative to its
+own neighbourhood.**
+
+And the top of the ranking is uninformative anyway: **10 of the top 12 have no
+EnTAP hit at all** -- unannotated predicted genes.
+
+**Two honest weaknesses.**
+1. The constraint check came out BACKWARDS: corr(ratio, 0-fold fraction) =
+   +0.29 (body), +0.63 (control), where more constraint should mean LESS
+   divergence. So the window normalisation is not fully clean, and the ranking
+   should not be read even as a weak ordering.
+2. Power. 95 transcripts at n = 40/class detects only a large excess at a single
+   gene. This is "no strong outlier", NOT "no functional divergence".
+
+**Where this leaves the gene question.** Combined with sec 8.10 (the GO
+enrichment is a null artifact), sec 8.25 (the FST gene ranking is a polymorphism
+artifact) and the FST scan showing no co-adapted partners OUTSIDE the inversion:
+nothing in the gene content explains this inversion, inside or out. The block is
+differentiated as a UNIT, which is what suppressed recombination does, and no
+individual locus carries excess signal. That is a real and consistent finding,
+not an absence of analysis.

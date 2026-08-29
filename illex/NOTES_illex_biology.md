@@ -2800,3 +2800,53 @@ sequence does.
 So sec 8.29's framing stands but sharpens: the gene-level nulls apply to ~14% of
 the block, and the other 86% is not hiding genes -- it is sequence with no
 transcriptional evidence at all, in a gene-poor block.
+
+## 8.31 Raw ISOSEQ alignments vs the high-diff regions -- better test, same answer (2026-08-29)
+
+stsmall: "there are already mapped Isoseq to the genome, you can check for gene
+models there." Correct, and sec 8.30 used the wrong instrument. The StringTie
+merge had LOST most of the ISOSEQ signal: it covered 6.1% of the block by
+transcript span, while the raw collapsed ISOSEQ alignments cover **12.1%** --
+twice as much, and comparable to the curated models' 14.3%.
+
+`isoseq.collapse.bam` in the body: **2,482 collapsed transcripts, 7,677 exon
+blocks** (the raw `isoseq.mm2.bam` holds 2,248,258 alignments there).
+
+| | union bp in body | % of block |
+|---|---|---|
+| curated genes + lncRNA | 2,850,534 | 14.3% |
+| **ISOSEQ collapse, spans** | **2,418,650** | **12.1%** |
+| ISOSEQ collapse, exons | 553,117 | 2.8% |
+| StringTie spans (sec 8.30) | 1,217,583 | 6.1% |
+
+**So the test now has real power -- and the answer does not change.**
+
+| | all sites | dp>=0.8 | ratio |
+|---|---|---|---|
+| curated gene model | 16.24% | 14.79% | 0.91x |
+| ISOSEQ exon | 3.92% | 2.65% | **0.68x** |
+| ISOSEQ span (incl introns) | 13.55% | 11.92% | 0.88x |
+
+Of the **8,299** near-fixed sites outside any curated gene:
+
+    in an ISOSEQ EXON:  125 (1.5%)  vs 1.5% background  -> enrichment 0.98x
+    in an ISOSEQ SPAN:  399 (4.8%)  vs 4.2% background  -> enrichment 1.14x
+    NEITHER gene nor ISOSEQ span:  7,900 = 95.2%
+
+**0.98x is background exactly.** Adding ISOSEQ raises total coverage from 16.2%
+to 19.8% of assayed sites, but it does not preferentially cover the
+differentiated sites. The missing-annotation hypothesis is now tested with an
+instrument that has ~13% genomic coverage rather than 6%, and it still finds
+nothing.
+
+**What IS there:** 125 near-fixed sites fall in ISOSEQ exons with no curated gene
+model -- genuine candidate unannotated exons carrying arrangement
+differentiation. At 0.98x they are exactly the proportional expectation, so they
+are not evidence of a hidden functional class, but they exist and are the only
+concrete leads if anyone wants to chase them.
+
+**The two exemptions from sec 8.30 still stand and are now the whole residual
+argument:** ISOSEQ reflects the tissues and stages actually sequenced, and
+**cis-regulatory sequence is not a transcript and is invisible to every analysis
+in this project.** Regulatory divergence remains the main untested functional
+hypothesis for this inversion.

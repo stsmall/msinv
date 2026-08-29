@@ -2686,3 +2686,61 @@ preceding analyses (sec 8.10, 8.21, 8.25, 8.26, 8.27) found nothing localised.
 
 **Sixth null on locus-level causation, but the FIRST positive characterisation
 of the coding divergence itself:** it is sparse and constrained.
+
+## 8.29 The two stop-gains were MY BUG, and an annotation-coverage limit (2026-08-29)
+
+**RETRACTION.** Sec 8.28 reported two apparent premature stops in the AA
+arrangement (S->* at 2:68,088,901, E->* at 2:71,894,582) and guessed they were
+reference-is-BB frame artifacts. Wrong diagnosis, and the finding itself is
+withdrawn: **there are ZERO stop-gains.**
+
+**The actual cause is a strand mismatch in my own join.** degenotate reports
+`ref` and the alternative-codon table on the **transcript** strand; ANGSD
+reports major/minor on the **genomic** strand. For minus-strand genes these are
+complements. Verified directly against the reference FASTA:
+
+    2:68,088,901  genome = G   degenotate ref = C   (complement)
+    2:71,894,582  genome = C   degenotate ref = G   (complement)
+
+Both genes (LOC_00005332, LOC_00005351) are on the minus strand. Complementing
+the ANGSD minor allele before the lookup turns both into ordinary missense:
+**S->L** and **E->K**. Roughly half the annotation is minus-strand (18,562 of
+36,708 mRNAs), so about half of sec 8.28's residue identities were wrong.
+
+**Corrected: all 13 near-fixed nonsynonymous changes, none a stop.**
+
+| position | gene | strand | dp | change |
+|---|---|---|---|---|
+| 60,908,622 | LOC_00005300 | + | 0.92 | E->G |
+| 61,552,548 | LOC_00005304 | - | 0.95 | H->D |
+| 64,103,547 | LOC_00005316 | - | 0.88 | T->S |
+| 68,088,901 | LOC_00005332 | - | 0.94 | S->L |
+| 68,920,207 | LOC_00005336 | - | 0.96 | R->C |
+| 69,090,644/649/650/665, 69,092,152 | LOC_00005340 | - | 0.80-0.86 | F->L, S->L, S->P, A->T, L->P |
+| 71,561,097 | LOC_00005350 | + | 0.86 | G->R |
+| 71,894,582 | LOC_00005351 | - | 0.86 | E->K |
+| 78,295,550 | LOC_00005374 | + | 0.84 | S->T |
+
+**The dN/dS-like result of 0.13-0.23 is UNAFFECTED** -- degeneracy class is
+strand-invariant. Only residue identities changed.
+
+**ANNOTATION COVERAGE -- a limit on every gene-level null in sec 8.10-8.28.**
+Raised by stsmall: high-differentiation regions with no annotated genes might
+just be missing annotation.
+
+    annotated gene models cover      14.3% of the 19.95 Mb block
+    assayed sites inside a gene      16.24%
+    assayed sites inside CDS          0.95%
+    of 9,740 sites at dp >= 0.8, 8,299 (85.2%) fall OUTSIDE any annotated gene
+
+**So every gene-level analysis in this project speaks to ~14% of the block**,
+and 85% of the near-fixed differentiation sits in sequence with no gene model.
+The six nulls are nulls *within annotated genes*, which must be stated that way.
+
+What can be said against the cryptic-gene reading: high-dp sites are **not**
+enriched outside genes either -- the in-gene fraction runs 0.80-1.06x the
+background across dp thresholds, i.e. differentiation is distributed roughly in
+proportion to sequence. That is what a linked block does, and it gives no
+positive evidence that the extragenic signal is concentrated in unannotated
+genes. But it does not exclude it, and the ISOSEQ/sq3 novel transcript set has
+not been checked against these regions.

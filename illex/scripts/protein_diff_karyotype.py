@@ -29,6 +29,20 @@ AA and BB are exchangeable in the collinear region. Whatever |dp| tail appears
 there is the false-positive rate, and any claim about the inversion has to clear
 it. This is the check the callset failed.
 
+STRAND -- THE BUG THAT ALMOST PRODUCED TWO NONSENSE MUTATIONS
+-------------------------------------------------------------
+degenotate reports `ref` and the alternative-codon table on the **transcript**
+strand; ANGSD reports major/minor on the **genomic** strand. For a minus-strand
+gene they are complements. Verified directly: the genome base at 2:68,088,901 is
+G, degenotate lists C.
+
+Looking the ANGSD minor allele up in degenotate's table without complementing
+called two premature stops (S->* at 68.089 Mb, E->* at 71.895 Mb), both in
+minus-strand genes. After complementing they are ordinary missense changes
+(S->L and E->K) and **there are ZERO stop-gains among the near-fixed
+differences**. Degeneracy class (0-fold/4-fold) is strand-invariant, so the
+dN/dS-like result below is unaffected -- only residue identities were wrong.
+
 THE CAVEAT THAT SURVIVES A CLEAN RESULT
 ---------------------------------------
 Recombination between arrangements is suppressed across the whole block, so
@@ -53,6 +67,26 @@ ENTAP = Path("/sietch_colab/data_share/illex/annotations/gene_annotation_dir/"
              "project/functional_entap/entap_outfiles/final_results/annotated.tsv")
 OUT = Path("results/illex")
 MIN_IND = {"AA": 150, "BB": 60}       # ~60% of 254 / 95
+GFF = Path("/sietch_colab/data_share/illex/popgen_data/degenotate_illex/"
+           "Illex_F24.gene_lnc_pseudo.func.fix.sq3.FINAL.v2.fixID.gff3")
+COMP = {"A": "T", "T": "A", "C": "G", "G": "C"}
+
+
+def strands() -> dict:
+    """Transcript -> strand. Needed to complement the ANGSD minor allele before
+    looking it up in degenotate's transcript-strand codon table."""
+    import re
+    out = {}
+    with GFF.open() as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            f = line.split("\t")
+            if len(f) > 8 and f[2] == "mRNA":
+                mm = re.search(r"ID=([^;]+)", f[8])
+                if mm:
+                    out[mm.group(1)] = f[6]
+    return out
 
 
 def load(region: str) -> pd.DataFrame:

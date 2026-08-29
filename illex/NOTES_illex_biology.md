@@ -2403,3 +2403,70 @@ arrived", not "still falling"; the family cannot express p passing THROUGH
 0.374. Whether p is changing now is answered by the transit-window bound in sec
 8.20 (an ongoing decline must be 20-100x weaker than the fitted one), not by
 this profile. The two agree: the strong fall is over.
+
+## 8.23 Per-site FST off the called VCF FAILS its control (2026-08-28)
+
+Asked for high-FST SNPs between karyotypes, the genes, and codon positions.
+Built it from the callset (`fst_snp_coding.py`) and it does not work.
+
+**The control kills it.** In the collinear region AA and BB are exchangeable,
+so there should be essentially no differentiated sites. Instead: **267 apparent
+FIXED differences and 0.25% of SNPs at |dp| >= 0.8**, against 171 and 0.75% in
+the body. A 3x body/control ratio where FST differs 100-fold (0.365 vs 0.0035)
+means the tail is noise-dominated in both.
+
+**Diagnosis: structured missingness.** NONE of the apparent fixed differences,
+in either region, survives AN >= 75% of maximum -- 0 of 205 (body), 0 of 339
+(control). A site reads as fixed exactly when few genotypes are called.
+
+**Fourth occurrence of one lesson.** Called-genotype SFS (sec 8.4), argentinus
+sufficiency (sec 8.12), the polarization subset (sec 8.15), now per-site FST.
+**Standing rule: do not read per-site allele frequencies off this callset.**
+
+**What survives, because it does not need individual sites to be right:** the
+differentiated tail is overwhelmingly NON-CODING -- 43 of 11,381 sites at
+dp >= 0.8 are in CDS (0.4%) -- and shows no 0-fold enrichment (OR 0.89-1.30,
+p >= 0.57, n = 20-43). Zero fixed differences fall in CDS in either region.
+Consistent with a gene-poor block; underpowered rather than a strong negative.
+
+## 8.24 The unfolded AA x BB 2D SFS -- the same question, answered (2026-08-29)
+
+`realSFS -fold 0` on fresh n=40 SAFs for body and control (2 h and 2.5 h EM;
+the full-n 509x191 version failed back in July). `sfs2d_karyotype.py`.
+
+| as % of variable sites | body | control | ratio |
+|---|---|---|---|
+| shared polymorphism | 21.40% | 47.16% | **0.45** |
+| AA-private | 41.40% | 25.96% | 1.59 |
+| BB-private | 37.20% | 26.88% | 1.38 |
+| near-fixed AA-ALT/BB-REF | 0.196% (1,950) | **0.000% (0)** | inf |
+| near-fixed AA-REF/BB-ALT | 0.027% (269) | **0.000% (0)** | inf |
+
+1. **The control is spotless** -- every near-fixed cell exactly zero, 3,229 of
+   6,561 cells empty. Best control pass in the project, and what licenses
+   reading the body at all. Contrast sec 8.23, where the same question off the
+   called VCF failed this test outright.
+2. **No exact fixed differences anywhere -- and that is EXPECTED.** dxy/pi_I =
+   1.385 puts between-class divergence at ~1.4x within-BB diversity, nowhere
+   near reciprocal monophyly, so complete sorting across 160 chromosomes should
+   be rare. Not a null result about the barrier.
+3. **Near-fixed differentiation is real: 2,219 sites in the body, ZERO in the
+   control.** This is the "are there high-FST SNPs" answer, and only the GL
+   route could give it.
+4. **Clean barrier signature:** shared polymorphism collapses 47% -> 21% while
+   private variation rises in both classes. Symmetric in AA/BB, so the least
+   reference-sensitive statistic here.
+5. **The 7.2:1 directional lean is NOT biology.** The reference IS a BB
+   haplotype inside the inversion, so BB-derived variants shared with the
+   reference are invisible by construction. The control cannot remove this --
+   outside the inversion the reference carries no arrangement identity. Counts
+   are LOWER BOUNDS with a known lean. (This is the sec 8.13 equidistance trap
+   in a new place.)
+6. **AA is not lost to mapping bias:** AA-private (41.4%) exceeds BB-private
+   (37.2%) in the body; severe reference-mapping loss would deplete AA.
+
+**LIMITATION:** a 2D SFS carries counts, not positions -- it cannot say which
+genes the near-fixed sites are in. That needs per-site output
+(`realSFS fst print`) intersected with degenotate. Natural follow-on, and the
+only route to the gene/codon half of the original question that has a control
+behind it.

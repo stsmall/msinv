@@ -3027,3 +3027,66 @@ divergence is accessible, non-repetitive, and now demonstrably part-genic.
 answer "are genes enriched in divergent windows", which is not the question and
 was never claimed. Annotation completeness is a property of the annotation, not
 a contrast between regions.
+
+## 8.35 How many genes did we actually miss? ~12-14, not 99 (2026-08-30)
+
+Sec 8.34 established the annotation is incomplete. This quantifies it, and the
+answer is much smaller than the raw hit count.
+
+**Method.** All unannotated, non-repeat sequence in the pinned inversion
+(60.54-79.50 Mb) -- 5,509 intervals >=500 bp, **5.28 Mb** -- by `diamond blastx`
+against 282,815 proteins from seven cephalopods (Sthenoteuthis, same family as
+Illex; Architeuthis, Doryteuthis, Sepioteuthis, Euprymna, Sepia, Octopus).
+**99 intervals hit** (1.8%). Function transferred by blastp of the matched
+proteins against real SwissProt (`public_seqdb/diamond_db/swissprot.dmnd`; the
+`easel/assets` copy is a 2,000-protein demo and gave 1 hit -- do not use it).
+Unresolved proteins then run through `hmmscan` vs Pfam-A.
+
+**Three filters, each removing most of what survived the last.**
+
+| class | n | near-fixed | ORF vs shuffled null |
+|---|---|---|---|
+| no_pfam_domain | 53 | 121 | **1.37x** |
+| TE_derived (SwissProt) | 20 | 29 | 1.53x |
+| **gene_candidate** | **14** | **17** | **1.72x** |
+| TE_pfam | 6 | 10 | 1.41x |
+| domain_nonTE | 4 | 4 | 1.72x |
+| probable_TE_pfam | 2 | 0 | 1.80x |
+
+1. **~28 are transposon-derived** -- Gag-Pol/retrovirus Pol x6, Ty3 x2, Tcb1,
+   Tigger, Pogo-KRAB, SETMAR, SCAN, MYM-ZnF, K02A2.6, CDP2, plus 6 TE-domain and
+   2 transposase-associated (HTH_animal, DUF4817) by Pfam. EarlGrey did not mask
+   these, so they entered as "unannotated non-repeat".
+2. **53 match a cephalopod protein with NO Pfam domain at all** (43 of 55
+   unresolved proteins had none).
+3. **The ORF shuffle control is what settles it.** These intervals are AT-rich
+   (GC 0.379), so long stop-free runs are cheap: median observed ORF 116 aa
+   against **77 aa in composition-matched shuffles**, overall ratio only 1.51.
+   The no_pfam_domain class sits at **1.37x** -- no coding signal. An earlier
+   read that "85 of 99 have an ORF >= their alignment" was misleading, because
+   both quantities are short and short stop-free runs come free in AT-rich DNA.
+
+**RESULT: ~12-14 genuinely missed genes**, not 99. Only the SwissProt
+gene_candidate class has real support (1.72x null, 71% clearly above it, 12/14
+with an ORF spanning the blastx alignment; USP32 and BAAT are broken, likely
+fragments). Named: USP32, WRNIP1 (x3 intervals), LACTB2, KCTD9, MFS transporter
+(x2), protocadherin-11, heme-binding protein 2, BAAT, and uncharacterised
+L446/R571.
+
+**The 53 no-domain intervals carry 121 of the near-fixed sites** and have no
+SwissProt function, no Pfam domain, and no ORF support. Best reading: non-coding
+or degraded sequence matching a domainless -- probably spurious -- prediction in
+another cephalopod's proteome.
+
+**WHY NO RERUN OF THE DIVERGENCE SCANS.** Missed genes occur at 1.8%
+genome-wide in the inversion vs 2.0% in the highest-divergence windows -- a flat
+rate. They are distributed like the annotated genes, so adding ~14 to a
+95-transcript set cannot move a compartment comparison or a per-transcript
+ranking. What needs fixing is the FRAMING (sec 8.10, 8.25-8.27, 8.33 are
+statements about ANNOTATED genes, with the denominator now known to be ~14
+short), not the compute.
+
+**Still open:** a genuinely cephalopod-specific gene would look exactly like the
+no_pfam_domain class. Paralarval/juvenile ISOSEQ is the experiment that would
+separate them, and would also test the stage-restriction explanation for why
+adult-only data missed the 14.

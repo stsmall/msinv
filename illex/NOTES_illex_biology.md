@@ -2850,3 +2850,80 @@ argument:** ISOSEQ reflects the tissues and stages actually sequenced, and
 **cis-regulatory sequence is not a transcript and is invisible to every analysis
 in this project.** Regulatory divergence remains the main untested functional
 hypothesis for this inversion.
+
+## 8.32 Breakpoints PINNED, and the clustering question (2026-08-29)
+
+**Two independent lines, and they agree on the right breakpoint.**
+
+**(a) Arrangement differentiation, 10 kb windows** (per-site GL allele-frequency
+difference, sec 8.28). The transition is a STEP, not a ramp:
+
+    left  flank 60.04-60.53 Mb:  18% of the interior plateau, rate 0.0
+    ---- breakpoint ----
+    left  inside 60.55-61.40 Mb: 72% of plateau, median rate 25.0
+    core        63.00-77.00 Mb: 104%, median rate 37.3
+    right inside 79.20-79.50 Mb: 111%, median rate 36.7
+    ---- breakpoint ----
+    right flank 79.52-79.99 Mb:  29% of plateau, rate 0.0
+
+    LEFT  breakpoint  ~60.540 Mb  (between 60.530 and 60.550)
+    RIGHT breakpoint  ~79.500 Mb  (between 79.490 and 79.520)
+    SPAN  ~18.96 Mb
+
+**(b) AnchorWave anchors vs I. coindetii** (strand runs, whole chr2):
+
+| strand | span | size |
+|---|---|---|
+| - | 0.323 - 2.032 Mb | 1.71 Mb |
+| + | 2.050 - 44.376 Mb | 42.33 Mb |
+| **-** | **44.439 - 79.312 Mb** | **34.87 Mb** |
+| + | 79.569 - 115.834 Mb | 36.26 Mb |
+
+The strand flip at **79.312-79.569 Mb** brackets the differentiation-based right
+breakpoint at 79.50 Mb. **Independent confirmation.**
+
+**But the LEFT breakpoint has NO structural counterpart.** 60.54 Mb sits in the
+middle of a 34.87 Mb minus-oriented block, with 48 anchors in 60.2-60.9 Mb, all
+minus -- so this is not sparse-anchor blindness.
+
+**Reading:** relative to coindetii, illecebrosus chr2 carries a large (34.9 Mb)
+fixed orientation difference spanning 44.4-79.3 Mb. The SEGREGATING inversion
+occupies only the right ~19 Mb of it and **shares its right breakpoint**. So
+either the segregating inversion reused a pre-existing fragile site, or it is
+nested inside an older fixed rearrangement. Its left breakpoint at 60.54 Mb is
+novel. (Distinct from the retracted sec 8.15 "two inversions" claim, which was
+about AA/BB polarity; this is about illecebrosus-vs-coindetii orientation.)
+*Caveat: AnchorWave anchors are CDS-based, and a lineage assignment cannot be
+made without a third genome -- the 34.9 Mb block could be a coindetii-lineage
+rearrangement.*
+
+**CONSEQUENCE: the nominal span 60,040,617-79,995,597 overshoots by ~0.5 Mb on
+each side.** The "differentiated body" 60.5-79.5 Mb used for the SFS, dxy, f1
+and 2D-SFS work was essentially correct -- those results are unaffected. The
+nominal-span figures in sec 8.3 include ~1 Mb of collinear sequence.
+
+**CLUSTERING (stsmall's question): clustered, but DIFFUSELY.**
+
+    Poisson dispersion 23.6 within the pinned block (1 = uniform)
+    rate per 10k assayed sites: median 10.1, sd 8.7, range 0-49.7
+    top 10% of windows hold 24.8% of near-fixed sites
+    top 25% hold 50.6%;  top 50% hold 79.7%
+
+~2.5x enrichment in the top decile -- patchy on a ~100 kb scale, not focal. The
+20 hottest windows form **16 separate runs**, mostly single windows, scattered
+61.7-77.8 Mb. Consistent with everything else: no locus stands out.
+
+**FLUX, and a caveat on sec 8.4's "flux excluded".** With breakpoints pinned:
+
+    outer 1 Mb   mean rate  7.91
+    1-2 Mb in               10.65
+    core                    12.91
+    corr(rate, distance from breakpoint) = +0.138
+      (nominal span +0.238; Fst-defined body +0.151)
+
+Pinning the breakpoints REDUCES the edge effect but does not remove it. A ~40%
+depletion in the outer 1 Mb is what gene flux near breakpoints produces. sec 8.4
+excluded flux on FLAT MEAN dxy (edge/core 0.999); the near-fixed tail is more
+sensitive than the mean, so these are not in direct contradiction -- but
+**"flux excluded" is too strong and should read "no flux detectable in mean
+dxy; a residual edge gradient is present in the near-fixed tail."**

@@ -3090,3 +3090,61 @@ short), not the compute.
 no_pfam_domain class. Paralarval/juvenile ISOSEQ is the experiment that would
 separate them, and would also test the stage-restriction explanation for why
 adult-only data missed the 14.
+
+## 8.36 beneficial -> neutral -> NEGATIVE: the drift-out arm is excluded (2026-08-30)
+
+stsmall asked whether we can distinguish **beneficial -> neutral -> negative**
+from **beneficial -> neutral** (drifted out). We can, and the discriminator is
+`t_fall`: drift needs TIME proportional to the variance it must generate.
+
+**How much time drift needs** for the 0.74 -> 0.374 fall (0.366), on the growth
+demography:
+
+    as a 1-sigma event: 1,096 ky
+    as a 2-sigma event:   514 ky
+    as a 3-sigma event:   330 ky
+
+against ~850 ky of total lifetime. So drift is NOT excluded on time alone -- it
+needs the fall to have taken >= ~500 ky, leaving essentially no plateau. The
+plateau is exactly what the diversity excess demands. The two hypotheses
+therefore predict different `t_fall`, and that is measurable.
+
+**The profile** (58 cells, weighted chi-square, `t_inv`/`p_hist`/`t_decline`
+re-optimised at each `t_fall`; run 2026-08-30, 1,175 s):
+
+| t_fall | delta chi2 |
+|---|---|
+| 50 ky | 0.85 |
+| **100 ky** | **0** |
+| 200 ky | 0.74 |
+| **400 ky** | **8.36** |
+| **600 ky** | **81.52** |
+
+**The slow-fall arm is excluded.** The fall took **50-200 ky**, which is
+**4.4-9.9 SD** of drift. Neutral loss cannot produce it.
+
+**This result does NOT rest on f1**, unlike the `t_decline` profile (sec 8.22).
+Inflating the f1 SE 5x leaves delta chi2 at 7.0 (400 ky) and 69.2 (600 ky). The
+exclusion comes from the two statistics carrying proper block-jackknife SEs:
+
+    t_fall 400 ky:  pi -2.7 SE   dxy +0.9 SE   f1 -1.7 SE
+    t_fall 600 ky:  pi -5.6 SE   dxy +7.0 SE   f1 +2.1 SE
+
+Mechanistically: a slow fall means the arrangement spent most of its history at
+intermediate frequency, which shrinks the inverted class's diversity excess
+(pi breaks) and inflates dxy/pi_I (dxy breaks).
+
+**NOTE the earlier exclusion of 400 ky did not carry.** Sec 8.17 excluded it at
+Delta 10.64, but under the UNWEIGHTED score and the stale f1 target 0.8256. This
+is the first test of the slow arm under the weighted chi-square and the
+calibrated target 0.8125, and it confirms the exclusion independently.
+
+**THE HISTORY IS NOW THREE CONSTRAINED PHASES:**
+
+1. **Rose under selection** -- attainment of 0.74 by drift needs 1.36x the
+   inversion's entire lifetime at the binding Ne (sec 8.16).
+2. **Held near 0.74** -- required by the 2.27x diversity excess.
+3. **Actively removed** over 50-200 ky ending >= 50-100 ka, s ~ 1.45e-4.
+
+Neutrality survives ONLY in the last ~175 ky, where drift alone can hold p near
+0.374 (SD 0.064) and nothing distinguishes maintenance from drift (sec 8.20).

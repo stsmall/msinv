@@ -2987,3 +2987,43 @@ site-level resolution: **near-fixed divergence accumulates in intergenic and
 intronic sequence, is depleted everywhere purifying selection acts, and is
 concentrated nowhere.** That is neutral accumulation behind a recombination
 barrier. Whatever drove the frequency changes did not leave a localised mark.
+
+## 8.34 The annotation IS incomplete -- sec 8.30/8.31 retracted (2026-08-30)
+
+**RETRACTION.** Sec 8.31 concluded "the missing-annotation hypothesis gets no
+support" because near-fixed sites fall in ISOSEQ exons at 0.98x background.
+**That conclusion is wrong, and the reasoning behind it was wrong too.**
+
+**The error was framing this as an ENRICHMENT question.** It never was. The
+question stsmall asked is whether our GFF is complete, and enrichment of
+near-fixed sites in transcript evidence has nothing to do with that. ISOSEQ from
+a single tissue and life stage cannot establish absence of a gene; a proportional
+overlap rate says nothing either way. The right instrument is cross-species
+protein homology, which does not depend on our expression data at all.
+
+**diamond blastx settles it.** 488 kb of unannotated, non-repeat sequence from
+the 20 highest-divergence 100 kb windows, against 282,815 proteins from seven
+cephalopods (Sthenoteuthis -- same family as Illex -- Architeuthis, Doryteuthis,
+Sepioteuthis, Euprymna, Sepia, Octopus): **11 intervals with real protein
+homology**, tens to hundreds of kb from the nearest gene model. The strongest,
+2:62,180,079-62,181,727, is a 375 aa alignment at 42.7% identity, **E = 1e-80**,
+89 kb from any annotated gene. Several carry near-fixed arrangement differences
+(2:67,219,944 has 13; 2:61,746,024 has 8 at dp up to 0.94).
+
+**Consequences.**
+1. The "85% of near-fixed sites have no transcript evidence" framing (sec 8.30,
+   8.31) is retracted. It measured our ISOSEQ coverage, not the sequence.
+2. The gene-level nulls (sec 8.10, 8.25-8.27, 8.33) rest on a gene set that is
+   incomplete inside this region. They stand as statements about ANNOTATED
+   genes and must be written that way -- the true denominator is unknown.
+3. The 14.3% annotated-coverage figure is a lower bound on genic sequence.
+
+**Also worth noting: repeats are not the story.** The block is 50.8%
+repeat-masked, but only 0.2% of assayed sites fall in repeats, because ANGSD was
+restricted to the accessibility mask. The unannotated sequence carrying the
+divergence is accessible, non-repetitive, and now demonstrably part-genic.
+
+**NO CONTROL RUN, DELIBERATELY.** A matched blastx in the collinear region would
+answer "are genes enriched in divergent windows", which is not the question and
+was never claimed. Annotation completeness is a property of the annotation, not
+a contrast between regions.

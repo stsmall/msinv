@@ -2927,3 +2927,63 @@ excluded flux on FLAT MEAN dxy (edge/core 0.999); the near-fixed tail is more
 sensitive than the mean, so these are not in direct contradiction -- but
 **"flux excluded" is too strong and should read "no flux detectable in mean
 dxy; a residual edge gradient is present in the near-fixed tail."**
+
+## 8.33 Regulatory divergence: not detectable in promoters or UTRs (2026-08-29)
+
+The last untested functional hypothesis. `regulatory_divergence.py`.
+
+**What could be tested.** There is no regulatory annotation for this genome --
+no ATAC, no ChIP, no conserved-element track. The GFF supports a COMPARTMENT
+test: promoters (2 kb upstream of each TSS, strand-aware), 5'/3' UTRs, introns,
+CDS, intergenic. Body uses the PINNED breakpoints 60.54-79.50 Mb (sec 8.32).
+
+**Near-fixed rate (dp >= 0.8) per 10k sites, body:**
+
+| compartment | n sites | near-fixed | per 10k | vs intergenic |
+|---|---|---|---|---|
+| promoter | 92,348 | 75 | 8.12 | 0.66x |
+| 5' UTR | 10,860 | 7 | 6.45 | **0.52x** |
+| 3' UTR | 13,268 | 12 | 9.04 | 0.73x |
+| CDS | 65,735 | 45 | 6.85 | 0.55x |
+| intron | 1,102,915 | 1,377 | 12.49 | 1.01x |
+| intergenic | 6,645,265 | 8,235 | 12.39 | 1.00x |
+
+Every functional compartment is DEPLETED; introns sit at background. That looks
+like a result -- but it is not calibrated, and **the control has ZERO near-fixed
+sites (0 of 8M, sec 8.28)**, so this rate cannot be calibrated against it at all.
+
+**Mean dp IS calibratable, and it kills the reading:**
+
+| compartment | body /interg | control /interg | ratio |
+|---|---|---|---|
+| **promoter** | 0.757 | 0.776 | **0.975** |
+| 5' UTR | 0.427 | 0.398 | 1.074 |
+| 3' UTR | 0.522 | 0.373 | 1.398 |
+| CDS | 0.392 | 0.372 | 1.053 |
+| intron | 0.854 | 0.734 | 1.164 |
+
+**Promoters sit at 0.975 -- exactly their control baseline.** The depletion of
+functional compartments in the body is present in the CONTROL at the same
+magnitude, so it is a generic property of those compartments (constraint,
+mappability, GC), **not arrangement-specific**. No promoter-proximal or UTR
+regulatory divergence is detectable.
+
+The 3' UTR at 1.398 is the only value notably above 1. It rests on 13,268 body
+sites, no significance test was done, and 3' UTRs are the least canonical
+regulatory compartment. **Unverified -- do not build on it.** (This project has
+now produced three plausible-looking signals that dissolved on calibration:
+the GO enrichment, the FST gene list, and the control-standardised sweep
+candidates. Treat this the same way until tested.)
+
+**WHAT THIS DOES AND DOES NOT BOUND.** It bounds PROMOTER-PROXIMAL (2 kb) and
+UTR regulatory divergence. **Distal enhancers remain entirely untested** and
+could sit anywhere in the 85% of the block with no gene model -- there is no
+instrument in this project that would see them. A regulatory explanation for the
+inversion is not excluded; it is only excluded near genes.
+
+**Seventh consecutive null on localised causation.** The picture is now
+consistent across coding, regulatory-proximal, gene-level, window-level and
+site-level resolution: **near-fixed divergence accumulates in intergenic and
+intronic sequence, is depleted everywhere purifying selection acts, and is
+concentrated nowhere.** That is neutral accumulation behind a recombination
+barrier. Whatever drove the frequency changes did not leave a localised mark.

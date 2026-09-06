@@ -1,0 +1,60 @@
+Is arrangement divergence concentrated in regulatory-candidate sequence?
+Compartments from the GFF; near-fixed = dp >= 0.8. Body uses the
+PINNED breakpoints 60.54-79.50 Mb (sec 8.32).
+
+==========================================================================
+BODY  7,912,066 sites, 9,740 near-fixed
+==========================================================================
+  compartment        n sites  near-fix  per 10k  vs intergenic
+  promoter            92,348        75     8.12          0.66x
+  five_prime_UTR      10,860         7     6.45          0.52x
+  three_prime_UTR     13,268        12     9.04          0.73x
+  cds                 65,735        45     6.85          0.55x
+  intron           1,102,915     1,377    12.49          1.01x
+  intergenic       6,645,265     8,235    12.39          1.00x
+
+==========================================================================
+CONTROL  10,360,195 sites, 0 near-fixed
+==========================================================================
+  compartment        n sites  near-fix  per 10k  vs intergenic
+  promoter            61,910         0     0.00           nanx
+  five_prime_UTR      10,370         0     0.00           nanx
+  three_prime_UTR     26,609         0     0.00           nanx
+  cds                 23,544         0     0.00           nanx
+  intron             859,755         0     0.00           nanx
+  intergenic       9,393,865         0     0.00           nanx
+
+==========================================================================
+MEAN dp PER COMPARTMENT -- the calibratable statistic
+==========================================================================
+  The control has no near-fixed sites at all, so the rate above
+  cannot be calibrated against it. Mean dp is defined in both.
+
+  compartment           body  /interg   control  /interg    ratio
+  promoter           0.00620    0.757   0.00296    0.776    0.975
+  five_prime_UTR     0.00350    0.427   0.00152    0.398    1.074
+  three_prime_UTR    0.00428    0.522   0.00142    0.373    1.398
+  cds                0.00321    0.392   0.00142    0.372    1.053
+  intron             0.00700    0.854   0.00280    0.734    1.164
+  intergenic         0.00820    1.000   0.00381    1.000    1.000
+
+  VERDICT: promoters sit at 0.975 -- exactly their control baseline.
+  The depletion of functional compartments visible in the body is
+  present in the CONTROL at the same magnitude, so it is a generic
+  property of those compartments (constraint, mappability, GC), NOT
+  arrangement-specific. No promoter-proximal or UTR regulatory
+  divergence is detectable. The 3' UTR at 1.40 is the only value
+  notably above 1 and is unverified -- do not build on it.
+
+==========================================================================
+BODY vs CONTROL -- near-fixed rate (uncalibratable, see above)
+==========================================================================
+  compartment       body/interg  ctl/interg     ratio
+
+  A regulatory-driven inversion should show promoter and UTR
+  enrichment in the BODY above whatever the control shows. The
+  control column is the compartment artifact; only the ratio counts.
+
+  BOUND, not verdict: this tests PROMOTER-PROXIMAL and UTR
+  divergence only. Distal enhancers are unannotated and could sit
+  anywhere in the 85% of the block with no gene model.

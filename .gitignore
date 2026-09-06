@@ -34,3 +34,9 @@ flamegraph*.svg
 
 # local scratch
 .tmp/
+
+# Track-4 validation sweeps: 600 .npz + 300 .trees, ~8.3 GB, regenerable from
+# validation/track4_*/run.py. The small per-rep stats (pilot_*, track4/hard)
+# stay tracked; these full-tree dumps do not.
+results/validation/track4_vsimple/
+results/validation/track4_vsimple.pre_ws_fix.bak/

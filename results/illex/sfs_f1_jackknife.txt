@@ -1,0 +1,89 @@
+Block-jackknife SE on the ANGSD singleton ratio f1(I)/f1(S)
+I = BB (inverted, derived), S = AA (standard).  1 Mb blocks.
+
+==========================================================================
+GATE: does the sum of per-block EM estimates reproduce the global EM?
+==========================================================================
+  realSFS optimises over its whole region, so per-block estimates need
+  not sum to the global one. If they do not, the block route is not a
+  valid stand-in for a true leave-one-out and no SE is reported.
+
+  arm           f1 global  f1 sum-of-blk   rel diff
+  AA/body          0.6024         0.6022     0.03%
+  AA/control       0.5885         0.5888     0.06%
+  BB/body          0.4973         0.4972     0.02%
+  BB/control       0.5980         0.5983     0.06%
+
+  GATE PASSED (worst 0.06% <= 2%). Proceeding.
+
+==========================================================================
+RESULT
+==========================================================================
+
+BODY  (19 blocks of 1 Mb)
+  f1(BB) = 0.4973 +- 0.0030
+  f1(AA) = 0.6022 +- 0.0070
+  ratio f1(I)/f1(S) = 0.8256 +- 0.0076  (0.9%)   [point 0.8257]
+
+CONTROL  (20 blocks of 1 Mb)
+  f1(BB) = 0.5983 +- 0.0034
+  f1(AA) = 0.5888 +- 0.0035
+  ratio f1(I)/f1(S) = 1.0161 +- 0.0011  (0.1%)   [point 1.0161]
+
+  The CONTROL ratio is the sanity check: AA and BB are exchangeable
+  outside the inversion, so it must sit at 1 within its own SE.
+  control ratio 1.0161 +- 0.0011 -> 15.13 SE from 1
+
+==========================================================================
+THE CONTROL FAILS ITS OWN CHECK -- and the fix is a ratio of ratios
+==========================================================================
+  1.6% is small, but the jackknife SE is smaller still (0.1%), so the
+  offset is a SYSTEMATIC, not noise: it is near-identical in every
+  block, which is exactly why the spatial jackknife cannot see it.
+  AA and BB are exchangeable in the collinear region by construction,
+  so a persistent f1 difference there is a property of the two SAMPLE
+  SETS, not of the genome. The obvious candidate is n: 254 vs 95
+  individuals, so realSFS's EM estimates the two source spectra with
+  different bias before either is projected to n = 20. Coverage
+  differences between the two bamlists would do the same. This has NOT
+  been diagnosed -- confirming it needs an AA SAF rebuilt at n = 95
+  over the control region, which is a new ANGSD run.
+
+  It does not need to be diagnosed to be removed. The model side has
+  n_i = n_s = 100, so it carries NO class-size asymmetry; the empirical
+  ratio carries one. Dividing the body ratio by the control ratio
+  cancels any class-level systematic shared by the two regions,
+  whatever its cause -- the same logic already used for the per-class
+  body-vs-control comparison (NOTES sec 8.5).
+
+  body ratio          0.8256 +- 0.0076
+  control ratio       1.0161 +- 0.0011
+  CALIBRATED TARGET   0.8125 +- 0.0076  (0.9%)
+
+  This shifts the fitted f1 target from 0.8256 to 0.8125,
+  i.e. by -1.6% -- about 1.7 of the spatial SE. The decline
+  fit was scored against the UNCALIBRATED 0.8256, so it should be
+  rescored. Per-class body-vs-control L1 values are unaffected: they
+  compare each class against itself and the systematic cancels there
+  already.
+
+  Blocks are disjoint between body and control, so the two jackknives
+  are treated as independent and their relative SEs added in quadrature.
+  The assumption that does the work is that the class-level offset is
+  the SAME in both regions. That is plausible -- same individuals, same
+  bamlists, same n -- but it is an assumption, not a measurement.
+
+==========================================================================
+WHAT THIS MEANS FOR THE t_decline TEST
+==========================================================================
+  f1 target = 0.8125 +- 0.0076 (calibrated)  [uncalibrated 0.8256 +- 0.0076]
+  Fitted sensitivity (t_inv = 850 ka, t_fall = 100 ky):
+    t_decline 175 ka -> f1 0.827   (the fit)
+    t_decline 100 ka -> f1 0.865   (+0.038)
+  so 75 ky of t_decline moves f1 by 0.038 = 5.0 jackknife SE.
+  Resolution on t_decline is therefore roughly 15 ky per SE, which is what sets whether an
+  ongoing decline (t_decline -> 0) is separable from the fitted one.
+
+  CAVEAT, same as dxy in empirical_jackknife.py: blocks inside a
+  non-recombining inversion share one origin, so this is a measurement
+  error and a LOWER bound on the uncertainty for a fit.

@@ -1,0 +1,64 @@
+Unfolded AA x BB 2D SFS -- inversion body vs collinear control
+m[i,j] = expected sites with i ALT alleles in AA, j in BB (80 chromosomes each)
+
+==========================================================================
+BODY   9,128,070 sites, 995,952 variable
+==========================================================================
+  exact-zero cells            40 of 6561
+  asymmetry (i,j)->(N-i,N-j) 1.984   (~0 would mean it is effectively folded; it is not)
+  FIXED differences                 0.0 (AA all ALT)       0.0008 (BB all ALT)
+  near-fixed (within 4)          1,950 (AA ALT)          269 (BB ALT)
+
+==========================================================================
+CONTROL   12,027,890 sites, 2,470,823 variable
+==========================================================================
+  exact-zero cells          3229 of 6561
+  asymmetry (i,j)->(N-i,N-j) 1.972   (~0 would mean it is effectively folded; it is not)
+  FIXED differences                 0.0 (AA all ALT)       0.0000 (BB all ALT)
+  near-fixed (within 4)              0 (AA ALT)            0 (BB ALT)
+
+==========================================================================
+BODY vs CONTROL, as a fraction of variable sites
+==========================================================================
+                                    body   control    ratio
+  shared polymorphism            21.401%   47.158%     0.45
+  AA-private                     41.396%   25.961%     1.59
+  BB-private                     37.204%   26.880%     1.38
+  near-fixed AA-ALT/BB-REF        0.196%    0.000%      inf
+  near-fixed AA-REF/BB-ALT        0.027%    0.000%      inf
+
+READING IT
+--------------------------------------------------------------------------
+  1. THE CONTROL IS CLEAN. Every near-fixed cell is exactly zero and
+     3229 of 6561 cells are empty. AA and BB
+     are indistinguishable outside the inversion, which is what
+     exchangeability requires. This is the strongest control pass in
+     the project and it is what licenses reading the body at all.
+  2. NO EXACT FIXED DIFFERENCES, in either region -- and that is
+     EXPECTED, not a failure. dxy/pi_I = 1.385 means between-class
+     divergence is only ~1.4x within-BB diversity, i.e. the classes are
+     nowhere near reciprocal monophyly. Complete sorting across all 160
+     chromosomes should be rare, and it is.
+  3. NEAR-FIXED DIFFERENTIATION IS REAL AND LARGE: 2,219 sites in the
+     body against ZERO in the control. This is the answer the called
+     VCF could not give -- its version of this test failed its own
+     control (sec 8.23).
+  4. THE BARRIER SIGNATURE IS CLEAN: shared polymorphism collapses
+     from 47.2% to 21.4% of variable sites while private
+     variation rises in both classes. That is arrangements sorting
+     behind a recombination barrier, and it is symmetric in AA/BB so
+     it is the least reference-sensitive statistic here.
+  5. THE DIRECTIONAL ASYMMETRY IS NOT INTERPRETABLE AS BIOLOGY.
+     Near-fixed runs 7.3:1 toward AA-ALT/BB-REF. The reference IS a
+     BB haplotype inside the inversion, so BB-derived variants shared
+     with the reference are invisible by construction. The control
+     cannot remove this -- outside the inversion the reference carries
+     no arrangement identity. Treat the counts as lower bounds.
+  6. AA IS NOT BEING LOST TO MAPPING BIAS: AA-private exceeds
+     BB-private in the body (41.4% vs 37.2%). Severe reference-mapping
+     loss would deplete AA, and it does not.
+
+  LIMITATION: a 2D SFS carries COUNTS, not POSITIONS. It cannot say
+  which genes the near-fixed sites are in. That needs per-site output
+  (`realSFS fst print`) intersected with degenotate, which is the
+  natural follow-on.

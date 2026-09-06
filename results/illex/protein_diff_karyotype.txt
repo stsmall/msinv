@@ -1,0 +1,72 @@
+Protein-coding differences between arrangements, from ANGSD genotype
+likelihoods. dp = |freq(AA) - freq(BB)| at the same reference-pinned
+allele. The called-VCF version of this failed its control (sec 8.23).
+
+============================================================================
+BODY   6,424,291 sites passing coverage and major/minor agreement
+============================================================================
+          dp class      n sites      rate
+               all    6,424,291 100.0000%
+         dp >= 0.5       29,251   0.4553%
+         dp >= 0.8        8,667   0.1349%
+         dp >= 0.9        2,892   0.0450%
+        dp >= 0.95          576   0.0090%
+        dp >= 0.99            2   0.0000%
+
+============================================================================
+CONTROL   8,009,993 sites passing coverage and major/minor agreement
+============================================================================
+          dp class      n sites      rate
+               all    8,009,993 100.0000%
+         dp >= 0.5            0   0.0000%
+         dp >= 0.8            0   0.0000%
+         dp >= 0.9            0   0.0000%
+        dp >= 0.95            0   0.0000%
+        dp >= 0.99            0   0.0000%
+
+============================================================================
+THE CONTROL -- does the instrument work this time?
+============================================================================
+  dp >= 0.80:  body   0.1349%   control   0.0000%   enrichment      infx
+  dp >= 0.90:  body   0.0450%   control   0.0000%   enrichment      infx
+  dp >= 0.95:  body   0.0090%   control   0.0000%   enrichment      infx
+  dp >= 0.99:  body   0.0000%   control   0.0000%   enrichment      infx
+
+  The called VCF gave a body/control ratio of ~3x where FST differs
+  100-fold, which is how we knew it was noise (sec 8.23).
+
+============================================================================
+ARE THE DIFFERENTIATED SITES PROTEIN-ALTERING?
+============================================================================
+  BODY: 92,936 coding sites  (61,022 0-fold / 12,474 4-fold, 0f frac 0.830)
+    dp >= 0.5:    29 0-fold /    45 4-fold  frac 0.392  OR  0.13  p = 3.38e-17
+    dp >= 0.8:    16 0-fold /    14 4-fold  frac 0.533  OR  0.23  p = 0.000154
+    dp >= 0.9: 5 0-fold / 3 4-fold -- too few to test
+
+  CONTROL: 55,839 coding sites  (36,289 0-fold / 7,378 4-fold, 0f frac 0.831)
+    dp >= 0.5: 0 0-fold / 0 4-fold -- too few to test
+    dp >= 0.8: 0 0-fold / 0 4-fold -- too few to test
+    dp >= 0.9: 0 0-fold / 0 4-fold -- too few to test
+
+============================================================================
+NEAR-FIXED NONSYNONYMOUS SITES IN THE BODY (dp >= 0.8, 0-fold): 16
+============================================================================
+  across 12 transcripts
+  transcript                 n  description
+  LOC_00005340-mRNA-1        5  XP_029652894.2 acidic repeat-containing protei
+  LOC_00005300-mRNA-1        1  XP_014780088.1 uncharacterized protein LOC1068
+  LOC_00005300-mRNA-2        1  tr|A0A0L8GL54|A0A0L8GL54_OCTBM Phospholipase A
+  LOC_00005304-mRNA-1        1  XP_029639203.1 cytochrome P450 4X1-like [Octop
+  LOC_00005316-mRNA-1        1  tr|A0A812C1T4|A0A812C1T4_ACAPH PNPLA domain-co
+  LOC_00005332-mRNA-1        1  (no EnTAP hit)
+  LOC_00005336-mRNA-1        1  (no EnTAP hit)
+  LOC_00005350-mRNA-1        1  XP_029640555.1 uncharacterized protein LOC1152
+  LOC_00005351-mRNA-1        1  XP_014784375.1 cysteine-rich venom protein [Oc
+  LOC_00005374-mRNA-1        1  XP_029634123.1 LOW QUALITY PROTEIN: glycerate 
+  LOC_00005374-mRNA-2        1  XP_029634123.1 LOW QUALITY PROTEIN: glycerate 
+  LOC_0000SQ31894            1  (no EnTAP hit)
+
+  CAVEAT: recombination is suppressed across the whole block, so a
+  near-fixed nonsynonymous site is a PASSENGER on the arrangement's
+  haplotype unless something independent implicates it. This counts
+  protein-level differences; it does not identify a causal one.

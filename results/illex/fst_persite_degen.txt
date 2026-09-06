@@ -1,0 +1,73 @@
+Per-site GL FST x codon degeneracy (AA vs BB, n=40/class)
+The called-VCF version of this failed its control (sec 8.23); this is
+the genotype-likelihood redo.
+
+============================================================================
+BODY  9,128,070 sites with FST defined, 98,536 in CDS   region FST = 0.3228
+============================================================================
+    per-site FST quantile 0.500  =   0.0106
+    per-site FST quantile 0.900  =   0.0185
+    per-site FST quantile 0.990  =   0.1847
+    per-site FST quantile 0.999  =   0.8132
+
+============================================================================
+CONTROL  12,027,781 sites with FST defined, 66,687 in CDS   region FST = 0.0053
+============================================================================
+    per-site FST quantile 0.500  =   0.0059
+    per-site FST quantile 0.900  =   0.0065
+    per-site FST quantile 0.990  =   0.0145
+    per-site FST quantile 0.999  =   0.0318
+
+============================================================================
+CODON COMPOSITION OF THE HIGH-FST TAIL
+============================================================================
+  0-fold = every change nonsynonymous; 4-fold = every change
+  synonymous. Null = the SAME region's own coding sites, so gene
+  content and codon usage are controlled for.
+
+  BODY   all coding: 63,736 0-fold / 13,730 4-fold (0f frac 0.823)
+    top 10.000% (FST>= 0.018):   959 0-fold /  498 4-fold  frac 0.658  OR  0.41  p = 3.24e-52
+    top 1.000%  (FST>= 0.185):    98 0-fold /  118 4-fold  frac 0.454  OR  0.18  p = 2.22e-34
+    top 0.100%  (FST>= 0.813):    24 0-fold /   13 4-fold  frac 0.649  OR  0.40  p = 0.00937
+
+  CONTROL   all coding: 43,050 0-fold / 9,068 4-fold (0f frac 0.826)
+    top 10.000% (FST>= 0.006): 2,177 0-fold /  557 4-fold  frac 0.796  OR  0.81  p = 3.73e-05
+    top 1.000%  (FST>= 0.014):    38 0-fold /   18 4-fold  frac 0.679  OR  0.44  p = 0.0071
+    top 0.100%  (FST>= 0.032): only 5 coding sites -- no test
+
+============================================================================
+WHICH GENES -- per-transcript FST  **WITHDRAWN, SEE HEADER**
+============================================================================
+  region-wide body FST = 0.3228; 95 transcripts with >= 50 coding sites
+
+  transcript                nCDS     FST    0f    4f  description
+  LOC_00005336-mRNA-1         51  0.7867    32     9  (no EnTAP hit)
+  LOC_00005332-mRNA-1        126  0.6890    82    20  (no EnTAP hit)
+  LOC_00005304-mRNA-1       1554  0.6100  1011   197  XP_029639203.1 cytochrome P450 4X1-like [Oct
+  LOC_00005351-mRNA-1        717  0.6087   471    92  XP_014784375.1 cysteine-rich venom protein [
+  LOC_00005340-mRNA-1       2529  0.5584  1648   342  XP_029652894.2 acidic repeat-containing prot
+  LOC_00005300-mRNA-2       1542  0.5498   972   236  tr|A0A0L8GL54|A0A0L8GL54_OCTBM Phospholipase
+  LOC_00005300-mRNA-1       1737  0.5360  1098   262  XP_014780088.1 uncharacterized protein LOC10
+  LOC_00005384-mRNA-2        495  0.5341   325    93  CAE1326238.1 unnamed protein product [Sepia 
+  LOC_00005337-mRNA-1       1437  0.5338   918   213  tr|A0A812CDV3|A0A812CDV3_ACAPH PNPLA domain-
+  LOC_00005384-mRNA-1        510  0.5275   336    96  CAE1326238.1 unnamed protein product [Sepia 
+  LOC_00005361-mRNA-1       1161  0.5162   768   151  CAE1312823.1 UPB1 [Sepia pharaonis]
+  LOC_00005350-mRNA-1       2619  0.4570  1699   367  XP_029640555.1 uncharacterized protein LOC11
+  LOC_00005316-mRNA-1       1470  0.4399   939   207  tr|A0A812C1T4|A0A812C1T4_ACAPH PNPLA domain-
+  LOC_00005352-mRNA-1        708  0.4338   468    90  XP_014784375.1 cysteine-rich venom protein [
+  LOC_00005371-mRNA-2        876  0.4192   570   103  CAE1305157.1 unnamed protein product [Sepia 
+  LOC_00005309-mRNA-1         84  0.4191    57     5  (no EnTAP hit)
+  LOC_00005374-mRNA-2       1596  0.4118  1020   245  XP_029634123.1 LOW QUALITY PROTEIN: glycerat
+  LOC_00005374-mRNA-1       1596  0.4118  1020   245  XP_029634123.1 LOW QUALITY PROTEIN: glycerat
+  LOC_0000SQ31894           1596  0.4118  1020   245  (no EnTAP hit)
+  LOC_00005339-mRNA-1       1407  0.3916   907   198  CAI9744479.1 malonyl-CoA-acyl carrier protei
+
+  ** THE TABLE ABOVE IS NOT A RESULT. ** Spearman corr(FST, polymorphism)
+  = +0.69 across these transcripts; it ranks them by diversity, not by
+  differentiation. Reproduced only so the artifact is on the record.
+
+  Compare against the region-wide value, not against zero: inside a
+  non-recombining block every transcript is differentiated, so a
+  transcript near the region FST is UNREMARKABLE. Only a transcript
+  well above the block's own level would mean anything, and even then
+  linkage means it need not be the target.

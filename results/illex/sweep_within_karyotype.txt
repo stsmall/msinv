@@ -1,0 +1,78 @@
+Selection scan WITHIN each arrangement (ANGSD 50 kb windows, chr2)
+AA n=254, BB n=95 diploids. Windows with >= 5,000 callable sites.
+
+============================================================================
+BACKGROUND: what the inversion does to each class structurally
+============================================================================
+                            pi(AA)    pi(BB)    D(AA)    D(BB)  n win
+  inversion body          0.005966  0.007720   -2.372   -2.028   1994
+  collinear control       0.013991  0.013785   -2.097   -2.034   2000
+  rest of chr2            0.006747  0.007079   -2.258   -2.192   7580
+
+  Both classes lose diversity inside the inversion -- expected, and
+  why a SHARED dip carries no information. The scan below keys on
+  ASYMMETRY between the classes instead.
+
+============================================================================
+SWEEP CANDIDATES: low pi AND negative Tajima's D in ONE class only
+============================================================================
+  Each class is z-scored against its OWN collinear background, so its
+  reduced effective size inside the inversion cancels.
+
+  INVERSION BODY       n=1994   AA-specific  44 ( 2.2%)   BB-specific   0 ( 0.0%)
+  collinear control    n=2000   AA-specific   0 ( 0.0%)   BB-specific   0 ( 0.0%)
+
+  The control gives the false-positive rate: AA and BB are
+  exchangeable there, so anything it flags is noise.
+
+  AA-SPECIFIC candidate windows:
+          Mb     pi_AA     pi_BB    D_AA    D_BB    z_pi
+       78.78  0.002511  0.006906   -2.65   -1.98   -2.98
+       78.77  0.002710  0.006791   -2.62   -2.02   -2.93
+       78.78  0.002770  0.007514   -2.62   -1.90   -2.92
+       66.17  0.003201  0.007431   -2.62   -2.05   -2.80
+       77.77  0.003353  0.007370   -2.57   -1.96   -2.76
+       77.86  0.003477  0.008452   -2.54   -1.87   -2.73
+       77.86  0.003482  0.008705   -2.54   -1.84   -2.73
+       79.05  0.003558  0.008053   -2.57   -2.00   -2.71
+       64.12  0.003576  0.008424   -2.63   -1.85   -2.71
+       77.84  0.003672  0.008941   -2.53   -1.85   -2.68
+       64.11  0.003698  0.008395   -2.62   -1.85   -2.67
+       79.03  0.003767  0.007624   -2.54   -2.06   -2.66
+
+  No BB-specific candidates in the inversion body.
+============================================================================
+THE CONTROL IS THE WRONG YARDSTICK -- retest against the BLOCK
+============================================================================
+  pi_AA sits ~23% below pi_BB throughout the inversion. That is the
+  project's central observation (pi_I/pi_S = 1.356 with I = BB), not a
+  sweep -- so ANY test standardised on the collinear control flags AA
+  across the whole block. The candidates above are that shift, not
+  localised events. The right null is the body's OWN ratio
+  distribution.
+
+  pi_AA/pi_BB across 1994 body windows: median 0.787, sd 0.195
+  windows > 2 SD below the body's own median: 3 of 1994 (0.2%) -- 2.3% expected if Normal.
+  The block is LIGHT-tailed. There is no localised excess.
+  Of the 44 control-standardised candidates, only 2 survive this test,
+  and they spread over 17 distinct 0.5 Mb bins across 64.1-79.3 Mb -- not one focal region.
+
+  VERDICT: no within-arrangement sweep signal in either class. Note
+  the direction too -- ZERO BB-specific windows by any criterion, and
+  BB carries HIGHER pi than AA throughout. The derived arrangement,
+  which is where a supergene's adaptive variant would sit, shows no
+  sweep signature at all.
+
+  POWER CAVEAT: 50 kb windows, SFS statistics only (haplotype stats
+  are degenerate on unphased data), BB n = 95. A weak or old sweep
+  would be missed, and one predating the inversion would be shared by
+  both classes and invisible to an asymmetry test.
+
+============================================================================
+THE CLASS-ASYMMETRY DISTRIBUTION
+============================================================================
+  A sweep in one arrangement shows as a heavy tail in the DIFFERENCE
+  of standardised pi. Compared against the control, which has none.
+                         median       p1      p99      min      max
+  inversion body         -0.439   -1.474    0.538   -1.905    1.024
+  collinear control      -0.009   -0.199    0.145   -0.399    0.228

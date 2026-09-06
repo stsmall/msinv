@@ -1,0 +1,53 @@
+Most-differentiated SNPs between arrangements, and their codon class
+I = BB (inverted), S = AA. dp = |p_AA - p_BB|.
+
+READ THE CAVEAT FIRST: recombination between arrangements is
+suppressed across the whole block, so high dp is expected EVERYWHERE
+inside the inversion. Individual high-dp SNPs are passengers, not
+candidate causal variants. Only the 0-fold vs 4-fold COMPOSITION of
+the differentiated tail is interpretable, and only against the
+collinear control.
+
+============================================================================
+BODY   1,517,357 biallelic SNPs, 5,817 of them in CDS with a degeneracy call
+============================================================================
+        dp class     n SNPs  n coding   0-fold   4-fold  0f/(0f+4f)
+             all  1,517,357     5,817    2,233    1,995      0.5281
+       dp >= 0.5     26,710        83       24       30      0.4444
+       dp >= 0.8     11,381        43       16       11      0.5926
+       dp >= 0.9      5,808        20        5        5      0.5000
+  dp = 1 (fixed)        171         0        0        0          --
+
+============================================================================
+CONTROL   4,311,461 biallelic SNPs, 3,647 of them in CDS with a degeneracy call
+============================================================================
+        dp class     n SNPs  n coding   0-fold   4-fold  0f/(0f+4f)
+             all  4,311,461     3,647    1,451    1,065      0.5767
+       dp >= 0.5     18,070        16        4        2      0.6667
+       dp >= 0.8     10,868        14        4        2      0.6667
+       dp >= 0.9      7,272         9        3        0      1.0000
+  dp = 1 (fixed)        267         0        0        0          --
+
+============================================================================
+IS THE DIFFERENTIATED TAIL ENRICHED FOR PROTEIN-ALTERING SITES?
+============================================================================
+  Fisher exact, 0-fold vs 4-fold, differentiated tail vs all coding
+  SNPs in the SAME region (so the region's own codon composition and
+  gene content are the null, not the genome's).
+
+  BODY
+    dp >= 0.8     16 0-fold /   11 4-fold  OR  1.30  p = 0.565
+    dp >= 0.9      5 0-fold /    5 4-fold  OR  0.89  p = 1
+    dp = 1     only 0 coding sites -- too few
+
+  CONTROL
+    dp >= 0.8  only 6 coding sites -- too few
+    dp >= 0.9  only 3 coding sites -- too few
+    dp = 1     only 0 coding sites -- too few
+
+============================================================================
+FIXED DIFFERENCES IN THE BODY
+============================================================================
+  171 sites with dp = 1 out of 1,517,357 (0.011%)
+  in an annotated gene: 21 (12.3%)
+  in CDS with a degeneracy call: 0

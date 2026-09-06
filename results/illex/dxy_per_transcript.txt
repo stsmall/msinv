@@ -1,0 +1,44 @@
+Per-transcript between-arrangement divergence, normalised to its own
+100 kb window. Replaces the FST version, which was invalid (sec 8.25).
+B is proportional to dxy on ANGSD's scale, so only WITHIN-region
+ratios are used and no absolute dxy is quoted.
+
+============================================================================
+DOES THE STATISTIC BEHAVE? (this is where FST failed)
+============================================================================
+  body      95 transcripts   corr(transcript dxy, window dxy) = +0.310  (Spearman +0.408)
+  control   63 transcripts   corr(transcript dxy, window dxy) = +0.620  (Spearman +0.851)
+  For comparison, per-transcript FST vs window FST was +0.20 / +0.16.
+
+  Constraint check -- dxy should FALL as the 0-fold fraction rises:
+    body     corr(ratio, 0-fold fraction) = +0.294
+    control  corr(ratio, 0-fold fraction) = +0.634
+
+============================================================================
+THE BAR: what does 'unremarkable' look like in the control?
+============================================================================
+                n   median      p90      p95      max
+  control      63    0.444    2.042    2.548    4.554
+  body         95    0.351    1.633    2.687    6.102
+
+  Control 95th percentile = 2.548. Body transcripts above it: 5 of 95 (5.3%) -- 5% expected by chance.
+
+============================================================================
+BODY TRANSCRIPTS RANKED BY DIVERGENCE RELATIVE TO THEIR OWN WINDOW
+============================================================================
+  transcript                 Mb  nCDS  ratio    0f  description
+  LOC_00005355-mRNA-1     74.72   156  6.102  0.81  (no EnTAP hit)
+  LOC_00005329-mRNA-1     67.27    70  5.001  0.74  (no EnTAP hit)
+  LOC_00005308-mRNA-1     62.09   333  4.192  0.96  (no EnTAP hit)
+  LOC_00005321-mRNA-1     65.88   132  3.707  0.96  (no EnTAP hit)
+  LOC_00005325-mRNA-1     66.50    86  3.083  0.98  (no EnTAP hit)
+  LOC_00005336-mRNA-1     68.92    51  2.517  0.78  (no EnTAP hit)
+  LOC_00005345-mRNA-1     69.88    75  2.194  0.98  (no EnTAP hit)
+  LOC_00005344-mRNA-1     69.39   101  2.117  0.83  (no EnTAP hit)
+  LOC_00005309-mRNA-1     62.42    84  2.074  0.92  (no EnTAP hit)
+  LOC_00005332-mRNA-1     68.09   126  2.017  0.80  (no EnTAP hit)
+  LOC_00005323-mRNA-1     66.29   585  1.058  0.83  (no EnTAP hit)
+  LOC_00005381-mRNA-1     78.90   156  1.039  0.84  (no EnTAP hit)
+  LOC_00005340-mRNA-1     69.09  2529  0.875  0.83  XP_029652894.2 acidic repeat-containing 
+  LOC_00005313-mRNA-1     63.59    96  0.836  0.88  (no EnTAP hit)
+  LOC_00005304-mRNA-1     61.55  1554  0.827  0.84  XP_029639203.1 cytochrome P450 4X1-like 

@@ -1,0 +1,30 @@
+{
+  "body": {
+    "sites": 9128069.999982996,
+    "variable": 995951.8918099958,
+    "shared": 213138.768484,
+    "priv_AA": 412280.693955,
+    "priv_BB": 370532.42862,
+    "fixed_AAalt": 0.0,
+    "fixed_BBalt": 0.000751,
+    "nearfix_AAalt": 1950.478482,
+    "nearfix_BBalt": 268.727097,
+    "exact_zero_cells": 40,
+    "cells": 6561,
+    "asymmetry": 1.9836248979021556
+  },
+  "control": {
+    "sites": 12027889.999975,
+    "variable": 2470823.452863,
+    "shared": 1165196.744698,
+    "priv_AA": 641460.9885659999,
+    "priv_BB": 664165.7195990001,
+    "fixed_AAalt": 0.0,
+    "fixed_BBalt": 0.0,
+    "nearfix_AAalt": 0.0,
+    "nearfix_BBalt": 0.0,
+    "exact_zero_cells": 3229,
+    "cells": 6561,
+    "asymmetry": 1.9722632842479695
+  }
+}

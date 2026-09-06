@@ -1,0 +1,46 @@
+Neutrality at the WEIGHTED best-fit history (inverted = BB, p_now = 0.374)
+fitted history: arose ~850 ka, held near p_hist = 0.74, fell to 0.374 over ~100 ky ending ~175 ka
+(supersedes neutrality_check.txt, which is the earlier unweighted p_hist = 0.7 epoch, NOTES sec 8.17)
+
+==========================================================================
+1. ATTAINMENT -- could drift take it to the frequency it reached?
+==========================================================================
+  The relevant target is the HIGHEST frequency inferred, p_hist, not
+  the present one: a neutral allele has to get up there before it can
+  come back down.
+
+  Ne                              x=0.374 (now)    x=0.74 (p_hist)
+  N_ANC = 547,928                       473,378          1,154,383
+  N(t=850 ka)                           473,378          1,154,383
+  N(t=275 ka)                         2,390,251          5,828,887
+  N0 = 6,808,096                      5,881,796         14,343,402
+
+  coefficients: E[t|reach x] = 0.864*N at x=0.374, 2.107*N at x=0.74
+  (the old, wrong reading used x=0.626: 1.650*N; the unweighted refit used x=0.70: 1.936*N)
+
+  Reaching p_hist = 0.74 by drift takes 1,154,383-14,343,402 generations,
+  against a fitted total age of 850,000.
+  BINDING case (smallest Ne, N_ANC): needs 1.36x the inversion's
+  entire lifetime; widens to 17x at N0 as N grows 12.4x.
+  (At the earlier unweighted p_hist = 0.7 the binding margin was 1.25x, so weighting the fit strengthened this.)
+
+  P(a new neutral inversion ever reaching 0.74) = 1.23e-06 to 9.92e-08
+
+==========================================================================
+2. THE DECLINE -- how many SD of drift is the fall?
+==========================================================================
+  observed fall: 0.74 -> 0.374, i.e. 0.366
+  N over the best-fit (100 ky) window: 2,766,682 to 3,838,532
+
+    t_fall   drift SD  observed fall (SD)
+      25ky     0.0256                14.3
+      50ky     0.0369                 9.9
+     100ky     0.0545                 6.7   <- best fit
+     200ky     0.0841                 4.4
+     400ky     0.1439                 2.5
+
+  At the fitted 100 ky the fall is 6.7 SD of pure drift.
+  This bounds DRIFT only (diffusion for an unlinked neutral allele); it
+  takes the fitted p_hist and t_fall as given. The independent test that
+  t_fall itself is fast -- so a slow drift-out is excluded -- is the
+  weighted t_fall profile, NOTES sec 8.36 / refit_declinetfall2.txt.

@@ -136,6 +136,14 @@ pub struct HullSimulator {
     /// If true, simulate_with_cache populates SimResult::event_log.
     /// Default false; production sims should leave this off.
     pub record_events: bool,
+    /// Coalescence eligibility for lineages without inversion tags.
+    /// false (default): a pair can coalesce only if it shares ancestral
+    /// material (the original SMC). true: SMC', as in msprime's hull
+    /// algorithm, where pairs whose hulls overlap or touch are eligible,
+    /// so the two halves of a recombined lineage can coalesce back
+    /// together. SMC' matches the linkage of the exact coalescent much
+    /// more closely but is slower (about 1.8x at Illex scale).
+    pub smc_prime: bool,
 }
 
 impl HullSimulator {
@@ -176,7 +184,7 @@ impl HullSimulator {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         }
     }
 
@@ -204,7 +212,7 @@ impl HullSimulator {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         }
     }
 
@@ -704,6 +712,7 @@ impl HullSimulator {
         // array stays sparse).
         let max_lins = (active.len() * 40).max(2048);
         rate_cache.reset(max_lins, self.sequence_length);
+        rate_cache.smc_prime = self.smc_prime;
         rate_cache.rebuild(&active, arena);
 
         // Persistent event list + Fenwick tree. Rebuilt on structural
@@ -1156,7 +1165,7 @@ impl HullSimulator {
                     // pairs made eligible by the SMC' hull rule (no shared
                     // material) actually merge.
                     let allowed = if any_barrier
-                        && !(cls.is_panmictic()
+                        && !(self.smc_prime && cls.is_panmictic()
                              && lineage_all_pan(active[i].head, arena)
                              && lineage_all_pan(active[j].head, arena)) {
                         Some(cls)
@@ -1225,7 +1234,7 @@ impl HullSimulator {
                     // pairs made eligible by the SMC' hull rule (no shared
                     // material) actually merge.
                     let allowed = if any_barrier
-                        && !(cls.is_panmictic()
+                        && !(self.smc_prime && cls.is_panmictic()
                              && lineage_all_pan(active[i].head, arena)
                              && lineage_all_pan(active[j].head, arena)) {
                         Some(cls)
@@ -3447,7 +3456,7 @@ mod tests {
             compound_rate: true,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 15);
@@ -3475,7 +3484,7 @@ mod tests {
             compound_rate: true,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         // 6 samples, no recomb → 11 nodes.
@@ -3716,7 +3725,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -3756,7 +3765,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -3797,7 +3806,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);
@@ -3981,7 +3990,7 @@ mod tests {
             compound_rate: false,
             iters_max: 10_000_000,
             gc_stride: 160,
-            record_events: false,
+            record_events: false, smc_prime: false,
         };
         sim.record_events = true;
 
@@ -4149,7 +4158,7 @@ mod tests {
             inversions: vec![], sweeps: vec![sweep],
             seed: 7, stop_at: f64::INFINITY,
             compound_rate: false, iters_max: 1_000_000,
-            gc_stride: 160, record_events: false,
+            gc_stride: 160, record_events: false, smc_prime: false,
         };
         let result = sim.simulate();
         // The deepest internal node should fall inside the sweep window

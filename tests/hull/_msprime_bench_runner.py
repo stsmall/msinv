@@ -321,11 +321,7 @@ def _stats_from_ts(ts, sample_sets, compute_afs: bool):
     """
     out: dict[str, float] = {
         "pi_branch": ts.diversity(mode="branch"),
-        # Distinct genealogies: count trees after simplification, so the
-        # comparison does not depend on whether an engine keeps
-        # recombinations that leave the genealogy unchanged (msprime's
-        # full ARG keeps them; msinv's SMC' back-coalescence removes them).
-        "n_trees": float(ts.simplify().num_trees),
+        "n_trees": float(ts.num_trees),
     }
     weighted = sum(tree.time(tree.root) * tree.span for tree in ts.trees())
     out["mean_tmrca"] = weighted / ts.sequence_length

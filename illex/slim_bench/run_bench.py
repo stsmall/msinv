@@ -20,11 +20,16 @@ import os
 import subprocess
 import tempfile
 import time
+import warnings
 from pathlib import Path
 
+import msprime
 import numpy as np
 import pyslim
 import tskit
+
+# SLiM tree sequences are in ticks; one tick is one generation in this WF model.
+warnings.simplefilter("ignore", msprime.TimeUnitsMismatchWarning)
 
 HERE = Path(__file__).resolve().parent
 RECIPE = HERE / "inversion_bench.slim"

@@ -79,7 +79,7 @@ recombination() {
     f = (size(mut) == 0) ? 0.0 else sim.mutationFrequencies(p1, mut);
     defineGlobal("TRAJ", c(TRAJ, f));
     if (f == 0.0 | f == 1.0) {
-        catn("[bench] STATUS=" + ((f == 0.0) ? "LOST" : "FIXED") + " tick=" + community.tick);
+        catn("[bench] STATUS=" + ((f == 0.0) ? "LOST" else "FIXED") + " tick=" + community.tick);
         sim.simulationFinished();
     }
 }

@@ -1717,19 +1717,20 @@ impl HullSimulator {
         for (k, inv) in inversions.iter().enumerate() {
             if barrier_active[k] && t >= inv.t_inv_max() {
                 barrier_active[k] = false;
-                // At t_inv: every I-class segment morphs into S (the inversion
-                // mutation arose from an S precursor; going past t_inv we're
-                // pre-inversion era, lineage lives in the S subpopulation).
-                // S-class stays S.  Class label is preserved (not cleared to
-                // PAN) so it stays meaningful for any class-conditional
-                // events that fire later.
+                // At t_inv the inversion no longer exists: further back there
+                // is a single panmictic population at this locus, so this
+                // inversion's karyotype tag is cleared from every segment
+                // (I and S alike). Keeping an S tag made body segments a
+                // separate (pop, class) coalescence cell from the panmictic
+                // flanks, so a pair overlapping in both was counted in both
+                // cells and coalesced at twice the panmictic rate (the
+                // post-barrier merge is a full Hudson merge).
                 for lin in active.iter() {
                     let mut cur = lin.head;
                     while cur != SEG_NIL {
                         let seg = arena.get_mut(cur);
-                        if let Some(Karyotype::I) = seg.branch_class.get_inv(inv.inv_id) {
-                            seg.branch_class = seg.branch_class
-                                .with_inv(inv.inv_id, Karyotype::S);
+                        if seg.branch_class.get_inv(inv.inv_id).is_some() {
+                            seg.branch_class = seg.branch_class.clear_inv(inv.inv_id);
                         }
                         cur = seg.next;
                     }

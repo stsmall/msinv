@@ -97,6 +97,8 @@ def slim_stats(ts, params, seed):
     var = next(rts.variants(samples=nodes, left=INV_START, right=INV_START + 1,
                             isolated_as_missing=False))
     carrier = var.genotypes > 0
+    if carrier.sum() < NS or (~carrier).sum() < NS:
+        return None, float(carrier.mean())         # too few of one arrangement to sample
     rng = np.random.default_rng(seed)
     i_nodes = rng.choice(nodes[carrier], NS, replace=False)
     s_nodes = rng.choice(nodes[~carrier], NS, replace=False)
@@ -148,13 +150,15 @@ def main():
             for attempt in range(a.max_tries):
                 seed = base + attempt
                 status, ts, freqs = run_slim(a.slim, params, seed, wd)
-                if status == "SEGREGATING":
+                if status != "SEGREGATING":
+                    continue
+                sl, p_final = slim_stats(ts, params, seed)
+                if sl is not None:
                     break
             else:
                 fh.write(json.dumps({"scenario": a.scenario, "task": a.task_id, "rep": rep,
                                      "status": "FAILED", "tries": a.max_tries}) + "\n")
                 continue
-            sl, p_final = slim_stats(ts, params, seed)
             ms = msinv_stats(freqs, params, seed)
             rec = {"scenario": a.scenario, "task": a.task_id, "rep": rep, "seed": seed,
                    "tries": attempt + 1, "p_final": p_final,

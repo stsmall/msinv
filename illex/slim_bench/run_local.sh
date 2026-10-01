@@ -5,7 +5,7 @@
 # Each task runs CHUNK replicates of one scenario on one core (OMP/BLAS threads = 1).
 # Requires: SLiM >= 5.0 (SLIM_BIN), and msinv with the post-barrier fix importable
 # from the repo root (run from the repo root).
-set -euo pipefail
+set -uo pipefail   # a failed task must not stop the comparison step
 JOBS=${JOBS:-8}
 REPS=${REPS:-200}
 CHUNK=${CHUNK:-10}

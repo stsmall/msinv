@@ -822,11 +822,15 @@ impl RateCache {
                 if active[i].population != active[j].population {
                     continue;
                 }
-                if self.lineage_pos_bits[i] & self.lineage_pos_bits[j] == 0 {
+                let both_pan = segs_all_pan(&self.lineage_segs[i])
+                    && segs_all_pan(&self.lineage_segs[j]);
+                if !both_pan
+                    && self.lineage_pos_bits[i] & self.lineage_pos_bits[j] == 0 {
                     continue;
                 }
-                let ovl = compute_overlap(
-                    &self.lineage_segs[i], &self.lineage_segs[j]);
+                let ovl = pair_overlap(
+                    &self.lineage_segs[i], &self.lineage_segs[j],
+                    self.lineage_hulls[i], self.lineage_hulls[j]);
                 if !ovl.is_empty() {
                     self.store_pair(i, j, &ovl);
                 }
@@ -887,21 +891,28 @@ impl RateCache {
         // bitmap test + the actual segment overlap.
         self.hull_query_scratch.clear();
         let pi = changed_pop as usize;
+        // The hull index tests strict overlap; widen the query by a tiny
+        // margin so hulls that only touch are returned too (SMC' rule in
+        // `pair_overlap`, which then applies the exact inclusive test).
+        let eps = 1e-9 * self.seq_len.max(1.0);
         if pi < self.hull_indexes.len() {
             self.hull_indexes[pi].iter_overlaps(
-                changed_hull_l, changed_hull_r,
+                changed_hull_l - eps, changed_hull_r + eps,
                 &mut self.hull_query_scratch,
             );
         }
+        let changed_pan = segs_all_pan(&self.lineage_segs[idx]);
         for k in 0..self.hull_query_scratch.len() {
             let other = self.hull_query_scratch[k] as usize;
             if other == idx { continue; }
             debug_assert_eq!(self.lineage_pop[other], changed_pop);
-            if changed_bits & self.lineage_pos_bits[other] == 0 { continue; }
+            let both_pan = changed_pan && segs_all_pan(&self.lineage_segs[other]);
+            if !both_pan && changed_bits & self.lineage_pos_bits[other] == 0 { continue; }
             let i = other.min(idx);
             let j = other.max(idx);
-            let ovl = compute_overlap(
-                &self.lineage_segs[i], &self.lineage_segs[j]);
+            let ovl = pair_overlap(
+                &self.lineage_segs[i], &self.lineage_segs[j],
+                self.lineage_hulls[i], self.lineage_hulls[j]);
             if !ovl.is_empty() {
                 self.store_pair(i, j, &ovl);
             }
@@ -974,6 +985,15 @@ impl RateCache {
                 right_hull_l, right_hull_r);
         }
         self.peers_scratch.clear();
+        // SMC': the two halves of an all-panmictic lineage touch at the
+        // split, so they are an eligible pair (back-coalescence).
+        let (a, b) = (idx.min(new_idx), idx.max(new_idx));
+        let ovl = pair_overlap(
+            &self.lineage_segs[a], &self.lineage_segs[b],
+            self.lineage_hulls[a], self.lineage_hulls[b]);
+        if !ovl.is_empty() {
+            self.store_pair(a, b, &ovl);
+        }
     }
 
     /// Per-pair handler for apply_recomb_split: called only for
@@ -995,6 +1015,27 @@ impl RateCache {
         let ni = other.min(new_idx);
         let nj = other.max(new_idx);
         debug_assert!(!bit_get(&self.nonempty_bits, pair_idx(ni, nj, cap)));
+
+        // All-panmictic pairs use hull eligibility (SMC'), for which the
+        // Case A/B shortcuts below do not hold: a split can shrink a hull
+        // past `other` or leave it touching the other half. Recompute
+        // both halves directly.
+        if segs_all_pan(&self.lineage_segs[idx]) && segs_all_pan(&self.lineage_segs[other]) {
+            self.clear_pair(oi, oj);
+            let ovl = pair_overlap(
+                &self.lineage_segs[oi], &self.lineage_segs[oj],
+                self.lineage_hulls[oi], self.lineage_hulls[oj]);
+            if !ovl.is_empty() {
+                self.store_pair(oi, oj, &ovl);
+            }
+            let ovl = pair_overlap(
+                &self.lineage_segs[ni], &self.lineage_segs[nj],
+                self.lineage_hulls[ni], self.lineage_hulls[nj]);
+            if !ovl.is_empty() {
+                self.store_pair(ni, nj, &ovl);
+            }
+            return;
+        }
 
         // Case A: other entirely left of split_pos — old pair with the
         // left-half is unchanged; nothing to do.
@@ -1509,6 +1550,36 @@ impl<'a> Iterator for NonEmptyPairIter<'a> {
 /// one compute_overlap → store_pair hand-off. Inline 4 covers up to
 /// 2 inversions' worth of distinct (PANMICTIC, S, I) tags.
 type ClassBuf = SmallVec<[BranchClass; 4]>;
+
+/// True if every segment of a lineage is panmictic (no inversion tag).
+#[inline]
+fn segs_all_pan(s: &[FlatSeg]) -> bool {
+    s.iter().all(|&(_, _, c)| c.is_panmictic())
+}
+
+/// Coalescence eligibility of a pair, as the set of classes in which it
+/// can coalesce.
+///
+/// Two all-panmictic lineages follow the SMC' rule of msprime's hull
+/// algorithm: they are eligible whenever their hulls (first segment's
+/// left to last segment's right) intersect or touch, even if they share
+/// no ancestral material. This lets the two halves of a recombined
+/// lineage coalesce back together, which the exact coalescent allows
+/// and the original SMC does not. Eligible pairs merge with a full
+/// (Hudson) merge. Lineages carrying inversion tags keep the
+/// material-overlap rule per class, so the barrier is unchanged.
+#[inline]
+fn pair_overlap(a: &[FlatSeg], b: &[FlatSeg],
+                hull_a: (f64, f64), hull_b: (f64, f64)) -> ClassBuf {
+    if !a.is_empty() && !b.is_empty() && segs_all_pan(a) && segs_all_pan(b) {
+        let mut r: ClassBuf = SmallVec::new();
+        if hull_a.0 <= hull_b.1 && hull_b.0 <= hull_a.1 {
+            r.push(BranchClass::PANMICTIC);
+        }
+        return r;
+    }
+    compute_overlap(a, b)
+}
 
 /// Compute the set of branch classes for which two lineages' flat
 /// segment slices have any positive-length overlap. Two-pointer walk

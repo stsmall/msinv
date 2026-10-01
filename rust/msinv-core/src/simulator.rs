@@ -1151,7 +1151,14 @@ impl HullSimulator {
                     // drops by 1 per event. Barrier-era Some(cls) keeps
                     // class-mismatched regions on remainder lineages so
                     // S/I can't coalesce via a PAN-class event.
-                    let allowed = if any_barrier {
+                    // Two all-panmictic lineages (no inversion tags) take a
+                    // full Hudson merge even while a barrier is active, so
+                    // pairs made eligible by the SMC' hull rule (no shared
+                    // material) actually merge.
+                    let allowed = if any_barrier
+                        && !(cls.is_panmictic()
+                             && lineage_all_pan(active[i].head, arena)
+                             && lineage_all_pan(active[j].head, arena)) {
                         Some(cls)
                     } else {
                         None
@@ -1213,7 +1220,14 @@ impl HullSimulator {
                     let old_j_len = active[j].cached_len;
                     // See CoalAggregate above — post-barrier wants
                     // Hudson full merge.
-                    let allowed = if any_barrier {
+                    // Two all-panmictic lineages (no inversion tags) take a
+                    // full Hudson merge even while a barrier is active, so
+                    // pairs made eligible by the SMC' hull rule (no shared
+                    // material) actually merge.
+                    let allowed = if any_barrier
+                        && !(cls.is_panmictic()
+                             && lineage_all_pan(active[i].head, arena)
+                             && lineage_all_pan(active[j].head, arena)) {
                         Some(cls)
                     } else {
                         None
@@ -2063,6 +2077,17 @@ fn emit_coal_events_from_cache(
 /// Helper: true if any segment in the lineage's chain has
 /// `branch_class == cls`. Used by the per-allele rate emitter to
 /// decide which (pop, cls) cells a lineage participates in.
+/// True if every segment of the lineage is panmictic (no inversion tag).
+fn lineage_all_pan(head: SegIdx, arena: &SegmentArena) -> bool {
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        if !seg.branch_class.is_panmictic() { return false; }
+        cur = seg.next;
+    }
+    true
+}
+
 fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bool {
     let mut cur = head;
     while cur != SEG_NIL {

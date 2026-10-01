@@ -1,0 +1,92 @@
+// SLiM forward benchmark for msinv's inversion coalescent (SLiM >= 5.0, haplosome API).
+//
+// Constant-size Wright-Fisher population of N diploids, sequence [0, L) with an
+// inversion on [INV_START, INV_END]. At tick 1 the inversion is placed on
+// round(P0 * 2N) randomly chosen haplosomes, T_INV generations before sampling.
+// This is the history msinv simulates backwards: a panmictic population until
+// t_inv, then two karyotype classes separated by a recombination barrier.
+// Crossovers inside the inversion are removed in heterokaryotypes. There is no
+// gene flux. Optional overdominance (fitness 1 - A_SS, 1, 1 - B_II for SS, SI, II)
+// holds the inverted frequency near A_SS / (A_SS + B_II).
+//
+// Outputs: a tree sequence at the final tick (recapitated in Python) and the
+// realised inverted-haplosome frequency at every tick, which is passed to msinv
+// as its trajectory so both simulators model the same history.
+
+initialize() {
+    if (!exists("N"))         defineConstant("N", 2000);
+    if (!exists("L"))         defineConstant("L", 100000);
+    if (!exists("INV_START")) defineConstant("INV_START", 10000);
+    if (!exists("INV_END"))   defineConstant("INV_END", 89999);
+    if (!exists("R"))         defineConstant("R", 2.5e-6);
+    if (!exists("P0"))        defineConstant("P0", 0.5);
+    if (!exists("T_INV"))     defineConstant("T_INV", 2000);
+    if (!exists("A_SS"))      defineConstant("A_SS", 0.0);
+    if (!exists("B_II"))      defineConstant("B_II", 0.0);
+    if (!exists("OUT_TREES")) defineConstant("OUT_TREES", "bench.trees");
+    if (!exists("OUT_TRAJ"))  defineConstant("OUT_TRAJ", "bench.traj");
+
+    initializeTreeSeq();
+    initializeMutationRate(0.0);
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    initializeMutationType("m2", 0.5, "f", 0.0);   // karyotype marker
+    m2.convertToSubstitution = F;
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, L - 1);
+    initializeRecombinationRate(R);
+}
+
+1 early() {
+    sim.addSubpop("p1", N);
+    community.rescheduleScriptBlock(s1, T_INV, T_INV);
+    defineGlobal("TRAJ", float(0));
+}
+
+// Introduce the inversion on a random set of haplosomes before the first round
+// of reproduction, so the first offspring generation already carries it.
+1 late() {
+    k = asInteger(round(P0 * 2 * N));
+    targets = sample(p1.haplosomes, k);
+    mut = targets[0].addNewDrawnMutation(m2, INV_START);
+    if (k > 1) targets[1:(k - 1)].addMutations(mut);
+}
+
+// Overdominance on the marker (only when A_SS or B_II is non-zero).
+mutationEffect(m2) {
+    if (homozygous) return 1.0 - B_II;
+    return 1.0;
+}
+fitnessEffect() {
+    if (A_SS == 0.0) return 1.0;
+    if (individual.countOfMutationsOfType(m2) == 0) return 1.0 - A_SS;
+    return 1.0;
+}
+
+// Barrier: no crossovers inside the inversion in heterokaryotypes.
+recombination() {
+    h1 = haplosome1.containsMarkerMutation(m2, INV_START);
+    h2 = haplosome2.containsMarkerMutation(m2, INV_START);
+    if (h1 == h2) return F;
+    inInv = (breakpoints > INV_START) & (breakpoints <= INV_END);
+    if (!any(inInv)) return F;
+    breakpoints = breakpoints[!inInv];
+    return T;
+}
+
+// Record the inverted frequency of the generation alive at the end of each tick.
+2: late() {
+    mut = sim.mutationsOfType(m2);
+    f = (size(mut) == 0) ? 0.0 else sim.mutationFrequencies(p1, mut);
+    defineGlobal("TRAJ", c(TRAJ, f));
+    if (f == 0.0 | f == 1.0) {
+        catn("[bench] STATUS=" + ((f == 0.0) ? "LOST" : "FIXED") + " tick=" + community.tick);
+        sim.simulationFinished();
+    }
+}
+
+s1 2 late() {
+    writeFile(OUT_TRAJ, paste(TRAJ, sep="\n"));
+    sim.treeSeqOutput(OUT_TREES);
+    catn("[bench] STATUS=SEGREGATING tick=" + community.tick + " freq=" + TRAJ[size(TRAJ) - 1]);
+    sim.simulationFinished();
+}

@@ -106,6 +106,7 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
         iters_max=int(getattr(simulator, "iters_max", 10_000_000)),
         gc_stride=int(getattr(simulator, "gc_stride", 160)),
         record_events=bool(getattr(simulator, "_record_events", False)),
+        smc_prime=bool(getattr(simulator, "smc_prime", False)),
     )
 
     # --- Convert to tskit TreeSequence ---

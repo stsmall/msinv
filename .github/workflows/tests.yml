@@ -45,7 +45,7 @@ jobs:
         # No --no-index: numpy + other pure-Python deps still pull
         # from PyPI.
         pip install --find-links dist msinv
-        pip install pytest pytest-timeout 'msprime>=1.2' stdpopsim
+        pip install pytest pytest-timeout 'msprime>=1.2' stdpopsim 'scipy>=1.7'
 
     - name: Put the compiled extension next to the source package
       # The tests import `tests.hull.*`, so pytest puts the repo root on

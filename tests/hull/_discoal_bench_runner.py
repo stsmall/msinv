@@ -18,6 +18,8 @@ import sys
 import tempfile
 import time
 
+import os
+
 import pytest
 import tskit
 
@@ -26,7 +28,8 @@ from msinv.hull.simulator import HullSimulator
 pytestmark = pytest.mark.skip("child runner — invoked via subprocess")
 
 
-DISCOAL_BIN = "/home/adkern/discoal/build/discoal"
+# Override with the DISCOAL_BIN environment variable on other machines.
+DISCOAL_BIN = os.environ.get("DISCOAL_BIN", "/home/adkern/discoal/build/discoal")
 
 
 # Scenario registry filled in by Task B2 (D1) and Phase C tasks (D2-D5).

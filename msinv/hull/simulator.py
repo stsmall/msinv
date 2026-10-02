@@ -368,6 +368,7 @@ class HullSimulator:
         iters_max: int = 10_000_000,
         gc_stride: int = 160,
         record_events: bool = False,
+        smc_prime: bool = False,
     ):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
@@ -564,6 +565,10 @@ class HullSimulator:
         self.iters_max = int(iters_max)
         self.gc_stride = int(gc_stride)
         self._record_events = record_events
+        # SMC' coalescence eligibility (msprime hull algorithm, k = 0) for
+        # lineages without inversion tags; Rust engine only. Default off:
+        # the original SMC rule (shared ancestral material required).
+        self.smc_prime = bool(smc_prime)
         self.event_log = None  # populated after simulate() when record_events=True
         self.sweep_a_count = (
             0  # count of A-tagged sample lineages after last simulate()
@@ -1288,6 +1293,9 @@ class HullSimulator:
                 use_rust = RUST_AVAILABLE
             except ImportError:
                 use_rust = False
+        if self.smc_prime and not use_rust:
+            raise NotImplementedError(
+                "smc_prime=True is implemented in the Rust engine only")
         if use_rust:
             from ._rust_bridge import rust_simulate
 

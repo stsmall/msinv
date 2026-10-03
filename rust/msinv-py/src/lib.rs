@@ -196,6 +196,196 @@ impl PySweep {
 /// ``HullSimulator(...).simulate()`` in the Python version. The
 /// Python wrapper in ``msinv/hull/_rust_bridge.py`` calls this
 /// function and converts the dict into a tskit TreeSequence.
+/// Build one inversion's frequency trajectory from its inversion dict
+/// (`'trajectory'` sub-dict, or legacy `'p_inv'` + `'t_inv'`). Shared by
+/// `simulate_raw` and `InvTrajectory` so tier 0 reads the same
+/// frequencies as the simulators.
+fn build_trajectory_from_inv_dict(
+    d: &Bound<'_, PyDict>,
+) -> PyResult<Box<dyn Trajectory + Send + Sync>> {
+    let trajectory: Box<dyn Trajectory + Send + Sync> =
+        if let Some(traj_obj) = d.get_item("trajectory")? {
+            let td: &Bound<'_, PyDict> = traj_obj.downcast()?;
+            let ttype: String = td.get_item("type")?
+                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                    "trajectory dict requires 'type' key"))?
+                .extract()?;
+            match ttype.as_str() {
+                "constant" => {
+                    let p = td.get_item("p_inv")?.unwrap();
+                    let p_vec: Vec<f64> = if let Ok(v) = p.extract::<f64>() {
+                        vec![v]
+                    } else { p.extract()? };
+                    let t_inv: f64 = td.get_item("t_inv")?.unwrap().extract()?;
+                    Box::new(ConstantTrajectory::new(p_vec, t_inv))
+                }
+                "deterministic" => {
+                    let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                    // Optional p_start (founding frequency).
+                    // Defaults to 1/(2N) (hard sweep) when omitted.
+                    // Set to e.g. 0.05 for partial-SHIC-style soft sweep
+                    // on standing variation.
+                    let p_start: Option<f64> = td.get_item("p_start")?
+                        .and_then(|v| v.extract().ok());
+                    match p_start {
+                        Some(p0) => Box::new(
+                            DeterministicTrajectory::new_with_p_start(
+                                p_final, p0, n_e, s)),
+                        None => Box::new(
+                            DeterministicTrajectory::new(p_final, n_e, s)),
+                    }
+                }
+                "stochastic" => {
+                    let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                    let seed: u64   = td.get_item("seed")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(42);
+                    Box::new(StochasticTrajectory::new(p_final, n_e, s, seed))
+                }
+                // Discoal-style stochastic-then-deterministic.
+                // Phase 1 (small p, drift-dominated): integer-WF
+                //   from p_start to det_threshold (default
+                //   5/(2N), configurable).
+                // Phase 2 (large p, selection-dominated): closed-
+                //   form logistic from det_threshold to p_final.
+                "stoch_det" | "stochastic_deterministic" => {
+                    let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                    let p_start: f64 = td.get_item("p_start")?
+                        .and_then(|v| v.extract().ok())
+                        .unwrap_or(1.0 / (2.0 * n_e));
+                    let det_threshold: Option<f64> = td.get_item("det_threshold")?
+                        .and_then(|v| v.extract().ok());
+                    let seed: u64 = td.get_item("seed")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(42);
+                    let max_attempts: u32 = td.get_item("max_attempts")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(100);
+                    Box::new(StochasticDeterministicTrajectory::new(
+                        p_final, n_e, s, p_start, det_threshold,
+                        seed, max_attempts
+                    ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
+                }
+                // Integer-copy WF trajectory: forward-simulate
+                // discrete WF with selection from p_start to
+                // p_final, rejection-resampling lost paths.
+                // The robust large-N replacement for 'stochastic'
+                // (which uses continuous-diffusion approx).
+                "integer_wf" => {
+                    let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                    let p_start: f64 = td.get_item("p_start")?
+                        .and_then(|v| v.extract().ok())
+                        .unwrap_or(1.0 / (2.0 * n_e));
+                    let seed: u64   = td.get_item("seed")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(42);
+                    let max_attempts: u32 = td.get_item("max_attempts")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(100);
+                    Box::new(IntegerWFTrajectory::new(
+                        p_final, n_e, s, p_start, seed, max_attempts
+                    ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
+                }
+                // Bridge stochastic: conditioned on BOTH t_inv
+                // and p_final.  partialdiscoal-style incomplete
+                // sweep.  s>0 is recommended for tractable
+                // acceptance rates.
+                "bridge" => {
+                    let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: f64      = td.get_item("s")?.unwrap().extract()?;
+                    let t_inv: f64  = td.get_item("t_inv")?.unwrap().extract()?;
+                    let seed: u64   = td.get_item("seed")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(42);
+                    let tolerance: f64 = td.get_item("tolerance")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(0.02);
+                    let max_attempts: u64 = td.get_item("max_attempts")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(10_000);
+                    Box::new(BridgeStochasticTrajectory::new(
+                        p_final, n_e, s, t_inv, seed, tolerance, max_attempts
+                    ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
+                }
+                // Precomputed: user supplies (times, freqs, n_e).
+                // freqs is a list of per-pop arrays.
+                // Optional 't_inv': per-pop barrier dissolution
+                // times.  If omitted, inferred from when freq
+                // reaches 1/(2N).
+                "precomputed" => {
+                    let times: Vec<f64> = td.get_item("times")?.unwrap().extract()?;
+                    let freqs: Vec<Vec<f64>> = td.get_item("freqs")?.unwrap().extract()?;
+                    let n_e: Vec<f64> = td.get_item("n_e")?.unwrap().extract()?;
+                    let t_inv_explicit: Option<Vec<f64>> =
+                        td.get_item("t_inv")?.and_then(|v| v.extract().ok());
+                    Box::new(PrecomputedTrajectory::with_t_inv(
+                        times, freqs, n_e, t_inv_explicit))
+                }
+                "coupled" => {
+                    let p_final: Vec<f64> = td.get_item("p_final")?.unwrap().extract()?;
+                    let n_e: Vec<f64>    = td.get_item("n_e")?.unwrap().extract()?;
+                    let s: Vec<f64>      = td.get_item("s")?.unwrap().extract()?;
+                    let m: f64           = td.get_item("m")?.unwrap().extract()?;
+                    let seed: u64        = td.get_item("seed")?
+                        .and_then(|v| v.extract().ok()).unwrap_or(42);
+                    Box::new(CoupledTrajectory::new(p_final, n_e, s, m, seed))
+                }
+                other => return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("unknown trajectory type: {:?}", other))),
+            }
+        } else {
+            // Legacy back-compat: p_inv + t_inv
+            let p_inv_obj = d.get_item("p_inv")?.ok_or_else(||
+                pyo3::exceptions::PyValueError::new_err(
+                    "inversion dict requires 'p_inv' or 'trajectory'"))?;
+            let p_inv: Vec<f64> = if let Ok(v) = p_inv_obj.extract::<f64>() {
+                vec![v]
+            } else if let Ok(v) = p_inv_obj.extract::<Vec<f64>>() {
+                v
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "p_inv must be a float or list of floats"));
+            };
+            let t_inv: f64 = d.get_item("t_inv")?.unwrap().extract()?;
+            Box::new(ConstantTrajectory::new(p_inv, t_inv))
+        };
+    Ok(trajectory)
+}
+
+/// Read-only handle on one inversion's frequency trajectory, built from
+/// the same inversion dict `simulate_raw` takes (see `msinv.expect`).
+#[pyclass(name = "InvTrajectory")]
+struct PyInvTrajectory {
+    inner: Box<dyn Trajectory + Send + Sync>,
+}
+
+#[pymethods]
+impl PyInvTrajectory {
+    #[new]
+    fn new(inversion: &Bound<'_, PyDict>) -> PyResult<Self> {
+        Ok(Self { inner: build_trajectory_from_inv_dict(inversion)? })
+    }
+
+    /// Inverted-arrangement frequency in `pop` at each backward time.
+    fn p_inv(&self, times: Vec<f64>, pop: u32) -> Vec<f64> {
+        times.iter().map(|&t| self.inner.p_inv_at(t, pop)).collect()
+    }
+
+    fn t_inv(&self, pop: u32) -> f64 {
+        self.inner.t_inv(pop)
+    }
+
+    fn t_inv_max(&self) -> f64 {
+        self.inner.t_inv_max()
+    }
+
+    fn knots(&self) -> Vec<f64> {
+        self.inner.knots()
+    }
+}
+
+
 #[pyfunction]
 #[pyo3(signature = (
     sample_config,
@@ -346,153 +536,7 @@ fn simulate_raw(
             };
 
             // Build trajectory
-            let trajectory: Box<dyn Trajectory + Send + Sync> =
-                if let Some(traj_obj) = d.get_item("trajectory")? {
-                    let td: &Bound<'_, PyDict> = traj_obj.downcast()?;
-                    let ttype: String = td.get_item("type")?
-                        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-                            "trajectory dict requires 'type' key"))?
-                        .extract()?;
-                    match ttype.as_str() {
-                        "constant" => {
-                            let p = td.get_item("p_inv")?.unwrap();
-                            let p_vec: Vec<f64> = if let Ok(v) = p.extract::<f64>() {
-                                vec![v]
-                            } else { p.extract()? };
-                            let t_inv: f64 = td.get_item("t_inv")?.unwrap().extract()?;
-                            Box::new(ConstantTrajectory::new(p_vec, t_inv))
-                        }
-                        "deterministic" => {
-                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            // Optional p_start (founding frequency).
-                            // Defaults to 1/(2N) (hard sweep) when omitted.
-                            // Set to e.g. 0.05 for partial-SHIC-style soft sweep
-                            // on standing variation.
-                            let p_start: Option<f64> = td.get_item("p_start")?
-                                .and_then(|v| v.extract().ok());
-                            match p_start {
-                                Some(p0) => Box::new(
-                                    DeterministicTrajectory::new_with_p_start(
-                                        p_final, p0, n_e, s)),
-                                None => Box::new(
-                                    DeterministicTrajectory::new(p_final, n_e, s)),
-                            }
-                        }
-                        "stochastic" => {
-                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            let seed: u64   = td.get_item("seed")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(42);
-                            Box::new(StochasticTrajectory::new(p_final, n_e, s, seed))
-                        }
-                        // Discoal-style stochastic-then-deterministic.
-                        // Phase 1 (small p, drift-dominated): integer-WF
-                        //   from p_start to det_threshold (default
-                        //   5/(2N), configurable).
-                        // Phase 2 (large p, selection-dominated): closed-
-                        //   form logistic from det_threshold to p_final.
-                        "stoch_det" | "stochastic_deterministic" => {
-                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            let p_start: f64 = td.get_item("p_start")?
-                                .and_then(|v| v.extract().ok())
-                                .unwrap_or(1.0 / (2.0 * n_e));
-                            let det_threshold: Option<f64> = td.get_item("det_threshold")?
-                                .and_then(|v| v.extract().ok());
-                            let seed: u64 = td.get_item("seed")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(42);
-                            let max_attempts: u32 = td.get_item("max_attempts")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(100);
-                            Box::new(StochasticDeterministicTrajectory::new(
-                                p_final, n_e, s, p_start, det_threshold,
-                                seed, max_attempts
-                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
-                        }
-                        // Integer-copy WF trajectory: forward-simulate
-                        // discrete WF with selection from p_start to
-                        // p_final, rejection-resampling lost paths.
-                        // The robust large-N replacement for 'stochastic'
-                        // (which uses continuous-diffusion approx).
-                        "integer_wf" => {
-                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            let p_start: f64 = td.get_item("p_start")?
-                                .and_then(|v| v.extract().ok())
-                                .unwrap_or(1.0 / (2.0 * n_e));
-                            let seed: u64   = td.get_item("seed")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(42);
-                            let max_attempts: u32 = td.get_item("max_attempts")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(100);
-                            Box::new(IntegerWFTrajectory::new(
-                                p_final, n_e, s, p_start, seed, max_attempts
-                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
-                        }
-                        // Bridge stochastic: conditioned on BOTH t_inv
-                        // and p_final.  partialdiscoal-style incomplete
-                        // sweep.  s>0 is recommended for tractable
-                        // acceptance rates.
-                        "bridge" => {
-                            let p_final: f64 = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: f64    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: f64      = td.get_item("s")?.unwrap().extract()?;
-                            let t_inv: f64  = td.get_item("t_inv")?.unwrap().extract()?;
-                            let seed: u64   = td.get_item("seed")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(42);
-                            let tolerance: f64 = td.get_item("tolerance")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(0.02);
-                            let max_attempts: u64 = td.get_item("max_attempts")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(10_000);
-                            Box::new(BridgeStochasticTrajectory::new(
-                                p_final, n_e, s, t_inv, seed, tolerance, max_attempts
-                            ).map_err(pyo3::exceptions::PyRuntimeError::new_err)?)
-                        }
-                        // Precomputed: user supplies (times, freqs, n_e).
-                        // freqs is a list of per-pop arrays.
-                        // Optional 't_inv': per-pop barrier dissolution
-                        // times.  If omitted, inferred from when freq
-                        // reaches 1/(2N).
-                        "precomputed" => {
-                            let times: Vec<f64> = td.get_item("times")?.unwrap().extract()?;
-                            let freqs: Vec<Vec<f64>> = td.get_item("freqs")?.unwrap().extract()?;
-                            let n_e: Vec<f64> = td.get_item("n_e")?.unwrap().extract()?;
-                            let t_inv_explicit: Option<Vec<f64>> =
-                                td.get_item("t_inv")?.and_then(|v| v.extract().ok());
-                            Box::new(PrecomputedTrajectory::with_t_inv(
-                                times, freqs, n_e, t_inv_explicit))
-                        }
-                        "coupled" => {
-                            let p_final: Vec<f64> = td.get_item("p_final")?.unwrap().extract()?;
-                            let n_e: Vec<f64>    = td.get_item("n_e")?.unwrap().extract()?;
-                            let s: Vec<f64>      = td.get_item("s")?.unwrap().extract()?;
-                            let m: f64           = td.get_item("m")?.unwrap().extract()?;
-                            let seed: u64        = td.get_item("seed")?
-                                .and_then(|v| v.extract().ok()).unwrap_or(42);
-                            Box::new(CoupledTrajectory::new(p_final, n_e, s, m, seed))
-                        }
-                        other => return Err(pyo3::exceptions::PyValueError::new_err(
-                            format!("unknown trajectory type: {:?}", other))),
-                    }
-                } else {
-                    // Legacy back-compat: p_inv + t_inv
-                    let p_inv_obj = d.get_item("p_inv")?.ok_or_else(||
-                        pyo3::exceptions::PyValueError::new_err(
-                            "inversion dict requires 'p_inv' or 'trajectory'"))?;
-                    let p_inv: Vec<f64> = if let Ok(v) = p_inv_obj.extract::<f64>() {
-                        vec![v]
-                    } else if let Ok(v) = p_inv_obj.extract::<Vec<f64>>() {
-                        v
-                    } else {
-                        return Err(pyo3::exceptions::PyValueError::new_err(
-                            "p_inv must be a float or list of floats"));
-                    };
-                    let t_inv: f64 = d.get_item("t_inv")?.unwrap().extract()?;
-                    Box::new(ConstantTrajectory::new(p_inv, t_inv))
-                };
+            let trajectory = build_trajectory_from_inv_dict(d)?;
 
             let mut spec = InversionSpec::new(bp_left, bp_right, trajectory);
             spec.gene_conversion_rate = gcr;
@@ -634,5 +678,6 @@ fn _msinv_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(simulate_raw, m)?)?;
     m.add_class::<PySweep>()?;
+    m.add_class::<PyInvTrajectory>()?;
     Ok(())
 }

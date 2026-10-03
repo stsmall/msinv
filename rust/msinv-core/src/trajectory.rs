@@ -48,6 +48,13 @@ pub trait Trajectory: Send + Sync + std::fmt::Debug {
 
     /// Number of populations this trajectory tracks (0 = single).
     fn n_pops(&self) -> usize;
+    /// Time grid on which the trajectory is linearly interpolated
+    /// (backward generations). Empty for closed-form trajectories.
+    /// Used by the tier 0 calculator (`msinv.expect`) to place
+    /// integration boundaries.
+    fn knots(&self) -> Vec<f64> {
+        Vec::new()
+    }
 
     /// Clone into a new boxed Trajectory.
     fn clone_boxed(&self) -> Box<dyn Trajectory + Send + Sync>;
@@ -364,6 +371,9 @@ fn linear_interp(times: &[f64], freqs: &[f64], t: f64) -> f64 {
 }
 
 impl Trajectory for StochasticTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
         if t >= self.t_inv_cached {
             return 0.0;
@@ -522,6 +532,9 @@ impl IntegerWFTrajectory {
 }
 
 impl Trajectory for IntegerWFTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
         if t >= self.t_inv_cached {
             return 0.0;
@@ -682,6 +695,9 @@ impl StochasticDeterministicTrajectory {
 }
 
 impl Trajectory for StochasticDeterministicTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
         if t >= self.t_inv_cached { return 0.0; }
         self.interp(t)
@@ -887,6 +903,9 @@ impl BridgeStochasticTrajectory {
 }
 
 impl Trajectory for BridgeStochasticTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, _pop: u32) -> f64 {
         if t >= self.t_inv_cached {
             return 0.0;
@@ -1053,6 +1072,9 @@ impl CoupledTrajectory {
 }
 
 impl Trajectory for CoupledTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, pop: u32) -> f64 {
         let pop_idx = (pop as usize).min(self.n_pops - 1);
         if t >= self.t_inv_per_pop[pop_idx] {
@@ -1191,6 +1213,9 @@ impl PrecomputedTrajectory {
 }
 
 impl Trajectory for PrecomputedTrajectory {
+    fn knots(&self) -> Vec<f64> {
+        self.times.clone()
+    }
     fn p_inv_at(&self, t: f64, pop: u32) -> f64 {
         let pop_idx = (pop as usize).min(self.n_pops - 1);
         if t >= self.t_inv_per_pop[pop_idx] {
@@ -1413,5 +1438,27 @@ mod tests {
         }
         // At t >= t_inv: p = 0
         assert_eq!(pre.p_inv_at(1001.0, 0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod knots_tests {
+    use super::*;
+
+    #[test]
+    fn closed_form_trajectories_have_no_knots() {
+        assert!(ConstantTrajectory::new(vec![0.3], 100.0).knots().is_empty());
+        assert!(DeterministicTrajectory::new(0.5, 1000.0, 0.01).knots().is_empty());
+    }
+
+    #[test]
+    fn precomputed_knots_are_its_time_grid() {
+        let tr = PrecomputedTrajectory::with_t_inv(
+            vec![0.0, 10.0, 20.0],
+            vec![vec![0.5, 0.4, 0.3]],
+            vec![1000.0],
+            Some(vec![20.0]),
+        );
+        assert_eq!(tr.knots(), vec![0.0, 10.0, 20.0]);
     }
 }

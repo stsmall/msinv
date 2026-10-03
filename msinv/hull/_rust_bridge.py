@@ -20,6 +20,23 @@ except ImportError:
         RUST_AVAILABLE = False
 
 
+def inversion_to_dict(inv, n_pops: int) -> dict:
+    """Inversion dict in the shape ``simulate_raw`` and ``InvTrajectory`` take."""
+    d = {
+        "bp_left": float(inv.bp_left),
+        "bp_right": float(inv.bp_right),
+        "gene_conversion_rate": float(inv.gene_conversion_rate),
+        "mean_tract_length": float(inv.mean_tract_length),
+        "tract_distribution": str(inv.tract_distribution),
+    }
+    if getattr(inv, "trajectory", None) is not None:
+        d["trajectory"] = dict(inv.trajectory)
+    else:
+        d["p_inv"] = inv._p_inv_as_list(n_pops)
+        d["t_inv"] = float(inv.t_inv)
+    return d
+
+
 def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
     """Run a simulation using the Rust core.
 
@@ -58,21 +75,7 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
     n_pops = simulator.demography.n_pops
     inv_dicts = []
     for inv in simulator.inversions:
-        d = {
-            "bp_left": float(inv.bp_left),
-            "bp_right": float(inv.bp_right),
-            "gene_conversion_rate": float(inv.gene_conversion_rate),
-            "mean_tract_length": float(inv.mean_tract_length),
-            "tract_distribution": str(inv.tract_distribution),
-        }
-        if getattr(inv, "trajectory", None) is not None:
-            # New trajectory path — pass dict straight to Rust.
-            d["trajectory"] = dict(inv.trajectory)
-        else:
-            # Back-compat: constant p_inv/t_inv
-            d["p_inv"] = inv._p_inv_as_list(n_pops)
-            d["t_inv"] = float(inv.t_inv)
-        inv_dicts.append(d)
+        inv_dicts.append(inversion_to_dict(inv, n_pops))
 
     # --- Sweeps ---
     sweep_specs = [sw.to_rust() for sw in simulator.sweeps]

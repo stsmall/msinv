@@ -80,3 +80,28 @@ class ExpectModel:
     def profile(self, ys, a, b) -> np.ndarray:
         """Mean pairwise time at each site in ys, in one integration."""
         return self._solve([a, b], list(ys)).mean.copy()
+
+    def expected_branch_lengths(self, y, sample, max_states=10**6) -> np.ndarray:
+        """E[L_b], b = 1..n-1: expected length (generations) of branches
+        subtending b of the sampled chromosomes; E[xi_b] = mu * E[L_b]."""
+        res = self._solve(sample, [y], max_states=max_states)
+        return res.branch_lengths[0].copy()
+
+    def expected_sfs(self, y, pop, state, n, max_states=10**6) -> np.ndarray:
+        """Unfolded expected SFS (per unit mutation rate) of n chromosomes."""
+        return self.expected_branch_lengths(y, [(pop, state)] * n, max_states)
+
+    def f1(self, y, pop, state, n=20, max_states=10**6) -> float:
+        """Illex f1: folded first class over total, ratio of expectations."""
+        folded = fold(self.expected_sfs(y, pop, state, n, max_states))
+        return float(folded[0] / folded.sum())
+
+
+def fold(unfolded) -> np.ndarray:
+    """Fold E[L_b], b = 1..n-1, as illex/scripts/sfs_shape.py does."""
+    unf = np.asarray(unfolded, dtype=float)
+    n = len(unf) + 1
+    out = np.zeros(n // 2)
+    for b in range(1, n):
+        out[min(b, n - b) - 1] += unf[b - 1]
+    return out

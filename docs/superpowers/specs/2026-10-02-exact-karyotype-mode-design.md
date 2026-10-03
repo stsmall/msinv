@@ -202,10 +202,11 @@ timed by §4.4.
    where C(y) = E_l[∫ φ(x) · P(tract from x of length l covers y) dx]
    ≈ φ(y) · mean tract length away from the breakpoints. For a lineage
    whose material near y is fragmentary, the current rule (event positions
-   drawn only within ancestral material) gives a smaller per-site hazard;
-   whether exact mode keeps that rule or initiates tracts wherever they
-   would overlap ancestral material (Wiuf & Hein 2000) is decided before
-   the tier 2 plan. Recombination
+   drawn only within ancestral material) gives a smaller per-site hazard.
+   Decided 2026-10-03: exact mode initiates tracts wherever they would
+   overlap ancestral material (Wiuf & Hein 2000), so every ancestral site
+   is converted at γ · f_d(other, t) · C(y) regardless of the surrounding
+   material, matching tier 0. Tier 1 keeps its current rule. Recombination
    cannot enter a zero-frequency state either: if f_d(other, t) = 0 the
    flux hazard is zero.
 5. At `t_inv`: `origin="barrier"` drops the inversion's entry from every

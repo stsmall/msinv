@@ -6,12 +6,38 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.integrate import solve_ivp
+from scipy.integrate import BDF, solve_ivp
 from scipy.sparse.linalg import expm_multiply, splu
 
 from ._chain import I, P, S
 
 _NAME = {S: "S", I: "I"}
+
+
+class _NoPivotBDF(BDF):
+    """BDF whose sparse LU takes diagonal pivots (no partial pivoting).
+
+    In the Newton matrix I - h*J the generator block is strictly column
+    diagonally dominant (J's generator columns sum to zero) and the auxiliary
+    rows (rewards, survival) sit below it with identity diagonal, so diagonal
+    pivots are stable. With SuperLU's default threshold pivoting the larger
+    auxiliary entries get picked as pivots and the factors fill in.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if sp.issparse(self.J):
+
+            def lu(a):
+                self.nlu += 1
+                return splu(a, diag_pivot_thresh=0.0)
+
+            self.lu = lu
+
+
+# ODE method used by Solver; a module attribute so tests can compare it
+# against scipy's default "BDF".
+_ODE_METHOD = _NoPivotBDF
 
 
 class ImpossibleHistoryError(ValueError):
@@ -240,7 +266,7 @@ class Solver:
                     self._rhs,
                     (t, end),
                     z,
-                    method="BDF",
+                    method=_ODE_METHOD,
                     jac=self._jac,
                     rtol=self.rtol,
                     atol=self.atol,

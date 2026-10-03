@@ -49,3 +49,15 @@ def test_f1_equals_illex_projection_of_larger_sample():
     big = m.expected_sfs(y, 0, "I", 12)
     folded = project_unfolded(np.concatenate([[0.0], big, [0.0]]), 12, 10)
     assert m.f1(y, 0, "I", n=10) == pytest.approx(folded[0] / folded.sum(), rel=1e-6)
+
+
+def test_no_pivot_lu_matches_default_bdf(monkeypatch):
+    # The diagonal-pivot LU (msinv/expect/_solve.py::_NoPivotBDF) must give
+    # the same answer as scipy's default BDF, within the ODE tolerance.
+    from msinv.expect import _solve
+
+    m = _model(t_inv=4000.0, r=1e-6)
+    fast = m.expected_sfs(9_000.0, 0, "I", 8)
+    monkeypatch.setattr(_solve, "_ODE_METHOD", "BDF")
+    default = m.expected_sfs(9_000.0, 0, "I", 8)
+    assert np.allclose(fast, default, rtol=1e-7, atol=0.0)

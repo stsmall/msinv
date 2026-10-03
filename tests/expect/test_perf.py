@@ -28,7 +28,11 @@ def test_pairwise_profile_100_positions_under_1s():
 
 @pytest.mark.slow
 @pytest.mark.skip(
-    reason="tier 0 f1 at n=20 exceeds the 5 s target by orders of magnitude (measured: n=6 0.34 s, n=8 0.52 s, n=10 1.9 s, n=12 10.1 s; 25467 chain states at n=20); solver redesign pending user decision"
+    reason=(
+        "tier 0 f1 at n=20 still exceeds the 5 s target after the no-pivot LU "
+        "fix (measured: n=10 0.83 s, n=12 1.9 s, n=14 6.3 s; 25467 chain "
+        "states at n=20); further solver work pending user decision"
+    )
 )
 def test_f1_n20_one_population_under_5s():
     m = _model()

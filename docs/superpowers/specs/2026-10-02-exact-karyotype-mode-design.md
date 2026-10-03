@@ -1,13 +1,15 @@
 # Exact karyotype mode and tiered inference — design spec
 
-Status: written 2026-10-02 for review. Sections 1–5 agreed in conversation on
-2026-10-02. Supersedes the working notes
+Status: written 2026-10-02; revised 2026-10-03 after external review (P0
+items resolved: `t_inv` semantics, integrated hazards, zero-frequency
+boundaries, singleton statistic, corrected closed forms; P1/P2 items folded
+in). Sections 1–5 agreed in conversation. Supersedes the working notes
 `2026-10-02-exact-karyotype-mode-notes.md` (kept for history; two statements
-there about current msinv behaviour are corrected in §3.3 below).
+there about current msinv behaviour are corrected in §3.3).
 
-Scope of this spec: build steps 1 and 2 (single inversion). Step 3 (multiple
-and nested inversions, Balanus) gets its own spec; §6 lists what steps 1–2
-must provide so step 3 needs no rework.
+Scope: build steps 1 and 2 (single inversion). Step 3 (multiple and nested
+inversions, Balanus) gets its own spec; §6 lists what steps 1–2 must provide
+so step 3 needs no rework.
 
 ## 1. Motivation
 
@@ -26,21 +28,29 @@ migration, gene flux and per-population inversion frequencies. Speed has been
 the limiting factor, so fast tiers must reject histories before slower exact
 runs.
 
-## 2. Decisions
+## 2. Decisions and definitions
 
 - Single inversion first (with migration, per-population frequencies, flux
   and trajectories). Data model, recombination rule and frequency interface
   are designed for multiple and nested inversions from the start.
 - Exact mode is opt-in. Default behaviour, output and speed are unchanged.
-  Exact mode may cost up to 2× wall time and peak RSS. Exact mode always uses
-  SMC'.
 - Approach: karyotype state per lineage (Hudson & Kaplan 1988; Guerrero et
   al. 2012 background model), not per-segment tags. Rejected:
-  distance-based approximate tagging (arbitrary, approximate); per-locus
-  two-deme coalescent (loses the joint genealogy and tree-sequence output).
-- Model assumption, stated explicitly: random mating (Hardy–Weinberg) within
-  each population, so a lineage's homologous chromosome in its parent has
-  karyotype K' with probability f_d(K', t).
+  distance-based approximate tagging; per-locus two-deme coalescent (loses
+  the joint genealogy and tree-sequence output).
+- Meaning of "exact": `karyotype_mode="exact"` conditions each lineage's
+  ancestry exactly on its karyotype state, within the SMC' approximation to
+  the ARG and given the supplied frequency histories. Event timing under
+  time-varying rates is exact up to stated numerical tolerances (§4.4). It
+  is not a full ARG and not a forward Wright–Fisher simulation.
+- Frequency trajectories are exogenous conditioning histories. msinv does
+  not require them to be the deterministic solution of the supplied
+  migration/selection model; inconsistent histories can imply extreme
+  conditional hazards, and impossible ones raise errors (§4.4).
+- Random mating within each population: conditional on a chromosome being
+  in state K, its homolog is an independent draw from the population's
+  chromosomes, so it is in state K' with probability f_d(K', t). (A
+  chromosome-level probability, not a genotype frequency such as p².)
 - Out of scope: inferring trajectories inside msinv. Selection is estimated
   by fitting trajectory parameters (scan with tier 0, confirm with tier 2).
 
@@ -50,20 +60,19 @@ runs.
 
 | Tier | What | Speed | Use |
 |---|---|---|---|
-| 0 | Expectation calculator (new, `msinv.expect`). Single-site Markov chain over lineage counts by (population, state); forward equations integrated with an adaptive ODE solver. | ms–s per history | Grid scans, likelihood surfaces, rejecting histories |
+| 0 | Expectation calculator (new, `msinv.expect`). Single-site Markov chains over lineages labelled by (population, state); forward equations integrated with an adaptive ODE solver. | ms–s per history | Grid scans, likelihood surfaces, rejecting histories |
 | 1 | Current default engine (`karyotype_mode="segment"`), unchanged | fast | Genealogies when breakpoint linkage does not matter |
-| 2 | Exact mode (new, `karyotype_mode="exact"`): lineage-level karyotype state + SMC' | ≤ 2× tier 1 | Linkage-dependent statistics (LD near breakpoints, haplotype structure, divergence profile) and final fits |
+| 2 | Exact mode (new, `karyotype_mode="exact"`): lineage-level karyotype state + SMC' + integrated hazards | target ≤ 2× tier 1 | Linkage-dependent statistics and final fits |
 
 All tiers read one history description (§3.2).
 
 Consistency contract (built-in correctness test):
 - Tier 0 expectations = tier 2 means, everywhere (inside and flank, any
-  number of populations, with flux).
-- Tier 0 expectations = tier 1 means only for sites inside the inversion
-  and only when inversion frequencies are equal in all populations. Tier 1
-  treats flank material as panmictic and migrates lineages regardless of
-  karyotype (§3.3), so flank sites and migration between populations with
-  different frequencies are not expected to match tier 1.
+  number of populations, with flux, either `origin` setting).
+- Tier 0 expectations = tier 1 means only for sites inside the inversion,
+  with inversion frequencies equal in all populations, and with
+  `origin="barrier"`. Tier 1 treats flank material as panmictic, migrates
+  lineages regardless of karyotype (§3.3), and has no single-origin merge.
 
 Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
 (3) both extended to multiple/nested inversions (separate spec).
@@ -71,19 +80,35 @@ Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
 ### 3.2 History description, states and frequencies
 
 - Populations: msinv `Demography` (sizes over time, splits/merges,
-  migration matrix `M[dst][src]`, "fraction of dst absorbing from src", i.e.
-  the backward rate of a lineage in dst moving to src).
-- Inversion (`InversionSpec`): breakpoints; age `t_inv` (barrier forms;
-  before it, backward, the locus is panmictic); gene-flux rate γ and tract
-  length with the Peischl φ(x) profile. A `parent` field is added now for
-  nesting; in steps 1–2 setting it raises `NotImplementedError`.
+  migration matrix `M[dst][src]` = "fraction of dst absorbing from src",
+  i.e. the backward hazard of a lineage in dst moving to src).
+- Inversion (`InversionSpec`): breakpoints; `t_inv`; gene-flux rate γ
+  (per bp per generation, as in the existing `gene_conversion_rate`) and
+  mean tract length with the Peischl φ(x) profile. A `parent` field is added
+  now for nesting; in steps 1–2 setting it raises `NotImplementedError`.
+- Meaning of `t_inv`, set by a new `origin` argument (exact mode and tier 0
+  only; tier 1 is always `"barrier"`):
+  - `origin="barrier"` (default; matches tier 1 and all fits to date):
+    `t_inv` is the onset of the recombination barrier. At `t_inv` the
+    inversion's entry is dropped from every state and surviving
+    I-background lineages continue independently in the panmictic
+    population (consistent with the post-barrier fix, PR #11).
+  - `origin="single"`: `t_inv` is the origin of a single inversion
+    mutation. At `t_inv` every lineage still in state I (inside or flank
+    material) is merged into one lineage — the origin chromosome — and that
+    lineage then drops the inversion's entry. Use this when `t_inv` is to be
+    reported as inversion age.
+  - With per-population `t_inv` (coupled trajectories), the origin is in the
+    population with the largest `t_inv`; I lineages elsewhere must have
+    migrated there before their own population's `t_inv` (enforced by the
+    zero-frequency rule, §4.4).
 - Frequency trajectories per population: f_d(state, t) for each allowed
   karyotype combination (one inversion: p_d(t) for I, 1 − p_d(t) for S).
   Inputs only: constant, deterministic (selection; one population first) or
   precomputed. Existing trajectory types are reused.
-- States: allowed karyotype combinations. One inversion: {S, I}. (Step 3,
-  B nested in A: {S.S, I.S, I.I}.) Encoded with the existing 2-bit-per-
-  inversion `BranchClass`.
+- States: allowed karyotype combinations. One inversion: {S, I}. Encoded
+  with the existing 2-bit-per-inversion `BranchClass`. (Step 3, B nested in
+  A: {S.S, I.S, I.I}, first component the parent inversion.)
 - Frequency interface, used by both tiers:
   - `f(pop, state, t)`;
   - `draw_conditional(pop, t, known)` — given the karyotypes already known
@@ -91,136 +116,193 @@ Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
     it at recombination; tier 0 uses the same conditionals as transition
     rates. For one inversion with nothing known it reduces to "I with
     probability p_d(t)".
-- Setup checks: allowed-state frequencies sum to 1 (tolerance 1e-9) in every
-  population at every trajectory time point; a lineage sampled in state K
-  requires f_d(K, 0) > 0.
-- At t_inv the inversion's entry is dropped from every state (consistent with
-  the post-barrier fix, PR #11).
+  - Invariants (checked at setup and in debug builds): `f` in [0, 1] within
+    1e-12; allowed-state frequencies sum to 1 within 1e-9 in every
+    population at every trajectory knot; `draw_conditional` returns only
+    allowed states, derives its probabilities from the same joint table as
+    `f`, and raises if the conditioning event has zero probability; no
+    frequency is read at a time other than the one asked for (no stale
+    caching).
+- Setup checks: a lineage sampled in state K requires f_d(K, 0) > 0.
 
 ### 3.3 Corrections to the working notes (current tier 1 behaviour)
 
 Verified in source on 2026-10-02:
 - Tier 1 recombination is not frequency-scaled inside the inversion: rate is
   `total_material * recombination_rate` (`simulator.rs:390, 705`) and
-  `apply_recombination` does not consult the inversion. The notes' "same
-  r·p_c rule as current msinv" was wrong; the r·f_d(K) rule (§3.4, rule 2)
-  is new behaviour. It does not change single-site means inside the
-  inversion in tier 1, because a site's class there never changes by
-  recombination.
+  `apply_recombination` does not consult the inversion. The r·f_d(K) rule
+  (§3.4 rule 2) is new behaviour. It does not change single-site means
+  inside the inversion in tier 1, because a site's class there never changes
+  by recombination.
 - Tier 1 continuous migration ignores karyotype: rate
   `migration_matrix[dst][src]` per lineage (`simulator.rs:409–424`). Only
   the instantaneous `apply_class_mig` pulse is karyotype-specific.
+- Tier 1 `t_inv` is a barrier onset: every trajectory type returns
+  `p_inv = 0` for `t ≥ t_inv` (`trajectory.rs`) and `cross_barriers_static`
+  clears the tags; nothing forces I lineages to coalesce at `t_inv`.
+  Consequence outside this spec: the Illex "arose ~850 ka" estimate is a
+  barrier-onset time under this model, not a single-origin age; whether
+  `origin="single"` would move it has not been checked.
 
 ### 3.4 Tier 2 event rules
 
 Backward time. Lineage l in population d with state K; N_d(t), f_d(·, t).
 Written for one inversion; for several, the same rules apply per inversion
-with the conditional draws of §3.2.
+with the conditional draws of §3.2. All hazards are time-dependent and are
+timed by §4.4.
 
 1. Coalescence: two lineages in the same population and the same state
-   whose hulls overlap or touch (SMC'): rate 1 / (2 N_d f_d(K)) per pair;
-   full Hudson merge of the two lineages.
+   whose hulls overlap or touch (SMC'): hazard 1 / (2 N_d(t) f_d(K, t)) per
+   pair; full Hudson merge of the two lineages.
 2. Recombination at x, uniform over the lineage's material at rate r per
    base.
-   - x inside the inversion: effective rate r · f_d(K) (only homokaryotypes
-     cross over there). Both halves keep K.
+   - x inside the inversion: accepted hazard r · f_d(K, t). By §2's
+     random-mating statement the homolog is also K with probability
+     f_d(K, t), and only homokaryotypes cross over inside the inversion.
+     Both halves keep K.
    - x outside the inversion: the half on the inversion's side of x keeps K;
-     the other half sits on the parent's other chromosome and draws its
-     state with `draw_conditional` (one inversion: I with probability
-     p_d(t)).
+     the other half sits on the homolog and draws its state with
+     `draw_conditional` (one inversion: I with probability p_d(t)).
    - General case (step 3): each half keeps the karyotypes of inversions on
      its own side of x and draws the rest conditional on what it kept; an
      inversion spanning x forces both halves to share its karyotype.
-3. Migration d → d' (backward): rate M[d][d'] · f_{d'}(K) / f_d(K)
-   (migrants carry source karyotype frequencies; first order in m, by Bayes'
-   rule). State kept. A lineage in state K cannot move into a population with
-   f_{d'}(K) = 0. As f_d(K) → 0 with f_{d'}(K) > 0 the rate becomes large;
-   this is correct (the lineage must leave) and is handled by the time-step
-   cap in §4.4.
-4. Gene flux: a conversion tract covering y inside the inversion at rate
-   γ · φ(y) · f_d(other) (heterokaryotypes only). The tract becomes a new
-   lineage in the other state; the rest of the lineage keeps K.
-5. At t_inv: the inversion's entry is dropped from every lineage's state.
+3. Migration d → d' (backward): conditional on observing a lineage in state
+   K in population d, the backward migration hazard to source population d'
+   is the unconditioned hazard times the source/destination frequency ratio,
+   M[d][d'](t) · f_{d'}(K, t) / f_d(K, t). State kept. A state with zero
+   frequency in d' cannot be entered by migration. As f_d(K, t) → 0 with
+   f_{d'}(K, t) > 0 the hazard can diverge; this is a genuine
+   time-inhomogeneous boundary, handled by §4.4, not a large finite rate.
+4. Gene flux: γ is per bp per generation. A lineage's flux hazard is
+   γ · f_d(other, t) · ∫ φ over its material inside the inversion, i.e. the
+   per-site hazard at y is γ · φ(y) · f_d(other, t) (heterokaryotypes only),
+   matching `flux_lineage_rate_arena` (`simulator.rs:2346`). The tract
+   becomes a new lineage in the other state; the rest keeps K. Recombination
+   cannot enter a zero-frequency state either: if f_d(other, t) = 0 the
+   flux hazard is zero.
+5. At `t_inv`: `origin="barrier"` drops the inversion's entry from every
+   lineage's state; `origin="single"` first merges all lineages in state I
+   into one lineage (one new node; Hudson merge of their material, which may
+   be disjoint), then drops the entry.
 
-### 3.5 Tier 0 single-site chain
+### 3.5 Tier 0 single-site chains
 
 At position y; lineages labelled by (population, state).
-- Coalescence within (population, state) cell with c lineages:
-  C(c, 2) / (2 N_d f_d(K)).
+- Coalescence within a (population, state) cell with c lineages:
+  C(c, 2) / (2 N_d(t) f_d(K, t)).
 - Migration: as tier 2 rule 3.
 - State switching (linkage at one site):
   - flank site at distance δ from the nearer breakpoint: rate
-    r · δ · f_d(other);
-  - inside the inversion: flux only, γ · φ(y) · f_d(other).
-- At t_inv states merge (cells of the same population combine).
-- Time-varying rates (trajectories, demography): the forward (Kolmogorov)
-  equations are integrated with an adaptive ODE solver at a stated tolerance
-  (default rtol 1e-8, atol 1e-12), with demographic and trajectory
-  breakpoints passed as forced step boundaries. No piecewise-constant
-  approximation of trajectories.
+    r · δ · f_d(other, t) (uniform recombination rate over that interval);
+  - inside the inversion: flux only, γ · φ(y) · f_d(other, t).
+- At `t_inv`: states merge (`origin="barrier"`), or all I lineages first
+  merge into one (`origin="single"`).
+- Time-varying rates: the forward (Kolmogorov) equations are integrated
+  with an adaptive ODE solver (default rtol 1e-8, atol 1e-12), with
+  demographic and trajectory knots and `t_inv` as forced step boundaries.
+  A cell whose frequency reaches zero has diverging exit rates; the solver
+  integrates up to the boundary with the probability mass that must leave
+  having left, and raises if mass would remain in a state with no support
+  anywhere.
 
 Outputs:
-- Expected pairwise coalescence times within and between states and
-  populations at any y (pair chain: about ten states).
-- Expected singleton fraction per arrangement. Computed with one focal
-  lineage, by exchangeability within a sampled (population, state) group: the
-  chain tracks the counts of the other lineages per (population, state) cell
-  plus the focal lineage's cell; expected external length of the group =
-  group size × E[time to the focal lineage's first coalescence]. State-space
-  size is C(n + c, c) · c for c cells (1 population, n = 40: ≈ 1.7 k;
-  2 populations, n = 40: ≈ 540 k).
-- Not the full SFS (use tier 1/2).
-- The state space is counted at setup; above `max_states` (default 10⁶) the
-  call raises a `ValueError` naming the count and suggesting tier 1/2.
+- Pairwise coalescence times within and between states and populations at
+  any y: mean, variance and survival function P(T > t) (pair chain, about
+  ten states).
+- Expected site frequency spectrum of a sample from one arrangement (and
+  population), by the block-counting process (Hobolth, Siri-Jégousse &
+  Bladt 2019): states are multisets of (cell, number of sampled
+  descendants) for the lineages; E[ξ_i] ∝ expected time-integrated total
+  length of branches subtending i sampled chromosomes. Computed directly at
+  the projection size (projecting an expected SFS by hypergeometric
+  sampling equals computing it at the smaller size).
+- `f1`, defined exactly as the Illex statistic (`illex/scripts/sfs_shape.py`
+  `project_unfolded`, `refit_decline.py:191`): the folded expected SFS at
+  projection size n (default 20 haploid chromosomes), first class divided by
+  the total: f1 = (E[ξ_1] + E[ξ_{n−1}]) / Σ_i E[ξ_i]. A ratio of
+  expectations, not E[S_1/S].
+- Not the full joint SFS across arrangements or populations (use tier 1/2).
+- State-space size (partitions of n into cell-coloured parts): one
+  population, two states, n = 20: 24,842; two populations, n = 20:
+  2,778,517, above the default limit. The state space is counted at setup; above `max_states`
+  (default 10⁶) the call raises a `ValueError` naming the count and
+  suggesting tier 1/2.
 
 ## 4. Implementation mapping (tier 2)
 
 ### 4.1 Core representation
 
 In exact mode every segment of a lineage carries the lineage's state,
-including flank segments. No segment is tagged panmictic until t_inv clears
-the inversion's bits. The lineage's state is therefore the (uniform) class of
-its segments; a debug assertion checks uniformity after every event that
-touches segments.
+including flank segments. No segment is tagged panmictic until `t_inv`. The
+lineage's state is the (uniform) class of its segments.
 
 Consequences, reusing existing machinery:
-- `compute_overlap` (`rate_index.rs`) already matches material class by
-  class, so a non-empty overlap means same population and same state.
-- `p_class_for_tag` already returns f_d(K), so the rate
-  1 / (2 N_d f_d(K)) is unchanged.
+- `compute_overlap` (`rate_index.rs`) matches material class by class, so a
+  non-empty overlap means same population and same state.
+- `p_class_for_tag` returns f_d(K, t) for the coalescence hazard.
 - Coalescence in exact mode calls `apply_coalescence` (full merge), not
   `apply_coalescence_partial`.
 - SMC' eligibility: today hulls that only touch are eligible only when both
-  lineages are all-panmictic (`segs_all_pan`, `rate_index.rs:1581`). In exact
-  mode this extends to two lineages each of uniform class, the same class.
-- t_inv: `cross_barriers_static` already clears the inversion's bits from
-  every segment; with uniform tags this drops the lineage's state.
+  lineages are all-panmictic (`segs_all_pan`, `rate_index.rs:1581`). In
+  exact mode this extends to two lineages each of uniform class, the same
+  class.
+- `t_inv`: `cross_barriers_static` clears the inversion's bits from every
+  segment; with `origin="single"` it is preceded by the I-lineage merge
+  (§4.6).
 
 ### 4.2 Recombination
 
-The total recombination rate stays `r · material`.
-- Breakpoint inside the inversion: accept with probability f_d(K, t);
-  rejection is a null event (thinning; exact because the bound r is
-  constant). The rate aggregate is unchanged.
+The proposal rate stays `r · material` (constant between events).
+- Breakpoint inside the inversion: accept with probability f_d(K, t) at the
+  event time; rejection is a null event (thinning; exact because the
+  proposal rate is constant). The proposal rate, not the accepted rate, is
+  the term in the total hazard of §4.4.
 - Breakpoint outside: the half on the inversion's side keeps K; the far half
-  draws a new state and has its segments retagged (O(segments)), followed by
+  draws a new state and has every segment retagged (O(segments)) before
   `rebuild_segs_for` on that lineage.
 
 ### 4.3 Migration
 
-Rate M[d][d'] · f_{d'}(K) / f_d(K). No thinning (the ratio is unbounded), so
-the aggregate is computed from counts per (population, state) and the
-migrating lineage is picked from per-(population, state) buckets, extending
-the current `pop_buckets`.
+Hazard M[d][d'](t) · f_{d'}(K, t) / f_d(K, t). The migrating lineage is
+picked from per-(population, state) buckets, extending the current
+`pop_buckets`.
 
-### 4.4 Time-varying rates
+### 4.4 Time-varying hazards (integrated)
 
-As in tier 1's class coalescence, rates are re-evaluated at each event and
-held fixed between events. Additional safeguard in exact mode: a time-step
-cap that applies only while a trajectory is moving fast — when the relative
-change |Δf/f| of any f_d(K) in use over the proposed step exceeds a
-tolerance (default 0.05), the step is truncated and rates re-evaluated. The
-cap is inactive under constant frequencies.
+Between events, lineage counts per cell, eligible pair counts per
+(population, state) bucket, total material and per-(population, state) flux
+weights (∫φ over material, without the frequency factor) are fixed. The total
+hazard is therefore
+
+  Λ(t) = Σ_k c_k · g_k(t) + r · material,
+
+where each g_k is one of a small set of known functions of time:
+1 / (N_d(t) f_d(K, t)) (coalescence), M[d][d'](t) f_{d'}(K, t) / f_d(K, t)
+(migration), f_d(other, t) (flux). At setup, the cumulative integrals
+G_k(t) = ∫₀ᵗ g_k are tabulated on a grid containing every demographic knot,
+trajectory knot and `t_inv`; within a grid cell the integral is analytic
+where the form is known (constant; linear interpolation) and by adaptive
+quadrature otherwise (rel. tol. 1e-10). Grids end at `t_inv` (beyond it no
+rate depends on frequency).
+
+Event step from t₀: draw E ~ Exp(1); solve Σ_k c_k (G_k(t₁) − G_k(t₀)) +
+r · material · (t₁ − t₀) = E for t₁ by bracketed root search on this
+monotone function, stopping at the next forced boundary if it comes first
+(apply the boundary, redraw). At t₁ choose the event class with probability
+proportional to its instantaneous hazard. Constant-frequency, constant-size
+epochs use the closed form (fast path).
+
+Zero-frequency boundaries: where f_d(K, t) → 0, G_k for coalescence and
+migration out of (d, K) diverges, so the root lands before the boundary and
+the lineage coalesces or leaves first; the simulator never steps across the
+singularity. If a lineage would remain in a state with zero support and no
+exit (no destination population with f_{d'}(K) > 0 and no partner to
+coalesce with), the simulation raises an error naming the population,
+state and time. The existing `t_inv` drop to zero is a forced boundary, not
+a singularity: it is handled by rule 5 before the frequency is read as
+zero.
+
+Tier 1 keeps its current scheduler (rates re-evaluated at events).
 
 ### 4.5 Gene flux
 
@@ -228,91 +310,150 @@ The tract becomes a new lineage whose segments take the other state; the
 rest of the lineage keeps K. Existing flux path, with the new lineage given a
 single state.
 
-### 4.6 Unsupported combinations in v1
+### 4.6 Single-origin merge
+
+With `origin="single"`, at `t_inv` all lineages in state I are merged into
+one lineage by successive full merges recorded under one new node at time
+`t_inv` (the sweep `still_a` force-coalesce at `t_origin`,
+`simulator.rs:3025`, is the precedent). The merged lineage then has the
+inversion's entry dropped. If no I lineage survives to `t_inv`, nothing
+happens.
+
+### 4.7 Unsupported combinations in v1
 
 Each raises an error at setup, never silently ignored:
 - `karyotype_mode="exact"` with sweeps;
 - with `compound_rate=True` (exact mode runs only on the main `run_loop`;
   `run_loop_compound` is untouched);
 - with the pure-Python reference simulator (`msinv/hull/simulator.py`);
-- with `smc_prime=False`.
+- with `smc_prime=False`;
+- `origin` other than `"barrier"` in `karyotype_mode="segment"`.
 
 The sweep stack and its `has_sv_phase` gating are untouched.
 
-### 4.7 Python interface
+### 4.8 Python interface
 
-- `HullSimulator(..., karyotype_mode="segment" | "exact")`, default
-  `"segment"`; matching `karyotype_mode` argument on `simulate_raw`
-  (`rust/msinv-py/src/lib.rs`). `"exact"` sets SMC'. Unknown values raise.
-- New module `msinv/expect/` (numpy/scipy), tier 0:
+- `HullSimulator(..., karyotype_mode="segment" | "exact",
+  origin="barrier" | "single")`, defaults `"segment"`, `"barrier"`;
+  matching arguments on `simulate_raw` (`rust/msinv-py/src/lib.rs`).
+  `"exact"` sets SMC'. Unknown values raise.
+- New package `msinv/expect/` (numpy/scipy), tier 0:
   - built from the same `Demography`, `InversionSpec` and trajectory objects
-    as `HullSimulator`;
-  - `pairwise_times(y)` → dict of expected T within/between (population,
-    state);
-  - `singleton_fraction(y, sample_config)` → per arrangement;
+    as `HullSimulator`, plus `origin`;
+  - `pairwise_times(y)` → mean, variance and survival function per
+    (population, state) pair;
+  - `expected_sfs(y, pop, state, n)` → unfolded expected SFS (θ = 1 units);
+  - `f1(y, pop, state, n=20)` → folded ratio of expectations (§3.5);
   - `profile(ys, ...)` → vectorised over positions;
   - `max_states` argument (default 10⁶).
   - Ported to Rust only if profiling shows a need.
 
 ## 5. Validation and performance
 
+Pass rule for all simulation comparisons (replaces "non-significant = pass"):
+- per statistic, bootstrap 95% CI of Cohen's d within ±0.2;
+- where variance is tested, bootstrap 95% CI of the SD ratio within
+  [0.85, 1.15];
+- KS and Brown–Forsythe/Levene reported as diagnostics only;
+- quantiles 0.1, 0.5, 0.9 reported with bootstrap CIs.
+Replicates: 100 for development checks; release validation uses the count
+needed for the SD-ratio CI to fit the band (≈ 1000; at 200 the CI half-width
+is ≈ ±14%), subject to a 1-rep pilot showing it is affordable. Where the same
+realised trajectory is used across engines it is kept as a blocking factor
+in summaries; replicates are not called paired.
+
 ### 5.A Default behaviour unchanged
 
-- `karyotype_mode="segment"` output identical for the same seed: one
-  golden tree sequence per existing scenario type (panmictic, inversion,
-  inversion + migration, flux, sweep), tables compared byte-for-byte against
-  HEAD-before-change; existing Rust and Python suites pass.
+- `karyotype_mode="segment"` with the same seed gives identical
+  node/edge/site/mutation/population/individual/migration tables (provenance
+  excluded): one golden tree sequence per existing scenario type
+  (panmictic, inversion, inversion + migration, flux, sweep) against
+  HEAD-before-change. Existing Rust and Python suites pass.
 - Default-mode wall time within ±2% of HEAD (median of 20 reps), measured as
   `bench-off-path` does.
 
 ### 5.B Tier 0 correctness, independent of msinv
 
-1. Closed forms, constant f, no flux, inside the inversion:
-   T_II = 2N·p, T_SS = 2N(1 − p), T_IS = t_inv + 2N. Plus a hand-solved
-   two-state pair chain at a flank site.
-2. msprime as exact single-site reference: each (population, state) is an
-   msprime deme of size N_d · f_d(K) (ploidy 1, pass 2·N per CLAUDE.md);
-   switching r · δ · f_d(other) and the scaled real migration enter as
-   migration rates; time-varying f as stepwise parameter changes. Checks
-   pairwise times and the singleton fraction (from msprime's SFS). msprime
-   cannot model background-dependent recombination, so it is not a tier 2
-   reference.
+1. Closed forms, constant f, no flux, no migration, inside the inversion,
+   with a_K = 2N f_K (f_I = p, f_S = 1 − p):
+   - `origin="barrier"`:
+     P(T_KK > t) = e^{−t/a_K} for t < t_inv, and
+     e^{−t_inv/a_K} e^{−(t − t_inv)/(2N)} for t ≥ t_inv;
+     E[T_KK] = a_K (1 − e^{−t_inv/a_K}) + 2N e^{−t_inv/a_K}.
+     P(T_IS > t) = 1 for t < t_inv, e^{−(t − t_inv)/(2N)} after;
+     E[T_IS] = t_inv + 2N.
+   - `origin="single"`: E[T_II] = a_I (1 − e^{−t_inv/a_I}) (I/I pairs
+     coalesce at `t_inv` at the latest); S/S and I/S as above.
+   - Limits: t_inv → ∞ gives 2N f_K; t_inv → 0 gives 2N (barrier);
+     p → 1 gives E[T_II] → 2N (barrier).
+   Means and full survival functions are tested.
+2. Plus a hand-solved two-state pair chain at a flank site.
+3. msprime as exact single-site reference: each (population, state) is an
+   msprime deme with `ploidy=1` and size `2 · N_d(t) · f_d(K, t)`; switching
+   r · δ · f_d(other) and the conditional scaled migration
+   M[d][d'] f_{d'}(K) / f_d(K) (same source/destination convention as msinv)
+   enter as migration rates; time-varying f as stepwise parameter changes.
+   Checks pairwise times and the expected SFS / f1. msprime cannot model
+   background-dependent recombination, so it is not a tier 2 reference.
+4. Identity cases: two identical demes with symmetric migration collapse to
+   the expected structured result; equal frequencies across populations
+   reduce the migration rule to plain M; r = 0 and γ = 0 give no switching;
+   p = 0 or 1 outside the inversion gives no stochastic state change.
 
-### 5.C Tier 0 vs simulation engines
+### 5.C Tier 0 vs tier 2
 
-Means only; n = 100 reps; KS + Cohen's d via
-`validation/_lib/aggregator.py` (α = 0.01, |d| < 0.2).
-- vs tier 2: inside and flank; one and two populations; with and without
-  flux.
-- vs tier 1: inside the inversion with equal frequencies across populations
-  only (§3.1).
+At single sites, constant and time-varying trajectories, n = 100 reps
+(development) under the §5 pass rule:
+- pairwise mean, variance and survival curve; state occupancy through time;
+  migration and flux event probabilities; expected SFS / f1;
+- inside and flank; one and two populations; with and without flux; both
+  `origin` settings.
+Tier 0 vs tier 1: inside the inversion, equal frequencies, `origin="barrier"`
+only (§3.1).
 
 ### 5.D Tier 2 vs SLiM (main test)
 
-- Rerun `illex/slim_bench` (4 scenarios × 200 reps, matched realised
-  trajectories) with `karyotype_mode="exact"`.
-- Pass per statistic: KS p > 0.01 and |d| < 0.2 (existing), plus variance:
-  Levene p > 0.01 and SD ratio (msinv/SLiM) in [0.85, 1.15]. SD ratio
-  reported for every statistic.
+- Rerun `illex/slim_bench` (4 scenarios, matched realised trajectories) with
+  `karyotype_mode="exact"`, at the release replicate count.
 - Additions to the benchmark:
   1. linkage statistics: T_IS and T_flank in 3 bins of distance from the
      nearer breakpoint; r² between flank sites and the inversion marker;
   2. a two-deme scenario: inversion frequencies differ between demes
      (selection in one deme only), migration between them; per-deme
      frequencies logged by SLiM and passed to msinv as precomputed
-     per-population trajectories. This is the test of the migration rule
-     (§3.4 rule 3).
-- Tier 1 (with `smc_prime=True`) run alongside as the documented baseline.
+     per-population trajectories (tests §3.4 rule 3);
+  3. single-origin comparison: SLiM's inversion arises once, so
+     `origin="single"` is compared against SLiM for T_II and its SD.
+- Tier 1 (`smc_prime=True`) run alongside as the documented baseline.
 
-### 5.E Performance targets
+### 5.E Exact-mode unit and invariant tests
 
-Pilot 1 rep at production L before any batch (CLAUDE.md).
+- SMC' eligibility, same state vs different state, for: overlapping
+  material; disjoint material with overlapping hulls; hulls touching at one
+  coordinate; and transition through `t_inv` (different states become
+  compatible).
+- After every exact-mode event in debug/test builds: every lineage has one
+  uniform state; no lineage occupies a zero-support state; rate-cache
+  bucket counts equal a direct recomputation; total ancestral material is
+  conserved across recombination and flux as in the existing simulator.
+- Integrated-hazard scheduler: event-time distribution under a known
+  time-varying hazard matches the analytic inverse; zero-frequency
+  boundary: a lineage in a state whose frequency falls linearly to zero
+  always leaves before the boundary; the error path fires for an impossible
+  history.
+- `draw_conditional` empirical frequencies agree with `f`.
+
+### 5.F Performance
+
+Pilot 1 rep at production L before any batch (CLAUDE.md). The ≤ 2× figure
+is an engineering target, reported, not a release gate.
 
 | Measure | Target |
 |---|---|
 | Tier 2 vs tier 1, wall and peak RSS | ≤ 2× on SLiM-bench settings and on L = 1 Mb v12 + inversion |
+| Tier 2 stress cases (reported) | p ≈ 0.5; p ≈ 0.05; fast-changing trajectory; two demes with strongly different frequencies; flux on/off |
 | Tier 0 pairwise profile, 100 positions | < 1 s |
-| Tier 0 singleton fraction, 1 population, n = 40 | < 1 s |
+| Tier 0 f1, 1 population, n = 20 | < 5 s |
 | Tier 0 above `max_states` | clear `ValueError` |
 
 Batches use `ProcessPoolExecutor(max_workers=50)`. Runs ≥ 1 h wall or ≥ 10
@@ -323,18 +464,19 @@ cores go overnight. Results to `results/validation/exact_karyotype/`
 
 Step 3 adds:
 - states as tuples over inversions, allowed combinations only (nested:
-  {S.S, I.S, I.I}); partially overlapping, non-nested inversions remain out
-  of scope;
+  {S.S, I.S, I.I}, parent first); partially overlapping, non-nested
+  inversions remain out of scope;
 - a joint frequency input per population, defaulting to the product of
   single-inversion frequencies for unlinked inversions, read by
   `draw_conditional`;
-- nesting checks at setup: an inner inversion's t_inv is younger than its
+- nesting checks at setup: an inner inversion's `t_inv` is younger than its
   parent's and it lies on the parent's I background;
+- a recombination map, if needed (replace r·δ by integrated map distance);
 - a nested-inversion SLiM benchmark scenario.
 
 Steps 1–2 provide now: the frequency interface (`f`, `draw_conditional`)
-used by both tiers, and the `parent` field on `InversionSpec` (raises if
-set).
+with its invariants, the `origin` argument, and the `parent` field on
+`InversionSpec` (raises if set).
 
 ## 7. Relevant code
 
@@ -342,12 +484,17 @@ set).
   `compute_overlap`, `segs_all_pan`, `apply_recomb_split`).
 - Event loop: `rust/msinv-core/src/simulator.rs` (`run_loop`,
   `CoalAggregate`/`CoalPair`, `MigrationAggregate`, `cross_barriers_static`,
-  `p_class_for_tag`).
+  `p_class_for_tag`, `flux_lineage_rate_arena`, sweep `still_a`
+  force-coalesce).
+- Trajectories: `rust/msinv-core/src/trajectory.rs` (`Trajectory` trait,
+  `p_inv_at`, `t_inv`).
 - Merges: `rust/msinv-core/src/events.rs` (`apply_coalescence`,
   `apply_coalescence_partial`, `apply_recombination`).
 - Class tag: `rust/msinv-core/src/class_tag.rs` (`BranchClass`).
 - PyO3 bridge: `rust/msinv-py/src/lib.rs` (`simulate_raw`); wrapper
   `msinv/hull/_rust_bridge.py`.
+- Illex f1 definition: `illex/scripts/sfs_shape.py` (`project_unfolded`,
+  `PROJ = 20`), `illex/scripts/refit_decline.py:191`.
 - SLiM benchmark: branch `bench/slim-inversion`, `illex/slim_bench/`.
 - Known residual: ~4% excess distinct trees for n > 2 in SMC and SMC'
   (xfail in `tests/hull/test_smc_prime.py`); not addressed here.

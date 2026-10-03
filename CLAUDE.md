@@ -17,6 +17,7 @@ cd rust && cargo build --release -p msinv-py
 - Rust: `cd rust && cargo test --release`
 - Python: `.venv/bin/python -m pytest tests/hull/ --ignore=tests/hull/test_stress_corners.py`
 - Validation: `.venv/bin/python -m pytest tests/validation/ -v`
+- Tier 0 (`msinv.expect`): `.venv/bin/python -m pytest tests/expect/ -m "not slow"`; full incl. msprime reference + perf: `-m "slow or not slow"`
 - Always `.venv/bin/python`, not system.
 
 ## Pre-commit hooks (in `.claude/hooks/`)

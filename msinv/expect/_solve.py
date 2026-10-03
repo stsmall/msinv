@@ -30,8 +30,9 @@ class Solver:
     """Integrate R replicas of one chain that differ only in the switching
     coefficient (one per site), as one block-diagonal system."""
 
-    def __init__(self, chain, epochs, freq, coeffs, rtol=1e-8, atol=1e-12,
-                 force_knots_max=1000):
+    def __init__(
+        self, chain, epochs, freq, coeffs, rtol=1e-8, atol=1e-12, force_knots_max=1000
+    ):
         self.ch, self.ep, self.fq = chain, epochs, freq
         self.coeffs = np.asarray(coeffs, dtype=float)
         self.R = len(self.coeffs)
@@ -209,8 +210,16 @@ class Solver:
             sel = (times >= t) & (times < tb)
             if end > t:
                 t_eval = np.append(np.minimum(times[sel], end), end)
-                sol = solve_ivp(self._rhs, (t, end), z, method="BDF", jac=self._jac,
-                                rtol=self.rtol, atol=self.atol, t_eval=t_eval)
+                sol = solve_ivp(
+                    self._rhs,
+                    (t, end),
+                    z,
+                    method="BDF",
+                    jac=self._jac,
+                    rtol=self.rtol,
+                    atol=self.atol,
+                    t_eval=t_eval,
+                )
                 if not sol.success:
                     raise RuntimeError(
                         f"ODE solver failed on [{t}, {end}]: {sol.message}"

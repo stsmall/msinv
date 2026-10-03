@@ -10,8 +10,9 @@ N = 1000.0
 
 
 def _model(t_inv, p=0.3, r=1e-8):
-    inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, p_inv=p, t_inv=t_inv,
-                        mean_tract_length=0.0)
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, p_inv=p, t_inv=t_inv, mean_tract_length=0.0
+    )
     return ExpectModel(Demography([N]), inv, r)
 
 
@@ -31,8 +32,9 @@ def test_pair_branch_length_is_twice_pairwise_time():
     m = _model(t_inv=2000.0, r=1e-6)
     y = 9_500.0
     lb = m.expected_branch_lengths(y, [(0, "I"), (0, "I")])
-    assert lb[0] / 2 == pytest.approx(m.pairwise_times(y, (0, "I"), (0, "I")).mean,
-                                      rel=1e-7)
+    assert lb[0] / 2 == pytest.approx(
+        m.pairwise_times(y, (0, "I"), (0, "I")).mean, rel=1e-7
+    )
 
 
 def test_fold_convention():

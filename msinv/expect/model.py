@@ -21,8 +21,16 @@ class PairwiseTimes:
 class ExpectModel:
     """Exact single-site expectations under one inversion history."""
 
-    def __init__(self, demography, inversion, recombination_rate,
-                 origin="barrier", rtol=1e-8, atol=1e-12, force_knots_max=1000):
+    def __init__(
+        self,
+        demography,
+        inversion,
+        recombination_rate,
+        origin="barrier",
+        rtol=1e-8,
+        atol=1e-12,
+        force_knots_max=1000,
+    ):
         if origin not in ("barrier", "single"):
             raise ValueError(f"origin must be 'barrier' or 'single', got {origin!r}")
         if recombination_rate <= 0.0:
@@ -45,8 +53,12 @@ class ExpectModel:
         inv = self.inversion
         if inv.bp_left <= y < inv.bp_right:
             return inv.gene_conversion_rate * flux_coverage(
-                y, inv.bp_left, inv.bp_right, inv.mean_tract_length,
-                inv.tract_distribution)
+                y,
+                inv.bp_left,
+                inv.bp_right,
+                inv.mean_tract_length,
+                inv.tract_distribution,
+            )
         delta = inv.bp_left - y if y < inv.bp_left else y - inv.bp_right
         return self.r * delta
 
@@ -65,9 +77,16 @@ class ExpectModel:
         self._check_sample(sample)
         coeffs = [self.switching_coefficient(y) for y in ys]
         joins = [j for e in self.epochs.epochs for j in e.joins]
-        chain = Chain(sample, self.epochs.n_pops, self.epochs.mig_pairs(), joins,
-                      any(c > 0.0 for c in coeffs), self.origin, self.origin_pop,
-                      max_states)
+        chain = Chain(
+            sample,
+            self.epochs.n_pops,
+            self.epochs.mig_pairs(),
+            joins,
+            any(c > 0.0 for c in coeffs),
+            self.origin,
+            self.origin_pop,
+            max_states,
+        )
         return Solver(chain, self.epochs, self.freq, coeffs, **self._opts).run(times)
 
     def pairwise_times(self, y, a, b, times=None) -> PairwiseTimes:

@@ -45,8 +45,17 @@ class Chain:
     ``switching``: whether the site's switching coefficient is positive.
     """
 
-    def __init__(self, sample, n_pops, mig_pairs, joins, switching, origin,
-                 origin_pop, max_states=None):
+    def __init__(
+        self,
+        sample,
+        n_pops,
+        mig_pairs,
+        joins,
+        switching,
+        origin,
+        origin_pop,
+        max_states=None,
+    ):
         self.n = len(sample)
         if self.n < 2:
             raise ValueError("need at least two sampled chromosomes")
@@ -129,9 +138,12 @@ class Chain:
     def _boundary_images(self, s: tuple):
         for src, dst in self._joins:
             if any(pop_of(c) == src for c, _ in s):
-                yield ("join", src, dst), canon(
-                    (cell(dst, k_of(c)), b) if pop_of(c) == src else (c, b)
-                    for c, b in s
+                yield (
+                    ("join", src, dst),
+                    canon(
+                        (cell(dst, k_of(c)), b) if pop_of(c) == src else (c, b)
+                        for c, b in s
+                    ),
                 )
         if any(k_of(c) != P for c, _ in s):
             yield "t_inv", self._inv_image(s)

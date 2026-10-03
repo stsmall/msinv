@@ -273,12 +273,24 @@ def flux_coverage(
         lo, hi = max(0.0, yr - length), min(inv_len, yr + length)
         if hi <= lo:
             return 0.0
-        kinks = (yr, yr - length / 2, yr + length / 2, length, inv_len - length,
-                 w * inv_len, (1 - w) * inv_len)
+        kinks = (
+            yr,
+            yr - length / 2,
+            yr + length / 2,
+            length,
+            inv_len - length,
+            w * inv_len,
+            (1 - w) * inv_len,
+        )
         pts = [p for p in kinks if lo < p < hi]
         val, _ = quad(
             lambda x: _phi(x / inv_len, w) * _cover_prob(x, yr, length, inv_len),
-            lo, hi, points=pts or None, limit=200, epsabs=0.0, epsrel=1e-10,
+            lo,
+            hi,
+            points=pts or None,
+            limit=200,
+            epsabs=0.0,
+            epsrel=1e-10,
         )
         return val
 
@@ -287,6 +299,10 @@ def flux_coverage(
     cap, m = 0.99 * inv_len, mean_tract_length
     body, _ = quad(
         lambda length: given_length(length) * math.exp(-length / m) / m,
-        0.0, cap, limit=200, epsabs=0.0, epsrel=1e-8,
+        0.0,
+        cap,
+        limit=200,
+        epsabs=0.0,
+        epsrel=1e-8,
     )
     return body + math.exp(-cap / m) * given_length(cap)

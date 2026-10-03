@@ -12,8 +12,9 @@ Y_IN = 15_000.0
 
 
 def _model(origin="barrier", t_inv=T_INV, p=P_I, demo=None, r=1e-8):
-    inv = InversionSpec(bp_left=BL, bp_right=BR, p_inv=p, t_inv=t_inv,
-                        mean_tract_length=0.0)
+    inv = InversionSpec(
+        bp_left=BL, bp_right=BR, p_inv=p, t_inv=t_inv, mean_tract_length=0.0
+    )
     return ExpectModel(demo or Demography([N]), inv, r, origin=origin)
 
 
@@ -48,20 +49,29 @@ def test_old_inversion_limit():
 
 def test_flank_site_matches_hand_solved_chain():
     r, delta = 1e-6, 500.0
-    m = ExpectModel(Demography([N]), InversionSpec(
-        bp_left=BL, bp_right=BR, p_inv=P_I, t_inv=1e9, mean_tract_length=0.0), r)
+    m = ExpectModel(
+        Demography([N]),
+        InversionSpec(
+            bp_left=BL, bp_right=BR, p_inv=P_I, t_inv=1e9, mean_tract_length=0.0
+        ),
+        r,
+    )
     c, p = r * delta, P_I
-    q = np.array([
-        [-(1 / (2 * N * p) + 2 * c * (1 - p)), 2 * c * (1 - p), 0.0],
-        [c * p, -c, c * (1 - p)],
-        [0.0, 2 * c * p, -(1 / (2 * N * (1 - p)) + 2 * c * p)],
-    ])  # transient states II, IS, SS (row generator)
+    q = np.array(
+        [
+            [-(1 / (2 * N * p) + 2 * c * (1 - p)), 2 * c * (1 - p), 0.0],
+            [c * p, -c, c * (1 - p)],
+            [0.0, 2 * c * p, -(1 / (2 * N * (1 - p)) + 2 * c * p)],
+        ]
+    )  # transient states II, IS, SS (row generator)
     expected = np.linalg.solve(-q, np.ones(3))
     y = BL - delta
     assert m.pairwise_times(y, (0, "I"), (0, "I")).mean == pytest.approx(
-        expected[0], rel=1e-6)
+        expected[0], rel=1e-6
+    )
     assert m.pairwise_times(y, (0, "I"), (0, "S")).mean == pytest.approx(
-        expected[1], rel=1e-6)
+        expected[1], rel=1e-6
+    )
 
 
 def test_profile_matches_pointwise():
@@ -69,8 +79,9 @@ def test_profile_matches_pointwise():
     ys = [Y_IN, BL - 500.0, BR + 2000.0]
     prof = m.profile(ys, (0, "I"), (0, "I"))
     for y, v in zip(ys, prof):
-        assert v == pytest.approx(m.pairwise_times(y, (0, "I"), (0, "I")).mean,
-                                  rel=1e-7)
+        assert v == pytest.approx(
+            m.pairwise_times(y, (0, "I"), (0, "I")).mean, rel=1e-7
+        )
 
 
 def test_equal_frequencies_reduce_to_plain_island_model():
@@ -91,11 +102,13 @@ def test_asymmetric_migration_matches_hand_solved_chain():
     model = _model(t_inv=1e9, p={0: p0, 1: p1}, demo=demo)
     h = m_rate * p1 / p0
     c0, c1 = 1 / (2 * N * p0), 1 / (2 * N * p1)
-    q = np.array([
-        [-(c0 + 2 * h), 2 * h, 0.0],
-        [0.0, -h, h],
-        [0.0, 0.0, -c1],
-    ])  # transient states I0I0, I0I1, I1I1 (row generator)
+    q = np.array(
+        [
+            [-(c0 + 2 * h), 2 * h, 0.0],
+            [0.0, -h, h],
+            [0.0, 0.0, -c1],
+        ]
+    )  # transient states I0I0, I0I1, I1I1 (row generator)
     expected = np.linalg.solve(-q, np.ones(3))
     starts = [((0, "I"), (0, "I")), ((0, "I"), (1, "I")), ((1, "I"), (1, "I"))]
     for (a, b), e in zip(starts, expected):
@@ -103,6 +116,7 @@ def test_asymmetric_migration_matches_hand_solved_chain():
 
 
 # --- Review focus ---------------------------------------------------------
+
 
 def test_zero_frequency_sample_rejected():
     m = _model(p={0: 0.0, 1: 0.5}, demo=Demography([N, N]))
@@ -120,8 +134,14 @@ def test_breakpoint_sites_are_finite():
     # Gene conversion makes switching active inside; at BL the flux coverage
     # phi -> 0 and BR is a flank site with delta = 0, so both have zero
     # switching and must agree with each other but not with the interior.
-    inv = InversionSpec(bp_left=BL, bp_right=BR, p_inv=P_I, t_inv=T_INV,
-                        mean_tract_length=100.0, gene_conversion_rate=1e-6)
+    inv = InversionSpec(
+        bp_left=BL,
+        bp_right=BR,
+        p_inv=P_I,
+        t_inv=T_INV,
+        mean_tract_length=100.0,
+        gene_conversion_rate=1e-6,
+    )
     m = ExpectModel(Demography([N]), inv, 1e-6)
     assert m.switching_coefficient(Y_IN) > 0.0
     assert m.switching_coefficient(BL) == pytest.approx(0.0, abs=1e-15)

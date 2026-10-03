@@ -18,10 +18,12 @@ def _two_pop(freqs_pop1, mig, origin="barrier"):
         "n_e": [1000.0, 1000.0],
         "t_inv": [1000.0, 500.0],
     }
-    inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, trajectory=traj,
-                        mean_tract_length=0.0)
-    return ExpectModel(Demography([1000.0, 1000.0], migration_matrix=mig), inv,
-                       1e-8, origin=origin)
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    return ExpectModel(
+        Demography([1000.0, 1000.0], migration_matrix=mig), inv, 1e-8, origin=origin
+    )
 
 
 def test_frequency_jump_to_zero_without_exit_is_impossible():
@@ -44,8 +46,9 @@ def test_continuous_decline_with_migration_matches_limit():
         decay = math.exp(-rate * left)
         return tau + (1 - decay) / rate + decay * 2000.0
 
-    expected, _ = quad(lambda u: total(500.0 * (1 - u * u)), 0.0, 1.0,
-                       epsabs=0.0, epsrel=1e-10)
+    expected, _ = quad(
+        lambda u: total(500.0 * (1 - u * u)), 0.0, 1.0, epsabs=0.0, epsrel=1e-10
+    )
     got = m.pairwise_times(Y, (1, "I"), (0, "I")).mean
     assert got == pytest.approx(expected, rel=1e-5)
 
@@ -66,8 +69,9 @@ def _model(times, freqs, t_inv, mig, sizes=None):
         "n_e": [1000.0] * len(freqs),
         "t_inv": t_inv,
     }
-    inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, trajectory=traj,
-                        mean_tract_length=0.0)
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
     sizes = sizes or [1000.0] * len(freqs)
     return ExpectModel(Demography(sizes, migration_matrix=mig), inv, 1e-8)
 
@@ -77,16 +81,23 @@ def test_exit_into_cell_vanishing_at_same_time_is_impossible():
     # about exp(-0.5) of A's ancestry is stranded in (0, I) at t = 500.
     decline = [0.5, 0.25, 0.0, 0.0]
     mig = [[0.0, 0.0, 0.0], [1e-3, 0.0, 0.0], [0.0, 1e-3, 0.0]]
-    m = _model([0.0, 250.0, 500.0, 1000.0], [decline, decline, [0.5] * 4],
-               [500.0, 500.0, 1000.0], mig)
+    m = _model(
+        [0.0, 250.0, 500.0, 1000.0],
+        [decline, decline, [0.5] * 4],
+        [500.0, 500.0, 1000.0],
+        mig,
+    )
     with pytest.raises(ImpossibleHistoryError, match="population 0"):
         m.pairwise_times(Y, (0, "I"), (2, "I"))
 
 
 def _late_boundary(freqs_pop1):
-    return _model([0.0, 99_999.0, 100_000.0, 200_000.0],
-                  [[0.5] * 4, freqs_pop1], [200_000.0, 100_000.0],
-                  [[0.0, 1e-8], [0.0, 0.0]])
+    return _model(
+        [0.0, 99_999.0, 100_000.0, 200_000.0],
+        [[0.5] * 4, freqs_pop1],
+        [200_000.0, 100_000.0],
+        [[0.0, 1e-8], [0.0, 0.0]],
+    )
 
 
 def test_steep_continuous_decline_at_large_time_is_not_a_jump():
@@ -116,7 +127,10 @@ def test_small_migration_decline_matches_limit():
 
     integral, _ = quad(
         lambda t: (1 + math.exp(-rate * (1000.0 - t))) * (1 - t / 500.0) ** alpha,
-        0.0, 500.0, epsabs=0.0, epsrel=1e-12,
+        0.0,
+        500.0,
+        epsabs=0.0,
+        epsrel=1e-12,
     )
     expected = g(0.0) + integral
     got = m.pairwise_times(Y, (1, "I"), (0, "I")).mean
@@ -124,8 +138,12 @@ def test_small_migration_decline_matches_limit():
 
 
 def _linear_decline():
-    return _model([0.0, 500.0, 1000.0], [[0.5] * 3, [0.5, 0.0, 0.0]],
-                  [1000.0, 500.0], [[0.0, 0.0], [0.0, 0.0]])
+    return _model(
+        [0.0, 500.0, 1000.0],
+        [[0.5] * 3, [0.5, 0.0, 0.0]],
+        [1000.0, 500.0],
+        [[0.0, 0.0], [0.0, 0.0]],
+    )
 
 
 def test_coalescence_only_exit_matches_closed_form():

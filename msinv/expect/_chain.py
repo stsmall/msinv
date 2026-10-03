@@ -39,7 +39,8 @@ class Chain:
     """Enumerated chain for one sample.
 
     ``sample``: list of (pop, 'S'|'I'), one per sampled chromosome.
-    ``mig_pairs``: (d_from, d_to) with positive migration in some epoch.
+    ``mig_pairs``: (src, dst) with positive migration in some epoch; a lineage
+    moves src -> dst backward in time.
     ``joins``: (src, dst) population joins (ej) at any time.
     ``switching``: whether the site's switching coefficient is positive.
     """
@@ -49,6 +50,10 @@ class Chain:
         self.n = len(sample)
         if self.n < 2:
             raise ValueError("need at least two sampled chromosomes")
+        if origin not in ("barrier", "single"):
+            raise ValueError(f"origin must be 'barrier' or 'single', got {origin!r}")
+        if origin == "single" and origin_pop is None:
+            raise ValueError("origin='single' requires origin_pop")
         self.n_pops = n_pops
         self._mig_pairs = sorted(mig_pairs)
         self._joins = sorted(set(joins))

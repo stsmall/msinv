@@ -49,3 +49,83 @@ def test_rewards_count_blocks():
     ch = _chain([(0, "I")] * 3, switching=False)
     i = ch.index[canon([(cell(0, I), 1), (cell(0, I), 2)])]
     assert ch.rewards[:, i].tolist() == [1.0, 1.0]
+
+
+def _rate(ch, key, src, dst):
+    return ch.AT[key][ch.index[dst], ch.index[src]]
+
+
+def _st(*lin):
+    return canon(lin)
+
+
+def test_coal_rates_same_type():
+    ch = _chain([(0, "I")] * 3, switching=False)
+    a = ch.AT[("coal", 0, I)]
+    i = ch.init
+    j = ch.index[_st((cell(0, I), 1), (cell(0, I), 2))]
+    assert a[j, i] == 3
+    assert a[i, i] == -3
+
+
+def test_coal_rates_distinct_block_types():
+    ch = _chain([(0, "I")] * 4, switching=False)
+    c = cell(0, I)
+    s = _st((c, 1), (c, 1), (c, 2))
+    assert _rate(ch, ("coal", 0, I), s, _st((c, 2), (c, 2))) == 1
+    assert _rate(ch, ("coal", 0, I), s, _st((c, 1), (c, 3))) == 2
+
+
+def test_migration_rate():
+    ch = _chain([(0, "I"), (0, "I")], n_pops=2, mig=[(0, 1)], switching=False)
+    s = _st((cell(0, I), 1), (cell(0, I), 1))
+    t = _st((cell(0, I), 1), (cell(1, I), 1))
+    assert _rate(ch, ("mig", 0, 1, I), s, t) == 2
+    assert ("mig", 1, 0, I) not in ch.AT
+
+
+def test_switching_rate():
+    ch = _chain([(0, "I"), (0, "I")])
+    s = _st((cell(0, I), 1), (cell(0, I), 1))
+    t = _st((cell(0, I), 1), (cell(0, S), 1))
+    assert _rate(ch, ("sw", 0, I), s, t) == 2
+
+
+def test_join_map():
+    ch = _chain([(0, "I"), (1, "I"), (0, "S")], n_pops=2, joins=[(1, 0)],
+                switching=False)
+    bt = ch.BT[("join", 1, 0)]
+    s = _st((cell(0, I), 1), (cell(1, I), 1), (cell(0, S), 1))
+    t = _st((cell(0, I), 1), (cell(0, I), 1), (cell(0, S), 1))
+    assert ch.states[bt[:, ch.index[s]].nonzero()[0][0]] == t
+
+
+def test_join_map_identity_state():
+    # Migration 1 -> 0 lets the pop-1 lineage leave; that state is a fixed point.
+    ch = _chain([(0, "I"), (0, "I"), (1, "I")], n_pops=2, mig=[(1, 0)],
+                joins=[(1, 0)], switching=False)
+    bt = ch.BT[("join", 1, 0)]
+    s = _st((cell(0, I), 1), (cell(0, I), 1), (cell(0, I), 1))
+    assert ch.states[bt[:, ch.index[s]].nonzero()[0][0]] == s
+
+
+def test_barrier_t_inv():
+    ch = _chain([(0, "I"), (1, "S")], n_pops=2, switching=False)
+    s = _st((cell(0, I), 1), (cell(1, S), 1))
+    t = _st((cell(0, P), 1), (cell(1, P), 1))
+    assert ch.states[ch.BT["t_inv"][:, ch.index[s]].nonzero()[0][0]] == t
+
+
+def test_single_origin_two_populations():
+    ch = _chain([(0, "I"), (1, "I"), (1, "S")], n_pops=2, switching=False,
+                origin="single", origin_pop=0)
+    s = _st((cell(0, I), 1), (cell(1, I), 1), (cell(1, S), 1))
+    t = _st((cell(0, P), 2), (cell(1, P), 1))
+    assert ch.states[ch.BT["t_inv"][:, ch.index[s]].nonzero()[0][0]] == t
+
+
+def test_origin_validation():
+    with pytest.raises(ValueError, match="origin"):
+        _chain([(0, "I")] * 2, origin="bogus")
+    with pytest.raises(ValueError, match="origin_pop"):
+        _chain([(0, "I")] * 2, origin="single", origin_pop=None)

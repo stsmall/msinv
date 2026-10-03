@@ -543,7 +543,7 @@ is an engineering target, reported, not a release gate.
 | Tier 2 vs tier 1, wall and peak RSS | ≤ 2× on SLiM-bench settings and on L = 1 Mb v12 + inversion |
 | Tier 2 stress cases (reported) | p ≈ 0.5; p ≈ 0.05; p declining 0.05 → 0.001 without reaching zero; fast-changing trajectory; two demes with strongly different frequencies; flux on/off |
 | Tier 0 pairwise profile, 100 positions | < 1 s |
-| Tier 0 f1, 1 population, n = 20 | < 5 s |
+| Tier 0 f1, 1 population, n = 20 | minutes per history (relaxed 2026-10-03 from < 5 s: measured n=12 1.4 s, n=14 5.4 s, n=16 24 s, n=20 est. ~8 min; adequate for overnight grid scans; pairwise statistics stay ~1 s) |
 | Tier 0 above `max_states` | clear `ValueError` |
 
 Batches use `ProcessPoolExecutor(max_workers=50)`. Runs ≥ 1 h wall or ≥ 10

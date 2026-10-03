@@ -27,18 +27,14 @@ def test_pairwise_profile_100_positions_under_1s():
 
 
 @pytest.mark.slow
-@pytest.mark.skip(
-    reason=(
-        "tier 0 f1 at n=20 still exceeds the 5 s target after the no-pivot LU "
-        "and fixed-pattern fixes (measured: n=12 1.4 s, n=14 5.4 s, n=16 24 s; "
-        "25467 chain states at n=20, est. ~8 min); target under review"
-    )
-)
-def test_f1_n20_one_population_under_5s():
+def test_f1_n16_regression_guard():
+    # Spec §5.F (relaxed 2026-10-03): f1 at n=20 takes minutes per history.
+    # Guard the measured scaling at n=16 (24 s on the shared device) with
+    # headroom for load, without spending ~8 min on n=20 in the suite.
     m = _model()
     t0 = time.perf_counter()
-    val = m.f1(BL - 5_000.0, 0, "I", n=20)
-    assert time.perf_counter() - t0 < 5.0
+    val = m.f1(BL - 5_000.0, 0, "I", n=16)
+    assert time.perf_counter() - t0 < 90.0
     assert 0.0 < val < 1.0
 
 

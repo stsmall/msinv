@@ -1,9 +1,10 @@
 # Exact karyotype mode and tiered inference — design spec
 
-Status: written 2026-10-02; revised 2026-10-03 after external review (P0
-items resolved: `t_inv` semantics, integrated hazards, zero-frequency
-boundaries, singleton statistic, corrected closed forms; P1/P2 items folded
-in). Sections 1–5 agreed in conversation. Supersedes the working notes
+Status: written 2026-10-02; revised 2026-10-03 after two external reviews
+(round 1: `t_inv` semantics, integrated hazards, zero-frequency boundaries,
+singleton statistic, corrected closed forms; round 2: global `t_inv`,
+open-boundary hazards, origin-merge semantics, msprime scope,
+development vs release criteria). Sections 1–5 agreed in conversation. Supersedes the working notes
 `2026-10-02-exact-karyotype-mode-notes.md` (kept for history; two statements
 there about current msinv behaviour are corrected in §3.3).
 
@@ -98,10 +99,17 @@ Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
     material) is merged into one lineage — the origin chromosome — and that
     lineage then drops the inversion's entry. Use this when `t_inv` is to be
     reported as inversion age.
-  - With per-population `t_inv` (coupled trajectories), the origin is in the
-    population with the largest `t_inv`; I lineages elsewhere must have
-    migrated there before their own population's `t_inv` (enforced by the
-    zero-frequency rule, §4.4).
+  - `t_inv` is global to the inversion (`t_inv_max()`, as tier 1 already
+    uses for `barrier_active`). Population-specific absence, arrival, loss
+    or reintroduction of the inversion is represented only by the support
+    of f_d(I, t); the per-population values of coupled trajectories are
+    read as support boundaries (p_d = 0 beyond them), not as separate
+    inversion ages. An I lineage in a population whose I frequency reaches
+    zero before `t_inv` must leave through the modelled ancestry process
+    before that boundary, or the history is impossible (§4.4).
+  - `origin="single"` additionally requires that at most one population has
+    f_d(I, t) > 0 immediately below `t_inv` (the origin population; checked
+    at setup); the origin chromosome is placed there.
 - Frequency trajectories per population: f_d(state, t) for each allowed
   karyotype combination (one inversion: p_d(t) for I, 1 − p_d(t) for S).
   Inputs only: constant, deterministic (selection; one population first) or
@@ -116,8 +124,11 @@ Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
     it at recombination; tier 0 uses the same conditionals as transition
     rates. For one inversion with nothing known it reduces to "I with
     probability p_d(t)".
-  - Invariants (checked at setup and in debug builds): `f` in [0, 1] within
-    1e-12; allowed-state frequencies sum to 1 within 1e-9 in every
+  - Invariants (checked at setup and in debug builds): the trajectory
+    representation preserves the simplex at all times, not only at knots
+    (for one inversion, f_S = 1 − p_I is derived, never stored; step 3 must
+    derive one state's frequency from the others or interpolate in a
+    simplex-preserving parameterisation); `f` in [0, 1] within 1e-12; allowed-state frequencies sum to 1 within 1e-9 in every
     population at every trajectory knot; `draw_conditional` returns only
     allowed states, derives its probabilities from the same joint table as
     `f`, and raises if the conditioning event has zero probability; no
@@ -181,9 +192,8 @@ timed by §4.4.
    cannot enter a zero-frequency state either: if f_d(other, t) = 0 the
    flux hazard is zero.
 5. At `t_inv`: `origin="barrier"` drops the inversion's entry from every
-   lineage's state; `origin="single"` first merges all lineages in state I
-   into one lineage (one new node; Hudson merge of their material, which may
-   be disjoint), then drops the entry.
+   lineage's state; `origin="single"` first applies the origin merge (§4.6),
+   then drops the entry.
 
 ### 3.5 Tier 0 single-site chains
 
@@ -200,10 +210,10 @@ At position y; lineages labelled by (population, state).
 - Time-varying rates: the forward (Kolmogorov) equations are integrated
   with an adaptive ODE solver (default rtol 1e-8, atol 1e-12), with
   demographic and trajectory knots and `t_inv` as forced step boundaries.
-  A cell whose frequency reaches zero has diverging exit rates; the solver
-  integrates up to the boundary with the probability mass that must leave
-  having left, and raises if mass would remain in a state with no support
-  anywhere.
+  An interval ending at a zero-support boundary t_b is integrated on
+  [t₀, t_b) only; rates are never evaluated at t_b. If probability mass
+  above the solver tolerance remains in the unsupported cell as t → t_b,
+  the history is impossible (§4.4 definition) and the call raises.
 
 Outputs:
 - Pairwise coalescence times within and between states and populations at
@@ -222,11 +232,13 @@ Outputs:
   the total: f1 = (E[ξ_1] + E[ξ_{n−1}]) / Σ_i E[ξ_i]. A ratio of
   expectations, not E[S_1/S].
 - Not the full joint SFS across arrangements or populations (use tier 1/2).
-- State-space size (partitions of n into cell-coloured parts): one
-  population, two states, n = 20: 24,842; two populations, n = 20:
-  2,778,517, above the default limit. The state space is counted at setup; above `max_states`
-  (default 10⁶) the call raises a `ValueError` naming the count and
-  suggesting tier 1/2.
+- State-space size of the SFS chain (partitions of n into cell-coloured
+  parts): one population, two states, n = 20: 24,842; two populations,
+  n = 20: 2,778,517, above the default limit. The SFS chain's state space
+  is counted at setup; above `max_states` (default 10⁶, an argument of the
+  SFS functions only) the call raises a `ValueError` naming the count and
+  suggesting tier 1/2. Pairwise calculations are unaffected at any number
+  of populations.
 
 ## 4. Implementation mapping (tier 2)
 
@@ -289,18 +301,33 @@ Event step from t₀: draw E ~ Exp(1); solve Σ_k c_k (G_k(t₁) − G_k(t₀)) 
 r · material · (t₁ − t₀) = E for t₁ by bracketed root search on this
 monotone function, stopping at the next forced boundary if it comes first
 (apply the boundary, redraw). At t₁ choose the event class with probability
-proportional to its instantaneous hazard. Constant-frequency, constant-size
-epochs use the closed form (fast path).
+proportional to its instantaneous hazard. Every event ends the current
+waiting interval, including a rejected recombination proposal (a null
+ancestry event): the scheduler restarts from its time with a fresh
+exponential variate. Constant-frequency, constant-size epochs use the
+closed form (fast path).
 
-Zero-frequency boundaries: where f_d(K, t) → 0, G_k for coalescence and
-migration out of (d, K) diverges, so the root lands before the boundary and
-the lineage coalesces or leaves first; the simulator never steps across the
-singularity. If a lineage would remain in a state with zero support and no
-exit (no destination population with f_{d'}(K) > 0 and no partner to
-coalesce with), the simulation raises an error naming the population,
-state and time. The existing `t_inv` drop to zero is a forced boundary, not
-a singularity: it is handled by rule 5 before the frequency is read as
-zero.
+Zero-support boundaries: a grid cell ending at a time t_b where some
+f_d(K, t_b) = 0 (other than `t_inv`) is open at its upper end. If
+lim_{t→t_b⁻} G_k(t) = +∞ the endpoint is stored as an explicit divergent
+marker, not a finite value; root finding is restricted to t < t_b, and
+f(K, t_b) is never used as a denominator. Where an occupied cell's exit
+hazard diverges (migration to a supported population, or coalescence with
+another lineage in the cell), the root lands before t_b and the lineage
+leaves or coalesces first.
+
+Impossible history (operational definition, both tiers): an occupied
+(population, state) cell reaches a zero-support boundary that is not
+`t_inv`, with ancestry still in it — in tier 2, the scheduler reaches t_b
+with a lineage still in the cell; in tier 0, mass above tolerance remains
+as t → t_b. Gene flux and flank recombination do not count as exits (each
+leaves part of the lineage in K). The simulator raises an error naming the
+population, state and time. Exogenous trajectories that are dynamically
+inconsistent with the migration/selection model are otherwise valid
+conditioning histories as long as no such boundary is hit.
+
+The drop to zero at `t_inv` is a forced boundary, not a singularity: rule 5
+is applied before any frequency is read as zero.
 
 Tier 1 keeps its current scheduler (rates re-evaluated at events).
 
@@ -312,12 +339,26 @@ single state.
 
 ### 4.6 Single-origin merge
 
-With `origin="single"`, at `t_inv` all lineages in state I are merged into
-one lineage by successive full merges recorded under one new node at time
-`t_inv` (the sweep `still_a` force-coalesce at `t_origin`,
-`simulator.rs:3025`, is the precedent). The merged lineage then has the
-inversion's entry dropped. If no I lineage survives to `t_inv`, nothing
-happens.
+Semantic operation `force_origin_merge(I, t_inv)`, applied when two or more
+lineages are in state I at `t_inv`. Invariants:
+- exactly one lineage in state I remains afterwards (the origin
+  chromosome), in the origin population, before the state entry is dropped;
+- at most one new node, at time `t_inv`, created only if some position is
+  carried by two or more I lineages;
+- at each position carried by k ≥ 2 I lineages, the k child segments get
+  edges to that node (a k-way multifurcation; no arbitrary binary
+  resolution, no chain of nodes at equal or near-equal times);
+- at positions carried by one I lineage, the segment keeps its existing
+  node (no unary edge); disjoint material stays disjoint ancestral material
+  on the one origin lineage;
+- no zero-length edges; total material is conserved.
+
+It is a dedicated k-way merge, not a reuse of the sweep force-coalesce
+(`coalesce_uid_group`, `simulator.rs:3248`): that function skips disjoint
+pairs (which would leave I lineages unmerged) and gives each binary merge a
+staggered time (`next_sweep_merge_t`). Whether `apply_coalescence`
+internals can be shared is an implementation choice, provided the
+invariants hold.
 
 ### 4.7 Unsupported combinations in v1
 
@@ -345,20 +386,25 @@ The sweep stack and its `has_sv_phase` gating are untouched.
   - `expected_sfs(y, pop, state, n)` → unfolded expected SFS (θ = 1 units);
   - `f1(y, pop, state, n=20)` → folded ratio of expectations (§3.5);
   - `profile(ys, ...)` → vectorised over positions;
-  - `max_states` argument (default 10⁶).
+  - `max_states` argument on the SFS functions only (default 10⁶).
   - Ported to Rust only if profiling shows a need.
 
 ## 5. Validation and performance
 
-Pass rule for all simulation comparisons (replaces "non-significant = pass"):
+Release pass rule (simulation comparisons):
 - per statistic, bootstrap 95% CI of Cohen's d within ±0.2;
 - where variance is tested, bootstrap 95% CI of the SD ratio within
   [0.85, 1.15];
 - KS and Brown–Forsythe/Levene reported as diagnostics only;
 - quantiles 0.1, 0.5, 0.9 reported with bootstrap CIs.
-Replicates: 100 for development checks; release validation uses the count
-needed for the SD-ratio CI to fit the band (≈ 1000; at 200 the CI half-width
-is ≈ ±14%), subject to a 1-rep pilot showing it is affordable. Where the same
+Release replicate count is chosen from pilot precision so that both CIs can
+fit their bands under equality (≈ 1000; at n = 200 the SD-ratio CI
+half-width is ≈ ±14%), subject to a 1-rep pilot showing it is affordable.
+
+Development smoke tests use 100 replicates and report the same quantities,
+but do not apply the release CI gates (at n = 100 the 95% CI of d under
+equality is already ≈ ±0.28). They fail only if |d| > 0.3 or the SD ratio
+is outside [0.7, 1.4], or on disagreement with an analytic value. Where the same
 realised trajectory is used across engines it is kept as a blocking factor
 in summaries; replicates are not called paired.
 
@@ -388,22 +434,32 @@ in summaries; replicates are not called paired.
      p → 1 gives E[T_II] → 2N (barrier).
    Means and full survival functions are tested.
 2. Plus a hand-solved two-state pair chain at a flank site.
-3. msprime as exact single-site reference: each (population, state) is an
-   msprime deme with `ploidy=1` and size `2 · N_d(t) · f_d(K, t)`; switching
-   r · δ · f_d(other) and the conditional scaled migration
-   M[d][d'] f_{d'}(K) / f_d(K) (same source/destination convention as msinv)
-   enter as migration rates; time-varying f as stepwise parameter changes.
-   Checks pairwise times and the expected SFS / f1. msprime cannot model
+3. msprime single-site reference, `origin="barrier"` only. Each
+   (population, state) is an msprime deme with `ploidy=1` and size
+   `2 · N_d(t) · f_d(K, t)`; switching r · δ · f_d(other) and the
+   conditional scaled migration M[d][d'] f_{d'}(K) / f_d(K) (same
+   source/destination convention as msinv) enter as migration rates.
+   - Exact reference when tier 0 is given the same piecewise-constant
+     history (sizes, frequencies, switching and migration rates).
+   - Convergence reference for continuous trajectories: step widths 100,
+     50, 20, 10, 5 generations, showing convergence to tier 0.
+   Checks pairwise times and the expected SFS / f1. `origin="single"` is
+   validated by the analytic results (item 1), tier 0 boundary transitions
+   and SLiM, not by this construction. msprime cannot model
    background-dependent recombination, so it is not a tier 2 reference.
 4. Identity cases: two identical demes with symmetric migration collapse to
    the expected structured result; equal frequencies across populations
    reduce the migration rule to plain M; r = 0 and γ = 0 give no switching;
    p = 0 or 1 outside the inversion gives no stochastic state change.
+5. Migration indexing: f_{d'}(K) = 0 gives exactly zero hazard into d';
+   a small-Δt forward calculation of P(source d' | state K, now in d) ∝
+   f_{d'}(K) · P(d' | d) reproduces the implemented conditional rates to
+   first order, with source and destination not swapped.
 
 ### 5.C Tier 0 vs tier 2
 
-At single sites, constant and time-varying trajectories, n = 100 reps
-(development) under the §5 pass rule:
+At single sites, constant and time-varying trajectories; development smoke
+tests at n = 100, release at the release count, under the §5 rules:
 - pairwise mean, variance and survival curve; state occupancy through time;
   migration and flux event probabilities; expected SFS / f1;
 - inside and flank; one and two populations; with and without flux; both
@@ -423,7 +479,10 @@ only (§3.1).
      frequencies logged by SLiM and passed to msinv as precomputed
      per-population trajectories (tests §3.4 rule 3);
   3. single-origin comparison: SLiM's inversion arises once, so
-     `origin="single"` is compared against SLiM for T_II and its SD.
+     `origin="single"` is compared against SLiM for T_II, T_IS, π within I
+     inside the inversion, and the flank distance-bin statistics (means and
+     SDs). The one-I-ancestor-at-origin property is trivially true in SLiM
+     and is tested as an msinv invariant instead (§5.E).
 - Tier 1 (`smc_prime=True`) run alongside as the documented baseline.
 
 ### 5.E Exact-mode unit and invariant tests
@@ -442,6 +501,9 @@ only (§3.1).
   always leaves before the boundary; the error path fires for an impossible
   history.
 - `draw_conditional` empirical frequencies agree with `f`.
+- Origin merge: every §4.6 invariant on hand-built lineage sets (all
+  overlapping; all disjoint; mixed; a single I lineage; none).
+- Null recombination proposals restart the scheduler (§4.4).
 
 ### 5.F Performance
 
@@ -451,7 +513,7 @@ is an engineering target, reported, not a release gate.
 | Measure | Target |
 |---|---|
 | Tier 2 vs tier 1, wall and peak RSS | ≤ 2× on SLiM-bench settings and on L = 1 Mb v12 + inversion |
-| Tier 2 stress cases (reported) | p ≈ 0.5; p ≈ 0.05; fast-changing trajectory; two demes with strongly different frequencies; flux on/off |
+| Tier 2 stress cases (reported) | p ≈ 0.5; p ≈ 0.05; p declining 0.05 → 0.001 without reaching zero; fast-changing trajectory; two demes with strongly different frequencies; flux on/off |
 | Tier 0 pairwise profile, 100 positions | < 1 s |
 | Tier 0 f1, 1 population, n = 20 | < 5 s |
 | Tier 0 above `max_states` | clear `ValueError` |

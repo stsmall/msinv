@@ -11,10 +11,10 @@ BL, BR = 10_000.0, 20_000.0
 Y_IN = 15_000.0
 
 
-def _model(origin="barrier", t_inv=T_INV, p=P_I, demo=None):
+def _model(origin="barrier", t_inv=T_INV, p=P_I, demo=None, r=1e-8):
     inv = InversionSpec(bp_left=BL, bp_right=BR, p_inv=p, t_inv=t_inv,
                         mean_tract_length=0.0)
-    return ExpectModel(demo or Demography([N]), inv, 1e-8, origin=origin)
+    return ExpectModel(demo or Demography([N]), inv, r, origin=origin)
 
 
 @pytest.mark.parametrize("state,f", [("I", P_I), ("S", 1 - P_I)])
@@ -65,8 +65,7 @@ def test_flank_site_matches_hand_solved_chain():
 
 
 def test_profile_matches_pointwise():
-    m = _model(t_inv=1e5)
-    m.r = 1e-6
+    m = _model(t_inv=1e5, r=1e-6)
     ys = [Y_IN, BL - 500.0, BR + 2000.0]
     prof = m.profile(ys, (0, "I"), (0, "I"))
     for y, v in zip(ys, prof):
@@ -84,6 +83,25 @@ def test_equal_frequencies_reduce_to_plain_island_model():
     assert res.mean == pytest.approx(4 * N * P_I + 1 / (2 * m_rate), rel=1e-6)
 
 
+def test_asymmetric_migration_matches_hand_solved_chain():
+    # migration_matrix[1][0] = m: a lineage in pop 0 moves backward to pop 1;
+    # nothing moves 1 -> 0. Conditional I hazard 0 -> 1 is m * p1 / p0.
+    m_rate, p0, p1 = 1e-3, 0.2, 0.6
+    demo = Demography([N, N], migration_matrix=[[0.0, 0.0], [m_rate, 0.0]])
+    model = _model(t_inv=1e9, p={0: p0, 1: p1}, demo=demo)
+    h = m_rate * p1 / p0
+    c0, c1 = 1 / (2 * N * p0), 1 / (2 * N * p1)
+    q = np.array([
+        [-(c0 + 2 * h), 2 * h, 0.0],
+        [0.0, -h, h],
+        [0.0, 0.0, -c1],
+    ])  # transient states I0I0, I0I1, I1I1 (row generator)
+    expected = np.linalg.solve(-q, np.ones(3))
+    starts = [((0, "I"), (0, "I")), ((0, "I"), (1, "I")), ((1, "I"), (1, "I"))]
+    for (a, b), e in zip(starts, expected):
+        assert model.pairwise_times(Y_IN, a, b).mean == pytest.approx(e, rel=1e-6)
+
+
 # --- Review focus ---------------------------------------------------------
 
 def test_zero_frequency_sample_rejected():
@@ -99,11 +117,26 @@ def test_disconnected_populations_rejected():
 
 
 def test_breakpoint_sites_are_finite():
-    m = _model()
-    m.r = 1e-6
+    # Gene conversion makes switching active inside; at BL the flux coverage
+    # phi -> 0 and BR is a flank site with delta = 0, so both have zero
+    # switching and must agree with each other but not with the interior.
+    inv = InversionSpec(bp_left=BL, bp_right=BR, p_inv=P_I, t_inv=T_INV,
+                        mean_tract_length=100.0, gene_conversion_rate=1e-6)
+    m = ExpectModel(Demography([N]), inv, 1e-6)
+    assert m.switching_coefficient(Y_IN) > 0.0
+    assert m.switching_coefficient(BL) == pytest.approx(0.0, abs=1e-15)
+    assert m.switching_coefficient(BR) == 0.0
     inside = m.pairwise_times(Y_IN, (0, "I"), (0, "I")).mean
-    assert m.pairwise_times(BL, (0, "I"), (0, "I")).mean == pytest.approx(inside)
-    assert m.pairwise_times(BR, (0, "I"), (0, "I")).mean == pytest.approx(inside)
+    at_bl = m.pairwise_times(BL, (0, "I"), (0, "I")).mean
+    at_br = m.pairwise_times(BR, (0, "I"), (0, "I")).mean
+    assert math.isfinite(at_bl) and math.isfinite(at_br)
+    assert at_bl == pytest.approx(at_br, rel=1e-7)
+    assert inside != pytest.approx(at_bl, rel=1e-4)
+
+
+def test_negative_times_rejected():
+    with pytest.raises(ValueError, match="non-negative"):
+        _model().pairwise_times(Y_IN, (0, "I"), (0, "I"), times=[-1.0, 10.0])
 
 
 def test_final_growth_rejected():

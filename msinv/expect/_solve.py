@@ -138,6 +138,8 @@ class Solver:
         times = np.asarray([] if times is None else times, dtype=float)
         if np.any(np.diff(times) < 0):
             raise ValueError("times must be in ascending order")
+        if np.any(times < 0):
+            raise ValueError("times must be non-negative")
         surv = np.full((self.R, len(times)), np.nan)
         z = np.zeros(self.N + self._n_aux)
         pi0 = np.zeros(self.ch.size)

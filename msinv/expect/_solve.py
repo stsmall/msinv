@@ -54,6 +54,9 @@ class Solver:
         self._n_aux = self.R * (chain.n - 1) + 2 * self.R
         knots = freq.knots if len(freq.knots) <= force_knots_max else []
         self._supp = freq.support_boundaries()
+        # Cells whose frequency declines continuously to zero at t_inv: their
+        # ancestry leaves by the limit chain just before t_inv (spec §3.5).
+        self._supp += [(freq.t_inv, d, st) for d, st in freq.vanishing_at_t_inv()]
         pts = set(epochs.boundaries()) | set(knots) | {freq.t_inv}
         pts |= {t for t, _, _ in self._supp}
         self.breaks = sorted(t for t in pts if 0.0 < t < np.inf)
@@ -123,11 +126,27 @@ class Solver:
             bt = self._BT.get(("join", src, dst))
             if bt is not None:
                 pi = bt @ pi
+                if tb < self.fq.t_inv:
+                    self._check_join(tb, src, dst, pi)
         if tb == self.fq.t_inv and "t_inv" in self._BT:
             pi = self._BT["t_inv"] @ pi
         return pi
 
-    def _flush(self, tb: float, cells: list, pi):
+    def _check_join(self, tb: float, src: int, dst: int, pi) -> None:
+        """A join may not move ancestry into a cell with zero frequency."""
+        for k, st in ((S, "S"), (I, "I")):
+            mask = self.ch.cell_mask.get(3 * dst + k)
+            if mask is None or self.fq.f(dst, st, tb) > 0.0:
+                continue
+            mass = self._per_replica(pi, np.tile(mask, self.R))
+            if mass.max() > self.atol:
+                raise ImpossibleHistoryError(
+                    f"history impossible: join {src} -> {dst} at t={tb} moves "
+                    f"{mass.max():.3g} of ancestry into population {dst}, state "
+                    f"{st}, where its frequency is zero"
+                )
+
+    def _flush(self, tb: float, cells: list, pi, allow_stuck: bool = False):
         """Resolve ancestry left in cells whose frequency reaches zero at tb.
 
         All exit hazards from such a cell scale as 1/f, so as f -> 0 the
@@ -137,7 +156,9 @@ class Solver:
         assumes the integral of dt/f diverges at tb, which holds for
         piecewise-linear and closed-form trajectories. Mass this chain cannot
         move, or mass in a cell whose frequency jumps to zero, means the
-        history is impossible.
+        history is impossible. With ``allow_stuck`` (cells vanishing at t_inv)
+        mass the limit chain cannot move stays put and passes through the
+        t_inv map.
         """
         tl = tb - 1e-9 * max(1.0, tb)
         dying = set(cells)
@@ -175,6 +196,9 @@ class Solver:
                 y = splu((-qts[tr][:, tr]).tocsc()).solve(pi[tr])
                 new[tr] = 0.0
                 new[ab] += qts[ab][:, tr] @ y
+            if allow_stuck:
+                pi = new
+                continue
             left = self._per_replica(new, stuck)
             if left.max() > self.atol:
                 raise ImpossibleHistoryError(
@@ -208,7 +232,9 @@ class Solver:
             cells = [(d, st) for tt, d, st in self._supp if tt == tb]
             end = tb - 1e-9 * max(1.0, tb) if cells else tb
             sel = (times >= t) & (times < tb)
-            if end > t:
+            if end <= t:
+                surv[:, sel] = (self._smat @ z[: self.N])[:, None]
+            else:
                 t_eval = np.append(np.minimum(times[sel], end), end)
                 sol = solve_ivp(
                     self._rhs,
@@ -227,7 +253,9 @@ class Solver:
                 surv[:, sel] = self._smat @ sol.y[: self.N, :-1]
                 z = sol.y[:, -1].copy()
             if cells:
-                z[: self.N] = self._flush(tb, cells, z[: self.N])
+                z[: self.N] = self._flush(
+                    tb, cells, z[: self.N], allow_stuck=tb == self.fq.t_inv
+                )
             z[: self.N] = self._apply_boundaries(tb, z[: self.N])
             t = tb
         return self._finish(t, z, times, surv)

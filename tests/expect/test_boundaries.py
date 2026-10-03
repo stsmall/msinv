@@ -156,3 +156,108 @@ def test_coalescence_only_exit_matches_closed_form():
 def test_no_exit_after_continuous_decline_is_impossible():
     with pytest.raises(ImpossibleHistoryError, match="population 1"):
         _linear_decline().pairwise_times(Y, (1, "I"), (0, "I"))
+
+
+def _join_into_empty(origin="barrier"):
+    # Pop 1 carries the inversion at 0.5, pop 0 never does (p = 0 throughout);
+    # ej at t = 500 < t_inv = 2000 moves pop 1's lineages into pop 0.
+    traj = {
+        "type": "precomputed",
+        "times": [0.0, 1000.0, 2000.0],
+        "freqs": [[0.0] * 3, [0.5] * 3],
+        "n_e": [1000.0, 1000.0],
+        "t_inv": [2000.0, 2000.0],
+    }
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    d = Demography([1000.0, 1000.0])
+    d.add_event(("ej", 500.0, 1, 0))
+    return ExpectModel(d, inv, 1e-8, origin=origin)
+
+
+def test_join_into_zero_frequency_cell_is_impossible():
+    m = _join_into_empty()
+    with pytest.raises(ImpossibleHistoryError, match=r"join 1 -> 0.*state I"):
+        m.pairwise_times(Y, (1, "I"), (1, "I"))
+
+
+def test_single_origin_population_joined_away_before_t_inv_is_rejected():
+    with pytest.raises(ValueError, match="origin population 1"):
+        _join_into_empty(origin="single")
+
+
+def _decline_at_t_inv(t_inv, f0, n=1000.0):
+    traj = {
+        "type": "precomputed",
+        "times": [0.0, t_inv],
+        "freqs": [[f0, 0.0]],
+        "n_e": [n],
+        "t_inv": [t_inv],
+    }
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    return ExpectModel(Demography([n]), inv, 1e-8)
+
+
+def test_linear_decline_to_zero_at_t_inv_matches_closed_form():
+    # f(t) = f0 (1 - t/T) to zero at T = t_inv; coalescence of two I lineages
+    # at 1/(2 N f(t)) gives P(T2 > t) = (1 - t/T)^a, a = T / (2 N f0), and the
+    # limit chain coalesces any pair still there before t_inv, so
+    # E[T2] = T / (a + 1) and E[T2^2] = 2 T^2 / ((a + 1)(a + 2)).
+    t_inv, f0, n = 1000.0, 0.4, 1000.0
+    a = t_inv / (2.0 * n * f0)
+    mean = t_inv / (a + 1.0)
+    var = 2.0 * t_inv**2 / ((a + 1.0) * (a + 2.0)) - mean**2
+    res = _decline_at_t_inv(t_inv, f0, n).pairwise_times(
+        Y, (0, "I"), (0, "I"), times=[0.0, 300.0, 999.0, 1500.0]
+    )
+    assert res.mean == pytest.approx(mean, rel=1e-6)
+    assert res.var == pytest.approx(var, rel=1e-6)
+    # Survival is a probability integrated at rtol 1e-8: compare absolutely
+    # (the error shrinks with the solver tolerance). Nothing survives t_inv.
+    expected = [1.0, 0.7**a, 0.001**a]
+    assert res.survival[:3] == pytest.approx(expected, rel=0.0, abs=1e-8)
+    assert res.survival[3] == 0.0
+
+
+def test_coupled_decline_to_zero_at_t_inv_is_finite():
+    traj = {
+        "type": "coupled",
+        "p_final": [0.5, 0.2],
+        "n_e": [1000.0, 1000.0],
+        "s": [0.02, 0.0],
+        "m": 1e-3,
+        "seed": 1,
+    }
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    d = Demography([1000.0, 1000.0], migration_matrix=[[0, 1e-3], [1e-3, 0]])
+    m = ExpectModel(d, inv, 1e-8)
+    for other in [(1, "I"), (0, "I")]:
+        assert np.isfinite(m.pairwise_times(Y, (1, "I"), other).mean)
+
+
+def test_survival_requested_inside_clamped_window_is_filled():
+    # An epoch boundary 1e-7 before a support boundary at 500 is closer than
+    # the eps clamp (5e-7), so no integration runs in [500 - 1e-7, 500).
+    traj = {
+        "type": "precomputed",
+        "times": [0.0, 250.0, 500.0, 1000.0],
+        "freqs": [[0.5] * 4, [0.5, 0.25, 0.0, 0.0]],
+        "n_e": [1000.0, 1000.0],
+        "t_inv": [1000.0, 500.0],
+    }
+    inv = InversionSpec(
+        bp_left=10_000.0, bp_right=20_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    d = Demography([1000.0, 1000.0], migration_matrix=[[0.0, 1e-3], [0.0, 0.0]])
+    d.add_event(("en", 500.0 - 1e-7, 0, 1000.0))
+    m = ExpectModel(d, inv, 1e-8)
+    surv = m.pairwise_times(
+        Y, (1, "I"), (0, "I"), times=[499.0, 500.0 - 5e-8, 600.0]
+    ).survival
+    assert np.all(np.isfinite(surv))
+    assert surv[0] >= surv[1] >= surv[2]

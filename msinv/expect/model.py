@@ -35,6 +35,8 @@ class ExpectModel:
             raise ValueError(f"origin must be 'barrier' or 'single', got {origin!r}")
         if recombination_rate <= 0.0:
             raise ValueError("recombination_rate must be > 0")
+        if not (hasattr(inversion, "bp_left") and hasattr(inversion, "bp_right")):
+            raise NotImplementedError("tier 0 supports exactly one inversion")
         self.epochs = Epochs(demography)
         if not self.epochs.final_growth_is_zero():
             raise NotImplementedError(
@@ -46,6 +48,16 @@ class ExpectModel:
         self.r = float(recombination_rate)
         self.origin = origin
         self.origin_pop = self.freq.origin_population() if origin == "single" else None
+        if origin == "single":
+            for e in self.epochs.epochs:
+                if e.start < self.freq.t_inv and any(
+                    src == self.origin_pop for src, _ in e.joins
+                ):
+                    raise ValueError(
+                        f"origin='single': origin population {self.origin_pop} is "
+                        f"joined into another population at t={e.start}, before "
+                        f"t_inv={self.freq.t_inv}"
+                    )
         self._opts = {"rtol": rtol, "atol": atol, "force_knots_max": force_knots_max}
 
     def switching_coefficient(self, y: float) -> float:

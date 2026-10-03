@@ -409,7 +409,8 @@ The sweep stack and its `has_sv_phase` gating are untouched.
     as `HullSimulator`, plus `origin`;
   - `pairwise_times(y)` → mean, variance and survival function per
     (population, state) pair;
-  - `expected_sfs(y, pop, state, n)` → unfolded expected SFS (θ = 1 units);
+  - `expected_sfs(y, pop, state, n)` → unfolded expected SFS as E[L_b]
+    (generations per unit mutation rate; E[ξ_b] = μ·E[L_b]);
   - `f1(y, pop, state, n=20)` → folded ratio of expectations (§3.5);
   - `profile(ys, ...)` → vectorised over positions;
   - `max_states` argument on the SFS functions only (default 10⁶).

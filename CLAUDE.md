@@ -11,7 +11,7 @@ cd rust && cargo build --release -p msinv-py
 /bin/cp -f target/release/lib_msinv_core.so ../msinv/_msinv_core.cpython-312-x86_64-linux-gnu.so
 ```
 - `/bin/cp` explicit: shell alias adds `-i` and prompts.
-- The PreToolUse hook blocks the cp if any `python.*(pytest|msinv)` process is running — wait or kill deliberately.
+- The PreToolUse hook blocks the cp if any of YOUR (current user's) `python.*(pytest|msinv|_msinv_core)` processes is running (`pgrep -u "$(id -un)"`) — wait or kill deliberately.
 
 ## Tests
 - Rust: `cd rust && cargo test --release`

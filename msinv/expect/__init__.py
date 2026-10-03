@@ -9,6 +9,11 @@ scipy: ``pip install msinv[expect]``.
 
 from __future__ import annotations
 
+try:
+    import scipy  # noqa: F401
+except ModuleNotFoundError as exc:
+    raise ImportError("msinv.expect requires scipy: pip install msinv[expect]") from exc
+
 from ._history import Epochs, FrequencyHistory, flux_coverage
 from ._solve import ImpossibleHistoryError
 from .model import ExpectModel, PairwiseTimes

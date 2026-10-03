@@ -206,6 +206,21 @@ class FrequencyHistory:
                 prev = p
         return sorted(out)
 
+    def vanishing_at_t_inv(self) -> list:
+        """(pop, state) whose frequency declines continuously to zero at t_inv.
+
+        Same jump test as the solver's flush: the left limit at t_inv is zero
+        relative to the frequency just before it.
+        """
+        out = []
+        t2 = self.t_inv - 2e-7 * max(1.0, self.t_inv)
+        for d in range(self.n_pops):
+            for st in ("S", "I"):
+                f2 = self.f(d, st, t2)
+                if f2 > 0.0 and self.left_limit(d, st, self.t_inv) <= 1e-6 * f2:
+                    out.append((d, st))
+        return out
+
     def draw_conditional(self, d: int, t: float, known: dict, rng) -> dict:
         """Draw the karyotypes not in ``known`` (inv_id -> 'S'/'I')."""
         if 0 in known:

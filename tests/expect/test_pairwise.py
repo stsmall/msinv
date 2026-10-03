@@ -164,3 +164,9 @@ def test_final_growth_rejected():
     demo.add_growth_rate_change(100.0, population=0, growth_rate=1e-3)
     with pytest.raises(NotImplementedError, match="growth"):
         _model(demo=demo)
+
+
+def test_more_than_one_inversion_is_not_supported():
+    inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, p_inv=0.3, t_inv=5000.0)
+    with pytest.raises(NotImplementedError, match="exactly one inversion"):
+        ExpectModel(Demography([1000.0]), [inv, inv], 1e-8)

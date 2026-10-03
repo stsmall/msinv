@@ -186,16 +186,6 @@ impl PySweep {
     }
 }
 
-// ---------------------------------------------------------------
-// simulate_raw: the main entry point from Python
-// ---------------------------------------------------------------
-
-/// Run a hull simulation and return raw table arrays as a dict.
-///
-/// This is the Rust-accelerated equivalent of
-/// ``HullSimulator(...).simulate()`` in the Python version. The
-/// Python wrapper in ``msinv/hull/_rust_bridge.py`` calls this
-/// function and converts the dict into a tskit TreeSequence.
 /// Build one inversion's frequency trajectory from its inversion dict
 /// (`'trajectory'` sub-dict, or legacy `'p_inv'` + `'t_inv'`). Shared by
 /// `simulate_raw` and `InvTrajectory` so tier 0 reads the same
@@ -385,7 +375,16 @@ impl PyInvTrajectory {
     }
 }
 
+// ---------------------------------------------------------------
+// simulate_raw: the main entry point from Python
+// ---------------------------------------------------------------
 
+/// Run a hull simulation and return raw table arrays as a dict.
+///
+/// This is the Rust-accelerated equivalent of
+/// ``HullSimulator(...).simulate()`` in the Python version. The
+/// Python wrapper in ``msinv/hull/_rust_bridge.py`` calls this
+/// function and converts the dict into a tskit TreeSequence.
 #[pyfunction]
 #[pyo3(signature = (
     sample_config,

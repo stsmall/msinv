@@ -48,6 +48,7 @@ pub trait Trajectory: Send + Sync + std::fmt::Debug {
 
     /// Number of populations this trajectory tracks (0 = single).
     fn n_pops(&self) -> usize;
+
     /// Time grid on which the trajectory is linearly interpolated
     /// (backward generations). Empty for closed-form trajectories.
     /// Used by the tier 0 calculator (`msinv.expect`) to place

@@ -81,8 +81,13 @@ Build order: (1) tier 0, single inversion; (2) tier 2, single inversion;
 ### 3.2 History description, states and frequencies
 
 - Populations: msinv `Demography` (sizes over time, splits/merges,
-  migration matrix `M[dst][src]` = "fraction of dst absorbing from src",
-  i.e. the backward hazard of a lineage in dst moving to src).
+  migration matrix). Convention, verified in source 2026-10-03
+  (`simulator.rs:521, 887`; `Demography` docstring): backward in time, a
+  lineage currently in population d moves to population d' at hazard
+  `migration_matrix[d'][d]` (code names: `m[dst][src]`, src = the
+  lineage's current population). Below, m(d → d') denotes that hazard.
+  msprime's `migration_matrix[j][k]` (lineage in j moves to k) is the
+  transpose.
 - Inversion (`InversionSpec`): breakpoints; `t_inv`; gene-flux rate γ
   (per bp per generation, as in the existing `gene_conversion_rate`) and
   mean tract length with the Peischl φ(x) profile. A `parent` field is added
@@ -180,7 +185,7 @@ timed by §4.4.
 3. Migration d → d' (backward): conditional on observing a lineage in state
    K in population d, the backward migration hazard to source population d'
    is the unconditioned hazard times the source/destination frequency ratio,
-   M[d][d'](t) · f_{d'}(K, t) / f_d(K, t). State kept. A state with zero
+   m(d → d', t) · f_{d'}(K, t) / f_d(K, t). State kept. A state with zero
    frequency in d' cannot be entered by migration. As f_d(K, t) → 0 with
    f_{d'}(K, t) > 0 the hazard can diverge; this is a genuine
    time-inhomogeneous boundary, handled by §4.4, not a large finite rate.
@@ -275,7 +280,7 @@ The proposal rate stays `r · material` (constant between events).
 
 ### 4.3 Migration
 
-Hazard M[d][d'](t) · f_{d'}(K, t) / f_d(K, t). The migrating lineage is
+Hazard m(d → d', t) · f_{d'}(K, t) / f_d(K, t). The migrating lineage is
 picked from per-(population, state) buckets, extending the current
 `pop_buckets`.
 
@@ -289,7 +294,7 @@ hazard is therefore
   Λ(t) = Σ_k c_k · g_k(t) + r · material,
 
 where each g_k is one of a small set of known functions of time:
-1 / (N_d(t) f_d(K, t)) (coalescence), M[d][d'](t) f_{d'}(K, t) / f_d(K, t)
+1 / (N_d(t) f_d(K, t)) (coalescence), m(d → d', t) f_{d'}(K, t) / f_d(K, t)
 (migration), f_d(other, t) (flux). At setup, the cumulative integrals
 G_k(t) = ∫₀ᵗ g_k are tabulated on a grid containing every demographic knot,
 trajectory knot and `t_inv`; within a grid cell the integral is analytic
@@ -437,8 +442,9 @@ in summaries; replicates are not called paired.
 3. msprime single-site reference, `origin="barrier"` only. Each
    (population, state) is an msprime deme with `ploidy=1` and size
    `2 · N_d(t) · f_d(K, t)`; switching r · δ · f_d(other) and the
-   conditional scaled migration M[d][d'] f_{d'}(K) / f_d(K) (same
-   source/destination convention as msinv) enter as migration rates.
+   conditional scaled migration m(d → d') f_{d'}(K) / f_d(K) enter as
+   migration rates (msprime matrix entry [cell(d, K)][cell(d', K)], i.e.
+   transposed relative to msinv's `migration_matrix`).
    - Exact reference when tier 0 is given the same piecewise-constant
      history (sizes, frequencies, switching and migration rates).
    - Convergence reference for continuous trajectories: step widths 100,
@@ -449,7 +455,7 @@ in summaries; replicates are not called paired.
    background-dependent recombination, so it is not a tier 2 reference.
 4. Identity cases: two identical demes with symmetric migration collapse to
    the expected structured result; equal frequencies across populations
-   reduce the migration rule to plain M; r = 0 and γ = 0 give no switching;
+   reduce the migration rule to plain m(d → d'); r = 0 and γ = 0 give no switching;
    p = 0 or 1 outside the inversion gives no stochastic state change.
 5. Migration indexing: f_{d'}(K) = 0 gives exactly zero hazard into d';
    a small-Δt forward calculation of P(source d' | state K, now in d) ∝

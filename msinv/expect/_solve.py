@@ -86,7 +86,63 @@ class Solver:
         pts = set(epochs.boundaries()) | set(knots) | {freq.t_inv}
         pts |= {t for t, _, _ in self._supp}
         self.breaks = sorted(t for t in pts if 0.0 < t < np.inf)
+        self._build_patterns()
         self._memo_t, self._memo_q = None, None
+
+    def _build_patterns(self) -> None:
+        """Fixed sparsity patterns, so qt(t) and the Jacobian only refill data.
+
+        qt(t) = sum_k g_k(t) AT_k: every AT_k is scattered once onto the union
+        pattern, giving coefficients D (nnz x K) with qt(t).data = D @ g(t).
+        The augmented Jacobian [[qt, 0], [rew; S; t*S, 0]] gets a fixed CSC
+        pattern; position arrays map qt data and the auxiliary rows into it.
+        """
+        n, m = self.N, self._n_aux
+        self._keys = list(self._AT)
+        coos = [self._AT[k].tocoo() for k in self._keys]
+        lin = np.concatenate(
+            [c.row.astype(np.int64) * n + c.col for c in coos] or [np.zeros(0, int)]
+        )
+        kidx = np.concatenate(
+            [np.full(c.nnz, i) for i, c in enumerate(coos)] or [np.zeros(0, int)]
+        )
+        vals = np.concatenate([c.data for c in coos] or [np.zeros(0)])
+        uniq, inv = np.unique(lin, return_inverse=True)  # sorted = CSR order
+        self._qD = sp.csr_matrix(
+            (vals, (inv, kidx)), shape=(len(uniq), max(len(self._keys), 1))
+        )
+        rows_u = uniq // n
+        self._q_indices = (uniq % n).astype(np.int32)
+        self._q_indptr = np.concatenate(
+            [[0], np.cumsum(np.bincount(rows_u, minlength=n))]
+        ).astype(np.int32)
+        nq = len(uniq)
+        # Jacobian pattern via markers: qt entries 1..nq, auxiliary nq+1...
+        qmark = sp.csr_matrix(
+            (np.arange(1, nq + 1, dtype=float), self._q_indices, self._q_indptr),
+            shape=(n, n),
+        )
+        low = sp.vstack([self._rew, self._smat, self._smat], format="csr")
+        nl = low.nnz
+        lmark = sp.csr_matrix(
+            (np.arange(nq + 1, nq + nl + 1, dtype=float), low.indices, low.indptr),
+            shape=low.shape,
+        )
+        jmark = sp.hstack(
+            [sp.vstack([qmark, lmark], format="csc"), sp.csc_matrix((n + m, m))],
+            format="csc",
+        )
+        mk = jmark.data.astype(np.int64)
+        self._j_indices, self._j_indptr = jmark.indices, jmark.indptr
+        self._j_pos_q = np.flatnonzero(mk <= nq)
+        self._j_src_q = mk[self._j_pos_q] - 1
+        self._j_pos_l = np.flatnonzero(mk > nq)
+        src_l = mk[self._j_pos_l] - nq - 1
+        self._j_val_l = low.data[src_l]
+        # Rows of the last auxiliary block (t * S) scale with t.
+        low_rows = np.repeat(np.arange(low.shape[0]), np.diff(low.indptr))
+        self._j_t_l = low_rows[src_l] >= low.shape[0] - self.R
+        self._j_nnz = len(mk)
 
     # -- rates -------------------------------------------------------------
 
@@ -119,12 +175,10 @@ class Solver:
 
     def qt(self, t: float):
         """Transpose generator at t: d(pi)/dt = qt(t) @ pi."""
-        out = sp.csr_matrix((self.N, self.N))
-        for key, at in self._AT.items():
-            g = self._g(key, t)
-            if g != 0.0:
-                out = out + g * at
-        return out
+        g = np.array([self._g(k, t) for k in self._keys] or [0.0])
+        return sp.csr_matrix(
+            (self._qD @ g, self._q_indices, self._q_indptr), shape=(self.N, self.N)
+        )
 
     def _qt_memo(self, t: float):
         if t != self._memo_t:
@@ -139,11 +193,13 @@ class Solver:
 
     def _jac(self, t, z):
         q = self._qt_memo(t)
-        m = self._n_aux
-        top = sp.hstack([q, sp.csr_matrix((self.N, m))])
-        low = sp.vstack([self._rew, self._smat, t * self._smat])
-        bottom = sp.hstack([low, sp.csr_matrix((m, m))])
-        return sp.vstack([top, bottom], format="csc")
+        data = np.empty(self._j_nnz)
+        data[self._j_pos_q] = q.data[self._j_src_q]
+        data[self._j_pos_l] = np.where(self._j_t_l, t, 1.0) * self._j_val_l
+        size = self.N + self._n_aux
+        return sp.csc_matrix(
+            (data, self._j_indices, self._j_indptr), shape=(size, size)
+        )
 
     # -- boundaries --------------------------------------------------------
 

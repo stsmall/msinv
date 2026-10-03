@@ -170,3 +170,46 @@ def test_more_than_one_inversion_is_not_supported():
     inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, p_inv=0.3, t_inv=5000.0)
     with pytest.raises(NotImplementedError, match="exactly one inversion"):
         ExpectModel(Demography([1000.0]), [inv, inv], 1e-8)
+
+
+def test_precomputed_patterns_match_direct_assembly():
+    # qt(t) and the Jacobian are refilled into fixed sparsity patterns; they
+    # must equal the direct sums sum_k g_k(t) AT_k and the stacked Jacobian.
+    import scipy.sparse as sp
+
+    from msinv.expect._chain import Chain
+    from msinv.expect._solve import Solver
+
+    demo = Demography([N, N], migration_matrix=[[0.0, 1e-3], [2e-3, 0.0]])
+    inv = InversionSpec(
+        bp_left=BL,
+        bp_right=BR,
+        p_inv={0: 0.3, 1: 0.6},
+        t_inv=T_INV,
+        mean_tract_length=0.0,
+    )
+    m = ExpectModel(demo, inv, 1e-6)
+    chain = Chain(
+        [(0, "I"), (1, "S"), (0, "I")],
+        2,
+        m.epochs.mig_pairs(),
+        [],
+        True,
+        "barrier",
+        None,
+    )
+    s = Solver(chain, m.epochs, m.freq, [5e-4, 0.0])
+    for t in (10.0, T_INV + 500.0):
+        direct = sum(s._g(k, t) * at for k, at in s._AT.items())
+        assert abs(s.qt(t) - direct).max() <= 1e-12 * abs(direct).max()
+        z = np.zeros(s.N + s._n_aux)
+        s._memo_t = None
+        jac = s._jac(t, z)
+        low = sp.vstack([s._rew, s._smat, t * s._smat])
+        ref = sp.bmat(
+            [
+                [direct, sp.csr_matrix((s.N, s._n_aux))],
+                [low, sp.csr_matrix((s._n_aux, s._n_aux))],
+            ]
+        )
+        assert abs(jac - ref).max() <= 1e-12 * abs(ref).max()

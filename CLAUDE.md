@@ -76,7 +76,7 @@ cd rust && cargo build --release -p msinv-py
 ## msinv API conventions
 - `Karyotype` enum (`rust/msinv-core/src/class_tag.rs`): variants `S` and `I` only.
 - Rust RNG: rand 0.9 — use `rng.random::<f64>()`, NOT `rng.gen::<f64>()`.
-- Migration matrix: `m_ij` = "fraction of pop i absorbing from pop j", matching `Demography::migration_matrix[dst][src]`. Forward-flow A→B needs `m(B, A) > 0`.
+- Migration matrix: `migration_matrix[dst][src]` is the backward hazard of a lineage currently in `src` moving to `dst` (`simulator.rs:521, 887`). Forward gene flow A→B (B receives migrants from A) is a backward move B→A, so it needs `migration_matrix[A][B] > 0`. msprime's `migration_matrix[j][k]` (lineage in j moves to k) is the transpose.
 - `recombination_rate > 0` required; for non-recombining smoke tests use `1e-12`, not zero.
 - Sweep + inversion trajectories use discrete-time WF logistic: `p_{t+1} = p_t·(1+s)/(1+s·p_t)` — don't test against continuous `exp(s·t)` form.
 

@@ -89,6 +89,8 @@ class InversionSpec:
     # Trajectory dict overrides p_inv/t_inv when provided.  See module
     # docstring for the supported shapes.
     trajectory: Optional[dict] = None
+    # Nesting (exact karyotype spec, step 3). Not supported yet.
+    parent: Optional[int] = None
 
     @property
     def length(self) -> float:
@@ -136,6 +138,11 @@ class InversionSpec:
         return "I" if self.inv_id < 0 else f"I{self.inv_id}"
 
     def __post_init__(self):
+        if self.parent is not None:
+            raise NotImplementedError(
+                "nested inversions (parent=...) are not supported yet; see "
+                "docs/superpowers/specs/2026-10-02-exact-karyotype-mode-design.md §6"
+            )
         if self.bp_right <= self.bp_left:
             raise ValueError(
                 f"bp_right must be > bp_left, got ({self.bp_left}, {self.bp_right})."

@@ -189,11 +189,23 @@ timed by §4.4.
    frequency in d' cannot be entered by migration. As f_d(K, t) → 0 with
    f_{d'}(K, t) > 0 the hazard can diverge; this is a genuine
    time-inhomogeneous boundary, handled by §4.4, not a large finite rate.
-4. Gene flux: γ is per bp per generation. A lineage's flux hazard is
-   γ · f_d(other, t) · ∫ φ over its material inside the inversion, i.e. the
-   per-site hazard at y is γ · φ(y) · f_d(other, t) (heterokaryotypes only),
-   matching `flux_lineage_rate_arena` (`simulator.rs:2346`). The tract
-   becomes a new lineage in the other state; the rest keeps K. Recombination
+4. Gene flux: γ is a per-bp per-generation initiation rate. A lineage's
+   flux hazard is γ · f_d(other, t) · ∫ φ over its material inside the
+   inversion (`flux_lineage_rate_arena`, `simulator.rs:2346`); the event
+   position x is drawn with density ∝ φ over that material
+   (`sample_flux_position`) and a tract of length l (fixed or exponential,
+   capped at 0.99 · inversion length) is placed uniformly among positions
+   containing x, clipped to the inversion (`draw_tract`). The tract becomes
+   a new lineage in the other state; the rest keeps K. Corrected
+   2026-10-03: the per-site conversion hazard is not γ · φ(y) · f; for a
+   lineage carrying the whole inversion it is γ · f_d(other, t) · C(y),
+   where C(y) = E_l[∫ φ(x) · P(tract from x of length l covers y) dx]
+   ≈ φ(y) · mean tract length away from the breakpoints. For a lineage
+   whose material near y is fragmentary, the current rule (event positions
+   drawn only within ancestral material) gives a smaller per-site hazard;
+   whether exact mode keeps that rule or initiates tracts wherever they
+   would overlap ancestral material (Wiuf & Hein 2000) is decided before
+   the tier 2 plan. Recombination
    cannot enter a zero-frequency state either: if f_d(other, t) = 0 the
    flux hazard is zero.
 5. At `t_inv`: `origin="barrier"` drops the inversion's entry from every
@@ -209,16 +221,24 @@ At position y; lineages labelled by (population, state).
 - State switching (linkage at one site):
   - flank site at distance δ from the nearer breakpoint: rate
     r · δ · f_d(other, t) (uniform recombination rate over that interval);
-  - inside the inversion: flux only, γ · φ(y) · f_d(other, t).
+  - inside the inversion: flux only, γ · C(y) · f_d(other, t), with C(y)
+    from rule 4.
 - At `t_inv`: states merge (`origin="barrier"`), or all I lineages first
   merge into one (`origin="single"`).
 - Time-varying rates: the forward (Kolmogorov) equations are integrated
   with an adaptive ODE solver (default rtol 1e-8, atol 1e-12), with
   demographic and trajectory knots and `t_inv` as forced step boundaries.
   An interval ending at a zero-support boundary t_b is integrated on
-  [t₀, t_b) only; rates are never evaluated at t_b. If probability mass
-  above the solver tolerance remains in the unsupported cell as t → t_b,
-  the history is impossible (§4.4 definition) and the call raises.
+  [t₀, t_b − ε) only; rates are never evaluated at t_b. Where f_d(K, t)
+  declines continuously to zero, exit hazards diverge only
+  logarithmically, so mass left at t_b − ε is not negligible; it is
+  resolved by the limit chain: all hazards out of the cell scale as
+  1/f_d(K), so the remaining mass is redistributed by the absorption
+  probabilities of the rescaled chain (coalescence within the cell at
+  1/(2N_d), migration at m(d → d') f_{d'}(K, t_b)). Mass that this chain
+  cannot move (no exit), or that sits in a cell whose frequency jumps to
+  zero (no divergence), is the impossible-history case (§4.4) and raises
+  if above the solver tolerance.
 
 Outputs:
 - Pairwise coalescence times within and between states and populations at

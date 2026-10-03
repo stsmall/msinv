@@ -546,8 +546,8 @@ with its invariants, the `origin` argument, and the `parent` field on
   `compute_overlap`, `segs_all_pan`, `apply_recomb_split`).
 - Event loop: `rust/msinv-core/src/simulator.rs` (`run_loop`,
   `CoalAggregate`/`CoalPair`, `MigrationAggregate`, `cross_barriers_static`,
-  `p_class_for_tag`, `flux_lineage_rate_arena`, sweep `still_a`
-  force-coalesce).
+  `p_class_for_tag`, `flux_lineage_rate_arena`; `coalesce_uid_group`
+  for contrast only, see §4.6).
 - Trajectories: `rust/msinv-core/src/trajectory.rs` (`Trajectory` trait,
   `p_inv_at`, `t_inv`).
 - Merges: `rust/msinv-core/src/events.rs` (`apply_coalescence`,

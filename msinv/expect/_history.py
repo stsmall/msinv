@@ -175,6 +175,11 @@ class FrequencyHistory:
             return 1.0 - p
         raise ValueError(f"state must be 'S' or 'I', got {state!r}")
 
+    def left_limit(self, d: int, state: str, t: float) -> float:
+        """f_d(state, t-), by two-point linear extrapolation from the left."""
+        delta = 1e-7 * max(1.0, t)
+        return 2.0 * self.f(d, state, t - delta) - self.f(d, state, t - 2.0 * delta)
+
     def _check_simplex(self) -> None:
         # One inversion: f_S = 1 - p is derived, so only p needs checking.
         for t in [0.0, *self.knots]:

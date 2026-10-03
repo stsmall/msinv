@@ -56,3 +56,85 @@ def test_single_origin_with_support_boundary():
     single = m.pairwise_times(Y, (1, "I"), (0, "I")).mean
     assert np.isfinite(single)
     assert single < barrier.pairwise_times(Y, (1, "I"), (0, "I")).mean
+
+
+def _model(times, freqs, t_inv, mig, sizes=None):
+    traj = {
+        "type": "precomputed",
+        "times": times,
+        "freqs": freqs,
+        "n_e": [1000.0] * len(freqs),
+        "t_inv": t_inv,
+    }
+    inv = InversionSpec(bp_left=10_000.0, bp_right=20_000.0, trajectory=traj,
+                        mean_tract_length=0.0)
+    sizes = sizes or [1000.0] * len(freqs)
+    return ExpectModel(Demography(sizes, migration_matrix=mig), inv, 1e-8)
+
+
+def test_exit_into_cell_vanishing_at_same_time_is_impossible():
+    # (0, I) can only leave towards (1, I), which vanishes at the same t_b, so
+    # about exp(-0.5) of A's ancestry is stranded in (0, I) at t = 500.
+    decline = [0.5, 0.25, 0.0, 0.0]
+    mig = [[0.0, 0.0, 0.0], [1e-3, 0.0, 0.0], [0.0, 1e-3, 0.0]]
+    m = _model([0.0, 250.0, 500.0, 1000.0], [decline, decline, [0.5] * 4],
+               [500.0, 500.0, 1000.0], mig)
+    with pytest.raises(ImpossibleHistoryError, match="population 0"):
+        m.pairwise_times(Y, (0, "I"), (2, "I"))
+
+
+def _late_boundary(freqs_pop1):
+    return _model([0.0, 99_999.0, 100_000.0, 200_000.0],
+                  [[0.5] * 4, freqs_pop1], [200_000.0, 100_000.0],
+                  [[0.0, 1e-8], [0.0, 0.0]])
+
+
+def test_steep_continuous_decline_at_large_time_is_not_a_jump():
+    m = _late_boundary([0.05, 0.05, 0.0, 0.0])
+    assert np.isfinite(m.pairwise_times(Y, (1, "I"), (0, "I")).mean)
+
+
+def test_jump_to_zero_at_large_time_is_impossible():
+    m = _late_boundary([0.05] * 4)
+    with pytest.raises(ImpossibleHistoryError, match="jumps to zero"):
+        m.pairwise_times(Y, (1, "I"), (0, "I"))
+
+
+def test_small_migration_decline_matches_limit():
+    # As the continuous-decline test with m = 1e-6: P(tau > t) =
+    # (1 - t/500)^alpha with alpha = 5e-4, so almost all of A's ancestry is
+    # still in (1, I) at t = 500 and leaves through the limit chain.
+    # E[g(tau)] = g(0) + int_0^500 g'(t) P(tau > t) dt, where
+    # g(tau) = tau + (1 - e^{-r l})/r + 2000 e^{-r l}, l = 1000 - tau, r = 1e-3,
+    # so g'(t) = 1 + e^{-r l}.
+    alpha, rate = 1e-6 * 500.0, 1e-3
+    m = _two_pop([0.5, 0.25, 0.0, 0.0], [[0.0, 1e-6], [0.0, 0.0]])
+
+    def g(tau):
+        decay = math.exp(-rate * (1000.0 - tau))
+        return tau + (1 - decay) / rate + decay * 2000.0
+
+    integral, _ = quad(
+        lambda t: (1 + math.exp(-rate * (1000.0 - t))) * (1 - t / 500.0) ** alpha,
+        0.0, 500.0, epsabs=0.0, epsrel=1e-12,
+    )
+    expected = g(0.0) + integral
+    got = m.pairwise_times(Y, (1, "I"), (0, "I")).mean
+    assert got == pytest.approx(expected, rel=1e-6)
+
+
+def _linear_decline():
+    return _model([0.0, 500.0, 1000.0], [[0.5] * 3, [0.5, 0.0, 0.0]],
+                  [1000.0, 500.0], [[0.0, 0.0], [0.0, 0.0]])
+
+
+def test_coalescence_only_exit_matches_closed_form():
+    # Coalescence in (1, I) at 1/(2*1000*f) = 1/(1000 (1 - t/500)) gives
+    # P(T > t) = (1 - t/500)^(1/2), so E[T] = 500 * 2/3.
+    got = _linear_decline().pairwise_times(Y, (1, "I"), (1, "I")).mean
+    assert got == pytest.approx(1000.0 / 3.0, rel=1e-6)
+
+
+def test_no_exit_after_continuous_decline_is_impossible():
+    with pytest.raises(ImpossibleHistoryError, match="population 1"):
+        _linear_decline().pairwise_times(Y, (1, "I"), (0, "I"))

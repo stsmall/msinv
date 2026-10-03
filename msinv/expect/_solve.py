@@ -131,30 +131,38 @@ class Solver:
 
         All exit hazards from such a cell scale as 1/f, so as f -> 0 the
         remaining mass leaves by the rescaled chain: coalescence within the
-        cell at 1/(2N) and migration at m(d -> d') f_d'(K) (spec §3.5). Mass
-        this chain cannot move, or mass in a cell whose frequency jumps to
-        zero, means the history is impossible.
+        cell at 1/(2N) and migration at m(d -> d') f_d'(K, tb) (spec §3.5);
+        migration into another cell that vanishes at tb has rate 0. This
+        assumes the integral of dt/f diverges at tb, which holds for
+        piecewise-linear and closed-form trajectories. Mass this chain cannot
+        move, or mass in a cell whose frequency jumps to zero, means the
+        history is impossible.
         """
         tl = tb - 1e-9 * max(1.0, tb)
+        dying = set(cells)
         for d, st in cells:
             k = 0 if st == "S" else 1
             c = 3 * d + k
             if c not in self.ch.cell_mask:
                 continue
             mask = np.tile(self.ch.cell_mask[c], self.R)
-            mass = float(pi[mask].sum())
-            if mass <= self.atol:
+            mass = self._per_replica(pi, mask)
+            if mass.max() <= self.atol:
                 continue
-            msg = (f"history impossible: {mass:.3g} of ancestry remains in "
-                   f"population {d}, state {st} at t={tb}, where its frequency "
-                   "is zero and no lineage can leave")
-            if self.fq.f(d, st, tl) > 1e-6:
-                raise ImpossibleHistoryError(msg)
+            f2 = self.fq.f(d, st, tb - 2e-7 * max(1.0, tb))
+            if self.fq.left_limit(d, st, tb) > 1e-6 * f2:
+                raise ImpossibleHistoryError(
+                    f"history impossible: frequency jumps to zero in population "
+                    f"{d}, state {st} at t={tb} while {mass.max():.3g} of "
+                    "ancestry remains there"
+                )
             qts = sp.csr_matrix((self.N, self.N))
             for key, at in self._AT.items():
                 if key[0] == "coal" and key[1] == d and key[2] == k:
                     qts = qts + at / (2.0 * self.ep.size(d, tl))
                 elif key[0] == "mig" and key[1] == d and key[3] == k:
+                    if (key[2], st) in dying:
+                        continue
                     rate = self.ep.mig_rate(d, key[2], tl) * self.fq.f(key[2], st, tl)
                     if rate > 0.0:
                         qts = qts + rate * at
@@ -166,11 +174,20 @@ class Solver:
                 y = splu((-qts[tr][:, tr]).tocsc()).solve(pi[tr])
                 new[tr] = 0.0
                 new[ab] += qts[ab][:, tr] @ y
-            if new[stuck].sum() > self.atol:
-                raise ImpossibleHistoryError(msg)
+            left = self._per_replica(new, stuck)
+            if left.max() > self.atol:
+                raise ImpossibleHistoryError(
+                    f"history impossible: {left.max():.3g} of ancestry remains "
+                    f"in population {d}, state {st} at t={tb}, where its "
+                    "frequency is zero and no lineage can leave"
+                )
             new[stuck] = 0.0
             pi = new
         return pi
+
+    def _per_replica(self, v, mask):
+        """Sum of v over the masked entries, per replica."""
+        return np.bincount(self._block[mask], weights=v[mask], minlength=self.R)
 
     # -- main loop ---------------------------------------------------------
 

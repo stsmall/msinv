@@ -127,10 +127,50 @@ class Solver:
         return pi
 
     def _flush(self, tb: float, cells: list, pi):
-        raise NotImplementedError(
-            "trajectories whose frequency reaches zero before t_inv are not "
-            "supported yet"
-        )
+        """Resolve ancestry left in cells whose frequency reaches zero at tb.
+
+        All exit hazards from such a cell scale as 1/f, so as f -> 0 the
+        remaining mass leaves by the rescaled chain: coalescence within the
+        cell at 1/(2N) and migration at m(d -> d') f_d'(K) (spec §3.5). Mass
+        this chain cannot move, or mass in a cell whose frequency jumps to
+        zero, means the history is impossible.
+        """
+        tl = tb - 1e-9 * max(1.0, tb)
+        for d, st in cells:
+            k = 0 if st == "S" else 1
+            c = 3 * d + k
+            if c not in self.ch.cell_mask:
+                continue
+            mask = np.tile(self.ch.cell_mask[c], self.R)
+            mass = float(pi[mask].sum())
+            if mass <= self.atol:
+                continue
+            msg = (f"history impossible: {mass:.3g} of ancestry remains in "
+                   f"population {d}, state {st} at t={tb}, where its frequency "
+                   "is zero and no lineage can leave")
+            if self.fq.f(d, st, tl) > 1e-6:
+                raise ImpossibleHistoryError(msg)
+            qts = sp.csr_matrix((self.N, self.N))
+            for key, at in self._AT.items():
+                if key[0] == "coal" and key[1] == d and key[2] == k:
+                    qts = qts + at / (2.0 * self.ep.size(d, tl))
+                elif key[0] == "mig" and key[1] == d and key[3] == k:
+                    rate = self.ep.mig_rate(d, key[2], tl) * self.fq.f(key[2], st, tl)
+                    if rate > 0.0:
+                        qts = qts + rate * at
+            stuck = mask & (qts.diagonal() >= 0.0)
+            tr = np.flatnonzero(mask & ~stuck)
+            ab = np.flatnonzero(~mask | stuck)
+            new = pi.copy()
+            if len(tr):
+                y = splu((-qts[tr][:, tr]).tocsc()).solve(pi[tr])
+                new[tr] = 0.0
+                new[ab] += qts[ab][:, tr] @ y
+            if new[stuck].sum() > self.atol:
+                raise ImpossibleHistoryError(msg)
+            new[stuck] = 0.0
+            pi = new
+        return pi
 
     # -- main loop ---------------------------------------------------------
 

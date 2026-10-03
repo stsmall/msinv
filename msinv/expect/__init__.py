@@ -10,5 +10,14 @@ scipy: ``pip install msinv[expect]``.
 from __future__ import annotations
 
 from ._history import Epochs, FrequencyHistory, flux_coverage
+from ._solve import ImpossibleHistoryError
+from .model import ExpectModel, PairwiseTimes
 
-__all__ = ["Epochs", "FrequencyHistory", "flux_coverage"]
+__all__ = [
+    "Epochs",
+    "ExpectModel",
+    "FrequencyHistory",
+    "ImpossibleHistoryError",
+    "PairwiseTimes",
+    "flux_coverage",
+]

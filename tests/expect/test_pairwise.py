@@ -1,0 +1,113 @@
+import math
+
+import numpy as np
+import pytest
+
+from msinv.expect import ExpectModel
+from msinv.hull import Demography, InversionSpec
+
+N, P_I, T_INV = 1000.0, 0.3, 2000.0
+BL, BR = 10_000.0, 20_000.0
+Y_IN = 15_000.0
+
+
+def _model(origin="barrier", t_inv=T_INV, p=P_I, demo=None):
+    inv = InversionSpec(bp_left=BL, bp_right=BR, p_inv=p, t_inv=t_inv,
+                        mean_tract_length=0.0)
+    return ExpectModel(demo or Demography([N]), inv, 1e-8, origin=origin)
+
+
+@pytest.mark.parametrize("state,f", [("I", P_I), ("S", 1 - P_I)])
+def test_same_state_barrier_closed_form(state, f):
+    a = 2 * N * f
+    res = _model().pairwise_times(Y_IN, (0, state), (0, state), times=[1000.0, 3000.0])
+    expected = a * (1 - math.exp(-T_INV / a)) + 2 * N * math.exp(-T_INV / a)
+    assert res.mean == pytest.approx(expected, rel=1e-6)
+    assert res.survival[0] == pytest.approx(math.exp(-1000.0 / a), rel=1e-6)
+    assert res.survival[1] == pytest.approx(
+        math.exp(-T_INV / a) * math.exp(-1000.0 / (2 * N)), rel=1e-6
+    )
+
+
+def test_between_states_barrier_closed_form():
+    res = _model().pairwise_times(Y_IN, (0, "I"), (0, "S"))
+    assert res.mean == pytest.approx(T_INV + 2 * N, rel=1e-6)
+    assert res.var == pytest.approx((2 * N) ** 2, rel=1e-5)
+
+
+def test_single_origin_closed_form():
+    a = 2 * N * P_I
+    res = _model("single").pairwise_times(Y_IN, (0, "I"), (0, "I"))
+    assert res.mean == pytest.approx(a * (1 - math.exp(-T_INV / a)), rel=1e-6)
+
+
+def test_old_inversion_limit():
+    res = _model(t_inv=1e7).pairwise_times(Y_IN, (0, "I"), (0, "I"))
+    assert res.mean == pytest.approx(2 * N * P_I, rel=1e-6)
+
+
+def test_flank_site_matches_hand_solved_chain():
+    r, delta = 1e-6, 500.0
+    m = ExpectModel(Demography([N]), InversionSpec(
+        bp_left=BL, bp_right=BR, p_inv=P_I, t_inv=1e9, mean_tract_length=0.0), r)
+    c, p = r * delta, P_I
+    q = np.array([
+        [-(1 / (2 * N * p) + 2 * c * (1 - p)), 2 * c * (1 - p), 0.0],
+        [c * p, -c, c * (1 - p)],
+        [0.0, 2 * c * p, -(1 / (2 * N * (1 - p)) + 2 * c * p)],
+    ])  # transient states II, IS, SS (row generator)
+    expected = np.linalg.solve(-q, np.ones(3))
+    y = BL - delta
+    assert m.pairwise_times(y, (0, "I"), (0, "I")).mean == pytest.approx(
+        expected[0], rel=1e-6)
+    assert m.pairwise_times(y, (0, "I"), (0, "S")).mean == pytest.approx(
+        expected[1], rel=1e-6)
+
+
+def test_profile_matches_pointwise():
+    m = _model(t_inv=1e5)
+    m.r = 1e-6
+    ys = [Y_IN, BL - 500.0, BR + 2000.0]
+    prof = m.profile(ys, (0, "I"), (0, "I"))
+    for y, v in zip(ys, prof):
+        assert v == pytest.approx(m.pairwise_times(y, (0, "I"), (0, "I")).mean,
+                                  rel=1e-7)
+
+
+def test_equal_frequencies_reduce_to_plain_island_model():
+    # Spec §5.B item 4: with f_0(I) = f_1(I) the conditional migration rate is
+    # plain m, so I lineages follow a two-deme island model with deme size
+    # N * p: E[T_between] = 4 N p + 1 / (2 m).
+    m_rate = 1e-3
+    demo = Demography([N, N], migration_matrix=[[0.0, m_rate], [m_rate, 0.0]])
+    res = _model(t_inv=1e9, demo=demo).pairwise_times(Y_IN, (0, "I"), (1, "I"))
+    assert res.mean == pytest.approx(4 * N * P_I + 1 / (2 * m_rate), rel=1e-6)
+
+
+# --- Review focus ---------------------------------------------------------
+
+def test_zero_frequency_sample_rejected():
+    m = _model(p={0: 0.0, 1: 0.5}, demo=Demography([N, N]))
+    with pytest.raises(ValueError, match="zero frequency"):
+        m.pairwise_times(Y_IN, (0, "I"), (1, "I"))
+
+
+def test_disconnected_populations_rejected():
+    m = _model(demo=Demography([N, N]))
+    with pytest.raises(ValueError, match="never coalesce"):
+        m.pairwise_times(Y_IN, (0, "S"), (1, "S"))
+
+
+def test_breakpoint_sites_are_finite():
+    m = _model()
+    m.r = 1e-6
+    inside = m.pairwise_times(Y_IN, (0, "I"), (0, "I")).mean
+    assert m.pairwise_times(BL, (0, "I"), (0, "I")).mean == pytest.approx(inside)
+    assert m.pairwise_times(BR, (0, "I"), (0, "I")).mean == pytest.approx(inside)
+
+
+def test_final_growth_rejected():
+    demo = Demography([N])
+    demo.add_growth_rate_change(100.0, population=0, growth_rate=1e-3)
+    with pytest.raises(NotImplementedError, match="growth"):
+        _model(demo=demo)

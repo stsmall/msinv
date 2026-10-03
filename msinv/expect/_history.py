@@ -6,6 +6,9 @@ import bisect
 import math
 from dataclasses import dataclass, field
 
+from msinv._msinv_core import InvTrajectory
+from msinv.hull._rust_bridge import inversion_to_dict
+
 _SUPPORTED_EVENTS = ("eN", "en", "eG", "eg", "eM", "em", "ej")
 
 
@@ -133,3 +136,152 @@ class Epochs:
             for s in range(n)
             if s != d and e.mig[d][s] > 0.0
         }
+
+
+class FrequencyHistory:
+    """Inversion frequencies per population, read from the Rust trajectory.
+
+    ``t_inv`` is global (``t_inv_max``). Per-population values of coupled or
+    precomputed trajectories are support boundaries of f_d(I, t), not
+    separate inversion ages (spec §3.2).
+    """
+
+    def __init__(self, inversion, n_pops: int):
+        self.n_pops = n_pops
+        self._traj = InvTrajectory(inversion_to_dict(inversion, n_pops))
+        self.t_inv = float(self._traj.t_inv_max())
+        self.t_inv_pop = [float(self._traj.t_inv(d)) for d in range(n_pops)]
+        self.knots = sorted(
+            {float(k) for k in self._traj.knots() if 0.0 < k < self.t_inv}
+        )
+        self._cache_t = None
+        self._cache_p = None
+        self._check_simplex()
+
+    def p_all(self, t: float) -> list:
+        """I frequency in every population at backward time ``t``."""
+        if t != self._cache_t:
+            self._cache_p = [self._traj.p_inv([t], d)[0] for d in range(self.n_pops)]
+            self._cache_t = t
+        return self._cache_p
+
+    def f(self, d: int, state: str, t: float) -> float:
+        if t >= self.t_inv:
+            raise ValueError(f"no karyotype states at or beyond t_inv={self.t_inv}")
+        p = self.p_all(t)[d]
+        if state == "I":
+            return p
+        if state == "S":
+            return 1.0 - p
+        raise ValueError(f"state must be 'S' or 'I', got {state!r}")
+
+    def _check_simplex(self) -> None:
+        # One inversion: f_S = 1 - p is derived, so only p needs checking.
+        for t in [0.0, *self.knots]:
+            for d, p in enumerate(self.p_all(t)):
+                if not -1e-12 <= p <= 1.0 + 1e-12:
+                    raise ValueError(
+                        f"inversion frequency {p} outside [0, 1] in population "
+                        f"{d} at t={t}"
+                    )
+
+    def support_boundaries(self) -> list:
+        """Sorted (t_b, pop, state): f_pop(state) becomes zero at t_b < t_inv."""
+        out = set()
+        for d in range(self.n_pops):
+            if self.t_inv_pop[d] < self.t_inv:
+                out.add((self.t_inv_pop[d], d, "I"))
+            prev = self.p_all(0.0)[d]
+            for k in self.knots:
+                p = self.p_all(k)[d]
+                if p <= 0.0 < prev:
+                    out.add((k, d, "I"))
+                if p >= 1.0 > prev:
+                    out.add((k, d, "S"))
+                prev = p
+        return sorted(out)
+
+    def draw_conditional(self, d: int, t: float, known: dict, rng) -> dict:
+        """Draw the karyotypes not in ``known`` (inv_id -> 'S'/'I')."""
+        if 0 in known:
+            if self.f(d, known[0], t) <= 0.0:
+                raise ValueError(
+                    f"conditioning state {known[0]!r} has zero frequency in "
+                    f"population {d} at t={t}"
+                )
+            return dict(known)
+        return {0: "I" if rng.random() < self.f(d, "I", t) else "S"}
+
+    def origin_population(self) -> int:
+        eps = 1e-9 * max(1.0, self.t_inv)
+        pops = [d for d, p in enumerate(self.p_all(self.t_inv - eps)) if p > 0.0]
+        if len(pops) != 1:
+            raise ValueError(
+                "origin='single' needs exactly one population with f(I) > 0 "
+                f"just below t_inv; found {pops}"
+            )
+        return pops[0]
+
+
+def _phi(u: float, w: float) -> float:
+    """Peischl phi, identical to rust/msinv-core/src/phi.rs::phi."""
+    if u <= 0.0 or u >= 1.0:
+        return 0.0
+    if w >= 1.0:
+        return 1.0
+    return min(max(min(u, 1.0 - u, w) / (1.0 - w), 0.0), 1.0)
+
+
+def _cover_prob(x: float, yr: float, length: float, inv_len: float) -> float:
+    """P(tract started from x with this length covers yr); mirrors draw_tract."""
+    lo, hi = max(x - length, 0.0), min(x, inv_len - length)
+    if hi <= lo:
+        b1 = min(max(x - length / 2.0, 0.0), inv_len - length)
+        return 1.0 if b1 <= yr <= b1 + length else 0.0
+    a, b = max(lo, yr - length), min(hi, yr)
+    return max(b - a, 0.0) / (hi - lo)
+
+
+def flux_coverage(
+    y: float,
+    bp_left: float,
+    bp_right: float,
+    mean_tract_length: float,
+    tract_distribution: str,
+) -> float:
+    """C(y) of spec §3.4 rule 4: per-site conversion hazard / (gamma * f_other).
+
+    For a lineage carrying the whole inversion, under the tier 2 event rules
+    (``sample_flux_position`` + ``draw_tract``). About phi(y) * mean tract
+    length away from the breakpoints.
+    """
+    from scipy.integrate import quad
+
+    inv_len = bp_right - bp_left
+    if not bp_left <= y < bp_right or mean_tract_length <= 0.0:
+        return 0.0
+    w = mean_tract_length / inv_len
+    yr = y - bp_left
+
+    def given_length(length: float) -> float:
+        length = min(length, 0.99 * inv_len)
+        lo, hi = max(0.0, yr - length), min(inv_len, yr + length)
+        if hi <= lo:
+            return 0.0
+        kinks = (yr, yr - length / 2, yr + length / 2, length, inv_len - length,
+                 w * inv_len, (1 - w) * inv_len)
+        pts = [p for p in kinks if lo < p < hi]
+        val, _ = quad(
+            lambda x: _phi(x / inv_len, w) * _cover_prob(x, yr, length, inv_len),
+            lo, hi, points=pts or None, limit=200, epsabs=0.0, epsrel=1e-10,
+        )
+        return val
+
+    if tract_distribution == "fixed":
+        return given_length(mean_tract_length)
+    cap, m = 0.99 * inv_len, mean_tract_length
+    body, _ = quad(
+        lambda length: given_length(length) * math.exp(-length / m) / m,
+        0.0, cap, limit=200, epsabs=0.0, epsrel=1e-8,
+    )
+    return body + math.exp(-cap / m) * given_length(cap)

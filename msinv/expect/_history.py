@@ -180,6 +180,28 @@ class FrequencyHistory:
         delta = 1e-7 * max(1.0, t)
         return 2.0 * self.f(d, state, t - delta) - self.f(d, state, t - 2.0 * delta)
 
+    def turning_knots(self) -> list:
+        """Knots where p changes direction in some population.
+
+        The slope sign (-, 0, +) of the piecewise-linear p changes there,
+        which includes both edges of a flat dip or plateau. Between two
+        turning knots p is monotone, so a change persists and the solver's
+        error control sees it; a short dip between unforced stops does not.
+        """
+        if not self.knots:
+            return []
+        pts = [0.0, *self.knots, self.t_inv - 1e-9 * max(1.0, self.t_inv)]
+        out = set()
+        for d in range(self.n_pops):
+            p = [self.p_all(t)[d] for t in pts]
+            sign = [
+                0 if abs(b - a) <= 1e-14 else (1 if b > a else -1)
+                for a, b in zip(p, p[1:])
+            ]
+            # sign[i] is the slope left of knots[i], sign[i + 1] right of it.
+            out.update(k for i, k in enumerate(self.knots) if sign[i] != sign[i + 1])
+        return sorted(out)
+
     def _check_simplex(self) -> None:
         # One inversion: f_S = 1 - p is derived, so only p needs checking.
         for t in [0.0, *self.knots]:

@@ -261,3 +261,36 @@ def test_survival_requested_inside_clamped_window_is_filled():
     ).survival
     assert np.all(np.isfinite(surv))
     assert surv[0] >= surv[1] >= surv[2]
+
+
+@pytest.mark.parametrize(
+    "times, freqs",
+    [
+        # flat-bottomed bottleneck of the inverted class
+        (
+            [0.0, 4999.0, 5000.0, 5010.0, 5011.0, 30000.0],
+            [0.3, 0.3, 0.002, 0.002, 0.3, 0.3],
+        ),
+        # V-shaped bottleneck
+        ([0.0, 4995.0, 5000.0, 5005.0, 30000.0], [0.3, 0.3, 0.001, 0.3, 0.3]),
+    ],
+)
+def test_narrow_dip_is_not_stepped_over(times, freqs):
+    # Unforced knots let BDF step across a short dip entirely (9.5% error for
+    # the flat one); the default forces the knots where p turns.
+    traj = {
+        "type": "precomputed",
+        "times": times,
+        "freqs": [freqs],
+        "n_e": [10_000.0],
+        "t_inv": [40_000.0],
+    }
+    inv = InversionSpec(
+        bp_left=100_000.0, bp_right=200_000.0, trajectory=traj, mean_tract_length=0.0
+    )
+    demo = Demography([10_000.0])
+    default = ExpectModel(demo, inv, 1e-8)
+    forced = ExpectModel(demo, inv, 1e-8, force_knots_max=10**6)
+    a = default.pairwise_times(99_000.0, (0, "I"), (0, "I")).mean
+    b = forced.pairwise_times(99_000.0, (0, "I"), (0, "I")).mean
+    assert a == pytest.approx(b, rel=1e-6)

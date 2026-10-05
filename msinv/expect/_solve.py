@@ -57,7 +57,7 @@ class Solver:
     coefficient (one per site), as one block-diagonal system."""
 
     def __init__(
-        self, chain, epochs, freq, coeffs, rtol=1e-8, atol=1e-12, force_knots_max=1000
+        self, chain, epochs, freq, coeffs, rtol=1e-8, atol=1e-12, force_knots_max=0
     ):
         self.ch, self.ep, self.fq = chain, epochs, freq
         self.coeffs = np.asarray(coeffs, dtype=float)
@@ -78,7 +78,11 @@ class Solver:
         self._post = np.tile(chain.post, self.R)
         self._block = np.repeat(np.arange(self.R), chain.size)
         self._n_aux = self.R * (chain.n - 1) + 2 * self.R
-        knots = freq.knots if len(freq.knots) <= force_knots_max else []
+        # Restarting BDF at every knot is ~19x slower on a 400-knot history;
+        # only the knots where p turns must be stops (see turning_knots).
+        knots = (
+            freq.knots if len(freq.knots) <= force_knots_max else freq.turning_knots()
+        )
         self._supp = freq.support_boundaries()
         # Cells whose frequency declines continuously to zero at t_inv: their
         # ancestry leaves by the limit chain just before t_inv (spec §3.5).

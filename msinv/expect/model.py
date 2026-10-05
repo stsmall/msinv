@@ -29,7 +29,7 @@ class ExpectModel:
         origin="barrier",
         rtol=1e-8,
         atol=1e-12,
-        force_knots_max=1000,
+        force_knots_max=0,
     ):
         if origin not in ("barrier", "single"):
             raise ValueError(f"origin must be 'barrier' or 'single', got {origin!r}")

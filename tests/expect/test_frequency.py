@@ -72,3 +72,33 @@ def test_flux_coverage_outside_and_at_breakpoint():
     assert flux_coverage(L, 0.0, L, 100.0, "fixed") == 0.0
     assert flux_coverage(50_000.0, 0.0, L, 0.0, "fixed") == 0.0
     assert 0.0 <= flux_coverage(0.0, 0.0, L, 100.0, "fixed") < 1e-6
+
+
+def _precomputed(times, freqs, t_inv=40_000.0):
+    return _inv(
+        trajectory={
+            "type": "precomputed",
+            "times": times,
+            "freqs": [freqs],
+            "n_e": [10_000.0],
+            "t_inv": [t_inv],
+        }
+    )
+
+
+def test_turning_knots_mark_both_edges_of_a_flat_dip():
+    fh = FrequencyHistory(
+        _precomputed(
+            [0.0, 4999.0, 5000.0, 5010.0, 5011.0, 30000.0],
+            [0.3, 0.3, 0.002, 0.002, 0.3, 0.3],
+        ),
+        1,
+    )
+    assert fh.turning_knots() == [4999.0, 5000.0, 5010.0, 5011.0]
+
+
+def test_turning_knots_empty_for_a_monotone_ramp():
+    times = np.linspace(0.0, 40_000.0, 400)
+    fh = FrequencyHistory(_precomputed(times.tolist(), np.linspace(0.3, 0.7, 400)), 1)
+    assert len(fh.knots) == 398  # t = 0 and t = t_inv are not knots
+    assert fh.turning_knots() == []

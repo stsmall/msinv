@@ -4,7 +4,10 @@ Status: written 2026-10-02; revised 2026-10-03 after two external reviews
 (round 1: `t_inv` semantics, integrated hazards, zero-frequency boundaries,
 singleton statistic, corrected closed forms; round 2: global `t_inv`,
 open-boundary hazards, origin-merge semantics, msprime scope,
-development vs release criteria). Sections 1–5 agreed in conversation. Supersedes the working notes
+development vs release criteria). Amended 2026-10-06: tier 0 joint SFS
+across sample groups (§3.6), after the Illex test case showed pairwise
+times and per-class f1 cannot separate `origin="barrier"` from
+`origin="single"` with gene flux. Sections 1–5 agreed in conversation. Supersedes the working notes
 `2026-10-02-exact-karyotype-mode-notes.md` (kept for history; two statements
 there about current msinv behaviour are corrected in §3.3).
 
@@ -257,7 +260,8 @@ Outputs:
   projection size n (default 20 haploid chromosomes), first class divided by
   the total: f1 = (E[ξ_1] + E[ξ_{n−1}]) / Σ_i E[ξ_i]. A ratio of
   expectations, not E[S_1/S].
-- Not the full joint SFS across arrangements or populations (use tier 1/2).
+- The joint SFS across arrangements or populations: §3.6 (amendment
+  2026-10-06).
 - State-space size of the SFS chain (partitions of n into cell-coloured
   parts): one population, two states, n = 20: 24,842; two populations,
   n = 20: 2,778,517, above the default limit. The SFS chain's state space
@@ -265,6 +269,72 @@ Outputs:
   SFS functions only) the call raises a `ValueError` naming the count and
   suggesting tier 1/2. Pairwise calculations are unaffected at any number
   of populations.
+
+### 3.6 Tier 0 joint SFS (amendment 2026-10-06)
+
+Why. On the Illex decline history, `origin="barrier"` (t_inv 0.83 My) and
+`origin="single"` with gene flux (t_inv anywhere in 2.0–4.5 My, flux
+≈ 7 × 10⁻⁷ per site per generation) both fit π_I/π_S, dxy/π_I and
+f1(I)/f1(S) to χ² < 0.13 once the decline time is free
+(`.tmp/joint_fit/`). These statistics cannot test the origin model, which
+is a core switch of tiers 0 and 2. The joint SFS can: under single origin
+without flux, every I lineage descends from one chromosome at t_inv, so
+no polymorphism is shared between arrangements (below); flux and the
+barrier model create shared polymorphism with different frequency
+signatures. Observed data are joint SFS (e.g. Illex AA×BB, 81 × 81,
+ANGSD), so the statistic is directly comparable.
+
+Definition. A sample is a list of G groups, each (population, state, n_g).
+The expected joint SFS is the array E[L(b)], b = (b_1, …, b_G) with
+0 ≤ b_g ≤ n_g, excluding b = 0 and b = (n_1, …, n_G): the expected
+time-integrated length (generations) of branches subtending exactly b_g
+sampled chromosomes of group g. E[ξ(b)] = μ · E[L(b)] for an unfolded
+spectrum. For the arrangement case G = 2: groups (pop, I, n_I) and
+(pop, S, n_S), giving an (n_I + 1) × (n_S + 1) array.
+
+Chain. The §3.5 block-counting chain with the block generalised from an
+integer to a G-vector of descendant counts per group; coalescence adds
+vectors, all other moves (migration, switching, joins, the `t_inv` map,
+the single-origin merge, zero-support flushes) are unchanged because they
+never read the block. Rewards: one per vector b, (Π(n_g + 1) − 2) in total,
+integrated exactly as the §3.5 rewards. The existing single-group SFS is
+the G = 1 case, so one implementation serves both; the `expected_sfs` and
+`f1` outputs must be unchanged.
+
+Outputs.
+- `expected_joint_sfs(y, groups, max_states=10**6)` → unfolded array of
+  shape (n_1 + 1, …, n_G + 1), corners zero.
+- `fold_joint(arr)` → folded spectrum: b and n − b combined (both axes
+  complemented together), for data without reliable polarisation.
+- Summary partitions for G = 2 (functions of the array, so they are exact
+  expectations): fixed differences (b = (n_I, 0), (0, n_S)), private I
+  (0 < b_I < n_I, b_S ∈ {0, n_S}), private S (symmetric), shared
+  (0 < b_I < n_I and 0 < b_S < n_S).
+- Data are compared at the tier 0 size by hypergeometric projection of the
+  observed array along each axis (projection commutes with expectation, as
+  in §3.5). Projection of data is the caller's job; tier 0 provides a
+  `project_joint(arr, sizes)` helper so model and data use one definition.
+
+State space (one population, two arrangements, barrier, switching on;
+counted with a prototype of the generalised chain):
+
+| n_I = n_S | joint chain | same total n, one-group chain |
+|---|---|---|
+| 3 | 297 | 74 |
+| 4 | 1,538 | 205 |
+| 5 | 7,107 | 521 |
+| 6 | 30,960 | 1,240 |
+| 7 | 126,130 | 2,798 |
+
+6 + 6 is about the size of the n = 20 one-group f1 chain (≈ 25k states,
+≈ 22 min per solve at 2026-10-05 speed); 5 + 5 is in seconds. Practical
+v1 size is therefore n_I = n_S ≤ 6 until the §5.F solver work lands;
+`max_states` guards the rest. Two populations × two arrangements
+multiply the count further and are expected to need tier 1/2.
+
+Out of scope for this amendment: joint SFS in tiers 1 and 2 (they already
+produce tree sequences, from which tskit computes it), likelihood or
+composite-likelihood fitting, and estimating the polarisation error.
 
 ## 4. Implementation mapping (tier 2)
 
@@ -412,6 +482,8 @@ The sweep stack and its `has_sv_phase` gating are untouched.
   - `expected_sfs(y, pop, state, n)` → unfolded expected SFS as E[L_b]
     (generations per unit mutation rate; E[ξ_b] = μ·E[L_b]);
   - `f1(y, pop, state, n=20)` → folded ratio of expectations (§3.5);
+  - `expected_joint_sfs(y, groups)`, `fold_joint`, `project_joint`
+    (§3.6);
   - `profile(ys, ...)` → vectorised over positions;
   - `max_states` argument on the SFS functions only (default 10⁶).
   - Ported to Rust only if profiling shows a need.
@@ -483,6 +555,25 @@ in summaries; replicates are not called paired.
    a small-Δt forward calculation of P(source d' | state K, now in d) ∝
    f_{d'}(K) · P(d' | d) reproduces the implemented conditional rates to
    first order, with source and destination not swapped.
+6. Joint SFS (§3.6):
+   - Marginal identity: for every group g and 1 ≤ i < n_g, summing
+     E[L(b)] over all b with b_g = i equals `expected_sfs` of group g's
+     chromosomes alone (to solver tolerance); G = 1 equals `expected_sfs`
+     exactly.
+   - Single origin, γ = 0, site inside the inversion: E[L(b)] = 0 for
+     every b with 0 < b_I < n_I and b_S > 0 (a partial I lineage never
+     meets an S-carrying lineage); the barrier model gives these cells
+     positive mass.
+   - Total: Σ_b E[L(b)] equals the expected total branch length.
+   - msprime reference (item 3 construction, barrier): the branch-mode
+     joint AFS, `ts.allele_frequency_spectrum(sample_sets=[I, S],
+     mode="branch", polarised=True)`, averaged over replicates, within
+     Monte Carlo error of tier 0, on a constant-rate and a piecewise
+     history.
+   - Fold and projection: `fold_joint(arr)` equals `fold_joint` of `arr`
+     reversed along every axis and preserves the total; `project_joint` of
+     the exact array at sizes n equals the chain computed directly at the
+     smaller sizes.
 
 ### 5.C Tier 0 vs tier 2
 
@@ -543,7 +634,8 @@ is an engineering target, reported, not a release gate.
 | Tier 2 vs tier 1, wall and peak RSS | ≤ 2× on SLiM-bench settings and on L = 1 Mb v12 + inversion |
 | Tier 2 stress cases (reported) | p ≈ 0.5; p ≈ 0.05; p declining 0.05 → 0.001 without reaching zero; fast-changing trajectory; two demes with strongly different frequencies; flux on/off |
 | Tier 0 pairwise profile, 100 positions | < 1 s |
-| Tier 0 f1, 1 population, n = 20 | minutes per history (relaxed 2026-10-03 from < 5 s: measured n=12 1.4 s, n=14 5.4 s, n=16 24 s, n=20 est. ~8 min; adequate for overnight grid scans; pairwise statistics stay ~1 s) |
+| Tier 0 f1, 1 population, n = 20 | minutes per history (relaxed 2026-10-03 from < 5 s: measured n=12 1.4 s, n=14 5.4 s, n=16 24 s, n=20 est. ~8 min; adequate for overnight grid scans; pairwise statistics stay ~1 s. Measured 2026-10-05 on the Illex decline history after forcing only turning knots: n=16 31 s, n=20 22 min) |
+| Tier 0 joint SFS, 1 population, n_I = n_S = 5 | reported (expected seconds) |
 | Tier 0 above `max_states` | clear `ValueError` |
 
 Batches use `ProcessPoolExecutor(max_workers=50)`. Runs ≥ 1 h wall or ≥ 10

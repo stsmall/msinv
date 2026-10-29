@@ -1,0 +1,21 @@
+Parametric bootstrap of the inversion grid fit (2000 pseudo-datasets, 202 cells, [48] reps/cell)
+truth = best cell {'t_inv': np.float64(850000.0), 'p_hist': np.float64(0.74), 't_decline': np.float64(175000.0), 't_fall': np.float64(100000.0)}; observed chi2 there = 2.41
+noise: jackknife SE [0.0481, 0.0214, 0.0076], corr(pi_I/pi_S, dxy/pi_I) = -0.71 (20 1-Mb blocks); cell means resampled from their replicates
+joint Delta-chi2 at the truth: median 0.54, 95th pct 7.68
+
+t_inv: c95 = 1.77 (Delta-chi2 < 2 covers the truth in 95.7% of pseudo-datasets)
+   observed profile    700000:35.4  750000:10.9  800000:0.4  850000:0.0  900000:10.3
+   calibrated 95% set  ['800000', '850000']   (Delta-chi2 < 2: ['800000', '850000'])
+   refitted best value 800000:8.6%  850000:88.3%  900000:3.1%
+p_hist: c95 = 4.58 (Delta-chi2 < 2 covers the truth in 89.2% of pseudo-datasets)
+   observed profile    0.7:0.2  0.74:0.0  0.78:18.9  0.82:89.2
+   calibrated 95% set  ['0.7', '0.74']   (Delta-chi2 < 2: ['0.7', '0.74'])
+   refitted best value 0.7:11.5%  0.74:81.3%  0.78:7.2%
+t_decline: c95 = 2.00 (Delta-chi2 < 2 covers the truth in 95.0% of pseudo-datasets)
+   observed profile    0:36.0  25000:16.4  50000:3.4  100000:0.2  175000:0.0  250000:0.4
+   calibrated 95% set  ['100000', '175000', '250000']   (Delta-chi2 < 2: ['100000', '175000', '250000'])
+   refitted best value 25000:0.1%  50000:10.9%  100000:30.2%  175000:47.0%  250000:11.8%
+t_fall: c95 = 2.99 (Delta-chi2 < 2 covers the truth in 88.4% of pseudo-datasets)
+   observed profile    50000:0.4  100000:0.0  200000:0.2  400000:8.9  600000:83.3
+   calibrated 95% set  ['50000', '100000', '200000']   (Delta-chi2 < 2: ['50000', '100000', '200000'])
+   refitted best value 50000:14.7%  100000:41.6%  200000:43.6%  400000:0.1%

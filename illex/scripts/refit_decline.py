@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import itertools
 import json
 import time
@@ -156,6 +157,12 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
         rows = list(ex.map(_one, jobs, chunksize=1))
     print(f"done in {time.time() - t0:.0f} s")
+    if a.tag:
+        # per-replicate rows (statistics and branch spectra) for the parametric bootstrap
+        OUT.mkdir(parents=True, exist_ok=True)
+        with gzip.open(OUT / f"refit_decline{a.tag}_reps.jsonl.gz", "wt") as fh:
+            for x in rows:
+                fh.write(json.dumps(x) + "\n")
 
     lines = []
 

@@ -2,7 +2,7 @@
 <img width="2932" height="800" alt="Untitled" src="https://github.com/user-attachments/assets/afae242b-49ab-43f8-baaf-3eb4b292c277" />
 
 
-[![Python](https://img.shields.io/badge/python-%3E%3D3.9-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Explain like I'm 5
@@ -139,7 +139,7 @@ pixi run test       # runs the hull test suite
 pixi run figures    # regenerates the presentation PDFs in figures/
 ```
 
-Requires Python ≥ 3.9, numpy, tskit. Optional: msprime (for mutation
+Requires Python ≥ 3.10, numpy, tskit. Optional: msprime (for mutation
 dropping in the figure examples) and matplotlib.
 
 To rebuild the Rust core in a development checkout:

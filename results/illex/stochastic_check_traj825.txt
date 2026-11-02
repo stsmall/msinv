@@ -1,0 +1,4 @@
+Best cell t_inv=825000 p_hist=0.74 t_decline=100000 t_fall=200000, s = 7.26e-05
+targets [1.3556, 1.3848, 0.8125]  SE [0.0481, 0.0214, 0.0076]
+deterministic: pi_I/pi_S 1.3948 (sd 0.030)  dxy/pi_I 1.3702 (sd 0.018)  singleton ratio 0.8076  chi2 1.54  freq at fall start 0.740 (sd 0.000)
+        drift: pi_I/pi_S 1.4488 (sd 0.129)  dxy/pi_I 1.3716 (sd 0.022)  singleton ratio 0.7949  chi2 9.50  freq at fall start 0.743 (sd 0.030)

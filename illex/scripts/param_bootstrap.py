@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
-import glob
 import gzip
 import json
 from pathlib import Path
@@ -57,10 +56,13 @@ SE = np.array([0.0481, 0.0214, 0.0076])
 BP_L, BP_R = 60_540_000, 79_500_000
 
 
-def load_cells():
-    """{params: (r[n], d[n], PI[n, PROJ+1], PS[n, PROJ+1])} from every *_pboot*_reps.jsonl.gz."""
+def load_cells(tags="ABCD"):
+    """{params: (r[n], d[n], PI[n, PROJ+1], PS[n, PROJ+1])} from refit_decline_pboot{tag}_reps.jsonl.gz.
+
+    The default is the manuscript's grid (A-D). Cells present in several files are pooled.
+    """
     raw = collections.defaultdict(lambda: ([], [], [], []))
-    for f in sorted(glob.glob(str(R / "refit_decline_pboot*_reps.jsonl.gz"))):
+    for f in [R / f"refit_decline_pboot{t}_reps.jsonl.gz" for t in tags]:
         for line in gzip.open(f, "rt"):
             x = json.loads(line)
             k = tuple(float(x[p]) for p in PARS)

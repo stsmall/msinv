@@ -1,0 +1,78 @@
+"""Task 3: msinv simulator and statistic vector for the trajectory ABC.
+
+The rep-heavy tests (no-barrier limit, flux scaling) run 20 sims each and are marked slow. The flux test is
+expensive: one no-flux 0.9 Ma call takes ~11 min, and msinv's cost grows steeply with gamma_eff (a single
+gamma_eff 1e-4 call did not finish in 50 min).
+"""
+import numpy as np
+import pytest
+
+from illex.abc.simulate import simulate_stats
+from illex.abc.statvec import STAT_KEYS, STAT_KEYS_PPC_ONLY
+from illex.abc.trajectory import Path
+from illex.theory import N_growth
+
+NAN = float("nan")
+RATIOS = ("pi_ratio", "dxy_pi", "f1_ratio")
+
+
+def path(t_inv, p_now=0.626, p_start=None, gamma_eff=NAN, hard=False):
+    """A flat (or two-point linear) path, built by hand so the tests do not depend on the sampler."""
+    p_start = p_now if p_start is None else p_start
+    prm = dict(model="N", flux=not np.isnan(gamma_eff), t_inv=float(t_inv), hard=hard,
+               p0=NAN if hard else p_start, t_sel=NAN, s=NAN, t_stop=NAN, p_star=NAN, gamma_eff=gamma_eff)
+    return Path(params=prm, times=np.array([0.0, float(t_inv)]), freqs=np.array([p_now, p_start]), p_now=p_now)
+
+
+def test_keys_contract():
+    out = simulate_stats(path(2e4), seed=11)
+    assert set(out) == set(STAT_KEYS) | {"p_obs", "n_nan"}
+    assert set(STAT_KEYS_PPC_ONLY) <= set(STAT_KEYS)
+    assert len(set(STAT_KEYS)) == len(STAT_KEYS)
+    assert all(isinstance(v, float) for k, v in out.items() if k != "n_nan")
+    assert out["n_nan"] == sum(np.isnan(out[k]) for k in STAT_KEYS)
+    assert 0.0 < out["p_obs"] < 1.0
+
+
+def test_seed_deterministic():
+    # gamma_eff 1e-9 keeps the flux code path on while staying cheap: msinv's cost grows steeply with flux
+    # (gamma_eff 1e-6 at t_inv 2e4 ran > 40 min for three sims).
+    p = path(2e4, gamma_eff=1e-9)
+    a, b = simulate_stats(p, seed=5), simulate_stats(p, seed=5)
+    assert a.keys() == b.keys()
+    for k in a:
+        assert (np.isnan(a[k]) and np.isnan(b[k])) or a[k] == b[k], k
+    c = simulate_stats(p, seed=6)
+    assert any(a[k] != c[k] for k in STAT_KEYS if not np.isnan(a[k]))
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(3600)
+def test_no_barrier_limit():
+    p = path(100.0, p_now=0.5)
+    rows = [simulate_stats(p, seed=100 + r) for r in range(20)]
+    for k in RATIOS:
+        m = np.nanmean([r[k] for r in rows])
+        assert abs(m - 1.0) <= 0.05, (k, m)
+
+
+def test_zero_seg_sites_flagged():
+    # A hard start 2,000 generations ago, rising exponentially from one copy. A two-point (linear-in-p) path
+    # would NOT do: msinv interpolates p linearly, so p stays O(1) until the last generation, the 2a lineages
+    # barely coalesce, and they are released into the panmictic pool at t_inv (no forced monophyly).
+    t_inv, p_now = 2000.0, 0.626
+    p_start = 1.0 / (2.0 * float(N_growth(t_inv)))
+    times = np.linspace(0.0, t_inv, 201)
+    freqs = p_now * np.exp(np.log(p_start / p_now) * times / t_inv)
+    p = path(t_inv, p_now=p_now, p_start=p_start, hard=True)
+    p.times, p.freqs = times, freqs
+    out = simulate_stats(p, seed=3)
+    assert out["n_nan"] > 0
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(0)
+def test_flux_scaling():
+    lo = [simulate_stats(path(9e5, gamma_eff=1e-9), seed=200 + r)["dxy_pi"] for r in range(20)]
+    hi = [simulate_stats(path(9e5, gamma_eff=1e-4), seed=200 + r)["dxy_pi"] for r in range(20)]
+    assert np.nanmean(hi) < 0.95 * np.nanmean(lo), (np.nanmean(hi), np.nanmean(lo))

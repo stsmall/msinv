@@ -14,7 +14,9 @@ chr2 collinear control. Classes: I = 2a (inverted), S = 2+ (standard).
                                are ~0 under panmixia, so the ratio is undefined)
   ld_{I,S}_{1..6}              mean genotype r^2 (random within-class diploid pairing, 50 diploids per class at
                                N_INV = N_STD = 100; MAF >= 0.05 within the class) in 6 log-spaced distance bins
-                               over LD_EDGES; body / control
+                               over LD_EDGES; the diploids pass through the data's genotype error model
+                               (``error_model``) and r^2 is the pairwise-complete kernel ``ld_block_sums``
+                               shared with the data; body / control
   tajd_{I,S}                   Tajima's D per class, site mode; body / control           (PPC only)
   edge_centre                  mean dxy/pi_mean in edge windows over core windows, the definition of
                                ``empirical_windowed.py`` (|rel| > 0.75 vs < 0.35); branch mode; no control (PPC only)
@@ -152,8 +154,18 @@ def _jsfs_fold(j):
     return {f"jsfs_{a}{b}": float(v / tot) for (a, b), v in fol.items()}
 
 
-def _ld(geno, pos, cols, rng):
-    """Mean genotype r^2 per LD_EDGES bin. geno: (sites, samples) 0/1; cols: this class's sample columns."""
+LD_KERNEL_VERSION = "pairwise-complete-r2-v1"
+
+
+def _ld(geno, pos, cols, rng, err=None, err_rng=None):
+    """Mean genotype r^2 per LD_EDGES bin. geno: (sites, samples) 0/1; cols: this class's sample columns.
+
+    Chromosomes are paired at random into diploids (``rng``). ``err`` = (call_rate, h) passes the diploids through
+    the data's genotype error model (``error_model.apply_genotype_errors``, drawn from ``err_rng``) first. r^2 is
+    the pairwise-complete kernel ``ld_block_sums``, the one the data use.
+    """
+    from illex.abc.error_model import apply_genotype_errors
+
     nbin = len(LD_EDGES) - 1
     out = np.full(nbin, np.nan)
     cols = np.asarray(cols)
@@ -163,33 +175,87 @@ def _ld(geno, pos, cols, rng):
     if m < 2 or geno.shape[0] < 2:
         return out
     d = geno[:, a].astype(np.float64) + geno[:, b]
-    af = d.sum(1) / (2.0 * m)
-    keep = (np.minimum(af, 1.0 - af) >= LD_MAF) & (d.std(1) > 0)
-    d, p = d[keep], pos[keep]
-    if d.shape[0] < 2:
-        return out
-    z = d - d.mean(1, keepdims=True)
-    z /= np.sqrt((z * z).sum(1, keepdims=True))
-    sums = np.zeros(nbin)
-    cnt = np.zeros(nbin)
+    if err is not None:
+        d = apply_genotype_errors(d, err[0], err[1], err_rng)
+    s, c = ld_block_sums(d, pos, np.zeros(d.shape[0], int), 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(c[0] > 0, s[0] / np.maximum(c[0], 1), np.nan)
+
+
+def ld_site_keep(dos, maf=LD_MAF):
+    """(keep, called, x) for the LD site filter: within-sample MAF over called genotypes >= ``maf``, >= 2 called,
+    and varying called dosages. dos: (sites, individuals), missing as -1 (int) or NaN (float); x is dos with 0 at
+    missing genotypes."""
+    dos = np.asarray(dos)
+    with np.errstate(invalid="ignore"):
+        called = (np.isfinite(dos) & (dos >= 0)) if dos.dtype.kind == "f" else dos >= 0
+    nc = called.sum(1)
+    x = np.where(called, dos, 0).astype(np.float64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        af = x.sum(1) / (2.0 * nc)
+        mean = x.sum(1) / nc
+        var = (np.where(called, (x - mean[:, None]) ** 2, 0.0)).sum(1)
+    keep = (nc >= 2) & (np.minimum(af, 1.0 - af) >= maf) & (var > 1e-12)
+    return keep, called, x
+
+
+def ld_block_sums(dos, pos, blk, n_blocks, maf=LD_MAF, xp=None, step=1024):
+    """Per-block, per-LD_EDGES-bin sums and counts of pairwise-complete genotype r^2 -- the ONE LD kernel, used by
+    the simulations (``_ld``) and the data (``observed.py``).
+
+    dos: (sites, individuals) dosage 0/1/2, missing as -1 (int) or NaN (float); pos sorted; blk: block id of each
+    site (a pair is credited to its left site's block). Sites pass ``ld_site_keep``; a pair counts when it has >= 2
+    jointly called individuals and both variances over those are > 0. With no missing data this is the plain
+    Pearson r^2 of the dosages. Returns (sums, counts), each (n_blocks, len(LD_EDGES) - 1).
+    """
+    xp = xp or np
+    nbin = len(LD_EDGES) - 1
+    sums = np.zeros((n_blocks, nbin))
+    cnt = np.zeros((n_blocks, nbin))
+    keep, called, x = ld_site_keep(dos, maf)
+    if keep.sum() < 2:
+        return sums, cnt
+    p = np.asarray(pos, float)[keep]
+    b = np.asarray(blk)[keep]
+    X = xp.asarray(x[keep])
+    M = xp.asarray(called[keep].astype(np.float64))
+    X2 = X * X
+    edges = xp.asarray(LD_EDGES)
     lo_d, hi_d = LD_EDGES[0], LD_EDGES[-1]
-    step = 512
-    for i0 in range(0, z.shape[0], step):
-        i1 = min(i0 + step, z.shape[0])
+    pd = xp.asarray(p)
+    bd = xp.asarray(b)
+    S_acc = xp.zeros(n_blocks * nbin)
+    C_acc = xp.zeros(n_blocks * nbin)
+    ns = p.size
+    for i0 in range(0, ns, step):
+        i1 = min(i0 + step, ns)
         j0 = i0 + 1
         j1 = int(np.searchsorted(p, p[i1 - 1] + hi_d, side="left"))
         if j1 <= j0:
             continue
-        r2 = (z[i0:i1] @ z[j0:j1].T) ** 2
-        dist = p[j0:j1][None, :] - p[i0:i1][:, None]
-        upper = np.arange(j0, j1)[None, :] > np.arange(i0, i1)[:, None]
-        ok = upper & (dist >= lo_d) & (dist < hi_d)
-        bi = np.searchsorted(LD_EDGES, dist[ok], side="right") - 1
-        sums += np.bincount(bi, weights=r2[ok], minlength=nbin)[:nbin]
-        cnt += np.bincount(bi, minlength=nbin)[:nbin]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        out = np.where(cnt > 0, sums / np.maximum(cnt, 1), np.nan)
-    return out
+        Xi, Mi, X2i = X[i0:i1], M[i0:i1], X2[i0:i1]
+        Xj, Mj, X2j = X[j0:j1], M[j0:j1], X2[j0:j1]
+        n = Mi @ Mj.T
+        sx, sy = Xi @ Mj.T, Mi @ Xj.T
+        sxx, syy, sxy = X2i @ Mj.T, Mi @ X2j.T, Xi @ Xj.T
+        with np.errstate(invalid="ignore", divide="ignore"):
+            nn = xp.maximum(n, 1.0)
+            cov = sxy - sx * sy / nn
+            vx = sxx - sx * sx / nn
+            vy = syy - sy * sy / nn
+            dist = pd[j0:j1][None, :] - pd[i0:i1][:, None]
+            upper = xp.arange(j0, j1)[None, :] > xp.arange(i0, i1)[:, None]
+            ok = upper & (dist >= lo_d) & (dist < hi_d) & (n >= 2) & (vx > 1e-9) & (vy > 1e-9)
+            r2 = cov * cov / (vx * vy)
+        bi = xp.searchsorted(edges, dist[ok], side="right") - 1
+        rows = xp.broadcast_to(bd[i0:i1][:, None], ok.shape)[ok]
+        idx = rows * nbin + bi
+        S_acc += xp.bincount(idx, weights=r2[ok], minlength=n_blocks * nbin)[: n_blocks * nbin]
+        C_acc += xp.bincount(idx, minlength=n_blocks * nbin)[: n_blocks * nbin]
+    if xp is not np:
+        S_acc, C_acc = S_acc.get(), C_acc.get()
+    return np.asarray(S_acc).reshape(n_blocks, nbin), np.asarray(C_acc).reshape(n_blocks, nbin)
+
 
 
 def _tajd(ts, nodes, win):
@@ -201,10 +267,12 @@ def _tajd(ts, nodes, win):
     return v if np.isfinite(v) else float("nan")
 
 
-def region_stats(ts, i_nodes, s_nodes, win, rng) -> dict:
+def region_stats(ts, i_nodes, s_nodes, win, rng, ld_err=None, err_rng=None) -> dict:
     """Raw (not yet control-divided) statistics of a mutated tree sequence over ``win`` = (left, right).
 
     ``ts`` must carry binary infinite-sites mutations. ``rng`` draws the within-class diploid pairing.
+    ``ld_err`` = {"I": (call_rate, h), "S": (call_rate, h)} applies the data's genotype error model to the LD
+    diploids, drawn from ``err_rng`` (None: error-free).
     """
     i_nodes, s_nodes = np.asarray(i_nodes), np.asarray(s_nodes)
     out = _branch_ratios(ts, i_nodes, s_nodes, win)
@@ -227,7 +295,8 @@ def region_stats(ts, i_nodes, s_nodes, win, rng) -> dict:
             out[f"sfs_{c}_{b}"] = float(v)
     out.update(_jsfs(ci, cs, ci_cols.size, cs_cols.size))
     for c, cols in (("I", ci_cols), ("S", cs_cols)):
-        for k, v in enumerate(_ld(g, p, cols, rng)):
+        err = None if ld_err is None else ld_err[c]
+        for k, v in enumerate(_ld(g, p, cols, rng, err, err_rng)):
             out[f"ld_{c}_{k + 1}"] = float(v)
     out["tajd_I"] = _tajd(ts, i_nodes, win)
     out["tajd_S"] = _tajd(ts, s_nodes, win)
@@ -268,4 +337,5 @@ def assemble(body: dict, control: dict, edge: float) -> dict:
     return {k: out[k] for k in STAT_KEYS}
 
 
-__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "MU"]
+__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "ld_block_sums",
+           "MU"]

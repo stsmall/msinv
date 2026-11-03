@@ -13,7 +13,9 @@ TRACT_BP (event rate gamma * p_other * integral(phi) * L, ``msinv/hull/simulator
 the body (``_phi``) and w = TRACT_BP / BODY_BP. So the initiation rate is c / TRACT_BP and
 gamma = c / TRACT_BP * (1 - w) / w. c NaN (no-flux model) uses GAMMA_FLOOR.
 
-One integer seed drives everything (both msinv runs, both mutation drops, the diploid pairings, p_obs).
+One integer seed drives everything (both msinv runs, both mutation drops, the diploid pairings, the LD genotype
+errors, p_obs). LD diploids carry the data's genotype error model (``illex.abc.error_model``): body rates in the
+body, control rates in the control.
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ import msprime
 import numpy as np
 
 from illex.abc import statvec as SV
+from illex.abc.error_model import LD_ERROR
 from illex.abc.constants import (BODY_BP, CONTROL_BP, GAMMA_FLOOR, MARGIN_BP, MU, N_INV, N_KARYO, N_STD,
                                  REC_RATE, TRACT_BP)
 
@@ -70,27 +73,36 @@ def _control_ts(seed):
     return sim.simulate()
 
 
-def simulate_stats(path, seed: int) -> dict[str, float]:
+def simulate_stats(path, seed: int, ld_error=LD_ERROR) -> dict[str, float]:
     """``STAT_KEYS`` for one accepted path, plus ``p_obs`` and ``n_nan`` (the count of NaN statistics).
+
+    ``ld_error`` = {"body"|"control": {"I"|"S": (call_rate, h)}} is the data's genotype error model, applied to
+    the LD diploids of the body and the control respectively (``illex.abc.error_model``); the default is the
+    estimated one. Pass ``{"body": None, "control": None}`` for error-free LD.
 
     Never raises on degenerate output (no segregating sites, zero variance): those keys are NaN.
     """
     from illex import stats as S
 
     ss = np.random.SeedSequence(int(seed))
-    s_inv, s_ctl, s_mi, s_mc, s_pi, s_pc, s_obs = (int(x) for x in ss.generate_state(7) % (2**31 - 1) + 1)
+    # The first 7 words are the Task-3 stream (SeedSequence words are a prefix-stable stream); 8-9 are the LD error
+    # draws, added so that every pre-existing draw is unchanged.
+    s_inv, s_ctl, s_mi, s_mc, s_pi, s_pc, s_obs, s_ei, s_ec = (
+        int(x) for x in ss.generate_state(9) % (2**31 - 1) + 1)
 
     sim, ts = _inversion_ts(path, s_inv)
     i_nodes, s_nodes = S.sample_nodes_by_karyotype(sim, ts)
     body_win = (MARGIN_BP, MARGIN_BP + BODY_BP)
     mts = _mutate(ts, s_mi)
-    body = SV.region_stats(mts, i_nodes, s_nodes, body_win, np.random.default_rng(s_pi))
+    body = SV.region_stats(mts, i_nodes, s_nodes, body_win, np.random.default_rng(s_pi),
+                           ld_err=ld_error["body"], err_rng=np.random.default_rng(s_ei))
     edge = SV.edge_centre(ts, i_nodes, s_nodes, body_win)
 
     cts = _mutate(_control_ts(s_ctl), s_mc)
     smp = cts.samples()
     control = SV.region_stats(cts, smp[N_STD:N_STD + N_INV], smp[:N_STD], (0.0, CONTROL_BP),
-                              np.random.default_rng(s_pc))
+                              np.random.default_rng(s_pc), ld_err=ld_error["control"],
+                              err_rng=np.random.default_rng(s_ec))
 
     out = SV.assemble(body, control, edge)
     two_n = 2 * N_KARYO

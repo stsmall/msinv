@@ -14,12 +14,14 @@ import pytest
 from illex.abc import statvec as SV
 from illex.abc.constants import P_NOW, TARGETS
 
-OBS = Path("results/illex/abc_observed.json")
+OBS = Path(__file__).resolve().parents[2] / "results/illex/abc_observed.json"
 RATIOS = ("pi_ratio", "dxy_pi", "f1_ratio")
 
 
 @pytest.fixture(scope="module")
 def obs():
+    if not OBS.exists():
+        pytest.skip(f"{OBS} not built (run illex/abc/observed.py in the pg_gpu env)")
     return json.loads(OBS.read_text())
 
 
@@ -102,21 +104,28 @@ def test_tajd_from_spectrum_matches_tskit():
     assert tajd_from_unfolded(unf, n, n_to=n, length=ts.sequence_length) == pytest.approx(want, rel=1e-9)
 
 
-def test_ld_kernel_matches_statvec_without_missing():
-    from illex.abc.observed import ld_block_sums
-
+def test_ld_kernel_matches_pearson_without_missing():
+    """statvec._ld (error-free) = the plain z-score Pearson r^2 of the paired dosages (the pre-kernel algorithm)."""
     ts = _ts(seed=7, n=100)
     g = np.minimum(ts.genotype_matrix(), 1).astype(np.int8)
     pos = ts.tables.sites.position
     cols = np.arange(ts.num_samples)
-    want = SV._ld(g, pos, cols, np.random.default_rng(5))
-    perm = np.random.default_rng(5).permutation(cols.size)       # the pairing statvec._ld draws
+    got = SV._ld(g, pos, cols, np.random.default_rng(5))
+    perm = np.random.default_rng(5).permutation(cols.size)
     m = cols.size // 2
-    dos = (g[:, cols[perm[:m]]] + g[:, cols[perm[m:2 * m]]]).astype(np.int8)
-    s, c = ld_block_sums(dos, pos, np.zeros(pos.size, int), 1)
-    got = s[0] / np.maximum(c[0], 1)
-    got[c[0] == 0] = np.nan
-    np.testing.assert_allclose(got, want, rtol=1e-9, equal_nan=True)
+    d = g[:, cols[perm[:m]]].astype(np.float64) + g[:, cols[perm[m:2 * m]]]
+    af = d.sum(1) / (2.0 * m)
+    keep = (np.minimum(af, 1.0 - af) >= SV.LD_MAF) & (d.std(1) > 0)
+    d, p = d[keep], pos[keep]
+    z = d - d.mean(1, keepdims=True)
+    z /= np.sqrt((z * z).sum(1, keepdims=True))
+    r2 = (z @ z.T) ** 2
+    dist = p[None, :] - p[:, None]
+    ok = np.triu(np.ones_like(r2, bool), 1) & (dist >= SV.LD_EDGES[0]) & (dist < SV.LD_EDGES[-1])
+    bi = np.searchsorted(SV.LD_EDGES, dist[ok], side="right") - 1
+    nb = len(SV.LD_EDGES) - 1
+    want = np.bincount(bi, r2[ok], nb) / np.bincount(bi, minlength=nb)
+    np.testing.assert_allclose(got, want, rtol=1e-9)
 
 
 def test_ld_kernel_pairwise_complete():
@@ -145,3 +154,46 @@ def test_ld_kernel_pairwise_complete():
             wc[blk[i], k] += 1
     np.testing.assert_array_equal(c, wc)
     np.testing.assert_allclose(s, ws, rtol=1e-9, atol=1e-12)
+
+
+# ------------------------------------------------------------------------- the LD genotype error model ----
+def test_error_model_null_is_bit_identical():
+    """h = 0, call_rate = 1: every simulated statistic, ld_* included, is unchanged bit for bit."""
+    ts = _ts(seed=11, n=200)
+    smp = ts.samples()
+    i_nodes, s_nodes = smp[:100], smp[100:]
+    a = SV.region_stats(ts, i_nodes, s_nodes, (0.0, ts.sequence_length), np.random.default_rng(4))
+    b = SV.region_stats(ts, i_nodes, s_nodes, (0.0, ts.sequence_length), np.random.default_rng(4),
+                        ld_err={"I": (1.0, 0.0), "S": (1.0, 0.0)}, err_rng=np.random.default_rng(9))
+    assert a.keys() == b.keys()
+    for k in a:
+        assert (a[k] == b[k]) or (np.isnan(a[k]) and np.isnan(b[k])), k
+
+
+def test_error_model_reproduces_call_rate_and_ho_he():
+    from illex.abc.error_model import apply_genotype_errors, genotype_error_stats
+
+    ts = _ts(seed=13, n=100, L=400_000.0)
+    g = np.minimum(ts.genotype_matrix(), 1).astype(np.float64)
+    perm = np.random.default_rng(1).permutation(ts.num_samples)
+    d = g[:, perm[:50]] + g[:, perm[50:]]                  # random pairing: HWE diploids
+    k, _, _ = SV.ld_site_keep(d)
+    cr0, hohe0 = genotype_error_stats(d[k])
+    assert cr0 == 1.0 and hohe0 == pytest.approx(1.0, abs=0.03)
+    call_rate, h = 0.73, 0.63
+    e = apply_genotype_errors(d, call_rate, h, np.random.default_rng(2))
+    k, _, _ = SV.ld_site_keep(e)
+    cr, hohe = genotype_error_stats(e[k])
+    assert cr == pytest.approx(call_rate, abs=0.01)
+    assert hohe == pytest.approx(1.0 - h, abs=0.02)
+
+
+def test_error_model_constants_match_observed(obs):
+    from illex.abc.error_model import LD_ERROR
+
+    em = obs["meta"]["ld_error_model"]
+    for lab in ("body", "control"):
+        for c in ("I", "S"):
+            cr, h = LD_ERROR[lab][c]
+            assert cr == pytest.approx(em[lab][c]["call_rate"], abs=1e-4), (lab, c)
+            assert h == pytest.approx(em[lab][c]["h"], abs=1e-4), (lab, c)

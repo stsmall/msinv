@@ -25,7 +25,7 @@ Sources per statistic:
                       ``statvec._hyper_binned`` / ``statvec._jsfs_fold``; no control
   ld_*                called genotypes, 20 random subsamples of 50 individuals per class (the simulation's 50
                       diploids), dosage 0/1/2, MAF >= LD_MAF within the subsample, pairwise-complete r^2
-                      (``ld_block_sums``, a missing-aware version of ``statvec._ld``), LD_EDGES bins
+                      (``statvec.ld_block_sums``, the kernel the simulations use), LD_EDGES bins
   tajd_*              ANGSD within-class spectra projected to the simulated n (100 per class) and evaluated as
                       Tajima's D of a BODY_BP = CONTROL_BP region with those per-site spectra
   edge_centre         called genotypes, N_WIN equal windows over the body, statvec.edge_centre's definition
@@ -43,6 +43,8 @@ from pathlib import Path
 import numpy as np
 
 from illex.abc import statvec as SV
+from illex.abc.error_model import genotype_error_stats, h_from_ho_he
+from illex.abc.statvec import LD_KERNEL_VERSION, ld_block_sums  # noqa: F401  one kernel for sim and data
 from illex.abc.constants import BODY_BP, BP_LEFT, BP_RIGHT, CONTROL_BP, N_INV, N_STD, P_NOW
 
 ANA = Path("/sietch_colab/data_share/illex/popgen_data/analysis/steps")
@@ -65,6 +67,34 @@ N_SIM = {"I": N_INV, "S": N_STD}
 LD_N, LD_REPS, LD_SEED = N_INV // 2, 20, 20261103
 RATIO_KEYS = SV.RATIO_KEYS
 DIVIDED = RATIO_KEYS + SV.SFS_KEYS + SV.LD_KEYS + ("tajd_I", "tajd_S")
+
+
+GENO_VERSION = "stacked-dosage-v1"
+
+
+def _hash(d) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def geno_params(label):
+    lo, hi = (BP_LEFT, BP_RIGHT) if label == "body" else (CTL_LO, CTL_HI)
+    return {"vcf": str(VCF[label]), "region": [lo, hi], "layout": GENO_VERSION}
+
+
+def vcf_part_params():
+    """Everything the cached called-genotype part depends on; a mismatch forces recomputation."""
+    return {"geno": {lab: _hash(geno_params(lab)) for lab in ("body", "control")},
+            "karyotypes": {c: str(f) for c, f in KARYO.items()}, "ld_seed": LD_SEED, "ld_n": LD_N,
+            "ld_reps": LD_REPS, "maf": SV.LD_MAF, "edges": SV.LD_EDGES.tolist(), "kernel": LD_KERNEL_VERSION,
+            "block": BLOCK, "body": [BP_LEFT, BP_RIGHT], "n_win": SV.N_WIN}
+
+
+def ld_subsamples():
+    """The fixed LD subsamples: {class: [LD_REPS sorted index arrays into that class's sample list]}."""
+    rng = np.random.default_rng(LD_SEED)
+    return {c: [np.sort(rng.choice(N_DIP[c], LD_N, replace=False)) for _ in range(LD_REPS)] for c in ("I", "S")}
 
 
 # ======================================================================== pure kernels (CPU-testable) ====
@@ -121,72 +151,6 @@ def _xp():
         return np
 
 
-def ld_block_sums(dos, pos, blk, n_blocks, maf=SV.LD_MAF, xp=None, step=1024):
-    """Per-block, per-LD_EDGES-bin sums and counts of pairwise-complete genotype r^2.
-
-    dos: (sites, individuals) dosage 0/1/2, -1 missing; pos sorted; blk: block id of each site (a pair is credited
-    to its left site's block). Sites are kept if their within-sample MAF (over called genotypes) >= ``maf`` and
-    their called dosages vary; a pair counts when it has >= 2 jointly called individuals and both variances over
-    those are > 0. With no missing data this is exactly ``statvec._ld``'s r^2 on the same dosages.
-    Returns (sums, counts), each (n_blocks, len(LD_EDGES) - 1).
-    """
-    xp = xp or np
-    nbin = len(SV.LD_EDGES) - 1
-    sums = np.zeros((n_blocks, nbin))
-    cnt = np.zeros((n_blocks, nbin))
-    dos = np.asarray(dos)
-    called = dos >= 0
-    nc = called.sum(1)
-    x = np.where(called, dos, 0).astype(np.float64)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        af = x.sum(1) / (2.0 * nc)
-        mean = x.sum(1) / nc
-        var = (np.where(called, (x - mean[:, None]) ** 2, 0.0)).sum(1)
-    keep = (nc >= 2) & (np.minimum(af, 1.0 - af) >= maf) & (var > 1e-12)
-    if keep.sum() < 2:
-        return sums, cnt
-    p = np.asarray(pos, float)[keep]
-    b = np.asarray(blk)[keep]
-    X = xp.asarray(x[keep])
-    M = xp.asarray(called[keep].astype(np.float64))
-    X2 = X * X
-    edges = xp.asarray(SV.LD_EDGES)
-    lo_d, hi_d = SV.LD_EDGES[0], SV.LD_EDGES[-1]
-    pd = xp.asarray(p)
-    bd = xp.asarray(b)
-    S_acc = xp.zeros(n_blocks * nbin)
-    C_acc = xp.zeros(n_blocks * nbin)
-    ns = p.size
-    for i0 in range(0, ns, step):
-        i1 = min(i0 + step, ns)
-        j0 = i0 + 1
-        j1 = int(np.searchsorted(p, p[i1 - 1] + hi_d, side="left"))
-        if j1 <= j0:
-            continue
-        Xi, Mi, X2i = X[i0:i1], M[i0:i1], X2[i0:i1]
-        Xj, Mj, X2j = X[j0:j1], M[j0:j1], X2[j0:j1]
-        n = Mi @ Mj.T
-        sx, sy = Xi @ Mj.T, Mi @ Xj.T
-        sxx, syy, sxy = X2i @ Mj.T, Mi @ X2j.T, Xi @ Xj.T
-        with np.errstate(invalid="ignore", divide="ignore"):
-            nn = xp.maximum(n, 1.0)
-            cov = sxy - sx * sy / nn
-            vx = sxx - sx * sx / nn
-            vy = syy - sy * sy / nn
-            dist = pd[j0:j1][None, :] - pd[i0:i1][:, None]
-            upper = xp.arange(j0, j1)[None, :] > xp.arange(i0, i1)[:, None]
-            ok = upper & (dist >= lo_d) & (dist < hi_d) & (n >= 2) & (vx > 1e-9) & (vy > 1e-9)
-            r2 = cov * cov / (vx * vy)
-        bi = xp.searchsorted(edges, dist[ok], side="right") - 1
-        rows = xp.broadcast_to(bd[i0:i1][:, None], ok.shape)[ok]
-        idx = rows * nbin + bi
-        S_acc += xp.bincount(idx, weights=r2[ok], minlength=n_blocks * nbin)[: n_blocks * nbin]
-        C_acc += xp.bincount(idx, minlength=n_blocks * nbin)[: n_blocks * nbin]
-    if xp is not np:
-        S_acc, C_acc = S_acc.get(), C_acc.get()
-    return np.asarray(S_acc).reshape(n_blocks, nbin), np.asarray(C_acc).reshape(n_blocks, nbin)
-
-
 def jackknife_se(partials):
     """Delete-one jackknife SE from the B leave-one-out values (NaN if any is non-finite)."""
     v = np.asarray(partials, float)
@@ -211,7 +175,9 @@ def load_region(label):
     """
     WORK.mkdir(parents=True, exist_ok=True)
     cache = WORK / f"{label}.geno.npz"
-    if cache.exists():
+    side = WORK / f"{label}.geno.json"
+    want = _hash(geno_params(label))
+    if cache.exists() and side.exists() and json.loads(side.read_text()).get("hash") == want:
         z = np.load(cache, allow_pickle=False)
         return z["pos"], z["dos"], [str(s) for s in z["samples"]]
     from pg_gpu import HaplotypeMatrix
@@ -230,6 +196,7 @@ def load_region(label):
     sel = (pos - 1 >= lo) & (pos - 1 < hi)
     pos, dos = pos[sel], dos[:, sel]
     np.savez(cache, pos=pos, dos=dos, samples=np.array(samples))
+    side.write_text(json.dumps({"hash": want, "params": geno_params(label)}))
     return pos, dos, samples
 
 
@@ -308,6 +275,30 @@ def _angsd_stats(unf_i, unf_s):
     return out
 
 
+def estimate_error_model(names):
+    """call_rate and h = 1 - Ho/He per region and class, on the LD SNP set of each of the fixed LD subsamples
+    (``statvec.ld_site_keep``), averaged over subsamples. These parameterise ``error_model.LD_ERROR``."""
+    subs = ld_subsamples()
+    out = {}
+    for lab in ("body", "control"):
+        pos, dos, samples = load_region(lab)
+        col = {s: i for i, s in enumerate(samples)}
+        keep = accessible(pos)
+        out[lab] = {}
+        for c in ("I", "S"):
+            idx = np.array([col[s] for s in names[c]])
+            cr, hh = [], []
+            for sub in subs[c]:
+                d = dos[idx[sub]][:, keep].T
+                k, _, _ = SV.ld_site_keep(d)
+                a, b = genotype_error_stats(d[k])
+                cr.append(a), hh.append(b)
+            ho_he = float(np.mean(hh))
+            out[lab][c] = {"call_rate": float(np.mean(cr)), "ho_he": ho_he, "h": h_from_ho_he(ho_he),
+                           "call_rate_sd": float(np.std(cr)), "ho_he_sd": float(np.std(hh))}
+    return out
+
+
 # ================================================================================================ main ====
 def _vcf_part(names, xp, raw, ctl, se_body, meta, t0):
     """pi_ratio, dxy_pi, edge_centre and ld_* (body raw, control, body jackknife partials) from called genotypes."""
@@ -342,11 +333,11 @@ def _vcf_part(names, xp, raw, ctl, se_body, meta, t0):
     print(f"ratios/edge done ({time.time() - t0:.0f}s)", flush=True)
 
     # LD: same 20 subsamples of 50 individuals for body and control, per class
-    rng = np.random.default_rng(LD_SEED)
+    all_subs = ld_subsamples()
     nbin = len(SV.LD_EDGES) - 1
     ld_meta = {}
     for c in ("I", "S"):
-        subs = [np.sort(rng.choice(N_DIP[c], LD_N, replace=False)) for _ in range(LD_REPS)]
+        subs = all_subs[c]
         bs, bc, cs, cc, nsnp = [], [], [], [], {"body": [], "control": []}
         for r, sub in enumerate(subs):
             for lab, (pos, dos, idx, keep) in geno.items():
@@ -376,7 +367,7 @@ def _vcf_part(names, xp, raw, ctl, se_body, meta, t0):
                       "pairs_per_bin_control_mean": cc.mean(0).tolist()}
     meta["ld"] = {"seed": LD_SEED, "reps": LD_REPS, "n_individuals": LD_N, "maf": SV.LD_MAF,
                   "edges": SV.LD_EDGES.tolist(), "thinning": "none (all pairs)",
-                  "r2": "pairwise-complete genotype r^2 (observed.ld_block_sums; statvec._ld has no missing data)",
+                  "r2": "pairwise-complete genotype r^2 (statvec.ld_block_sums, shared with the simulations)",
                   **ld_meta}
 
 
@@ -396,14 +387,21 @@ def main() -> None:
     # ---------------------------------------------------------------- called genotypes: ratios, LD, edge
     names = {c: _read_samples(f) for c, f in KARYO.items()}
     vcache = WORK / "vcf_part.json"
-    if vcache.exists():
-        v = json.loads(vcache.read_text())
+    want = _hash(vcf_part_params())
+    v = json.loads(vcache.read_text()) if vcache.exists() else {}
+    if v.get("param_hash") == want:
         raw.update(v["raw"]), ctl.update(v["ctl"]), se_body.update(v["se_body"]), meta.update(v["meta"])
-        print(f"called-genotype part from cache {vcache}", flush=True)
+        print(f"called-genotype part from cache {vcache} (hash {want})", flush=True)
     else:
+        if v:
+            print(f"cache {vcache} is stale (hash {v.get('param_hash')} != {want}): recomputing", flush=True)
         _vcf_part(names, xp, raw, ctl, se_body, meta, t0)
-        vcache.write_text(json.dumps({"raw": raw, "ctl": ctl, "se_body": se_body,
+        vcache.write_text(json.dumps({"raw": raw, "ctl": ctl, "se_body": se_body, "param_hash": want,
+                                      "params": vcf_part_params(),
                                       "meta": {k: meta[k] for k in ("regions", "samples", "ld")}}))
+    meta["ld"]["param_hash"] = want
+    meta["ld_error_model"] = estimate_error_model(names)
+    print(f"LD error model: {meta['ld_error_model']}  ({time.time() - t0:.0f}s)", flush=True)
     nblk = len(BLOCK_STARTS)
 
     # ------------------------------------------------------------------------- ANGSD: sfs, f1, tajd

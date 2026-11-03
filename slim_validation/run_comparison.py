@@ -287,11 +287,139 @@ def run_rep(scenario, rep, outdir):
     )
 
 
+# ---------------------------------------------------------------------------
+# Scenario "illex_growth_noinv": msinv (no inversion, Illex growth demography)
+# vs msprime Hudson, on the statistics the trajectory ABC divides its control by.
+# ---------------------------------------------------------------------------
+ILLEX_N_SAMPLES = 200          # = N_STD + N_INV of illex.abc.constants
+ILLEX_CONFIGS = {"40kb": 40_000, "200kb": 200_000}
+ILLEX_ENGINES = ("msinv_smc", "msinv_smcprime", "msprime")
+
+
+def _illex_ts(engine, length, seed):
+    """Unmutated no-inversion tree sequence, 200 haploid samples, Illex growth demography."""
+    from illex.abc.constants import REC_RATE
+    from illex.demography import PRESENT_NE_GROWTH, growth_demography
+    from illex.theory import ALPHA, N0, N_ANC, T_GROW
+
+    if engine.startswith("msinv"):
+        return HullSimulator(
+            samples=ILLEX_N_SAMPLES, population_size=PRESENT_NE_GROWTH,
+            demography=growth_demography(), sequence_length=float(length),
+            recombination_rate=REC_RATE, inversions=[], seed=seed,
+            smc_prime=(engine == "msinv_smcprime"),
+        ).simulate()
+    # msinv N is the diploid Ne (2N chromosomes): msprime ploidy=1 gets the sizes doubled, same growth rate.
+    demo = msprime.Demography()
+    demo.add_population(name="A", initial_size=2 * N0, growth_rate=ALPHA)
+    demo.add_population_parameters_change(time=T_GROW, initial_size=2 * N_ANC, growth_rate=0.0, population=0)
+    return msprime.sim_ancestry(
+        samples=ILLEX_N_SAMPLES, demography=demo, sequence_length=float(length),
+        recombination_rate=REC_RATE, ploidy=1, model="hudson", random_seed=seed + 1)
+
+
+def _illex_rep(args):
+    """One replicate -> dict of statistics (the ABC's own code for everything but pi/theta_W/D)."""
+    engine, cfg, rep = args
+    from illex.abc import statvec as SV
+    from illex.abc.constants import N_STD
+    from illex.abc.simulate import _mutate
+
+    length = ILLEX_CONFIGS[cfg]
+    seed = 7_000_000 + 1000 * rep + 17 * ILLEX_ENGINES.index(engine)
+    t0 = time.time()
+    ts = _illex_ts(engine, length, seed)
+    mts = _mutate(ts, seed + 5)
+    smp = mts.samples()
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out["pi"] = float(mts.diversity(mode="site"))
+        out["theta_w"] = float(mts.segregating_sites(mode="site")) / sum(1.0 / i for i in range(1, len(smp)))
+        out["tajd"] = float(mts.Tajimas_D(mode="site"))
+    g = np.minimum(mts.genotype_matrix(), 1).astype(np.int8)
+    for b, v in SV._sfs_bins(g.sum(1).astype(np.int64), len(smp)).items():
+        out[f"sfs_all_{b}"] = float(v)
+    st = SV.region_stats(mts, smp[N_STD:], smp[:N_STD], (0.0, float(length)),
+                         np.random.default_rng(seed + 9), ld_err=None)
+    for k in SV.SFS_KEYS + SV.LD_KEYS + ("tajd_I", "tajd_S"):
+        out[k] = float(st[k])
+    for k in range(len(SV.LD_EDGES) - 1):
+        out[f"ld_{k + 1}"] = 0.5 * (st[f"ld_I_{k + 1}"] + st[f"ld_S_{k + 1}"])
+    out["n_sites"] = float(mts.num_sites)
+    out["seconds"] = time.time() - t0
+    return engine, cfg, rep, out
+
+
+def _illex_verdict(res, cfg):
+    """Rows (engine, cfg, stat, mean_msinv, mean_msprime, ratio, z, verdict, criterion)."""
+    lines = []
+    for eng in ("msinv_smc", "msinv_smcprime"):
+        for st in sorted(res[(eng, cfg)][0]):
+            if st in ("seconds", "n_sites"):
+                continue
+            a = np.array([r[st] for r in res[(eng, cfg)]], float)
+            b = np.array([r[st] for r in res[("msprime", cfg)]], float)
+            ma, mb = np.nanmean(a), np.nanmean(b)
+            se = np.hypot(np.nanstd(a, ddof=1) / np.sqrt(np.isfinite(a).sum()),
+                          np.nanstd(b, ddof=1) / np.sqrt(np.isfinite(b).sum()))
+            z = (ma - mb) / se if se > 0 else np.nan
+            rel = ma / mb if mb != 0 else np.nan
+            if st.startswith("ld_I") or st.startswith("ld_S"):
+                continue                              # per-class LD bins are in the npz only
+            if st.startswith("ld_"):
+                ok, crit = abs(rel - 1.0) <= 0.10, "10%"   # pooled-class r^2 bins
+            else:
+                ok, crit = abs(z) <= 2.0, "2SE"
+            lines.append((eng, cfg, st, ma, mb, rel, z, "PASS" if ok else "FAIL", crit))
+    return lines
+
+
+def run_illex_growth_noinv(reps, workers):
+    from multiprocessing import Pool
+
+    outdir = HERE / "output"
+    outdir.mkdir(exist_ok=True)
+    reps_cfg = {"40kb": reps, "200kb": reps}
+    jobs = [(e, c, r) for c in ILLEX_CONFIGS for e in ILLEX_ENGINES for r in range(reps_cfg[c])]
+    t0 = time.time()
+    res = {}
+    with Pool(workers) as pool:
+        for e, c, r, out in pool.imap_unordered(_illex_rep, jobs, chunksize=1):
+            res.setdefault((e, c), []).append(out)
+    wall = time.time() - t0
+    rows, save = [], {}
+    for c in ILLEX_CONFIGS:
+        rows += _illex_verdict(res, c)
+        for e in ILLEX_ENGINES:
+            for st in res[(e, c)][0]:
+                save[f"{e}__{c}__{st}"] = np.array([r[st] for r in res[(e, c)]], float)
+    np.savez(outdir / "illex_growth_noinv_results.npz", **save)
+    with open(outdir / "illex_growth_noinv_verdict.txt", "w") as fh:
+        fh.write(f"illex_growth_noinv: msinv (SMC, SMC') vs msprime Hudson; {ILLEX_N_SAMPLES} chromosomes; reps/engine: "
+                 f"{reps_cfg}; wall {wall:.0f}s\n")
+        fh.write("criteria: pi/theta_W/D/SFS bins |diff| <= 2 SE; pooled (I,S mean) LD r2 bins within 10%\n")
+        fh.write("verdict\tengine\tconfig\tstat\tmsinv_mean\tmsprime_mean\tratio\tz\tcriterion\n")
+        for e, c, st, ma, mb, rel, z, v, crit in rows:
+            fh.write(f"{v}\t{e}\t{c}\t{st}\t{ma:.6g}\t{mb:.6g}\t{rel:.4f}\t{z:.2f}\t{crit}\n")
+    for e in ILLEX_ENGINES:
+        for c in ILLEX_CONFIGS:
+            s = np.array([r["seconds"] for r in res[(e, c)]])
+            print(f"  {e:15s} {c:6s} mean {s.mean():.2f}s/rep (max {s.max():.1f})")
+    print(f"wall {wall:.0f}s; verdict -> {outdir / 'illex_growth_noinv_verdict.txt'}")
+    nf = sum(1 for r in rows if r[7] == "FAIL")
+    print(f"{len(rows) - nf} PASS, {nf} FAIL")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=int, required=True, choices=[1, 2, 3])
+    parser.add_argument("--scenario", required=True, choices=["1", "2", "3", "illex_growth_noinv"])
+    parser.add_argument("--workers", type=int, default=24)
     parser.add_argument("--reps", type=int, default=3)
     args = parser.parse_args()
+    if args.scenario == "illex_growth_noinv":
+        run_illex_growth_noinv(args.reps, args.workers)
+        return
+    args.scenario = int(args.scenario)
 
     outdir = HERE / "output"
     outdir.mkdir(exist_ok=True)

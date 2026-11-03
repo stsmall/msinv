@@ -1,8 +1,7 @@
 """Task 3: msinv simulator and statistic vector for the trajectory ABC.
 
-The rep-heavy tests (no-barrier limit, flux scaling) run 20 sims each and are marked slow. The flux test is
-expensive: one no-flux 0.9 Ma call takes ~11 min, and msinv's cost grows steeply with gamma_eff (a single
-gamma_eff 1e-4 call did not finish in 50 min).
+The rep-heavy tests (no-barrier limit, flux scaling) run 20 sims each and are marked slow.
+``gamma_eff`` in a path's params is c, the per-site conversion probability per generation in heterokaryotypes.
 """
 import numpy as np
 import pytest
@@ -35,9 +34,7 @@ def test_keys_contract():
 
 
 def test_seed_deterministic():
-    # gamma_eff 1e-9 keeps the flux code path on while staying cheap: msinv's cost grows steeply with flux
-    # (gamma_eff 1e-6 at t_inv 2e4 ran > 40 min for three sims).
-    p = path(2e4, gamma_eff=1e-9)
+    p = path(2e4, gamma_eff=1e-5)
     a, b = simulate_stats(p, seed=5), simulate_stats(p, seed=5)
     assert a.keys() == b.keys()
     for k in a:
@@ -73,6 +70,9 @@ def test_zero_seg_sites_flagged():
 @pytest.mark.slow
 @pytest.mark.timeout(0)
 def test_flux_scaling():
+    # c = 1e-9 per site per generation is effectively no flux; c = 1e-5 (the Korunes & Noor scale) nearly
+    # homogenises the arrangements at 0.9 Ma. c = 1e-4 would be a stronger contrast but one call takes ~18 min
+    # and 40 GB RSS, so it is not used here.
     lo = [simulate_stats(path(9e5, gamma_eff=1e-9), seed=200 + r)["dxy_pi"] for r in range(20)]
-    hi = [simulate_stats(path(9e5, gamma_eff=1e-4), seed=200 + r)["dxy_pi"] for r in range(20)]
+    hi = [simulate_stats(path(9e5, gamma_eff=1e-5), seed=200 + r)["dxy_pi"] for r in range(20)]
     assert np.nanmean(hi) < 0.95 * np.nanmean(lo), (np.nanmean(hi), np.nanmean(lo))

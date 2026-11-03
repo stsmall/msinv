@@ -12,8 +12,9 @@ chr2 collinear control. Classes: I = 2a (inverted), S = 2+ (standard).
                                (count bins JSFS_BINS); the 12 folded cells left after dropping the monomorphic
                                cell, as proportions; site mode; NOT divided by the control (its near-fixed cells
                                are ~0 under panmixia, so the ratio is undefined)
-  ld_{I,S}_{1..6}              mean genotype r^2 (random within-class diploid pairing, MAF >= 0.05 within the
-                               class) in 6 log-spaced distance bins over LD_EDGES; body / control
+  ld_{I,S}_{1..6}              mean genotype r^2 (random within-class diploid pairing, 50 diploids per class at
+                               N_INV = N_STD = 100; MAF >= 0.05 within the class) in 6 log-spaced distance bins
+                               over LD_EDGES; body / control
   tajd_{I,S}                   Tajima's D per class, site mode; body / control           (PPC only)
   edge_centre                  mean dxy/pi_mean in edge windows over core windows, the definition of
                                ``empirical_windowed.py`` (|rel| > 0.75 vs < 0.35); branch mode; no control (PPC only)

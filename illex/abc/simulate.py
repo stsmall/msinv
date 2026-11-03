@@ -7,8 +7,11 @@ split by index into the same two groups (first N_STD as S, the next N_INV as I, 
 ``illex.stats.sample_nodes_by_karyotype`` uses). This mirrors the data's control (chr2 collinear sequence far
 from the breakpoints); the linked margins are not used as the control.
 
-Flux: msinv's per-site rate is gamma * phi(x) with phi ~ w/(1-w) inside the body (``msinv/hull/simulator.py:_phi``),
-w = TRACT_BP / BODY_BP, so gamma = gamma_eff * (1 - w) / w. gamma_eff NaN (no-flux model) uses GAMMA_FLOOR.
+Flux: the prior variable c (``params["gamma_eff"]``) is the per-site conversion probability per generation in
+heterokaryotypes (the Korunes & Noor quantity). msinv's gamma * phi(x) is a per-bp INITIATION rate of tracts of mean
+TRACT_BP (event rate gamma * p_other * integral(phi) * L, ``msinv/hull/simulator.py``), with phi ~ w/(1-w) inside
+the body (``_phi``) and w = TRACT_BP / BODY_BP. So the initiation rate is c / TRACT_BP and
+gamma = c / TRACT_BP * (1 - w) / w. c NaN (no-flux model) uses GAMMA_FLOOR.
 
 One integer seed drives everything (both msinv runs, both mutation drops, the diploid pairings, p_obs).
 """
@@ -24,11 +27,12 @@ from illex.abc.constants import (BODY_BP, CONTROL_BP, GAMMA_FLOOR, MARGIN_BP, MU
                                  REC_RATE, TRACT_BP)
 
 
-def gamma_from_eff(gamma_eff: float) -> float:
-    if gamma_eff is None or not np.isfinite(gamma_eff):
+def gamma_from_c(c: float) -> float:
+    """msinv gene_conversion_rate for per-site conversion probability c (per generation, in heterokaryotypes)."""
+    if c is None or not np.isfinite(c):
         return GAMMA_FLOOR
     w = TRACT_BP / BODY_BP
-    return float(gamma_eff) * (1.0 - w) / w
+    return float(c) / TRACT_BP * (1.0 - w) / w
 
 
 def _mutate(ts, seed):
@@ -44,7 +48,7 @@ def _inversion_ts(path, seed):
 
     t_inv = float(path.params["t_inv"])
     spec = InversionSpec(bp_left=MARGIN_BP, bp_right=MARGIN_BP + BODY_BP,
-                         gene_conversion_rate=gamma_from_eff(path.params.get("gamma_eff", float("nan"))),
+                         gene_conversion_rate=gamma_from_c(path.params.get("gamma_eff", float("nan"))),
                          mean_tract_length=TRACT_BP, tract_distribution="geometric",
                          trajectory={"type": "precomputed", "times": np.asarray(path.times, float),
                                      "freqs": [np.asarray(path.freqs, float)],

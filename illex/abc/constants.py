@@ -18,7 +18,7 @@ GAMMA_MAX = 1e-5
 PRIOR = dict(t_inv=(3e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.5), s=(1e-6, 1e-2), p_star=(0.3, 0.95))
 
 MU = 3e-9                # per-bp per-generation mutation rate
-TRACT_BP = 300.0         # mean gene-conversion tract length, bp: Korunes & Noor 2019 ML 188-390 bp (doi:10.1111/mec.14921)
+TRACT_BP = 300.0         # mean tract, bp: Korunes & Noor 2019 ML 188-390 bp (doi:10.1111/mec.14921). The Task 5 sweep ran at 1000; c is per-site, so only the edge zone differs
 BODY_BP = 40_000.0       # simulated inversion body
 MARGIN_BP = 10_000.0     # collinear margin on each side of the body (sequence = BODY_BP + 2 * MARGIN_BP)
 CONTROL_BP = 40_000.0    # separate no-inversion neutral control (the flank value of every statistic)

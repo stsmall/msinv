@@ -28,3 +28,19 @@ def test_noise_nonmonotone_takes_first_and_negative():
 def test_gamma_max():
     assert abs(gamma_max(1e-9) - 1e-7) < 1e-20
     assert gamma_max(1e-6) == 1e-5
+
+
+def test_gamma_from_c_gives_per_site_c_for_any_tract():
+    import pytest
+    from illex.abc import constants as C
+    from illex.abc import simulate as SIM
+
+    for L in (188.0, 300.0, 1000.0):
+        orig = SIM.TRACT_BP
+        try:
+            SIM.TRACT_BP = L
+            w = L / C.BODY_BP
+            g = SIM.gamma_from_c(1e-6)
+            assert g * w / (1 - w) * L == pytest.approx(1e-6, rel=1e-9)   # interior initiation × tract = c
+        finally:
+            SIM.TRACT_BP = orig

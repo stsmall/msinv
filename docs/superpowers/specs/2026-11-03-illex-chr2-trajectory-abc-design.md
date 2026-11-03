@@ -118,16 +118,40 @@ The observed sample sizes are the homokaryotypes (2aa 254 and 2++ 95 individuals
 and simulations sample to match. The singleton ratio keeps its ANGSD calibration (1/0.8256, control
 1/1.0161).
 
-## Inference (decided in outline)
+## Inference (decided: hybrid, 2026-11-03)
 
-- **Rejection ABC,** with model choice and parameter estimation by ABC random forest (abcrf, or an
-  equivalent). Rejection-plus-regression posteriors are reported as a cross-check.
+The inference is a hybrid. Model choice uses a rejection reference table drawn from the prior. Parameters are
+estimated by ABC-SMC within each model that survives.
+
+- **Model choice: rejection ABC plus ABC random forest** (abcrf; Pudlo et al. 2016). The reference table is
+  drawn from the prior, and ABC-RF gives the posterior model probabilities. Those are combined with the
+  p_now term as call 1 below describes. ABC-RF also gives first-pass parameter posteriors (regAbcrf), and
+  rejection-plus-regression posteriors are reported as a cross-check.
+- **Parameter estimation: ABC-SMC with pyABC** (Klinger, Rickert & Hasenauer 2018,
+  doi:10.1093/bioinformatics/bty361), run once for each model × flux with prob_total > 0.05.
+  - The simulator is the same trajectory sampler and msinv pipeline. A path that misses p_now, or a hard
+    start that fails to establish, returns an infinite distance. The p_now and establishment terms
+    therefore sit inside the SMC posterior through the importance weights, not as a separate factor.
+  - The distance is an adaptive weighted p-norm over MODEL_KEYS, re-weighted each generation by the spread
+    of each statistic (Prangle 2017), against the observed `stats`.
+  - SMC concentrates the simulations where the posterior is. That matters for the flux models, where a
+    single run costs about 90 s and 2 GB at c = 1e-5.
+- **Cross-checks between the two arms:**
+  - One pyABC run with all 8 models together, giving its own posterior model probabilities, set beside the
+    ABC-RF ones. Both are vulnerable to insufficient statistics (Robert et al. 2011), so agreement is the
+    claim and disagreement is reported.
+  - The ABC-SMC and ABC-RF posteriors for each surviving model are compared. Each median should fall inside
+    the other's 50% interval, and any that does not is reported.
+- **The reported parameter posteriors** are the ABC-SMC ones. The PPCs and the SLiM validation draw from
+  them.
 - **Validation:**
   - a confusion matrix on pseudo-observed data sets drawn from each model, to show the models can be told
     apart with these statistics
   - posterior coverage checks for the main parameters
+- **Validation of the SMC arm:** coverage of the 95% intervals on 10 pseudo-observed data sets per surviving
+  model, drawn from the ABC-RF posterior, since a full SMC per pod is costly.
 - **Stage-1 answer:** the posterior share of hard against soft, and the p0 posterior, within each model and
-  averaged over models.
+  averaged over models. Both come from ABC-SMC, with the ABC-RF values as a cross-check.
 - **Posterior predictive checks:** draw from the posterior of each model that fits, re-simulate, and compare
   every statistic to the data. That includes statistics left out of the fit, such as Tajima's D per
   arrangement and the edge-to-centre ratio of dxy/π.
@@ -158,8 +182,10 @@ and simulations sample to match. The singleton ratio keeps its ANGSD calibration
    - parameter posteriors: t_inv, hard/soft share, p0, t_sel, s, t_stop, p*, γ, and the highest frequency
      reached
    - what the model requires us to accept
-3. Figures: posterior trajectories of 2a frequency through time for each model that fits, and the confusion
-   matrix.
+3. Figures: posterior trajectories of 2a frequency through time for each model that fits, the confusion
+   matrix, and the ABC-SMC ε and acceptance-rate traces per generation.
+5. ABC-SMC databases (pyABC History, one per model × flux) and a table comparing the ABC-RF and ABC-SMC
+   model probabilities and posteriors.
 4. **Flux side experiment (for the Discussion):** show how much flux erases the dxy signal of an older
    single-copy origin, so dxy cannot trace the origin past the point where flux has homogenised it.
 
@@ -167,7 +193,13 @@ and simulations sample to match. The singleton ratio keeps its ANGSD calibration
 
 - Pilots run on the shared box within the load rule: user load under 150, and under 100 when the total load
   is over 200. Never touch `/sietch_colab/data_share/balanus` processes.
-- Production runs on Talapas, sized at about 2×10⁴ accepted simulations per model, about 1.6×10⁵ msinv runs.
+- Production runs on Talapas in two parts:
+  - The reference table for model choice: about 10⁴ accepted rows per model × flux, about 8×10⁴ msinv runs.
+    It is cut from the earlier 2×10⁴, because parameter estimation has moved to SMC.
+  - ABC-SMC: population size about 1,000 per generation, run until the acceptance rate falls below 1% or ε
+    changes by less than 5% between generations. pyABC's Redis sampler runs inside one multi-node Slurm
+    job: one node hosts redis-server and the orchestrator, and the others run `abc-redis-worker`. Box runs
+    use the multicore sampler within the load rule.
 - Use msinv `main` (5199374 or later, SMC′ available) with Illex code from branch `illex/pboot-recovery`.
 
 ## Non-goals

@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rejection ABC with model choice and posterior estimation for the rise of 2a. The models are N, D1,
+**Goal:** Hybrid ABC for the rise of 2a: rejection ABC-RF for model choice, and ABC-SMC (pyABC) for parameter
+posteriors. The models are N, D1,
 D2 and B, each with and without flux. Validation uses msprime and SLiM, and the PPCs are generated in SLiM.
 
 **Architecture:**
@@ -11,7 +12,9 @@ D2 and B, each with and without flux. Validation uses msprime and SLiM, and the 
   - an msinv simulator that turns each path into a statistic vector
   - an observed-statistic extractor that produces the same vector from the data
   - a reference-table driver that runs locally or as a Talapas array
-- Inference is ABC-RF in R (`abcrf`, `abc`).
+- Inference is a hybrid:
+  - model choice by ABC-RF in R (`abcrf`, `abc`) on a prior reference table
+  - parameter posteriors by ABC-SMC in pyABC (Task 8b), within each surviving model × flux
 - SLiM, through the existing `illex/slim/` recipe, and msprime provide the independent checks.
 
 **Tech Stack:**
@@ -19,6 +22,7 @@ D2 and B, each with and without flux. Validation uses msprime and SLiM, and the 
 - pg_gpu env `/home/ssmall/miniforge3/envs/varbuddy-pggpu` for the observed statistics
 - ANGSD SAFs
 - R at `/home/ssmall/R/bin/Rscript` with `abcrf` and `abc` (to be installed)
+- pyABC (to be installed in the venv, with `redis` for the cluster sampler)
 - SLiM ≥ 5.0 and pyslim
 - Talapas Slurm (`illex/slim/config.sh` conventions: ACCOUNT=kernlab, PARTITION=compute)
 
@@ -296,6 +300,60 @@ The combination rule, fixed by the spec: prob_total ∝ prior × acceptance × p
   - any parameter whose posterior piles up against a prior edge (the anti-goal: widen and rerun)
 - [ ] **Step 5:** Stage the files and draft the commit message.
 
+### Task 8b: ABC-SMC parameter estimation (pyABC)
+
+**Files:**
+- Create: `illex/abc/smc.py`, `illex/abc/talapas/smc.sbatch`
+- Test: `tests/illex/test_abc_smc.py`
+- Output: `results/illex/abc_smc_{M}_{flux}.db` (pyABC History), `abc_smc_posteriors.csv`,
+  `abc_smc_modelchoice.csv`, `abc_rf_vs_smc.csv`
+
+**Interfaces:**
+- Consumes:
+  - `trajectory.draw_prior` and `simulate_paths` (Task 2)
+  - `simulate.simulate_stats` and `statvec.MODEL_KEYS` (Task 3)
+  - `abc_observed.json` `stats` (Task 4)
+  - `abc_modelchoice.csv` and the posteriors from Task 8 (which models survive)
+- Produces:
+  - `smc.py --model M --flux {0,1} [--all-models] --pop-size 1000 --max-gen 15 --min-acc 0.01 --sampler
+    {multicore,redis} --db PATH`
+  - posterior draws `abc_smc_post_{M}_{flux}.csv` with 1,000 weighted-resampled rows, which Tasks 9 and 10
+    use in place of the ABC-RF draws
+
+**Definitions fixed here:**
+- **Prior:** the same priors as Task 2. Express them as `pyabc.Distribution`. The hard/soft class is a
+  discrete parameter with P(hard) 0.5, and p0 and t_sel are used only when the class is soft.
+  - Parameters bounded by others (t_sel < t_inv, t_stop < t_sel) are sampled as fractions in U(0, 1) and
+    mapped inside the model, so every pyABC prior is a product of independent marginals.
+- **Model function:** draw one path for the parameters (`max_attempts=1`).
+  - If the path is lost, fixed, outside P_TOL of p_now, or a failed hard establishment, return a sentinel
+    whose distance is +inf.
+  - Otherwise return `simulate_stats` restricted to MODEL_KEYS, plus p_obs.
+- **Distance:** `pyabc.AdaptivePNormDistance(p=2, scale_function=mad)` over MODEL_KEYS. NaN statistics get
+  weight 0 for that particle. Rows with n_nan > 3 return +inf.
+- **ε:** `QuantileEpsilon(alpha=0.5)`. The run stops at max_gen, at an acceptance rate below min_acc, or
+  when ε changes by less than 5%.
+- **Transitions:** `MultivariateNormalTransition` for continuous parameters, and a discrete jump kernel for
+  hard/soft with stay probability 0.7.
+
+- [ ] **Step 1:** Install `pyabc` and `redis` in the venv. Record the versions.
+- [ ] **Step 2: Write the failing tests.**
+  - `test_toy_gaussian_posterior`: a toy model y ~ N(θ, 1) with prior U(−5, 5) and observed 1.0. The SMC
+    posterior mean is within 0.15 of 1.0 and the sd within 25% of 1.
+  - `test_inf_sentinel`: a model returning the sentinel is never accepted, and the run completes.
+  - `test_prior_fraction_mapping`: t_sel < t_inv and t_stop < t_sel hold for 10⁴ prior draws.
+  - `test_smoke_illex`: soft D1, no flux, pop-size 8, max-gen 2, multicore with 4 workers. The run
+    completes and the History has 2 generations.
+- [ ] **Step 3:** Run and expect FAIL. **Step 4:** Implement. **Step 5:** Run and expect PASS.
+- [ ] **Step 6: Box pilot.** Soft D1, no flux, pop-size 200, max-gen 6, multicore within the load rule.
+  Report to the user the ε trace, the acceptance rates, the posterior medians and how they compare with the
+  Task 8 ABC-RF posteriors.
+- [ ] **Step 7: Talapas.** `smc.sbatch` is a multi-node job. Node 0 runs redis-server (port and password
+  from env) and `smc.py --sampler redis`, and the other nodes run `abc-redis-worker`. Follow the
+  `illex/slim/config.sh` conventions.
+- [ ] **Step 8:** Stage the files and draft the commit message.
+
+
 ### Task 9: SLiM validation of msinv
 
 **Files:**
@@ -305,7 +363,7 @@ The combination rule, fixed by the spec: prob_total ∝ prior × acceptance × p
 - Create: `illex/abc/slim_vs_msinv.py`
 - Output: `results/illex/abc_slim_validation.{csv,txt}`
 
-- [ ] **Step 1:** Choose 6 parameter sets from the Task 8 posteriors: soft D1, hard D1, hard B, soft B, D2
+- [ ] **Step 1:** Choose 6 parameter sets from the Task 8b ABC-SMC posteriors (Task 8 ABC-RF if 8b is not yet run): soft D1, hard D1, hard B, soft B, D2
   with flux and N soft.
 - [ ] **Step 2:** For each, run 100 SLiM reps (Q chosen so s·Q < 0.1, Q ≤ 200) and 100 msinv reps whose
   paths come from `simulate_paths` with the same parameters. SLiM paths are not filtered on p_now. Instead
@@ -322,10 +380,15 @@ The combination rule, fixed by the spec: prob_total ∝ prior × acceptance × p
 - Output: `results/illex/abc_ppc_{msinv,slim}.csv`, `abc_flux_erasure.csv`, `abc_results_table.csv`,
   `figures/abc_trajectories.png`, `figures/abc_confusion.png`
 
-- [ ] **Step 1: Production on Talapas.** Run 2×10⁴ accepted rows per model × flux, with hard and soft
-  classes run separately so their acceptance rates are measured. Collect, then rerun Task 8 on the full
-  table.
-- [ ] **Step 2: PPCs.** Use 500 posterior draws per surviving model (prob_total > 0.05). Simulate in SLiM
+- [ ] **Step 1: Production on Talapas.**
+  - Reference table: 10⁴ accepted rows per model × flux, with hard and soft classes run separately so their
+    acceptance rates are measured. Collect, then rerun Task 8 on the full table.
+  - Then ABC-SMC (Task 8b) for each model × flux with prob_total > 0.05, plus one `--all-models` run.
+  - Write `abc_rf_vs_smc.csv` with the model probabilities from both arms, and for each parameter whether
+    each median lies inside the other arm's 50% interval.
+  - Coverage: 10 pods per surviving model, drawn from the ABC-RF posterior and each run through a reduced
+    SMC (pop-size 300).
+- [ ] **Step 2: PPCs.** Use 500 ABC-SMC posterior draws per surviving model (prob_total > 0.05). Simulate in SLiM
   (Task 9 machinery) and in msinv. For each statistic, including `STAT_KEYS_PPC_ONLY`, report the
   two-sided posterior predictive p-value.
 - [ ] **Step 3: Flux erasure.** Use a hard start at t_inv in {1.5, 3, 5} Ma. Fit the age as the

@@ -49,6 +49,7 @@ fn tr1_simulator_completes_with_in_window_recombination() {
         iters_max: 100_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
     };
     let result = sim.simulate();
     assert!(
@@ -82,6 +83,7 @@ fn tr1_hard_sweep_unchanged() {
         iters_max: 100_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
     };
     let result = sim.simulate();
     assert!(

@@ -5,7 +5,7 @@ from illex.slim.config import REC_RATE  # noqa: F401  chr2 collinear rate, per b
 
 P_NOW = 0.626            # present frequency of the inverted arrangement 2a (provisional; Task 5 replaces it)
 P_TOL = 0.02             # acceptance half-width on p_now
-GAMMA_MAX = 1e-4         # upper bound of the logU prior on gamma_eff (provisional)
+GAMMA_MAX = 1e-5         # upper bound of the logU prior on c, the per-site conversion probability (provisional; Task 5)
 
 PRIOR = dict(t_inv=(3e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.5), s=(1e-6, 1e-2), p_star=(0.3, 0.95))
 

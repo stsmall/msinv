@@ -53,6 +53,7 @@ JSFS_KEYS = tuple(f"jsfs_{a}{b}" for a, b in JSFS_CELLS)
 LD_KEYS = tuple(f"ld_{c}_{k + 1}" for c in ("I", "S") for k in range(len(LD_EDGES) - 1))
 STAT_KEYS_PPC_ONLY = ("tajd_I", "tajd_S", "edge_centre")
 STAT_KEYS = RATIO_KEYS + SFS_KEYS + JSFS_KEYS + LD_KEYS + STAT_KEYS_PPC_ONLY
+MODEL_KEYS = tuple(k for k in STAT_KEYS if k not in STAT_KEYS_PPC_ONLY)  # the statistics the ABC fits
 
 assert PROJ == 20 and JSFS_BINS[-1][1] == PROJ
 
@@ -251,4 +252,4 @@ def assemble(body: dict, control: dict, edge: float) -> dict:
     return {k: out[k] for k in STAT_KEYS}
 
 
-__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "region_stats", "edge_centre", "assemble", "MU"]
+__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "MU"]

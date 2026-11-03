@@ -95,5 +95,5 @@ def simulate_stats(path, seed: int) -> dict[str, float]:
     out = SV.assemble(body, control, edge)
     two_n = 2 * N_KARYO
     out["p_obs"] = float(np.random.default_rng(s_obs).binomial(two_n, float(path.p_now)) / two_n)
-    out["n_nan"] = int(sum(math.isnan(out[k]) for k in SV.STAT_KEYS))
+    out["n_nan"] = int(sum(math.isnan(out[k]) for k in SV.MODEL_KEYS))  # PPC-only NaNs never flag a row
     return out

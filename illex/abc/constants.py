@@ -21,4 +21,7 @@ GAMMA_FLOOR = 1e-15      # msinv flux rate used when c (params['gamma_eff']) is 
 BP_LEFT, BP_RIGHT = 60_550_000, 79_520_000   # chr2 inversion breakpoints (reference coordinates)
 N_I_CHROM, N_S_CHROM = 508, 190              # observed 2a and 2+ chromosomes (2aa 254, 2++ 95 homokaryotypes)
 N_IND = N_KARYO                              # 633 karyotyped individuals
-TARGETS = dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)   # observed pi_2a/pi_2+, dxy/pi_2a, f1(2a)/f1(2+)
+# Observed pi_2a/pi_2+, dxy/pi_2a, f1(2a)/f1(2+). FORMS DIFFER: pi_ratio and dxy_pi are RAW body values
+# (empirical_jackknife.py, 60.5-79.5 Mb); f1_ratio is CONTROL-CALIBRATED body/control (sfs_f1_jackknife.py
+# ratio of ratios, 1.2112 / 0.9842), i.e. the form of the ABC statistic (abc_observed.json "stats").
+TARGETS = dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)

@@ -98,10 +98,18 @@ def _windows(ts, win):
 
 def _sfs_bins(counts, n):
     """Projected folded SFS of derived counts out of n, as f1..f5 + pooled >=6 proportions."""
-    out = dict.fromkeys(SFS_BINS, float("nan"))
     if counts.size == 0:
-        return out
-    v = project_unfolded(np.bincount(counts, minlength=n + 1).astype(float), n, PROJ)
+        return dict.fromkeys(SFS_BINS, float("nan"))
+    return _sfs_bins_unfolded(np.bincount(counts, minlength=n + 1).astype(float), n)
+
+
+def _sfs_bins_unfolded(unf, n):
+    """f1..f5 + pooled >=6 proportions of an unfolded count spectrum ``unf[0..n]``, projected to PROJ and folded.
+
+    Shared by the simulations (per-site counts, ``_sfs_bins``) and the data (realSFS spectra, ``observed.py``).
+    """
+    out = dict.fromkeys(SFS_BINS, float("nan"))
+    v = project_unfolded(np.asarray(unf, float), n, PROJ)
     tot = v.sum()
     if tot <= 0:
         return out
@@ -124,7 +132,15 @@ def _jsfs(ci, cs, ni, ns):
     out = dict.fromkeys(JSFS_KEYS, float("nan"))
     if ci.size == 0:
         return out
-    j = _hyper_binned(ci, ni).T @ _hyper_binned(cs, ns)
+    return _jsfs_fold(_hyper_binned(ci, ni).T @ _hyper_binned(cs, ns))
+
+
+def _jsfs_fold(j):
+    """The 12 folded JSFS_CELLS of a (5, 5) binned joint spectrum ``j`` (I bins x S bins), as proportions.
+
+    Shared by the simulations (``_jsfs``) and the data (a projected realSFS 2D spectrum, ``observed.py``).
+    """
+    out = dict.fromkeys(JSFS_KEYS, float("nan"))
     nb = len(JSFS_BINS)
     fol = {}
     for a, b in JSFS_CELLS:

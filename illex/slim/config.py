@@ -35,8 +35,17 @@ MU = 3e-9
 # against the male map (2.52 vs 1.977). chr2 recombines less than the
 # genome-wide average: male chr2 collinear / male genome-wide = 1.977/2.148 =
 # 0.92, female 2.248/2.892 = 0.78.
-REC_RATE = 1.977e-9
-REC_RATE_BRACKET = (1.977e-9, 2.248e-9)   # chr2 collinear male, female
+# 2026-11-03: UPDATED to the current male network (Achk_male_uf, 329 males,
+# bs200 correction), predicted on chr2 by
+#   analysis/steps/11_relernn/predict_chr2_male_achknet.sh ->
+#   run_chr2_male_achknet/proj/male_chr2.kept.PREDICT.BSCORRECTED200.txt
+# collinear (outside 58.55-81.52 Mb) mean 2.158e-9, median 2.223e-9, n 14,841;
+# interior 2.539e-9 (ratio 1.18, SNP-density confounded, not used). The
+# window-weighted rec_rate_for_inversion(CHR2_RMAP_MALE_UF) gives 2.157e-9.
+# chr2 / genome-wide male median (2.41e-9) = 0.90. Old value 1.977e-9 (autonet).
+REC_RATE = 2.158e-9
+REC_RATE_OLD_AUTONET = 1.977e-9           # superseded 2026-11-03; kept for provenance
+REC_RATE_BRACKET = (1.977e-9, 2.248e-9)   # OLD autonet chr2 collinear male, female
 REC_RATE_PROXY_OLD = 2.52e-9              # superseded; kept for provenance
 
 # Measured chr2 maps. CHR2_RMAP is used by the report script and by
@@ -45,6 +54,7 @@ REC_RATE_PROXY_OLD = 2.52e-9              # superseded; kept for provenance
 _RELERNN = ("/sietch_colab/data_share/illex/popgen_data/analysis/steps/"
             "11_relernn")
 CHR2_RMAP = f"{_RELERNN}/chr2_autosomal_predict/chr2_male.autonet.PREDICT.txt"
+CHR2_RMAP_MALE_UF = f"{_RELERNN}/run_chr2_male_achknet/proj/male_chr2.kept.PREDICT.BSCORRECTED200.txt"
 CHR2_RMAP_FEMALE = f"{_RELERNN}/chr2_autosomal_predict/chr2_female.autonet.PREDICT.txt"
 CHR2_RMAP_AA = f"{_RELERNN}/run_chr2_AA/proj/chr2_AA.kept.PREDICT.BSCORRECTED.txt"
 CHR2_RMAP_ALL = f"{_RELERNN}/run_chr2_all/proj/chr2_all.kept.PREDICT.BSCORRECTED.txt"

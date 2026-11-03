@@ -1,7 +1,7 @@
 """Shared constants for the trajectory ABC."""
 from __future__ import annotations
 
-from illex.slim.config import REC_RATE  # noqa: F401  chr2 collinear rate, per bp per generation (Task 1 updates it there)
+from illex.slim.config import REC_RATE  # noqa: F401  chr2 collinear male rate 2.158e-9 per bp per generation
 
 P_NOW = 0.626            # present frequency of the inverted arrangement 2a (provisional; Task 5 replaces it)
 P_TOL = 0.02             # acceptance half-width on p_now
@@ -17,3 +17,8 @@ CONTROL_BP = 40_000.0    # separate no-inversion neutral control (the flank valu
 N_INV, N_STD = 100, 100  # simulated chromosomes per class (50 diploids each for LD); data has 508 / 190
 N_KARYO = 633            # individuals karyotyped; p_obs = Binomial(2 * N_KARYO, p_now) / (2 * N_KARYO)
 GAMMA_FLOOR = 1e-15      # msinv flux rate used when c (params['gamma_eff']) is NaN (no-flux model)
+
+BP_LEFT, BP_RIGHT = 60_550_000, 79_520_000   # chr2 inversion breakpoints (reference coordinates)
+N_I_CHROM, N_S_CHROM = 508, 190              # observed 2a and 2+ chromosomes (2aa 254, 2++ 95 homokaryotypes)
+N_IND = N_KARYO                              # 633 karyotyped individuals
+TARGETS = dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)   # observed pi_2a/pi_2+, dxy/pi_2a, f1(2a)/f1(2+)

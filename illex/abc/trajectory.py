@@ -44,7 +44,8 @@ class Counts:
     drawn: int = 0
     lost: int = 0
     fixed: int = 0
-    est_failed: int = 0
+    lost_establishing: int = 0   # hard start: the single copy was lost before ESTABLISHED copies (max_attempts == 1)
+    est_failed: int = 0          # hard start: every one of max_attempts > 1 attempts failed
     accepted: int = 0
 
 
@@ -52,13 +53,20 @@ def _logu(rng, lo, hi, n):
     return np.exp(rng.uniform(np.log(lo), np.log(hi), n))
 
 
-def draw_prior(model: str, flux: bool, rng, n: int) -> dict:
-    """Draw n parameter sets. Unused keys are NaN. Also returns ``model`` and ``flux`` as scalars."""
+def draw_prior(model: str, flux: bool, rng, n: int, cls: str = "mixed") -> dict:
+    """Draw n parameter sets. Unused keys are NaN. Also returns ``model`` and ``flux`` as scalars.
+
+    cls: "hard" forces every draw hard, "soft" every draw soft, "mixed" keeps P(hard) = PRIOR["p_hard"].
+    """
+    if cls not in ("hard", "soft", "mixed"):
+        raise ValueError(cls)
     if model not in MODELS:
         raise ValueError(model)
     nan = np.full(n, np.nan)
     t_inv = rng.uniform(*PRIOR["t_inv"], n)
     hard = rng.random(n) < PRIOR["p_hard"]
+    if cls != "mixed":
+        hard = np.full(n, cls == "hard")
     p0 = np.where(hard, np.nan, _logu(rng, *PRIOR["p0"], n))
     out = dict(t_inv=t_inv, hard=hard, p0=p0, t_sel=nan.copy(), s=nan.copy(), t_stop=nan.copy(),
                p_star=nan.copy(), gamma_eff=nan.copy())
@@ -137,12 +145,17 @@ def _establish(model, prm, idx, rng, n_e_fn, max_attempts, block=64, flat_max=2_
     return g_out, k_out, two_n
 
 
-def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=2_000_000,
+def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
                    n_e_fn=N_growth, apply_filter=True):
-    """Simulate one path per parameter set. Returns (accepted paths, Counts)."""
+    """Simulate one path per parameter set. Returns (accepted paths, {"hard": Counts, "soft": Counts}).
+
+    Default max_attempts=1: each hard draw gets ONE establishment attempt from a single copy, and a loss before
+    ESTABLISHED copies is a rejection (Counts.lost_establishing). Accepted rows are then exact prior draws, so
+    accepted/drawn includes the establishment probability. max_attempts > 1 redraws lost copies (conditioning
+    on establishment; failures of the cap are Counts.est_failed) and is for diagnostics only.
+    """
     model = params["model"]
     n = len(params["t_inv"])
-    counts = Counts(drawn=n)
     rec_k = max(1, int(round(rec_every / dt)))
     rec_step = rec_k * dt
     t_inv = np.asarray(params["t_inv"], float)
@@ -151,18 +164,27 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=2_
     t_start = t_inv.copy()
     est_pt = {}                                   # hard draws: (t_inv, 1/2N) first point
     ok = np.ones(n, bool)
+    est_bad = np.zeros(n, bool)
     h = np.where(hard)[0]
     if h.size:
         g, k, two_n = _establish(model, params, h, rng, n_e_fn, max_attempts)
         bad = g < 0
-        counts.est_failed = int(bad.sum())
         ok[h[bad]] = False
+        est_bad[h[bad]] = True
         for j in np.where(~bad)[0]:
             i = h[j]
             t_start[i] = t_inv[i] - g[j]
             p_start[i] = k[j] / two_n[j]
             est_pt[i] = 1.0 / two_n[j]
     live = np.where(ok)[0]
+    stat = np.zeros(n, np.int8)             # 1 lost, 2 fixed
+    counts = {"hard": Counts(drawn=int(hard.sum())), "soft": Counts(drawn=int((~hard).sum()))}
+    for c, m in (("hard", hard), ("soft", ~hard)):
+        nb = int((est_bad & m).sum())
+        if max_attempts == 1:
+            counts[c].lost_establishing = nb
+        else:
+            counts[c].est_failed = nb
     if live.size == 0:
         return [], counts
     s_all = np.nan_to_num(np.asarray(params["s"], float)) if model != "N" else np.zeros(n)
@@ -181,7 +203,6 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=2_
     pos[live] = np.arange(live.size)
     a = np.empty(0, np.int64)               # active draw indices (global)
     pa = np.empty(0)
-    stat = np.zeros(n, np.int8)             # 1 lost, 2 fixed
     sa = ta = tb = ps = pa
     for i in range(i_max, 0, -1):
         grown = False
@@ -210,8 +231,9 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=2_
             keep = ~bad
             a, pa = a[keep], pa[keep]
             sa, ta, tb, ps = sa[keep], ta[keep], tb[keep], ps[keep]
-    counts.lost = int((stat == 1).sum())
-    counts.fixed = int((stat == 2).sum())
+    for c, m in (("hard", hard), ("soft", ~hard)):
+        counts[c].lost = int(((stat == 1) & m).sum())
+        counts[c].fixed = int(((stat == 2) & m).sum())
     surv = live[stat[live] == 0]
     p_now = rec[pos[surv], 0]
     keep = np.abs(p_now - P_NOW) <= P_TOL if apply_filter else np.ones(surv.size, bool)
@@ -232,5 +254,6 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=2_
         pr = dict(scal, **{k: params[k][d] for k in KEYS})
         pr = {k: (v.item() if isinstance(v, np.generic) else v) for k, v in pr.items()}
         paths.append(Path(params=pr, times=times, freqs=freqs, p_now=float(pn)))
-    counts.accepted = len(paths)
+    for c in counts:
+        counts[c].accepted = sum(bool(q.params["hard"]) == (c == "hard") for q in paths)
     return paths, counts

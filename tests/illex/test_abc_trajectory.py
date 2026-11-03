@@ -39,7 +39,7 @@ def test_draw_prior_shapes_and_nans():
 def test_neutral_soft_mean_preserved():
     p = prm("N", 2000, 1e4, p0=0.3)
     paths, c = simulate_paths(p, np.random.default_rng(2), n_e_fn=const_ne(1e5), apply_filter=False)
-    assert isinstance(c, Counts) and isinstance(paths[0], Path)
+    assert isinstance(c["soft"], Counts) and isinstance(paths[0], Path)
     assert abs(finals(paths).mean() - 0.3) < 0.01
 
 
@@ -78,15 +78,39 @@ def test_hard_establishment_prob():
     n = 100_000
     p = prm("N", n, 5000.0, hard=True)
     _, c = simulate_paths(p, np.random.default_rng(6), max_attempts=1, n_e_fn=const_ne(1e4), apply_filter=False)
-    frac = 1.0 - c.est_failed / n
+    frac = 1.0 - c["hard"].lost_establishing / n
     assert abs(frac - 1 / 500) < 0.3 / 500
+    assert c["hard"].est_failed == 0
+
+
+def test_hard_acceptance_includes_establishment():
+    # default max_attempts=1: a lost single copy is a rejection, so established fraction = establishment probability
+    n = 100_000
+    _, c = simulate_paths(prm("N", n, 5000.0, hard=True), np.random.default_rng(11), n_e_fn=const_ne(1e4),
+                          apply_filter=False)
+    assert abs(1 - c["hard"].lost_establishing / n - 1 / 500) < 0.3 / 500
+    s = 1e-2
+    p = prm("D1", n, 5000.0, hard=True, t_sel=5000.0, s=s)
+    _, c = simulate_paths(p, np.random.default_rng(12), n_e_fn=const_ne(1e4), apply_filter=False)
+    assert abs(1 - c["hard"].lost_establishing / n - (1 - np.exp(-2 * s))) < 0.3 * (1 - np.exp(-2 * s))
+
+
+def test_counts_split_by_class():
+    rng = np.random.default_rng(13)
+    p = draw_prior("N", False, rng, 400)
+    p["t_inv"] = np.full(400, 5000.0)
+    _, c = simulate_paths(p, rng, n_e_fn=const_ne(1e4), apply_filter=False)
+    assert c["hard"].drawn + c["soft"].drawn == 400
+    assert c["hard"].drawn == p["hard"].sum() and 0 < c["hard"].drawn < 400
+    assert draw_prior("D1", False, rng, 50, cls="hard")["hard"].all()
+    assert not draw_prior("D1", False, rng, 50, cls="soft")["hard"].any()
 
 
 @pytest.mark.timeout(10)
 def test_attempt_cap_records_failure():
     p = prm("D1", 50, 5000.0, hard=True, t_sel=5000.0, s=0.0)
     _, c = simulate_paths(p, np.random.default_rng(7), max_attempts=10, n_e_fn=const_ne(1e4))
-    assert c.est_failed > 0
+    assert c["hard"].est_failed > 0 and c["hard"].lost_establishing == 0
 
 
 def test_no_clipped_endpoints():
@@ -95,7 +119,7 @@ def test_no_clipped_endpoints():
     p["t_sel"] = np.minimum(p["t_sel"], 3e4)
     p["s"] = np.full(300, 1e-4)
     paths, c = simulate_paths(p, np.random.default_rng(9), n_e_fn=const_ne(1e4), apply_filter=False)
-    assert c.fixed > 0 and len(paths) > 0
+    assert c["soft"].fixed > 0 and len(paths) > 0
     for q in paths:
         assert (q.freqs > 0).all() and (q.freqs < 1).all()
         assert q.times[0] == 0 and (np.diff(q.times) > 0).all()
@@ -104,5 +128,5 @@ def test_no_clipped_endpoints():
 def test_filter():
     p = prm("N", 3000, 2e4, p0=0.626)
     paths, c = simulate_paths(p, np.random.default_rng(10), n_e_fn=const_ne(1e5))
-    assert c.accepted == len(paths) > 0
+    assert c["soft"].accepted == len(paths) > 0
     assert all(abs(q.p_now - 0.626) <= 0.02 for q in paths)

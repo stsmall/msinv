@@ -14,6 +14,7 @@ P_TOL = 0.02             # acceptance half-width on p_now
 # Korunes & Noor 2019 Mol Ecol 28:1302 (doi 10.1111/mec.14921): 1e-5 to 2.5e-5 converted sites per bp per generation
 # (D. pseudoobscura/persimilis crosses); ML tract length 188-390 bp (TRACT_BP below = 300, within that range).
 GAMMA_MAX = 1e-5
+GAMMA_MIN = 1e-9   # lower end of the logU prior on c (trajectory.draw_prior)
 
 PRIOR = dict(t_inv=(1e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.9), s=(1e-6, 1e-2), p_star=(0.3, 0.95))
 

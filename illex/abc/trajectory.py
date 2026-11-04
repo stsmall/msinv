@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from illex.abc.constants import GAMMA_MAX, P_NOW, P_TOL, PRIOR
+from illex.abc.constants import GAMMA_MAX, GAMMA_MIN, P_NOW, P_TOL, PRIOR
 from illex.abc.establishment import ESTABLISHED, establishment_prob  # noqa: F401 (re-exported)
 from illex.theory import N_growth
 
@@ -81,7 +81,7 @@ def draw_prior(model: str, flux: bool, rng, n: int, cls: str = "mixed") -> dict:
     if model == "B":
         out["p_star"] = rng.uniform(*PRIOR["p_star"], n)
     if flux:
-        out["gamma_eff"] = _logu(rng, 1e-9, GAMMA_MAX, n)
+        out["gamma_eff"] = _logu(rng, GAMMA_MIN, GAMMA_MAX, n)
     out["model"] = model
     out["flux"] = flux
     return out

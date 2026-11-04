@@ -31,13 +31,13 @@ test_that("toy: RF model choice puts > 0.95 on the true model at x = 3", {
   expect_equal(sum(p$prob_stats), 1, tolerance = 1e-9)
 })
 
-test_that("toy: 95% interval coverage is 0.95 +- 0.03 over 200 pods", {
-  d <- toy_table(2000, 2)
+test_that("toy: 95% interval coverage is 0.95 +- 0.03 over 600 pods (binomial SD 0.009)", {
+  d <- toy_table(3000, 2)
   d3 <- d[d$model == "M3", ]
   stats <- c("xbar", "xmed", "xsd", "noise")
   cv <- coverage_cv(d3, src_id = seq_len(nrow(d3)), param = "theta", stats = stats, log = FALSE,
-                    n_pods = 200, folds = 5, ntree = NTREE, ncores = NCORES, seed = 3)
-  expect_equal(cv$n_pods, 200)
+                    n_pods = 600, folds = 5, ntree = NTREE, ncores = NCORES, seed = 3)
+  expect_equal(cv$n_pods, 600)
   expect_lt(abs(cv$cover95 - 0.95), 0.03 + 1e-12)
 })
 
@@ -62,4 +62,32 @@ test_that("weighting: two classes with known acceptances recover the right mixtu
   expect_equal(hard_share_acc(0.5, 0.2, 0.6), 0.25)
   pt <- combine_total(prior = c(A = 0.5, B = 0.5), acc = c(A = 0.1, B = 0.3), prob_stats = c(A = 0.5, B = 0.5))
   expect_equal(unname(pt), c(0.25, 0.75))
+})
+
+test_that("case.weights reach ranger: weighted forests recover the weighted class mix", {
+  set.seed(11)
+  n <- 2000
+  df <- data.frame(cls = rep(c("hard", "soft"), each = n / 2), w_est = 1, x1 = runif(n), x2 = runif(n))
+  w <- mixture_weights(df, c(hard = 0.2, soft = 0.6))                 # hard mass 0.25; stats uninformative
+  d <- data.frame(y = as.numeric(df$cls == "hard"), df[, c("x1", "x2")])
+  grid <- data.frame(x1 = runif(100), x2 = runif(100))   # single points are noisy (sd ~0.09); average 100
+  pw <- mean(predict(reg_rf(d, NTREE, NCORES, w), grid, training = d, paral = TRUE, ncores = NCORES)$expectation)
+  pu <- mean(predict(reg_rf(d, NTREE, NCORES), grid, training = d, paral = TRUE, ncores = NCORES)$expectation)
+  expect_equal(pw, 0.25, tolerance = 0.04)   # needs the per-tree subsample (RF_SAMPLE_FRACTION); 0.34 at fraction 1
+  expect_equal(pu, 0.50, tolerance = 0.05)
+  obs <- data.frame(x1 = 0.5, x2 = 0.5)
+  # weighted classification forest: P(hard) from abcrf post.prob with the same weights is near 0.25 too
+  bt <- data.frame(cls = factor(df$cls), df[, c("x1", "x2")])
+  cf <- fit_model_choice(bt, ntree = NTREE, ncores = NCORES, resp = "cls", case_w = w)
+  cp <- predict_mc(cf, obs, bt, NTREE, NCORES, w)
+  ph <- if (as.character(cp$allocation) == "hard") cp$post.prob else 1 - cp$post.prob
+  expect_lt(ph, 0.40)
+})
+
+test_that("abc cross-check accepts a fixed number of rows", {
+  d <- toy_table(3000, 4); d3 <- d[d$model == "M3", ]
+  x <- abc_crosscheck(d3, "theta", c("xbar", "xmed", "xsd", "noise"), FALSE,
+                      data.frame(xbar = 3, xmed = 3, xsd = 1, noise = 0.5), n_accept = 100)
+  expect_equal(x$n_accept, 100)
+  expect_equal(x$loclinear, 3, tolerance = 0.3)
 })

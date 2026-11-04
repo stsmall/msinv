@@ -37,7 +37,10 @@ SMC_WALLTIME_H=${SMC_WALLTIME_H:-22}       # driver stops before the SLURM limit
 SMC_WORKER_PROCS=${SMC_WORKER_PROCS:-${SLURM_CPUS_PER_TASK:-32}}
 SMC_OUT=${SMC_OUT:-$OUTROOT/smc}
 if [[ -n "${SMC_ALL_MODELS:-}" ]]; then
-    TAG=all; SEL=(--all-models --models ${SMC_MODELS:-N D1 D2 B})
+    # survivors of Task 8 from SMC_MODELCHOICE (prob_total >= SMC_MIN_MODEL_PROB) unless SMC_MODELS lists them
+    TAG=mc; SEL=(--all-models --modelchoice "${SMC_MODELCHOICE:-$REPO/results/illex/abc_modelchoice.csv}"
+                 --min-model-prob "${SMC_MIN_MODEL_PROB:-0.01}")
+    [[ -n "${SMC_MODELS:-}" ]] && SEL+=(--models $SMC_MODELS)
 else
     TAG=${SMC_MODEL:?set SMC_MODEL or SMC_ALL_MODELS}; SEL=(--model "$SMC_MODEL")
 fi

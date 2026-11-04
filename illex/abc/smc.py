@@ -25,6 +25,12 @@ Transitions. Multivariate normal on the continuous parameters and a discrete jum
 Usage (from the repo root)
     python -m illex.abc.smc --model D1 --flux 0 --cls soft --pop-size 200 --max-gen 6 --n-procs 16 --db PATH
     python -m illex.abc.smc --all-models --flux 0 --sampler redis ...
+
+Model choice (--all-models) runs the models that survive Task 8, read from --modelchoice (abc_modelchoice.csv), as
+those with prob_total >= --min-model-prob (default MIN_MODEL_PROB = 0.01) at the run's flux. --models overrides the
+file. A model-choice run carries the run tag "mc" (db abc_smc_mc_{flux}.db, abc_smc_trace_mc_{flux}.csv,
+abc_smc_post_mc_{M}_{flux}.csv and run = "mc" in the upserted tables), so it never overwrites a single-model run
+(run = "single", abc_smc_post_{M}_{flux}.csv).
 """
 from __future__ import annotations
 
@@ -55,6 +61,8 @@ P_STAY = 0.7                 # discrete jump kernel on hard/soft
 RESULTS = FsPath("results/illex")
 OBSERVED = RESULTS / "abc_observed.json"
 RF_POSTERIORS = RESULTS / "abc_posteriors.csv"
+MODELCHOICE = RESULTS / "abc_modelchoice.csv"
+MIN_MODEL_PROB = 0.01        # a Task 8 model survives into SMC model choice at prob_total >= this
 
 
 # ------------------------------------------------------------------ prior and parameter mapping
@@ -311,6 +319,8 @@ def _natural(df, model, flux, cls):
 def _upsert(path: FsPath, new: pd.DataFrame, on: list[str]):
     if path.exists():
         old = pd.read_csv(path, comment="#")
+        if "run" in on and "run" not in old.columns:
+            old["run"] = "single"          # tables written before the run tag held single-model runs only
         key_new = set(map(tuple, new[on].astype(str).values))
         old = old[[tuple(r) not in key_new for r in old[on].astype(str).values]]
         new = pd.concat([old, new], ignore_index=True)
@@ -321,12 +331,24 @@ PAR_SCALE = dict(t_inv="linear", s="log10", p0="log10", t_sel="linear", t_stop="
                  gamma_eff="log10")
 
 
-def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, rf_path=RF_POSTERIORS):
-    """Posterior draws, summaries, the per-generation trace, model choice and the ABC-RF comparison."""
+def run_tag(models, model_choice=None) -> tuple[bool, str]:
+    """(model_choice, file tag). Model choice is the default for more than one model, and its tag is "mc"."""
+    mc = len(models) > 1 if model_choice is None else bool(model_choice)
+    return mc, ("mc" if mc else models[0])
+
+
+def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, rf_path=RF_POSTERIORS,
+                  model_choice=None):
+    """Posterior draws, summaries, the per-generation trace, model choice and the ABC-RF comparison.
+
+    A model-choice run writes abc_smc_post_mc_{M}_{flux}.csv and run = "mc" rows, a single-model run
+    abc_smc_post_{M}_{flux}.csv and run = "single" rows, so neither overwrites the other.
+    """
     out_dir = FsPath(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     fl = int(bool(flux))
-    tag = models[0] if len(models) == 1 else "all"
+    mc_run, tag = run_tag(models, model_choice)
+    run_lab = "mc" if mc_run else "single"
     rng = np.random.default_rng(seed)
     pops = h.get_all_populations()
     pops = pops[pops.t >= 0].set_index("t")
@@ -374,7 +396,7 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
         post.insert(0, "flux", fl)
         post.insert(0, "model", m)
         post["src"] = idx
-        post.to_csv(out_dir / f"abc_smc_post_{m}_{fl}.csv", index=False)
+        post.to_csv(out_dir / (f"abc_smc_post_mc_{m}_{fl}.csv" if mc_run else f"abc_smc_post_{m}_{fl}.csv"), index=False)
         hard = nat["hard"].astype(bool).values
         for k in ("t_inv", "s", "p0", "t_sel", "t_stop", "p_star", "gamma_eff"):
             x = nat[k].values.astype(float)
@@ -383,7 +405,7 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
                 continue
             ww = w[sel]
             q = _wq(x[sel], ww, [0.025, 0.25, 0.5, 0.75, 0.975])
-            summ.append(dict(model=m, flux=fl, cls_run=cls, parameter=k, scale=PAR_SCALE[k],
+            summ.append(dict(run=run_lab, model=m, flux=fl, cls_run=cls, parameter=k, scale=PAR_SCALE[k],
                              rows="soft" if k in ("p0", "t_sel") else "all", n=int(sel.sum()), ess=_ess(ww),
                              median=q[2], q025=q[0], q25=q[1], q75=q[3], q975=q[4], n_gen=h.n_populations,
                              eps_final=float(pops.loc[h.max_t, "epsilon"]),
@@ -391,9 +413,9 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
                              stop_reason=getattr(abc, "stop_reason", None)))
     summ = pd.DataFrame(summ)
     if len(summ):
-        _upsert(out_dir / "abc_smc_posteriors.csv", summ, ["model", "flux", "cls_run"])
+        _upsert(out_dir / "abc_smc_posteriors.csv", summ, ["run", "model", "flux", "cls_run"])
 
-    if len(models) > 1:
+    if mc_run:
         probs = h.get_model_probabilities(h.max_t).iloc[0]
         mc = pd.DataFrame([dict(flux=fl, cls_run=cls, model=m, prob=float(probs.get(mi, 0.0)), t=h.max_t)
                            for mi, m in enumerate(models)])
@@ -409,18 +431,34 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
         lg = cmp["scale"] == "log10"
         cmp["median_diff"] = np.where(lg, np.log10(cmp["smc_median"]) - np.log10(cmp["rf_median"]),
                                       cmp["smc_median"] - cmp["rf_median"])
-        cols = ["model", "flux", "cls_run", "parameter", "scale", "rf_median", "rf_q025", "rf_q975", "smc_median",
+        cols = ["run", "model", "flux", "cls_run", "parameter", "scale", "rf_median", "rf_q025", "rf_q975", "smc_median",
                 "smc_q025", "smc_q975", "median_diff", "ess", "n_gen"]
-        _upsert(out_dir / "abc_rf_vs_smc.csv", cmp[cols], ["model", "flux", "cls_run"])
+        _upsert(out_dir / "abc_rf_vs_smc.csv", cmp[cols], ["run", "model", "flux", "cls_run"])
     return summ
 
 
 # ------------------------------------------------------------------ driver
 
 def observed(path=OBSERVED) -> dict:
+    """The observed MODEL_KEYS. Raises ValueError on a non-finite value, which would make every distance NaN."""
     with open(path) as f:
         st = json.load(f)["stats"]
-    return {k: float(st[k]) for k in MODEL_KEYS}
+    obs = {k: float(st[k]) for k in MODEL_KEYS}
+    bad = [k for k, v in obs.items() if not math.isfinite(v)]
+    if bad:
+        raise ValueError(f"observed statistics in {path} are not finite for {bad}. A NaN in x_0 rejects every particle")
+    return obs
+
+
+def surviving_models(flux, path=MODELCHOICE, min_prob=MIN_MODEL_PROB) -> list[str]:
+    """Task 8 models with prob_total >= min_prob at ``flux``, in MODELS order. Raises ValueError if none."""
+    mc = pd.read_csv(path, comment="#")
+    mc = mc[mc["flux"].astype(int) == int(bool(flux))]
+    keep = set(mc.loc[mc["prob_total"] >= min_prob, "model"].astype(str))
+    out = [m for m in MODELS if m in keep]
+    if not out:
+        raise ValueError(f"no model in {path} has prob_total >= {min_prob} at flux {int(bool(flux))}. Pass --models")
+    return out
 
 
 def make_sampler(kind: str, n_procs: int = 4, redis_batch: int = 10):
@@ -437,11 +475,13 @@ def make_sampler(kind: str, n_procs: int = 4, redis_batch: int = 10):
 
 def run(models, flux, cls="mixed", pop_size=1000, max_gen=15, min_acc=0.01, min_eps_rel=0.05, sampler="multicore",
         n_procs=4, redis_batch=10, db=None, out_dir=RESULTS, write=True, n_post=1000,
-        engine="auto", raw_min_acc=0.0, max_walltime_h=None, overwrite=False, seed=None, obs_path=OBSERVED):
+        engine="auto", raw_min_acc=0.0, max_walltime_h=None, overwrite=False, seed=None, obs_path=OBSERVED,
+        model_choice=None):
     """Run ABC-SMC for ``models`` (one model, or model choice over several) and write the outputs."""
     flux = bool(flux)
     fl = int(flux)
-    tag = models[0] if len(models) == 1 else "all"
+    model_choice, tag = run_tag(models, model_choice)
+    x_0 = observed(obs_path)       # fail before any sampler or db is set up
     db = FsPath(db or FsPath(out_dir) / f"abc_smc_{tag}_{fl}.db")
     if db.exists():
         if not overwrite:
@@ -454,20 +494,24 @@ def run(models, flux, cls="mixed", pop_size=1000, max_gen=15, min_acc=0.01, min_
     abc = build_abc([IllexModel(m, flux, cls, engine) for m in models], [make_prior(m, flux, cls) for m in models],
                     keys=MODEL_KEYS, pop_size=pop_size, sampler=make_sampler(sampler, n_procs, redis_batch),
                     continuous=[tuple(c) for c, _ in names], discrete=[tuple(d) for _, d in names], names=models)
-    abc.new("sqlite:///" + str(db.resolve()), observed(obs_path))
+    abc.new("sqlite:///" + str(db.resolve()), x_0)
     h = abc.run_stop_rules(max_gen=max_gen, min_acc=min_acc, min_eps_rel=min_eps_rel, raw_min_acc=raw_min_acc,
                            max_walltime_h=max_walltime_h)
     log.info("stop: %s", abc.stop_reason)
     if write and h.n_populations > 0:
-        write_outputs(h, models, flux, cls, out_dir, abc=abc, n_post=n_post)
+        write_outputs(h, models, flux, cls, out_dir, abc=abc, n_post=n_post, model_choice=model_choice)
     return h
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--model", choices=MODELS)
-    ap.add_argument("--all-models", action="store_true", help="model choice over --models (default N D1 D2 B)")
-    ap.add_argument("--models", nargs="+", default=list(MODELS))
+    ap.add_argument("--all-models", action="store_true",
+                    help="model choice over the Task 8 survivors in --modelchoice, or over --models if given")
+    ap.add_argument("--models", nargs="+", choices=MODELS, default=None, help="explicit model list (overrides the file)")
+    ap.add_argument("--modelchoice", default=str(MODELCHOICE), help="Task 8 abc_modelchoice.csv")
+    ap.add_argument("--min-model-prob", type=float, default=MIN_MODEL_PROB,
+                    help="a model survives at prob_total >= this")
     ap.add_argument("--flux", type=int, choices=(0, 1), required=True)
     ap.add_argument("--cls", choices=("mixed", "soft", "hard"), default="mixed")
     ap.add_argument("--pop-size", type=int, default=1000)
@@ -489,11 +533,15 @@ def main(argv=None):
     if not a.all_models and not a.model:
         ap.error("--model or --all-models is required")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    models = a.models if a.all_models else [a.model]
+    if a.all_models:
+        models = a.models or surviving_models(a.flux, a.modelchoice, a.min_model_prob)
+        log.info("model choice over %s", models)
+    else:
+        models = [a.model]
     h = run(models, bool(a.flux), cls=a.cls, pop_size=a.pop_size, max_gen=a.max_gen, min_acc=a.min_acc,
             min_eps_rel=a.min_eps_rel, sampler=a.sampler, n_procs=a.n_procs, redis_batch=a.redis_batch, db=a.db,
             out_dir=a.out_dir, n_post=a.n_post, engine=a.engine, raw_min_acc=a.raw_min_acc,
-            max_walltime_h=a.max_walltime_h, overwrite=a.overwrite, seed=a.seed)
+            max_walltime_h=a.max_walltime_h, overwrite=a.overwrite, seed=a.seed, model_choice=a.all_models)
     print(f"done: {h.n_populations} generations")
 
 

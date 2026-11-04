@@ -114,3 +114,98 @@ def test_smoke_illex(tmp_path):
     assert h.n_populations == 2
     assert (tmp_path / "abc_smc_post_D1_0.csv").exists()
     assert (tmp_path / "abc_smc_trace_D1_0.csv").exists()
+
+
+# ------------------------------------------------------------------ fix round 1
+
+def test_observed_nan_refused(tmp_path):
+    import json
+
+    from illex.abc.statvec import MODEL_KEYS
+
+    st = smc.observed()                       # the real observed vector is finite
+    assert all(math.isfinite(v) for v in st.values())
+    bad = dict(st, **{MODEL_KEYS[0]: math.nan, MODEL_KEYS[5]: math.nan})
+    p = tmp_path / "obs.json"
+    p.write_text(json.dumps({"stats": bad}))
+    with pytest.raises(ValueError, match=MODEL_KEYS[5]) as e:
+        smc.observed(p)
+    assert MODEL_KEYS[0] in str(e.value)
+    with pytest.raises(ValueError):           # run() refuses before any sampler or db exists
+        smc.run(["D1"], False, cls="soft", sampler="single", db=str(tmp_path / "x.db"), out_dir=str(tmp_path),
+                obs_path=p)
+    assert not (tmp_path / "x.db").exists()
+
+
+def test_surviving_models(tmp_path):
+    import pandas as pd
+
+    p = tmp_path / "mc.csv"
+    pd.DataFrame(dict(model=["B", "D1", "D2", "N", "B", "N"], flux=[0, 0, 0, 0, 1, 1],
+                      prob_total=[0.84, 0.023, 0.12, 0.0096, 0.3, 0.7])).to_csv(p, index=False)
+    assert smc.surviving_models(0, p) == ["D1", "D2", "B"]          # MODELS order, N below 0.01 dropped
+    assert smc.surviving_models(0, p, min_prob=0.05) == ["D2", "B"]
+    assert smc.surviving_models(1, p) == ["N", "B"]
+    with pytest.raises(ValueError):
+        smc.surviving_models(0, p, min_prob=0.9)
+    if smc.MODELCHOICE.exists():                                     # the Task 8 file itself
+        assert set(smc.surviving_models(0)) <= set(smc.MODELS)
+
+
+class _ToyIllex:
+    """Cheap stand-in for IllexModel. One statistic from t_inv, no coalescent."""
+
+    def __call__(self, par):
+        return {"y": float(par["t_inv"] / 1e6 + 0.1 * np.random.standard_normal()), "n_nan": 0}
+
+
+def _toy_illex(models, tmp_path, name):
+    priors = [smc.make_prior(m, False, "soft") for m in models]
+    cont = [tuple(smc.param_names(m, False, "soft")[0]) for m in models]
+    abc = smc.build_abc([_ToyIllex() for _ in models], priors, keys=("y",), pop_size=60,
+                        sampler=pyabc.sampler.SingleCoreSampler(), continuous=cont, names=models)
+    abc.new("sqlite:///" + str(tmp_path / f"{name}.db"), {"y": 0.5})
+    np.random.seed(11)
+    return abc, abc.run_stop_rules(max_gen=2, min_acc=0.0, min_eps_rel=0.0)
+
+
+def test_modelchoice_outputs_distinct(tmp_path):
+    import pandas as pd
+
+    rf = tmp_path / "rf.csv"
+    pd.DataFrame(dict(model=["D1"], flux=[0], parameter=["t_inv"], rows=["all"], median=[5e5], q025=[2e5],
+                      q975=[1e6])).to_csv(rf, index=False)
+    out = tmp_path / "out"
+    abc1, h1 = _toy_illex(["D1"], tmp_path, "single")
+    smc.write_outputs(h1, ["D1"], False, "soft", out, abc=abc1, n_post=20, rf_path=rf)
+    single_post = (out / "abc_smc_post_D1_0.csv").read_text()
+    abc2, h2 = _toy_illex(["N", "D1"], tmp_path, "mc")
+    smc.write_outputs(h2, ["N", "D1"], False, "soft", out, abc=abc2, n_post=20, rf_path=rf, model_choice=True)
+    assert (out / "abc_smc_post_D1_0.csv").read_text() == single_post   # not overwritten
+    assert (out / "abc_smc_trace_D1_0.csv").exists() and (out / "abc_smc_trace_mc_0.csv").exists()
+    for m in ("N", "D1"):
+        if h2.get_distribution(m=["N", "D1"].index(m), t=h2.max_t)[0].shape[0]:
+            assert (out / f"abc_smc_post_mc_{m}_0.csv").exists()
+    post = pd.read_csv(out / "abc_smc_posteriors.csv")
+    d1 = post[(post.model == "D1") & (post.parameter == "t_inv")]
+    assert set(d1["run"]) == {"single", "mc"}
+    cmp = pd.read_csv(out / "abc_rf_vs_smc.csv")
+    assert set(cmp[cmp.model == "D1"]["run"]) == {"single", "mc"}
+    assert set(pd.read_csv(out / "abc_smc_modelchoice.csv")["model"]) == {"N", "D1"}
+    # a rerun of the single-model write replaces only its own rows
+    smc.write_outputs(h1, ["D1"], False, "soft", out, abc=abc1, n_post=20, rf_path=rf)
+    post = pd.read_csv(out / "abc_smc_posteriors.csv")
+    assert (post[(post.model == "D1") & (post.parameter == "t_inv")]["run"].value_counts() == 1).all()
+    assert smc.run_tag(["D1"]) == (False, "D1") and smc.run_tag(["N", "D1"]) == (True, "mc")
+    assert smc.run_tag(["B"], model_choice=True) == (True, "mc")
+
+
+def test_upsert_legacy_table_without_run(tmp_path):
+    import pandas as pd
+
+    p = tmp_path / "t.csv"
+    pd.DataFrame(dict(model=["D1"], flux=[0], cls_run=["soft"], v=[1.0])).to_csv(p, index=False)
+    smc._upsert(p, pd.DataFrame(dict(run=["mc"], model=["D1"], flux=[0], cls_run=["soft"], v=[2.0])),
+                ["run", "model", "flux", "cls_run"])
+    t = pd.read_csv(p)
+    assert sorted(t["run"]) == ["mc", "single"] and sorted(t["v"]) == [1.0, 2.0]

@@ -370,8 +370,50 @@ The combination rule, fixed by the spec: prob_total ∝ prior × acceptance × p
   both sets are filtered on the same ±0.02 window.
 - [ ] **Step 3:** For every statistic, run a two-sample KS test and compare means in units of the pooled SD.
   Report PASS when |Δmean| < 0.25 SD. Write the table. Disagreements are reported, not tuned.
+- [ ] **Step 3b:** The SLiM runs keep 100 kb collinear margins and emit the Task 9c `bnd_*` keys. These are compared like the other statistics.
 - [ ] **Step 4:** Run as a Talapas array via `illex/slim/submit.sh`. Stage the files and draft the commit
   message.
+
+### Task 9c: Breakpoint boundary statistic (PPC-only)
+
+Why: selection on the inverted arrangement also leaves a footprint in the collinear sequence just outside each
+breakpoint, which stays linked to the arrangement. The scale is d ≈ 1/(r·t) (about 600 bp at 800 ka) and the
+sweep dip grows with s/r. This statistic checks the chosen model against that footprint. It is never fitted.
+
+**Files:**
+- Create: `illex/abc/boundary.py`, `tests/illex/test_abc_boundary.py`
+- Modify: `illex/abc/statvec.py` (keys in `STAT_KEYS_PPC_ONLY`, never in `MODEL_KEYS`), `illex/abc/observed.py`
+  (data side), `illex/abc/constants.py` (`BND_EDGES_BP = (0, 1_000, 5_000, 20_000, 100_000)`,
+  `BND_MARGIN_BP = 100_000`)
+- Output: `boundary` block added to `results/illex/abc_observed.json` (point values, jackknife SEs, and per-side values)
+
+**Interfaces:**
+- Produces: `boundary.boundary_stats(ts, i_nodes, s_nodes, bp_left, bp_right, edges=BND_EDGES_BP) -> dict`
+  with keys `bnd_piratio_b{k}` and `bnd_dxypi_b{k}` for k = 0..3. Each key is the left and right flanks pooled,
+  with pi_I/pi_S and dxy/mean(pi_I, pi_S) per bin, as site-based statistics after the genotype error model
+  (`error_model.apply_genotype_errors`, the control-region error parameters, since the flanks are collinear).
+- Produces: `simulate.boundary_ppc(path, seed) -> dict` (msinv engine only).
+- Consumes: Task 10 PPCs, and Task 9 SLiM validation (the same keys from SLiM output).
+
+- [ ] **Step 1:** Write the tests:
+  - On a hand-built tree sequence with known site genotypes, `boundary_stats` returns the hand-computed per-bin π and dxy ratios. Bins are measured outward from each breakpoint, so a site at bp_left − 500 is in b0 and a site at bp_right + 3 000 is in b1.
+  - Sites inside [bp_left, bp_right) are never counted.
+  - The keys are in `STAT_KEYS_PPC_ONLY` and absent from `MODEL_KEYS`.
+  - `boundary_ppc` refuses (ValueError) when `engine_for(path) == "msprime"`. The two-population msprime model links the flanks fully to the arrangement, so its boundary is wrong by construction.
+  - For a neutral no-flux msinv path with t_inv = 1e6, the b3 (20–100 kb) ratios are within 0.1 of the control values (pi ratio about 1, dxy/pi about 1). This is the decay check.
+- [ ] **Step 2:** Run the tests and watch them fail.
+- [ ] **Step 3:** Implement `boundary_stats`. Then implement `boundary_ppc`: msinv with collinear margins of `BND_MARGIN_BP` on each side of the `BODY_BP` body, the same trajectory, flux and seed scheme as `simulate_stats`, and `REC_RATE` in the flanks.
+- [ ] **Step 4:** Data side in `observed.py`, using the same called-genotype path as `pi_ratio`/`dxy_pi`:
+  - flanks [BP_LEFT − 100 kb, BP_LEFT) and [BP_RIGHT, BP_RIGHT + 100 kb), classes I = 2a (AA) and S = 2+ (BB)
+  - accessible sites only
+  - per-bin values for each side and pooled
+  - SEs from a delete-one jackknife over the two sides × 4 bins is too coarse, so use a 10-kb-block bootstrap within each bin
+  
+  Record the per-bin site counts. Flag any bin with fewer than 50 accessible segregating sites as uninformative, and drop it from the PPC.
+- [ ] **Step 5:** Run the tests and watch them pass, then rerun observed.py and check that the existing keys are unchanged (diff the json).
+- [ ] **Step 6:** Commit.
+
+Dependency: the msinv barrier coalescence fix (msinv PR #19). Before it is merged and brought into this branch, `boundary_ppc` runs only in tests. Task 10 must not generate boundary PPCs from an msinv without the fix.
 
 ### Task 10: Production, PPCs, flux erasure and results
 

@@ -169,6 +169,11 @@ estimated by ABC-SMC within each model that survives.
   - Compare the full distribution of every statistic. A disagreement is reported. It is not tuned away.
 - **SLiM posterior predictive checks.** The final PPCs for the chosen model or models are generated in SLiM
   from posterior draws. msinv PPCs are kept alongside as a comparison.
+- **Breakpoint boundary check (PPC-only, author request 2026-11-03).**
+  - Selection on the arrangement leaves a footprint in the collinear flanks next to each breakpoint, linked to it on a scale of about 1/(r·t).
+  - π_I/π_S and dxy/π are measured in bins 0–1, 1–5, 5–20 and 20–100 kb outside each breakpoint, in the data, in fixed msinv (100 kb margins) and in SLiM.
+  - The check is never fitted.
+  - msprime cannot produce it, because its two-population model links the whole sequence to the arrangement.
 - **Scaling limit.** SLiM's Q-scaling is valid only while s·Q < 0.1. Posterior draws with larger s use a
   smaller Q for those runs. The s prior is never truncated to fit SLiM.
 

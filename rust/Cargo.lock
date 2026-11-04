@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "msinv-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "rand",
  "rand_distr",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "msinv-py"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "msinv-core",
  "numpy",

@@ -246,10 +246,31 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
   that counts each compatible pair once is derived only for a single
   active barrier. With two or more barriers active at the same time,
   those sweep-window events use the earlier partial merge, restricted
-  to the cell's class. Marginal trees are unaffected, but
-  within-arrangement short-range LD inside the sweep window keeps the
-  old barrier-era deficit. Coalescences outside sweep windows are not
-  affected.
+  to the cell's class. Marginal trees inside the inversion bodies are
+  unaffected, but within-arrangement short-range LD inside the sweep
+  window keeps the old barrier-era deficit, and a partial merge can
+  leave a remnant that holds only margin material, so flank
+  differentiation inside the sweep window is slightly understated.
+  I x S pairs are never merged there. Coalescences outside sweep
+  windows are not affected.
+
+## Changes in 0.3.6
+
+- **Flank linkage while a barrier is active.** A lineage that carries
+  arrangement material is one chromosome of that arrangement, flanks
+  included, so an I-carrying and an S-carrying lineage now cannot
+  coalesce while the barrier is active, also where they overlap in the
+  untagged flank. Flank material leaves its arrangement only through a
+  recombination in the flank. Earlier versions merged the shared flank of
+  such pairs at 1/(2N), so dxy fell about 3-fold at the breakpoints even
+  with the flank fully linked to the body; flank dxy now decays from the
+  body level toward the panmictic value with distance from the
+  breakpoint. Both engines.
+- **Python high-rho path** (4 N r L > 100): an untagged (margin-only)
+  lineage now coalesces with tagged lineages at 1/(2N), as in the Rust
+  engine; before, only lineages of the same karyotype bucket coalesced.
+- **Full merge for karyotype-compatible pairs** (PR #19): within-
+  arrangement LD while a barrier is active was about 3-fold too low.
 
 ## Running the tests
 

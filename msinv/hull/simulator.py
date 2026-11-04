@@ -22,7 +22,7 @@ Subsequent phases:
 import numpy as np
 
 from .lineage import Lineage, reset_uids
-from .segment import Segment, total_length
+from .segment import total_length
 from .tables import TableBuilder
 from .events import (
     apply_coalescence,
@@ -206,133 +206,20 @@ def _pair_karyotype(lin_a, lin_b):
     well-defined arrangement and a coalescence is a full Hudson merge.
     ``shared_class`` holds the tags present in both lineages (``'P'`` if one
     lineage carries only untagged material); the pair coalesces once, at
-    rate ``1 / (2 N p_shared)``. Incompatible pairs (I x S meeting in a
-    shared margin) return ``(False, None)`` and keep the per-class partial
-    merge. Mirrors ``pair_rate_classes`` / ``barrier_merge_class`` in the
-    Rust engine.
+    rate ``1 / (2 N p_shared)``. Incompatible pairs (e.g. an I and an S
+    lineage overlapping in a shared margin) return ``(False, None)``: each
+    lineage is one chromosome of its arrangement, flanks included, so the
+    pair cannot coalesce while the barrier is active (rate 0). Flank
+    material escapes its arrangement only through a recombination in the
+    flank, which yields an untagged lineage compatible with every other.
+    Mirrors ``pair_rate_classes`` / ``barrier_merge_class`` in the Rust
+    engine.
     """
     sa = _karyotype_signature(lin_a)
     sb = _karyotype_signature(lin_b)
     if tags_conflict(sa | sb):
         return False, None
     return True, tags_to_class(sa & sb)
-
-
-def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
-    """Coalesce ``lin_a`` and ``lin_b`` ONLY at overlap positions where
-    BOTH segments have class ``allowed_class``. Other overlap and
-    non-overlap positions remain on the original lineages.
-
-    Used only for karyotype-incompatible pairs (see ``_pair_karyotype``);
-    compatible pairs take a full merge (``apply_coalescence``).
-
-    Returns the new internal node id.
-    """
-    new_node = tables.add_internal(time=t, population=lin_a.population)
-    # Build new merged segment list (allowed-class overlap) + leftover
-    # segment lists (everything else for each lineage).
-    merged_head = merged_tail = None
-    a_remain_head = a_remain_tail = None
-    b_remain_head = b_remain_tail = None
-
-    def _emit_merged(l, r):
-        nonlocal merged_head, merged_tail
-        seg = Segment(l, r, new_node, branch_class=allowed_class, prev=merged_tail)
-        if merged_head is None:
-            merged_head = seg
-        if merged_tail is not None:
-            merged_tail.next = seg
-        merged_tail = seg
-
-    def _emit_a(l, r, src_seg):
-        nonlocal a_remain_head, a_remain_tail
-        seg = Segment(
-            l, r, src_seg.node_id, branch_class=src_seg.branch_class, prev=a_remain_tail
-        )
-        if a_remain_head is None:
-            a_remain_head = seg
-        if a_remain_tail is not None:
-            a_remain_tail.next = seg
-        a_remain_tail = seg
-
-    def _emit_b(l, r, src_seg):
-        nonlocal b_remain_head, b_remain_tail
-        seg = Segment(
-            l, r, src_seg.node_id, branch_class=src_seg.branch_class, prev=b_remain_tail
-        )
-        if b_remain_head is None:
-            b_remain_head = seg
-        if b_remain_tail is not None:
-            b_remain_tail.next = seg
-        b_remain_tail = seg
-
-    sa = lin_a.head
-    sb = lin_b.head
-    while sa is not None or sb is not None:
-        if sa is None:
-            _emit_b(sb.left, sb.right, sb)
-            sb = sb.next
-            continue
-        if sb is None:
-            _emit_a(sa.left, sa.right, sa)
-            sa = sa.next
-            continue
-        if sa.right <= sb.left:
-            _emit_a(sa.left, sa.right, sa)
-            sa = sa.next
-            continue
-        if sb.right <= sa.left:
-            _emit_b(sb.left, sb.right, sb)
-            sb = sb.next
-            continue
-        # Some overlap.
-        l = max(sa.left, sb.left)
-        r = min(sa.right, sb.right)
-        # Bits before overlap stay on their lineage.
-        if sa.left < l:
-            _emit_a(sa.left, l, sa)
-        if sb.left < l:
-            _emit_b(sb.left, l, sb)
-        # Overlap: if classes match `allowed_class`, MERGE into new
-        # node; otherwise it stays on both lineages.
-        if sa.branch_class == allowed_class and sb.branch_class == allowed_class:
-            tables.add_edge(l, r, new_node, sa.node_id)
-            tables.add_edge(l, r, new_node, sb.node_id)
-            _emit_merged(l, r)
-        else:
-            _emit_a(l, r, sa)
-            _emit_b(l, r, sb)
-        # Advance.
-        if sa.right == r:
-            sa = sa.next
-        else:
-            from .segment import Segment as _S
-
-            sa = _S(r, sa.right, sa.node_id, branch_class=sa.branch_class, next=sa.next)
-            if sa.next is not None:
-                sa.next.prev = sa
-        if sb.right == r:
-            sb = sb.next
-        else:
-            from .segment import Segment as _S
-
-            sb = _S(r, sb.right, sb.node_id, branch_class=sb.branch_class, next=sb.next)
-            if sb.next is not None:
-                sb.next.prev = sb
-
-    # Replace lin_a, lin_b in active with whatever remains + the merged
-    # lineage, where each is non-empty.
-    from .lineage import Lineage as _L
-
-    active.remove(lin_a)
-    active.remove(lin_b)
-    if merged_head is not None:
-        active.append(_L(merged_head, merged_tail, population=lin_a.population))
-    if a_remain_head is not None:
-        active.append(_L(a_remain_head, a_remain_tail, population=lin_a.population))
-    if b_remain_head is not None:
-        active.append(_L(b_remain_head, b_remain_tail, population=lin_b.population))
-    return new_node
 
 
 # ---------------------------------------------------------------------------
@@ -704,10 +591,11 @@ class HullSimulator:
 
         Two regimes:
         1. No active inversions → Hudson per-pop buckets, O(n).
-        2. Active inversions → per-pair rates, O(n^2): a karyotype-
-           compatible pair is one event at its shared karyotype's rate
-           with a full merge; an incompatible pair gets one event per
-           overlapping class with _coalesce_partial.
+        2. Active inversions: a karyotype-compatible pair is one event at
+           its shared karyotype's rate with a full merge; an incompatible
+           pair (I x S at some active inversion) has rate 0. Low rho:
+           exact per-pair rates, O(n^2). High rho: per-(karyotype, pop)
+           buckets, with one event per compatible bucket pair.
 
         Returns list of (kind, rate, payload).
         """
@@ -806,22 +694,56 @@ class HullSimulator:
                     tags.append(inv_tags.get(inv.inv_id, "P"))
                 return tuple(tags) if tags else ("P",)
 
+            # Pairs of lineages in two different buckets coalesce too,
+            # when compatible: per active inversion, the two keys hold
+            # the same tag or at least one holds 'P'. Their shared
+            # karyotype (tags equal in both) sets the rate, as in the
+            # low-rho path and the Rust engine; e.g. an untagged
+            # (margin-only) lineage pairs with an I lineage at 1/(2N).
+            # Incompatible bucket pairs (I x S) get no event. Before
+            # msinv 0.3.6 only same-bucket pairs coalesced here, so a
+            # margin-only lineage could never rejoin a tagged one.
             buckets = {}
             for i, lin in enumerate(active):
                 key = (_classify(lin), lin.population)
                 buckets.setdefault(key, []).append(i)
-            for (cls_tuple, pop), idx_list in buckets.items():
-                k = len(idx_list)
-                if k < 2:
-                    continue
+
+            def _shared(ka, kb):
+                out = []
+                for ta, tb in zip(ka, kb):
+                    if ta == "P" or tb == "P":
+                        out.append("P")
+                    elif ta == tb:
+                        out.append(ta)
+                    else:
+                        return None
+                return tuple(out)
+
+            keys = sorted(buckets, key=repr)
+            for ia, (cls_a, pop) in enumerate(keys):
                 ne_pop = max(self.demography.size_at(pop, t), 1e-9)
-                p_class = 1.0
-                for tag in cls_tuple:
-                    p_class *= _p_class_for(tag, pop)
-                if p_class <= 0:
-                    continue
-                rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
-                rates.append((f"coal_{pop}", rate, idx_list))
+                for cls_b, pop_b in keys[ia:]:
+                    if pop_b != pop:
+                        continue
+                    shared = _shared(cls_a, cls_b)
+                    if shared is None:
+                        continue
+                    p_class = 1.0
+                    for tag in shared:
+                        p_class *= _p_class_for(tag, pop)
+                    if p_class <= 0:
+                        continue
+                    list_a = buckets[(cls_a, pop)]
+                    if cls_b == cls_a:
+                        k = len(list_a)
+                        if k < 2:
+                            continue
+                        rate = k * (k - 1) / 2.0 / (2.0 * ne_pop * p_class)
+                        rates.append((f"coal_{pop}", rate, list_a))
+                    else:
+                        list_b = buckets[(cls_b, pop)]
+                        rate = len(list_a) * len(list_b) / (2.0 * ne_pop * p_class)
+                        rates.append((f"coal_{pop}", rate, (list_a, list_b)))
         else:
             # LOW RHO: exact per-pair overlap-by-class.
             for i in range(len(active)):
@@ -835,30 +757,18 @@ class HullSimulator:
                         continue
                     ne_pop = max(self.demography.size_at(lin_i.population, t), 1e-9)
                     # Karyotype-compatible pair: ONE event at the shared
-                    # karyotype's rate, merged in full (payload class None).
+                    # karyotype's rate, merged in full. Incompatible pair:
+                    # no event (cannot coalesce while the barrier holds).
                     compatible, shared = _pair_karyotype(lin_i, lin_j)
-                    if compatible:
-                        p_class = _p_class_for(shared, lin_i.population)
-                        if p_class > 0:
-                            rates.append(
-                                (
-                                    f"coal_{shared}_{lin_i.population}",
-                                    1.0 / (2.0 * ne_pop * p_class),
-                                    (i, j, None),
-                                )
-                            )
+                    if not compatible:
                         continue
-                    for cls_key, ov_len in ovl.items():
-                        if ov_len <= 0:
-                            continue
-                        p_class = _p_class_for(cls_key, lin_i.population)
-                        if p_class <= 0:
-                            continue
+                    p_class = _p_class_for(shared, lin_i.population)
+                    if p_class > 0:
                         rates.append(
                             (
-                                f"coal_{cls_key}_{lin_i.population}",
+                                f"coal_{shared}_{lin_i.population}",
                                 1.0 / (2.0 * ne_pop * p_class),
-                                (i, j, cls_key),
+                                (i, j),
                             )
                         )
         return rates
@@ -1562,19 +1472,20 @@ class HullSimulator:
                     apply_coalescence(
                         active, active[i], active[j], t, tables, skip_if_no_overlap=True
                     )
+                elif isinstance(payload[0], list):
+                    # High-rho cross-bucket event between two compatible
+                    # karyotype buckets: one lineage from each.
+                    pool_a, pool_b = payload
+                    i = pool_a[self.rng.integers(len(pool_a))]
+                    j = pool_b[self.rng.integers(len(pool_b))]
+                    apply_coalescence(
+                        active, active[i], active[j], t, tables, skip_if_no_overlap=True
+                    )
                 else:
-                    # Per-pair structured event: payload is
-                    # (i, j, allowed_class). allowed_class None is a
-                    # karyotype-compatible pair: full Hudson merge.
-                    # Otherwise partial coalescence — only merge at
-                    # positions where both segments have this class.
-                    i, j, allowed = payload
-                    if allowed is None:
-                        apply_coalescence(active, active[i], active[j], t, tables)
-                    else:
-                        _coalesce_partial(
-                            active, active[i], active[j], t, tables, allowed
-                        )
+                    # Per-pair structured event between a karyotype-
+                    # compatible pair: full Hudson merge.
+                    i, j = payload
+                    apply_coalescence(active, active[i], active[j], t, tables)
             elif chosen_kind == "flux":
                 idx, inv_id = chosen_payload
                 lineage = active[idx]

@@ -1217,8 +1217,15 @@ impl HullSimulator {
                                 AnyPairAction::Merge(a) => a,
                             }
                         } else {
-                            barrier_merge_class(
-                                true, karyotypes_compatible(sig_i, sig_j), cls)
+                            match barrier_merge_class(
+                                true, karyotypes_compatible(sig_i, sig_j)) {
+                                Some(a) => a,
+                                None => {
+                                    debug_assert!(false,
+                                        "incompatible pair drawn from cell {:?}", cls);
+                                    continue;
+                                }
+                            }
                         }
                     };
                     let pre_len = active.len();
@@ -1272,9 +1279,8 @@ impl HullSimulator {
                         }
                     }
                 }
-                Event::CoalPair { i, j, class } => {
+                Event::CoalPair { i, j, class: _ } => {
                     let (i, j) = (*i, *j);
-                    let cls = *class;
                     last_event = "coal_pair";
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
@@ -1284,7 +1290,8 @@ impl HullSimulator {
                     let compatible = !any_barrier || karyotypes_compatible(
                         lineage_sig(active[i].head, arena),
                         lineage_sig(active[j].head, arena));
-                    let allowed = barrier_merge_class(any_barrier, compatible, cls);
+                    let Some(allowed) = barrier_merge_class(any_barrier, compatible)
+                    else { continue; };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         allowed, Some(&mut a_tag), Some(&mut buckets));
@@ -2066,6 +2073,8 @@ fn emit_coal_events_from_cache(
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {
         if count <= 0.0 { continue; }
+        // Incompatible (I x S) pairs: rate 0 while a barrier is active.
+        if cls == BranchClass::BLOCKED { continue; }
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
         if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
@@ -2164,26 +2173,34 @@ fn lineage_sig(head: SegIdx, arena: &SegmentArena) -> u64 {
     sig
 }
 
-/// Merge mode for a coalescence event in cell class `cls`.
+/// Merge mode for a barrier-era coalescence event, or `None` when
+/// the pair cannot coalesce.
 ///
-/// `None` is a full Hudson merge: every segment of both lineages, overlap
-/// and non-overlap, folds into the parent. It applies after the barriers
-/// are gone and, while a barrier is active, to karyotype-compatible pairs
-/// (I x I, S x S, either with an untagged lineage, two untagged lineages):
-/// their common parent chromosome has a well-defined arrangement and
-/// inherits all of their material, exactly as in a two-deme coalescent.
+/// `Some(None)` is a full Hudson merge: every segment of both lineages,
+/// overlap and non-overlap, folds into the parent. It applies after the
+/// barriers are gone and, while a barrier is active, to every pair that
+/// can coalesce at all: the karyotype-compatible pairs (I x I, S x S,
+/// either with an untagged lineage, two untagged lineages). Their common
+/// parent chromosome has a well-defined arrangement and inherits all of
+/// their material, exactly as in a two-deme coalescent.
 ///
-/// `Some(cls)` is the partial merge, kept only for incompatible pairs
-/// (I x S meeting in a shared panmictic margin): only the overlap of class
-/// `cls` merges, everything else stays on remainder lineages. Up to
-/// msinv 0.3.5 every barrier-era coalescence was partial, which left
-/// same-arrangement non-overlap and margin material on remainder
-/// lineages, added spurious breakpoints at the overlap edges and cut
-/// within-arrangement LD about 3-fold.
+/// `None`: an incompatible pair (one lineage carries I and the other S at
+/// some active inversion) has no common ancestor while that barrier is
+/// active, so the event is dropped. The rate cache stores such pairs under
+/// `BranchClass::BLOCKED` with rate 0, so the overlap-bucket pickers never
+/// draw one; the check is a guard. Margin (flank) material leaves its
+/// arrangement only through a recombination in the flank, which makes an
+/// untagged lineage that is compatible with every other.
+///
+/// History: up to msinv 0.3.5 every barrier-era coalescence was partial
+/// (only the overlap of the event's class merged), which cut
+/// within-arrangement LD about 3-fold. Incompatible pairs also
+/// partial-merged their shared margin at 1/(2N), so arrangement-linked
+/// flank material behaved as panmictic right up to the breakpoints.
 #[inline]
-fn barrier_merge_class(any_barrier: bool, compatible: bool, cls: BranchClass)
-    -> Option<BranchClass> {
-    if any_barrier && !compatible { Some(cls) } else { None }
+fn barrier_merge_class(any_barrier: bool, compatible: bool)
+    -> Option<Option<BranchClass>> {
+    if any_barrier && !compatible { None } else { Some(None) }
 }
 
 /// What the sweep any-pair picker does with a pair drawn in cell `cls`.
@@ -2191,7 +2208,8 @@ fn barrier_merge_class(any_barrier: bool, compatible: bool, cls: BranchClass)
 enum AnyPairAction {
     /// Drop the event: the pair is counted in another cell.
     Reject,
-    /// Coalesce with this merge mode (see `barrier_merge_class`).
+    /// Coalesce with this merge mode (`None` = full merge, `Some(cls)` =
+    /// partial merge restricted to `cls`; see `barrier_merge_class`).
     Merge(Option<BranchClass>),
 }
 
@@ -2209,8 +2227,9 @@ enum AnyPairAction {
 /// lineage is untagged and carries only `P` material, so `P` is the only
 /// cell in which it is a candidate with the other), and in cell `K` it
 /// takes a full merge; drawn in any other cell it is rejected so the pair
-/// fires at one rate. Incompatible pairs (I x S) take the partial merge
-/// in the cell they were drawn in.
+/// fires at one rate. Incompatible pairs (I x S, with any number of
+/// active barriers) are rejected: they cannot coalesce while the barrier
+/// is active (see `barrier_merge_class`).
 ///
 /// More than one active barrier: a lineage's signature ORs tags carried
 /// by different segments (e.g. S0 material in one body and S1 in another),
@@ -2220,17 +2239,23 @@ enum AnyPairAction {
 /// single-cell rule is derived for this case, so the picker falls back to
 /// the pre-0.3.6 behaviour: the partial merge restricted to `cls`, which
 /// is consistent with the per-cell lineage-count rate the sweep emitter
-/// uses. Marginal trees are unaffected; within-arrangement short-range LD
-/// keeps the old barrier-era deficit inside sweep windows only.
+/// uses. Only compatible pairs reach this fallback (incompatible pairs
+/// are rejected first), so it never merges material across arrangements.
+/// Marginal trees inside the bodies are unaffected; within-arrangement
+/// short-range LD keeps the old barrier-era deficit inside sweep windows
+/// only, and a partial merge can leave a remnant holding only margin
+/// material (an untagged lineage that did not arise through a flank
+/// recombination), so with two or more barriers flank differentiation
+/// inside a sweep window is slightly understated.
 fn sweep_any_pair_action(n_active_barriers: usize, sig_i: u64, sig_j: u64,
                          cls: BranchClass,
                          both_have: impl FnOnce(BranchClass) -> bool)
     -> AnyPairAction {
     debug_assert!(n_active_barriers >= 1);
-    if n_active_barriers > 1 {
-        return AnyPairAction::Merge(Some(cls));
-    }
     if !karyotypes_compatible(sig_i, sig_j) {
+        return AnyPairAction::Reject;
+    }
+    if n_active_barriers > 1 {
         return AnyPairAction::Merge(Some(cls));
     }
     let shared = shared_karyotype(sig_i, sig_j);
@@ -2319,6 +2344,11 @@ fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
                     barrier_active: &[bool], t: f64, pop: u32) -> f64 {
     if cls.is_panmictic() {
         return 1.0;
+    }
+    // Karyotype-incompatible pairs: no coalescence while the barrier is
+    // active (see `rate_index::pair_rate_classes`).
+    if cls == BranchClass::BLOCKED {
+        return 0.0;
     }
     let mut p = 1.0;
     for (k, inv) in inversions.iter().enumerate() {
@@ -3484,7 +3514,7 @@ mod tests {
 
     /// Single active barrier: every compatible pair full-merges in exactly
     /// one cell (its shared karyotype) and is rejected in the others;
-    /// I x S pairs take the partial merge in the cell they were drawn in.
+    /// I x S pairs are rejected in every cell.
     #[test]
     fn sweep_any_pair_action_single_barrier() {
         let p = BranchClass::PANMICTIC;
@@ -3502,9 +3532,36 @@ mod tests {
         // S x untagged: shared = P, the only cell where both are candidates.
         assert_eq!(sweep_any_pair_action(1, sig_sp, sig_p, p, |k| k == p),
                    AnyPairAction::Merge(None));
-        // I x S meeting in the margin: partial merge restricted to P.
-        assert_eq!(sweep_any_pair_action(1, sig_ip, sig_sp, p, |k| k == p),
+        // I x S meeting in the margin: cannot coalesce, in any cell.
+        for c in [p, s, i] {
+            assert_eq!(sweep_any_pair_action(1, sig_ip, sig_sp, c, |k| k == p),
+                       AnyPairAction::Reject);
+        }
+    }
+
+    /// I x S pairs are rejected with several barriers active too (the
+    /// partial-merge fallback is for compatible pairs only).
+    #[test]
+    fn sweep_any_pair_action_multi_barrier_rejects_incompatible() {
+        let p = BranchClass::PANMICTIC;
+        let i0 = BranchClass::single(0, Karyotype::I).bits();
+        let s0 = BranchClass::single(0, Karyotype::S).bits();
+        let s1 = BranchClass::single(1, Karyotype::S).bits();
+        assert_eq!(sweep_any_pair_action(2, i0 | s1, s0 | s1, p, |_| true),
+                   AnyPairAction::Reject);
+        // Compatible across different inversions: partial fallback.
+        assert_eq!(sweep_any_pair_action(2, i0, s1, p, |_| true),
                    AnyPairAction::Merge(Some(p)));
+    }
+
+    #[test]
+    fn barrier_merge_class_blocks_incompatible() {
+        let p = BranchClass::PANMICTIC;
+        assert_eq!(barrier_merge_class(true, false), None);
+        assert_eq!(barrier_merge_class(true, true), Some(None));
+        assert_eq!(barrier_merge_class(false, false), Some(None));
+        assert_eq!(p_class_for_tag(BranchClass::BLOCKED, &[], &[], 0.0, 0), 0.0);
+        let _ = p;
     }
 
     /// Two active barriers: with two disjoint inversions, lineages that

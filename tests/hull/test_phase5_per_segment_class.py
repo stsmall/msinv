@@ -6,12 +6,20 @@ inversion bounds but NOT to outside-inv positions:
 
   - dxy_SI INSIDE the inversion: same as before (cross-class can only
     coalesce after t_inv).
-  - dxy_SI OUTSIDE the inversion: panmictic (no class barrier; can
-    coalesce at any time).
+  - dxy_SI OUTSIDE the inversion: no positional barrier, but outside
+    material is linked to the arrangement of the chromosome it sits on.
+    It escapes only through a recombination between it and the
+    breakpoint, after which it coalesces panmictically. Far from the
+    breakpoint (r * distance >> 1/t_inv) outside positions are panmictic.
 
 This was the limitation flagged by the SMC-vs-hull comparison: under
 phase 4, the class barrier was applied globally to the whole lineage,
-giving wrongly-elevated outside-inv dxy_SI.
+giving wrongly-elevated outside-inv dxy_SI even with free recombination.
+The opposite extreme, outside material that is panmictic regardless of
+linkage (I x S pairs merging their shared flank at 1/(2N)), was fixed
+in 0.3.6; see test_barrier_flank_linkage.py. The outside-panmictic
+checks below therefore use a high recombination rate (4 N r = 0.04 per
+bp, so linkage to the breakpoint decays within ~100 bp).
 """
 
 import numpy as np
@@ -20,6 +28,9 @@ import pytest
 from msinv.hull import HullSimulator
 
 from .conftest import NEGLIGIBLE_GAMMA
+
+# Flank recombination rate for the outside-panmictic checks (see above).
+R_LOOSE = 1e-5
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +98,7 @@ def test_inside_class_barrier_outside_panmictic(seed):
         t_inv=t_inv,
         bp_left=bp_left,
         bp_right=bp_right,
-        recombination_rate=1e-8,
+        recombination_rate=R_LOOSE,
         seed=seed,
     )
     ts = sim.simulate()
@@ -168,7 +179,7 @@ def test_within_class_outside_panmictic():
             t_inv=t_inv,
             bp_left=bp_left,
             bp_right=bp_right,
-            recombination_rate=1e-8,
+            recombination_rate=R_LOOSE,
             seed=seed,
         )
         ts = sim.simulate()

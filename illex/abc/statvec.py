@@ -57,11 +57,12 @@ JSFS_KEYS = tuple(f"jsfs_{a}{b}" for a, b in JSFS_CELLS)
 LD_KEYS = tuple(f"ld_{c}_{k + 1}" for c in ("I", "S") for k in range(len(LD_EDGES) - 1))
 # Breakpoint boundary keys (``boundary.py``). PPC-only, and outside STAT_KEYS because they come from their own msinv run
 # with 100 kb margins (``simulate.boundary_ppc``) and their own data block (abc_observed.json "boundary"), so the
-# ABC row and the observed "stats" vector do not carry them.
+# ABC row and the observed "stats" vector do not carry them. A PPC over table rows or obs["stats"] loops over
+# ROW_PPC_KEYS. The boundary PPC uses boundary_ppc output against obs["boundary"]["ppc_keys"] (informative bins).
 BND_KEYS = tuple(f"bnd_{s}_b{k}" for s in ("piratio", "dxypi") for k in range(4))
-_PPC_ROW_KEYS = ("tajd_I", "tajd_S", "edge_centre")
-STAT_KEYS_PPC_ONLY = _PPC_ROW_KEYS + BND_KEYS
-STAT_KEYS = RATIO_KEYS + SFS_KEYS + JSFS_KEYS + LD_KEYS + _PPC_ROW_KEYS
+ROW_PPC_KEYS = ("tajd_I", "tajd_S", "edge_centre")      # the PPC-only keys that are in STAT_KEYS
+STAT_KEYS_PPC_ONLY = ROW_PPC_KEYS + BND_KEYS             # NOT a subset of STAT_KEYS (BND_KEYS are outside it)
+STAT_KEYS = RATIO_KEYS + SFS_KEYS + JSFS_KEYS + LD_KEYS + ROW_PPC_KEYS
 MODEL_KEYS = tuple(k for k in STAT_KEYS if k not in STAT_KEYS_PPC_ONLY)  # the statistics the ABC fits
 
 assert PROJ == 20 and JSFS_BINS[-1][1] == PROJ
@@ -344,5 +345,5 @@ def assemble(body: dict, control: dict, edge: float) -> dict:
     return {k: out[k] for k in STAT_KEYS}
 
 
-__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "BND_KEYS", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "ld_block_sums",
-           "MU"]
+__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "ROW_PPC_KEYS", "BND_KEYS", "MODEL_KEYS", "region_stats",
+           "edge_centre", "assemble", "ld_block_sums", "MU"]

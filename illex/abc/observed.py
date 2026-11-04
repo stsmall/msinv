@@ -70,6 +70,7 @@ FLANK_VCF = VCF["body"]
 BND_BLOCK = 10_000                 # boundary bootstrap block, bp of distance from the breakpoint
 BND_BOOT, BND_SEED = 1000, 20261104
 BND_MIN_SEG = 50                   # a bin with fewer accessible segregating sites is uninformative (dropped)
+BND_MIN_UNITS = 5                  # a block bootstrap SE over fewer blocks is marked unreliable
 BLOCK = 1_000_000
 BLOCK_STARTS = tuple(range(BP_LEFT, BP_RIGHT, BLOCK))
 BP_RIGHT_2D = 79_500_000                       # the AA40/BB40 SAFs end here
@@ -320,9 +321,18 @@ def estimate_error_model(names):
 
 
 # ================================================================================ breakpoint boundary ====
+_BED = {}
+
+
+def _acc_bed():
+    if "bed" not in _BED:
+        _BED["bed"] = np.loadtxt(ACC_BED, usecols=(1, 2), dtype=np.int64)
+    return _BED["bed"]
+
+
 def accessible_bp(lo, hi):
     """Accessible bases of [lo, hi) (0-based half-open) in the chr2 mask."""
-    bed = np.loadtxt(ACC_BED, usecols=(1, 2), dtype=np.int64)
+    bed = _acc_bed()
     return int(np.clip(np.minimum(bed[:, 1], hi) - np.maximum(bed[:, 0], lo), 0, None).sum())
 
 
@@ -355,45 +365,60 @@ def _flank_sites(lab, names):
             "blk": blk[keep], "n_vcf": int(pos.size)}
 
 
-def _boot_se(units, rng):
-    """SE of (pi_I/pi_S, dxy/mean pi) from resampling the (n_units, 3) unit sums with replacement."""
-    from illex.abc import boundary as B
+def _boot_se(groups, rng, n_boot=BND_BOOT):
+    """Bootstrap SE of (pi_I/pi_S, dxy/mean pi), stratified by group (side).
 
-    u = np.asarray(units, float)
-    if u.shape[0] < 2:
-        return {"piratio": float("nan"), "dxypi": float("nan")}
-    idx = rng.integers(0, u.shape[0], size=(BND_BOOT, u.shape[0]))
-    tot = u[idx].sum(1)                              # (BND_BOOT, 3)
-    r = [B.bin_ratios(dict(zip(("pi_I", "pi_S", "dxy"), t))) for t in tot]
-    out = {}
-    for key in ("piratio", "dxypi"):
-        v = np.array([x[key] for x in r])
-        v = v[np.isfinite(v)]
-        out[key] = float(v.std(ddof=1)) if v.size > 1 else float("nan")
-    return out
+    ``groups`` is a list of (n_units, 3) arrays of unit sums (pi_I, pi_S, dxy), one per side. Each replicate
+    resamples every group's units with replacement within that group, so every replicate holds both sides as the
+    estimator does. Returns {"se": {piratio, dxypi}, "n_finite": {piratio, dxypi}, "n_units": int}. The SE is NaN
+    with fewer than 2 units in all. Replicates with an undefined ratio are left out and counted in n_finite.
+    """
+    gs = [np.asarray(g, float).reshape(-1, 3) for g in groups]
+    gs = [g for g in gs if g.shape[0] > 0]
+    n_units = int(sum(g.shape[0] for g in gs))
+    nan = {"piratio": float("nan"), "dxypi": float("nan")}
+    if n_units < 2:
+        return {"se": nan, "n_finite": {"piratio": 0, "dxypi": 0}, "n_units": n_units}
+    tot = np.zeros((n_boot, 3))
+    for g in gs:
+        tot += g[rng.integers(0, g.shape[0], size=(n_boot, g.shape[0]))].sum(1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        v = {"piratio": tot[:, 0] / tot[:, 1], "dxypi": tot[:, 2] / (0.5 * (tot[:, 0] + tot[:, 1]))}
+    se, nf = {}, {}
+    for key, x in v.items():
+        x = x[np.isfinite(x)]
+        nf[key] = int(x.size)
+        se[key] = float(x.std(ddof=1)) if x.size > 1 else float("nan")
+    return {"se": se, "n_finite": nf, "n_units": n_units}
 
 
 def boundary_block(names):
     """The abc_observed.json "boundary" block: BND_KEYS per bin pooled over the two flanks and per side.
 
     The called-genotype estimator of pi_ratio / dxy_pi (``site_stats``, accessible sites with >= 1 called
-    genotype in I or S), summed per bin and divided. The SEs come from a bootstrap of 10-kb blocks (counted outward from each
-    bin's inner edge, so a block never straddles two bins) within each bin, the two sides' blocks pooled for
-    the pooled value. Bins 0-1 and 1-5 kb are narrower than a block, so they have one block per side, and their
-    pooled block SE rests on two blocks (their per-side block SE is undefined). A site-level bootstrap SE, which
-    ignores linkage, is recorded beside it. A bin with fewer than BND_MIN_SEG accessible segregating sites is
-    flagged uninformative and left out of "ppc_keys".
+    genotype in I or S), summed per bin and divided. The SEs come from a bootstrap of 10-kb blocks (counted
+    outward from each bin's inner edge, so a block never straddles two bins) within each bin, stratified by side
+    for the pooled value. A bin narrower than a block has at most one block per side. An SE over fewer than
+    BND_MIN_UNITS blocks is marked unreliable in "se_reliable", and the count of finite replicates is recorded.
+    A site-level bootstrap SE, which ignores linkage, is recorded beside it. A bin with fewer than BND_MIN_SEG
+    accessible segregating sites is flagged uninformative and left out of "ppc_keys". The stored simulation mask
+    (``boundary.MASK_PATH``) must equal the accessible BED over both flanks, and its per-bin accessible bp are
+    those recorded here.
     """
     from illex.abc import boundary as B
 
+    stored, fresh = B.load_flank_mask(), B.build_flank_mask(ACC_BED)
+    if not all(np.array_equal(stored[sd], fresh[sd]) for sd in B.SIDES):
+        raise SystemExit(f"{B.MASK_PATH} differs from {ACC_BED}: rebuild it with boundary.build_flank_mask")
     rng = np.random.default_rng(BND_SEED)
     fl = {"left": _flank_sites("flank_left", names), "right": _flank_sites("flank_right", names)}
     keys3 = ("pi_I", "pi_S", "dxy")
     res = {"stats": {}, "se": {}, "se_site_bootstrap": {}, "per_side": {"left": {}, "right": {}},
-           "se_per_side": {"left": {}, "right": {}}, "counts": {}, "informative": {}}
+           "se_per_side": {"left": {}, "right": {}}, "counts": {}, "informative": {}, "se_reliable": {},
+           "se_n_finite": {}}
     for group, sides in (("pooled", ("left", "right")), ("left", ("left",)), ("right", ("right",))):
         cnt = {"n_sites": [], "n_seg": [], "accessible_bp": [], "n_blocks": []}
-        vals, ses, ses_site = {}, {}, {}
+        vals, ses, ses_site, rel, nfin = {}, {}, {}, {}, {}
         for b in range(B.N_BND):
             units, sites = [], []
             n_sites = n_seg = acc_bp = 0
@@ -405,20 +430,20 @@ def boundary_block(names):
                 n_seg += int(st["seg"].sum())
                 acc_bp += accessible_bp(*bin_span(sd, b))
                 blk = f["blk"][m]
-                for u in np.unique(blk):
-                    w = blk == u
-                    units.append([st[key][w].sum() for key in keys3])
+                units.append([[st[key][blk == u].sum() for key in keys3] for u in np.unique(blk)])
                 sites.append(np.stack([st[key] for key in keys3], 1))
-            sites = np.concatenate(sites, 0)
-            r = B.bin_ratios(dict(zip(keys3, sites.sum(0))))
-            se_b, se_s = _boot_se(units, rng), _boot_se(sites, rng)
+            r = B.bin_ratios(dict(zip(keys3, np.concatenate(sites, 0).sum(0))))
+            bb, bs = _boot_se(units, rng), _boot_se(sites, rng)
             for key in ("piratio", "dxypi"):
                 name = f"bnd_{key}_b{b}"
-                vals[name], ses[name], ses_site[name] = r[key], se_b[key], se_s[key]
+                vals[name], ses[name], ses_site[name] = r[key], bb["se"][key], bs["se"][key]
+                rel[name] = bool(bb["n_units"] >= BND_MIN_UNITS and math.isfinite(bb["se"][key]))
+                nfin[name] = bb["n_finite"][key]
             cnt["n_sites"].append(n_sites), cnt["n_seg"].append(n_seg)
-            cnt["accessible_bp"].append(acc_bp), cnt["n_blocks"].append(len(units))
+            cnt["accessible_bp"].append(acc_bp), cnt["n_blocks"].append(bb["n_units"])
         order = list(B.BND_KEYS)
-        vals, ses, ses_site = ({k: d[k] for k in order} for d in (vals, ses, ses_site))
+        vals, ses, ses_site, rel, nfin = ({k: d[k] for k in order} for d in (vals, ses, ses_site, rel, nfin))
+        res["se_reliable"][group], res["se_n_finite"][group] = rel, nfin
         if group == "pooled":
             res["stats"], res["se"], res["se_site_bootstrap"] = vals, ses, ses_site
         else:
@@ -439,8 +464,12 @@ def boundary_block(names):
                     "edges[k + 1]",
         "n_seg": "accessible sites with both alleles among the called I and S genotypes",
         "n_sites": "accessible VCF sites with >= 1 called I or S genotype",
-        "bootstrap": {"block_bp": BND_BLOCK, "replicates": BND_BOOT, "seed": BND_SEED,
-                      "blocks": "10-kb blocks from each bin's inner edge, within the bin, sides pooled for pooled"},
+        "bootstrap": {"block_bp": BND_BLOCK, "replicates": BND_BOOT, "seed": BND_SEED, "min_units": BND_MIN_UNITS,
+                      "blocks": "10-kb blocks from each bin's inner edge, within the bin, stratified by side for "
+                                "pooled (the site bootstrap is stratified the same way)"},
+        "sim_mask": {"path": str(B.MASK_PATH.name), "accessible_bp": B.mask_accessible_bp(stored),
+                     "rule": "sim site at offset j outward from its breakpoint takes the data base's accessibility "
+                             "at the same offset (left base BP_LEFT - 1 - j, right base BP_RIGHT + j)"},
         "min_seg": BND_MIN_SEG, "control": "none (raw values, as the simulated boundary_ppc)",
         "undefined": "null (a bin with no sites, or a bootstrap with fewer than two blocks)"}
     return _json_safe(res)

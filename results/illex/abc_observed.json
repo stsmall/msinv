@@ -2476,7 +2476,7 @@
       "length_bp": 40000.0
     },
     "polarization": "I = 2a = AA cluster (inverted), S = 2+ = BB cluster (standard)",
-    "runtime_s": 210.9
+    "runtime_s": 224.2
   },
   "boundary": {
     "stats": {
@@ -2492,22 +2492,22 @@
     "se": {
       "bnd_piratio_b0": null,
       "bnd_piratio_b1": null,
-      "bnd_piratio_b2": 0.061068356211510536,
-      "bnd_piratio_b3": 0.05641683470160499,
+      "bnd_piratio_b2": 0.021804611558946675,
+      "bnd_piratio_b3": 0.0457584510106415,
       "bnd_dxypi_b0": null,
       "bnd_dxypi_b1": null,
-      "bnd_dxypi_b2": 0.005799557587418433,
-      "bnd_dxypi_b3": 0.0035396368770779156
+      "bnd_dxypi_b2": 0.004020085034747027,
+      "bnd_dxypi_b3": 0.003495987711704214
     },
     "se_site_bootstrap": {
       "bnd_piratio_b0": null,
       "bnd_piratio_b1": 0.20896161790920084,
-      "bnd_piratio_b2": 0.036061827789734484,
-      "bnd_piratio_b3": 0.019407152238746964,
+      "bnd_piratio_b2": 0.03552159694968676,
+      "bnd_piratio_b3": 0.019884652108718658,
       "bnd_dxypi_b0": null,
       "bnd_dxypi_b1": 0.010321295818859195,
-      "bnd_dxypi_b2": 0.006523977281092914,
-      "bnd_dxypi_b3": 0.001880426057946744
+      "bnd_dxypi_b2": 0.006405349667496046,
+      "bnd_dxypi_b3": 0.001957533875002917
     },
     "per_side": {
       "left": {
@@ -2653,6 +2653,70 @@
         true
       ]
     },
+    "se_reliable": {
+      "pooled": {
+        "bnd_piratio_b0": false,
+        "bnd_piratio_b1": false,
+        "bnd_piratio_b2": false,
+        "bnd_piratio_b3": true,
+        "bnd_dxypi_b0": false,
+        "bnd_dxypi_b1": false,
+        "bnd_dxypi_b2": false,
+        "bnd_dxypi_b3": true
+      },
+      "left": {
+        "bnd_piratio_b0": false,
+        "bnd_piratio_b1": false,
+        "bnd_piratio_b2": false,
+        "bnd_piratio_b3": true,
+        "bnd_dxypi_b0": false,
+        "bnd_dxypi_b1": false,
+        "bnd_dxypi_b2": false,
+        "bnd_dxypi_b3": true
+      },
+      "right": {
+        "bnd_piratio_b0": false,
+        "bnd_piratio_b1": false,
+        "bnd_piratio_b2": false,
+        "bnd_piratio_b3": true,
+        "bnd_dxypi_b0": false,
+        "bnd_dxypi_b1": false,
+        "bnd_dxypi_b2": false,
+        "bnd_dxypi_b3": true
+      }
+    },
+    "se_n_finite": {
+      "pooled": {
+        "bnd_piratio_b0": 0,
+        "bnd_piratio_b1": 0,
+        "bnd_piratio_b2": 1000,
+        "bnd_piratio_b3": 1000,
+        "bnd_dxypi_b0": 0,
+        "bnd_dxypi_b1": 0,
+        "bnd_dxypi_b2": 1000,
+        "bnd_dxypi_b3": 1000
+      },
+      "left": {
+        "bnd_piratio_b0": 0,
+        "bnd_piratio_b1": 0,
+        "bnd_piratio_b2": 1000,
+        "bnd_piratio_b3": 1000,
+        "bnd_dxypi_b0": 0,
+        "bnd_dxypi_b1": 0,
+        "bnd_dxypi_b2": 1000,
+        "bnd_dxypi_b3": 1000
+      },
+      "right": {
+        "bnd_piratio_b0": 0,
+        "bnd_piratio_b1": 0,
+        "bnd_piratio_b2": 1000,
+        "bnd_piratio_b3": 1000,
+        "bnd_dxypi_b0": 0,
+        "bnd_dxypi_b1": 0,
+        "bnd_dxypi_b2": 1000,
+        "bnd_dxypi_b3": 1000
+      }
+    },
     "se_site_bootstrap_per_side": {
       "left": {
         "bnd_piratio_b0": null,
@@ -2715,7 +2779,26 @@
         "block_bp": 10000,
         "replicates": 1000,
         "seed": 20261104,
-        "blocks": "10-kb blocks from each bin's inner edge, within the bin, sides pooled for pooled"
+        "min_units": 5,
+        "blocks": "10-kb blocks from each bin's inner edge, within the bin, stratified by side for pooled (the site bootstrap is stratified the same way)"
+      },
+      "sim_mask": {
+        "path": "boundary_mask.npz",
+        "accessible_bp": {
+          "left": [
+            0,
+            318,
+            6014,
+            23635
+          ],
+          "right": [
+            183,
+            601,
+            7046,
+            14664
+          ]
+        },
+        "rule": "sim site at offset j outward from its breakpoint takes the data base's accessibility at the same offset (left base BP_LEFT - 1 - j, right base BP_RIGHT + j)"
       },
       "min_seg": 50,
       "control": "none (raw values, as the simulated boundary_ppc)",

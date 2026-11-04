@@ -18,18 +18,29 @@ parameters, since the flanks are collinear.
 The distance of a site at position x (continuous, or a 0-based base given at its centre x + 0.5) is
 left flank d = bp_left - x for x < bp_left, right flank d = x - bp_right for x >= bp_right, and the site is in
 bin k when edges[k] <= d < edges[k + 1]. Sites inside [bp_left, bp_right) are never counted.
+
+Accessibility. The data use accessible sites only, so the simulated flanks carry the same mask. Each flank base
+has an integer offset j outward from its breakpoint (j = 0 is the base next to it), with the left base
+BP_LEFT - 1 - j and the right base BP_RIGHT + j. ``boundary_mask.npz`` holds the chr2 accessible mask of both
+flanks by offset (``build_flank_mask``, checked against the BED by ``observed.py`` on every run). A simulated site
+at continuous x has j = ceil(bp_left - x) - 1 on the left and floor(x - bp_right) on the right, so it takes the
+mask value of the data base at the same signed distance from the same breakpoint. Each bin and side then has
+exactly the data's accessible bp (``mask_accessible_bp``), and the left / right pooling weights match the data.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
-from illex.abc.constants import BND_EDGES_BP
+from illex.abc.constants import BND_EDGES_BP, BND_MARGIN_BP, BP_LEFT, BP_RIGHT
 from illex.abc.error_model import LD_ERROR, apply_genotype_errors
 from illex.abc.statvec import BND_KEYS
 
 N_BND = len(BND_EDGES_BP) - 1
 assert len(BND_KEYS) == 2 * N_BND
 SIDES = ("left", "right")
+MASK_PATH = Path(__file__).with_name("boundary_mask.npz")
 
 
 def _div(a, b):
@@ -51,6 +62,41 @@ def flank_bins(pos, bp_left, bp_right, edges=BND_EDGES_BP):
         ok = (left | right) & np.isfinite(d) & (d >= e[0]) & (d < e[-1])
     side = np.where(ok, np.where(left, 0, 1), -1)
     return side, np.where(ok, k, -1)
+
+
+def flank_offsets(pos, bp_left, bp_right):
+    """(side, j) per site, side 0 = left, 1 = right, -1 inside the inversion (j = -1 there).
+
+    j is the integer base offset outward from the breakpoint, j = ceil(bp_left - x) - 1 on the left and
+    floor(x - bp_right) on the right. A data base p0 given at its centre p0 + 0.5 gets j = BP_LEFT - 1 - p0 on the
+    left and p0 - BP_RIGHT on the right.
+    """
+    x = np.asarray(pos, float)
+    left, right = x < bp_left, x >= bp_right
+    j = np.where(left, np.ceil(bp_left - x) - 1, np.where(right, np.floor(x - bp_right), -1)).astype(np.int64)
+    return np.where(left, 0, np.where(right, 1, -1)), j
+
+
+def build_flank_mask(bed_path, bp_left=BP_LEFT, bp_right=BP_RIGHT, margin=BND_MARGIN_BP):
+    """{"left", "right"} bool arrays over offsets j = 0 .. margin - 1 from a BED of accessible intervals."""
+    bed = np.loadtxt(bed_path, usecols=(1, 2), dtype=np.int64)
+    j = np.arange(int(margin))
+    out = {}
+    for name, p0 in (("left", bp_left - 1 - j), ("right", bp_right + j)):
+        k = np.searchsorted(bed[:, 0], p0, side="right") - 1
+        out[name] = (k >= 0) & (p0 < bed[np.maximum(k, 0), 1])
+    return out
+
+
+def load_flank_mask(path=MASK_PATH):
+    """The stored chr2 flank mask (``boundary_mask.npz``), {"left", "right"} bool arrays by offset."""
+    z = np.load(path)
+    return {name: z[name].astype(bool) for name in SIDES}
+
+
+def mask_accessible_bp(mask, edges=BND_EDGES_BP):
+    """{"left", "right"} accessible bp per bin of a flank mask (bin k holds offsets edges[k] <= j < edges[k+1])."""
+    return {name: [int(mask[name][edges[b]:edges[b + 1]].sum()) for b in range(len(edges) - 1)] for name in SIDES}
 
 
 def site_sums(dos_i, dos_s):
@@ -119,13 +165,15 @@ def diploid_dosages(g, cols, rng, err=None, err_rng=None):
 
 
 def boundary_stats(ts, i_nodes, s_nodes, bp_left, bp_right, edges=BND_EDGES_BP, rng=None,
-                   err=LD_ERROR["control"], err_rng=None, per_side=False) -> dict:
+                   err=LD_ERROR["control"], err_rng=None, per_side=False, mask=None) -> dict:
     """``BND_KEYS`` of a mutated tree sequence, pi_I/pi_S and dxy/mean(pi_I, pi_S) per flank bin with sides pooled.
 
     ``rng`` draws the within-class diploid pairing and ``err_rng`` the genotype errors (both default to a fixed
     seed 0). ``err`` = {"I": (call_rate, h), "S": (call_rate, h)}, by default the control-region parameters of
     ``error_model.LD_ERROR``. ``err=None`` skips the diploid pairing and the errors, and uses the haploid
     genotypes directly. ``per_side=True`` adds "left" / "right" dicts of the same keys and "n_seg" site counts.
+    ``mask`` = {"left", "right"} bool arrays by offset (``load_flank_mask``) keeps only the sites whose offset is
+    accessible. None keeps every flank site.
     """
     if tuple(edges) != tuple(BND_EDGES_BP):
         raise ValueError(f"edges must be BND_EDGES_BP {BND_EDGES_BP} (the key names fix the bins)")
@@ -134,6 +182,16 @@ def boundary_stats(ts, i_nodes, s_nodes, bp_left, bp_right, edges=BND_EDGES_BP, 
     pos = ts.tables.sites.position
     side, k = flank_bins(pos, bp_left, bp_right, edges)
     sel = side >= 0
+    if mask is not None:
+        _, j = flank_offsets(pos, bp_left, bp_right)
+        for s_id, name in enumerate(SIDES):
+            m = np.asarray(mask[name], bool)
+            on = sel & (side == s_id)
+            ok = np.zeros(on.sum(), bool)
+            jj = j[on]
+            inside = (jj >= 0) & (jj < m.size)
+            ok[inside] = m[jj[inside]]
+            sel[np.flatnonzero(on)[~ok]] = False
     samples = ts.samples()
     col = {int(u): c for c, u in enumerate(samples)}
     ci = np.array([col[int(u)] for u in i_nodes])
@@ -143,15 +201,16 @@ def boundary_stats(ts, i_nodes, s_nodes, bp_left, bp_right, edges=BND_EDGES_BP, 
     else:
         g = np.zeros((0, ts.num_samples), np.int8)
     if err is None:
-        st =_haploid_sums(g[:, ci], g[:, cs])
+        st = _haploid_sums(g[:, ci], g[:, cs])
     else:
         di = diploid_dosages(g, ci, rng, err["I"], err_rng)
         ds = diploid_dosages(g, cs, rng, err["S"], err_rng)
         st = site_sums(di, ds)
     side, k = side[sel], k[sel]
-    out = keyed(bin_sums(st, side, k))
+    pooled = bin_sums(st, side, k)
+    out = keyed(pooled)
     if per_side:
-        out["n_seg"] = bin_sums(st, side, k)["n_seg"].tolist()
+        out["n_seg"] = pooled["n_seg"].tolist()
         for j, name in enumerate(SIDES):
             s = bin_sums(st, side, k, sides=(j,))
             out[name] = keyed(s)

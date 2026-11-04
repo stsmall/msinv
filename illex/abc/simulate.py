@@ -226,7 +226,13 @@ def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> 
     return out
 
 
-def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR) -> dict:
+# Set to True once the msinv barrier coalescence fix (msinv PR #19) is in this branch. Until then boundary_ppc
+# refuses to run unless the caller passes allow_unfixed=True (the tests do).
+BND_PPC_READY = False
+
+
+def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR, mask="data",
+                 allow_unfixed: bool = False) -> dict:
     """The breakpoint boundary statistic (``boundary.BND_KEYS``) of one path, for posterior predictive checks only.
 
     msinv only, with a BODY_BP inversion between two BND_MARGIN_BP collinear margins at REC_RATE, the path's
@@ -237,18 +243,30 @@ def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR) -> d
     default engine is "msinv", and ``engine_for(path, engine) == "msprime"`` (engine "msprime", or "auto" on a
     no-flux path) raises ValueError.
 
-    Needs the msinv barrier coalescence fix (msinv PR #19) before it is used for real PPCs.
+    ``mask="data"`` (the default) keeps only the simulated sites at the data's accessible offsets from each
+    breakpoint (``boundary.load_flank_mask``), so every bin and side has the data's accessible bp. ``mask=None``
+    keeps every flank site, and a {"left", "right"} dict is used as given.
+
+    Needs the msinv barrier coalescence fix (msinv PR #19) before it is used for real PPCs. Until BND_PPC_READY is
+    True it raises RuntimeError unless ``allow_unfixed=True``.
     """
     from illex import stats as S
-    from illex.abc.boundary import boundary_stats
+    from illex.abc.boundary import boundary_stats, load_flank_mask
 
     if engine_for(path, engine) == "msprime":
         raise ValueError("boundary_ppc needs msinv: msprime's two-population model links the flanks fully to "
                          "the arrangement")
+    if not (BND_PPC_READY or allow_unfixed):
+        raise RuntimeError("boundary_ppc needs the msinv barrier coalescence fix (msinv PR #19), so it runs only "
+                           "with allow_unfixed=True until BND_PPC_READY is set")
+    if isinstance(mask, str):
+        if mask != "data":
+            raise ValueError(f"mask must be 'data', None or a dict, got {mask!r}")
+        mask = load_flank_mask()
     s_inv, _, s_mi, _, s_pi, _, _, s_ei, _ = _seed_words(seed)
     sim, ts = _inversion_ts(path, s_inv, margin=BND_MARGIN_BP)
     i_nodes, s_nodes = S.sample_nodes_by_karyotype(sim, ts)
     mts = _mutate(ts, s_mi)
     return boundary_stats(mts, i_nodes, s_nodes, BND_MARGIN_BP, BND_MARGIN_BP + BODY_BP,
                           rng=np.random.default_rng(s_pi), err=ld_error["control"],
-                          err_rng=np.random.default_rng(s_ei))
+                          err_rng=np.random.default_rng(s_ei), mask=mask)

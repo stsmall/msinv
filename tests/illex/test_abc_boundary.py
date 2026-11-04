@@ -9,8 +9,9 @@ import pytest
 import tskit
 
 from illex.abc import statvec as SV
-from illex.abc.boundary import BND_KEYS, boundary_stats, flank_bins, site_sums
-from illex.abc.constants import BND_EDGES_BP, BND_MARGIN_BP
+from illex.abc.boundary import (BND_KEYS, SIDES, boundary_stats, build_flank_mask, flank_bins, flank_offsets,
+                                 load_flank_mask, mask_accessible_bp, site_sums)
+from illex.abc.constants import BND_EDGES_BP, BND_MARGIN_BP, BP_LEFT, BP_RIGHT
 from illex.abc.trajectory import Path
 
 NAN = float("nan")
@@ -172,6 +173,139 @@ def test_boundary_ppc_refuses_msprime():
         boundary_ppc(p, seed=1, engine="auto")
 
 
+def test_boundary_ppc_refuses_unfixed_msinv():
+    from illex.abc import simulate
+
+    assert simulate.BND_PPC_READY is False          # flip only once msinv PR #19 is in this branch
+    with pytest.raises(RuntimeError):
+        simulate.boundary_ppc(path(1e5), seed=1)
+
+
+# ------------------------------------------------------------------------------ accessibility mask ----
+def _full_mask(margin=100_000):
+    return {name: np.ones(margin, bool) for name in SIDES}
+
+
+def test_masked_site_excluded():
+    """A site at an inaccessible offset is dropped, so the stats equal those of the ts without that site."""
+    j_left_b0 = int(np.ceil(500) - 1)                 # BPL - 500 has offset 499 on the left
+    mask = _full_mask()
+    mask["left"][j_left_b0] = False
+    got = boundary_stats(_ts(), I_NODES, S_NODES, BPL, BPR, err=None, per_side=True, mask=mask)
+    drop = {x: tuple(i) + tuple(sn) for x, (i, sn) in SITES.items() if x != BPL - 500}
+    want = boundary_stats(star_ts(drop), I_NODES, S_NODES, BPL, BPR, err=None, per_side=True)
+    for k in BND_KEYS:
+        assert got[k] == want[k] or (np.isnan(got[k]) and np.isnan(want[k])), k
+    assert got["left"]["n_seg"] == [0, 1, 0, 1]
+    full = boundary_stats(_ts(), I_NODES, S_NODES, BPL, BPR, err=None, mask=_full_mask())
+    base = boundary_stats(_ts(), I_NODES, S_NODES, BPL, BPR, err=None)
+    assert all(full[k] == base[k] or (np.isnan(full[k]) and np.isnan(base[k])) for k in BND_KEYS)
+    # masking the same offset on the right side changes nothing here
+    mask_r = _full_mask()
+    mask_r["right"][499] = False
+    other = boundary_stats(_ts(), I_NODES, S_NODES, BPL, BPR, err=None, mask=mask_r)
+    assert all(other[k] == base[k] or (np.isnan(other[k]) and np.isnan(base[k])) for k in BND_KEYS)
+
+
+def test_offsets_match_data_bases():
+    """A data base p0 at its centre p0 + 0.5 has offset BP_LEFT - 1 - p0 (left) or p0 - BP_RIGHT (right), and a
+    continuous sim position inside that base gets the same offset."""
+    from illex.abc.observed import bin_span
+
+    j = np.arange(100_000)
+    for name, p0 in (("left", BP_LEFT - 1 - j), ("right", BP_RIGHT + j)):
+        for frac in (0.5, 0.0, 0.999):
+            side, jj = flank_offsets(p0 + frac, BP_LEFT, BP_RIGHT)
+            assert (side == SIDES.index(name)).all() and np.array_equal(jj, j), (name, frac)
+        side, k = flank_bins(p0 + 0.5, BP_LEFT, BP_RIGHT)
+        for b in range(4):
+            lo, hi = bin_span(name, b)
+            assert np.array_equal(np.sort(p0[k == b]), np.arange(lo, hi)), (name, b)
+            assert ((j[k == b] >= BND_EDGES_BP[b]) & (j[k == b] < BND_EDGES_BP[b + 1])).all()
+
+
+def test_sim_mask_accessible_bp_equals_data():
+    import json
+    from pathlib import Path
+
+    obs = Path(__file__).resolve().parents[2] / "results/illex/abc_observed.json"
+    if not obs.exists():
+        pytest.skip("abc_observed.json not built")
+    counts = json.loads(obs.read_text())["boundary"]["counts"]
+    sim = mask_accessible_bp(load_flank_mask())
+    for name in SIDES:
+        assert sim[name] == counts[name]["accessible_bp"], name
+    assert [a + b for a, b in zip(sim["left"], sim["right"])] == counts["pooled"]["accessible_bp"]
+
+
+def test_stored_mask_equals_bed():
+    from illex.abc.observed import ACC_BED
+
+    if not ACC_BED.exists():
+        pytest.skip(f"{ACC_BED} not available")
+    stored, fresh = load_flank_mask(), build_flank_mask(ACC_BED)
+    for name in SIDES:
+        assert stored[name].shape == (BND_MARGIN_BP,) and np.array_equal(stored[name], fresh[name]), name
+
+
+def test_sim_masked_sites_carry_only_accessible_offsets():
+    """With the real mask, every simulated site that is counted sits at an accessible data offset."""
+    import msprime
+
+    seq = BND_MARGIN_BP * 2 + 40_000.0
+    ts = msprime.sim_mutations(msprime.sim_ancestry(10, sequence_length=seq, recombination_rate=1e-8,
+                                                    population_size=1e4, random_seed=7),
+                               rate=2e-7, random_seed=7, model=msprime.BinaryMutationModel(),
+                               discrete_genome=False)
+    smp = ts.samples()
+    bl, br = BND_MARGIN_BP, BND_MARGIN_BP + 40_000.0
+    mask = load_flank_mask()
+    got = boundary_stats(ts, smp[:10], smp[10:], bl, br, err=None, per_side=True, mask=mask)
+    side, j = flank_offsets(ts.tables.sites.position, bl, br)
+    _, k = flank_bins(ts.tables.sites.position, bl, br)
+    acc = np.zeros(side.size, bool)
+    for s_id, name in enumerate(SIDES):
+        on = side == s_id
+        acc[on] = mask[name][np.clip(j[on], 0, BND_MARGIN_BP - 1)] & (j[on] < BND_MARGIN_BP)
+    g = ts.genotype_matrix()
+    seg = (g.sum(1) > 0) & (g.sum(1) < g.shape[1])
+    for s_id, name in enumerate(SIDES):
+        want = [int(((side == s_id) & (k == b) & acc & seg).sum()) for b in range(4)]
+        assert got[name]["n_seg"] == want, name
+    assert got["left"]["n_seg"][0] == 0                     # left b0 has no accessible bp in the data
+
+
+def test_error_free_model_equals_haploid():
+    """err = (1, 0) per class (no errors, diploid pairing) gives the err=None haploid result exactly."""
+    import msprime
+
+    ts = msprime.sim_mutations(msprime.sim_ancestry(20, sequence_length=L, recombination_rate=1e-8,
+                                                    population_size=1e4, random_seed=3),
+                               rate=1e-7, random_seed=3, model=msprime.BinaryMutationModel())
+    smp = ts.samples()
+    a = boundary_stats(ts, smp[:20], smp[20:], BPL, BPR, err={"I": (1.0, 0.0), "S": (1.0, 0.0)},
+                       rng=np.random.default_rng(9))
+    b = boundary_stats(ts, smp[:20], smp[20:], BPL, BPR, err=None)
+    for k in BND_KEYS:
+        assert a[k] == pytest.approx(b[k], rel=1e-12), k
+
+
+def test_boot_se_stratified():
+    from illex.abc.observed import _boot_se
+
+    rng = np.random.default_rng(0)
+    left = np.array([[1.0, 2.0, 3.0]] * 3)
+    right = np.array([[3.0, 1.0, 2.0]] * 2)
+    r = _boot_se([left, right], rng, n_boot=200)
+    # with identical units within each side, a side-stratified replicate is always the point estimate
+    assert r["n_units"] == 5 and r["se"]["piratio"] == pytest.approx(0.0, abs=1e-12)
+    assert r["n_finite"]["piratio"] == 200
+    one = _boot_se([np.array([[1.0, 1.0, 1.0]]), np.zeros((0, 3))], rng)
+    assert one["n_units"] == 1 and np.isnan(one["se"]["piratio"])
+    zero = _boot_se([np.array([[1.0, 0.0, 1.0], [1.0, 1.0, 1.0]])], rng, n_boot=500)
+    assert 0 < zero["n_finite"]["piratio"] < 500             # replicates with pi_S = 0 are counted, not hidden
+
+
 # ------------------------------------------------------------------------------- decay (slow) ----
 REPS = 8
 
@@ -179,7 +313,7 @@ REPS = 8
 def _ppc(seed):
     from illex.abc.simulate import boundary_ppc
 
-    return boundary_ppc(path(1e6), seed=seed)
+    return boundary_ppc(path(1e6), seed=seed, allow_unfixed=True)
 
 
 def _control(seed):

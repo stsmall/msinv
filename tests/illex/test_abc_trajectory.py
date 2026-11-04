@@ -152,8 +152,6 @@ def test_establishment_prob_matches_wf(s):
     frac = float((g >= 0).mean())
     se = np.sqrt(u * (1 - u) / m)
     assert abs(frac - u) < 3 * se, (s, frac, u, se)
-    if s == 0.0:
-        assert u == pytest.approx(1.0 / ESTABLISHED)
 
 
 def test_conditional_attempts_and_weights():
@@ -168,12 +166,12 @@ def test_conditional_attempts_and_weights():
 
 
 def test_weighted_acceptance_matches_bruteforce(monkeypatch):
-    """Hard D1 at a small constant N: (1/n) sum w_est * accepted from the conditional run == brute-force rate."""
+    """Hard D1 at a smaller constant N (2e4): (1/n) sum w_est * accepted from the conditional run == brute-force rate."""
     from illex.abc import trajectory as T
-    monkeypatch.setitem(T.PRIOR, "t_inv", (300.0, 1000.0))
-    monkeypatch.setitem(T.PRIOR, "s", (3e-3, 1e-2))
-    ne = _const_ne(2000)
-    nb, nc = 800_000, 20_000
+    monkeypatch.setitem(T.PRIOR, "t_inv", (5e3, 2e4))
+    monkeypatch.setitem(T.PRIOR, "s", (2e-4, 6e-4))
+    ne = _const_ne(20_000)
+    nb, nc = 2_400_000, 20_000
     prm = T.draw_prior("D1", False, np.random.default_rng(1), nb, "hard")
     _, c1 = T.simulate_paths(prm, np.random.default_rng(2), n_e_fn=ne)
     p1 = c1["hard"].accepted / nb
@@ -183,5 +181,37 @@ def test_weighted_acceptance_matches_bruteforce(monkeypatch):
     h = c2["hard"]
     p2 = h.w_acc / nc
     se2 = np.sqrt((h.w_acc_sq / nc - p2 ** 2) / nc)
-    assert c1["hard"].accepted > 60 and h.accepted > 100
+    assert c1["hard"].accepted > 40 and h.accepted > 100
     assert abs(p1 - p2) < 3 * np.hypot(se1, se2), (p1, p2, se1, se2)
+
+
+def test_establishment_prob_exact_reviewer_values():
+    """Exact first-passage u at 2N = 1.1e6 (independent linear solve by the reviewer), to 4 significant figures."""
+    from illex.abc.establishment import direct_u, u_grid
+    exact = {0.0: 0.0019511, 1e-4: 0.0020526, 1e-3: 0.0031155, 1e-2: 0.0197371}
+    for s, v in exact.items():
+        assert direct_u(1_100_000, s) == pytest.approx(v, rel=5e-5)
+        assert float(u_grid([s], [1_100_000])[0]) == pytest.approx(v, rel=1e-4)
+
+
+def test_establishment_grid_matches_direct_offgrid():
+    """Grid interpolation vs a direct linear solve at off-grid s, 2N and (for B) p*: within 1e-4 relative."""
+    from illex.abc.establishment import direct_u, establishment_prob
+    from illex.theory import N_growth
+    rng = np.random.default_rng(0)
+    for t in (4e5, 6.1e5, 1.2e6):
+        two_n = int(np.floor(2 * float(N_growth(t))))
+        for s in np.exp(rng.uniform(np.log(1.1e-6), np.log(9e-3), 3)).tolist() + [3e-7, 0.0]:
+            d = establishment_prob("D1", s, t)[0]
+            assert d == pytest.approx(direct_u(two_n, s), rel=1e-4), (t, s)
+            for ps in (0.31, 0.5, 0.77, 0.94):
+                b = establishment_prob("B", s, t, None, ps)[0]
+                assert b == pytest.approx(direct_u(two_n, s, ps), rel=1e-4), (t, s, ps)
+    assert establishment_prob("N", 0.0, 7e5)[0] == pytest.approx(direct_u(int(2 * float(N_growth(7e5))), 0.0), rel=1e-4)
+
+
+def test_hard_draws_have_t_sel_equal_t_inv():
+    from illex.abc.trajectory import draw_prior
+    for m in ("D1", "D2", "B"):
+        p = draw_prior(m, False, np.random.default_rng(1), 200, "hard")
+        assert np.array_equal(p["t_sel"], p["t_inv"])

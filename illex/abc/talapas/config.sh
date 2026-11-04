@@ -6,6 +6,8 @@ HERE_CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "$HERE_CFG/../../slim/config.sh"
 export OUTROOT=${ABC_OUTROOT:-/gpfs/projects/$ACCOUNT/$USER/illex_traj_abc}
+# CHECK BEFORE SUBMITTING: the Talapas env (ENV from slim/config.sh, illex_slimsim) is not verified to hold msinv
+# and msprime of the versions used on the box; array.sbatch fails fast with exit 3 if the import preflight fails.
 export TABLE_MODELS=${TABLE_MODELS:-"N D1 D2 B"}
 export TABLE_FLUXES=${TABLE_FLUXES:-"0 1"}
 export TABLE_CLASSES=${TABLE_CLASSES:-"hard soft"}

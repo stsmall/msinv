@@ -6,7 +6,9 @@
 #SBATCH --output=logs/%x_%A_%a.out
 #SBATCH --error=logs/%x_%A_%a.out
 set -euo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
+# sbatch copies this script into the spool, so dirname "$0" is NOT the repo: submit.sh passes ABC_TALAPAS_DIR.
+# (illex/slim/submit_talapas.sbatch has the same latent bug; left untouched.)
+HERE=${ABC_TALAPAS_DIR:-${SLURM_SUBMIT_DIR:?}/illex/abc/talapas}
 # shellcheck disable=SC1091
 source "$HERE/config.sh"
 activate_env
@@ -20,6 +22,13 @@ TID=$((idx % TASKS_PER_COMBO))
 
 mkdir -p "$OUTROOT/table" logs
 cd "$REPO"
+# Preflight: the env must import everything the driver needs (msinv for flux rows, msprime for no-flux rows).
+if ! PYTHONPATH="$REPO" python -c "import msinv, msprime, illex.abc.run_table"; then
+    echo "FATAL: preflight failed: python in env '$ENV' cannot import msinv, msprime and illex.abc.run_table (REPO=$REPO)." >&2
+    echo "       Install msinv and msprime in that env (see illex/abc/talapas/config.sh) and make REPO a checkout of this branch." >&2
+    exit 3
+fi
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 echo "[idx $idx] model=$M flux=$F class=$C task_id=$TID K=$K_PER_TASK workers=$CPUS_PER_TASK host=$(hostname) $(date)"
 python -m illex.abc.run_table --model "$M" --flux "$F" --class "$C" --n-accept "$K_PER_TASK" --task-id "$TID" \
     --out "$OUTROOT/table" --workers "$CPUS_PER_TASK" --max-drawn "$MAX_DRAWN"

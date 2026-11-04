@@ -19,6 +19,7 @@ CMD=(sbatch
      --cpus-per-task="$CPUS_PER_TASK"
      --mem="$MEM"
      --time="$WALLTIME"
+     --export="ALL,ABC_TALAPAS_DIR=$HERE"
      "$HERE/array.sbatch")
 
 echo "$NCOMBO combinations x $TASKS_PER_COMBO tasks = $NTASKS array tasks; K=$K_PER_TASK per task"

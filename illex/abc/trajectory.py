@@ -24,9 +24,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from illex.abc.constants import GAMMA_MAX, P_NOW, P_TOL, PRIOR
+from illex.abc.establishment import ESTABLISHED, establishment_prob  # noqa: F401 (re-exported)
 from illex.theory import N_growth
 
-ESTABLISHED = 500
 MODELS = ("N", "D1", "D2", "B")
 KEYS = ("t_inv", "hard", "p0", "t_sel", "s", "t_stop", "p_star", "gamma_eff")
 
@@ -85,24 +85,6 @@ def draw_prior(model: str, flux: bool, rng, n: int, cls: str = "mixed") -> dict:
     out["model"] = model
     out["flux"] = flux
     return out
-
-
-def establishment_prob(model, s, t_inv, n_e_fn=N_growth, established=ESTABLISHED):
-    """u(theta): probability that ONE copy reaches ``established`` copies (Kimura's diffusion, N = Ne(t_inv)).
-
-    u = (1 - exp(-4 N s p0)) / (1 - exp(-4 N s p1)), p0 = 1 / 2N, p1 = established / 2N; s is s (D1, D2) or s_het
-    (B, delta ~ s_het p at small p). Neutral (model N, s = 0 or NaN): the limit p0 / p1 = 1 / established.
-    Vectorised; expm1 keeps it stable at small s.
-    """
-    t_inv = np.atleast_1d(np.asarray(t_inv, float))
-    two_n = np.maximum(2.0 * np.asarray(n_e_fn(t_inv), float), 2.0)
-    n = two_n / 2.0
-    p0, p1 = 1.0 / two_n, established / two_n
-    s = np.zeros_like(t_inv) if model == "N" else np.nan_to_num(np.broadcast_to(np.asarray(s, float), t_inv.shape))
-    x0, x1 = -4.0 * n * s * p0, -4.0 * n * s * p1
-    with np.errstate(divide="ignore", invalid="ignore"):
-        u = np.where(s == 0, p0 / p1, np.expm1(x0) / np.expm1(x1))
-    return np.clip(u, 0.0, 1.0)
 
 
 def _delta(model, p, s, p_star):
@@ -215,8 +197,11 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
     w_est = np.ones(n)
     if condition_on_establishment:
         if h.size:
+            assert np.allclose(np.asarray(params["t_sel"], float)[h], t_inv[h]) or model == "N", \
+                "hard draws must have t_sel == t_inv"
             w_est[h] = establishment_prob(model, np.asarray(params["s"], float)[h] if model != "N" else 0.0,
-                                          t_inv[h], n_e_fn)
+                                          t_inv[h], n_e_fn,
+                                          np.asarray(params["p_star"], float)[h] if model == "B" else None)
             counts_att = int(n_att.sum())
         else:
             counts_att = 0

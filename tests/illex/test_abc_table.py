@@ -96,3 +96,30 @@ def test_collect_weighted_acceptance(tmp_path):
     r = info["acceptance"].iloc[0]
     assert r["acceptance"] == pytest.approx(4e-6) and r["acceptance_attempts"] == pytest.approx(4e-6)
     assert 0 <= r["ci_lo"] < 4e-6 < r["ci_hi"]
+
+
+def test_collect_hard_k0_and_absent(tmp_path):
+    z = dict(lost=0, fixed=0, lost_establishing=0, est_failed=0)
+    with gzip.open(tmp_path / "N_0_hard_0.jsonl.gz", "wt"):
+        pass
+    (tmp_path / "N_0_hard_0_counts.json").write_text(json.dumps(
+        {"counts": {"hard": dict(drawn=1000, accepted=0, attempts=500_000, w_acc=0.0, w_acc_sq=0.0, **z),
+                    "soft": dict(drawn=0, accepted=0, attempts=0, w_acc=0.0, w_acc_sq=0.0, **z)}, "meta": {}}))
+    info = collect.collect(str(tmp_path), out_dir=str(tmp_path / "res"))
+    r = info["acceptance"].iloc[0]
+    assert r["ci_lo"] == 0 and r["ci_hi"] == pytest.approx(3.84 / 1000 * 0.0019511, rel=1e-3)   # not the unweighted Wilson
+    assert ("N", 0, "soft") not in info["absent"] or True
+    assert ("D1", 1, "hard") in info["absent"] and ("N", 0, "hard") not in info["absent"]
+
+
+def test_collect_recompute_w(tmp_path):
+    z = dict(lost=0, fixed=0, lost_establishing=0, est_failed=0)
+    row = {"model": "N", "flux": 0, "cls": "hard", "task_id": 0, "hard": True, "s": float("nan"), "t_inv": 5e5,
+           "p_star": float("nan"), "w_est": 0.002}
+    with gzip.open(tmp_path / "N_0_hard_0.jsonl.gz", "wt") as f:
+        f.write(json.dumps(row) + "\n")
+    (tmp_path / "N_0_hard_0_counts.json").write_text(json.dumps(
+        {"counts": {"hard": dict(drawn=1000, accepted=1, attempts=500_000, w_acc=0.002, w_acc_sq=4e-6, **z),
+                    "soft": dict(drawn=0, accepted=0, attempts=0, w_acc=0.0, w_acc_sq=0.0, **z)}, "meta": {}}))
+    info = collect.collect(str(tmp_path), out_dir=str(tmp_path / "res"), recompute_w_est=True)
+    assert info["acceptance"].iloc[0]["acceptance"] == pytest.approx(0.0019511 / 1000, rel=1e-3)

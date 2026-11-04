@@ -22,6 +22,15 @@ the pi/dxy checks guard.
 msinv's default is the SMC (coalescence needs shared material), so the LD
 reference is msprime's ``model="smc"``. Hudson gives about 3-5% higher r^2 at
 these recombination rates, for msinv-independent reasons.
+
+Crossover suppression (msinv 0.4.0): inside the body an arrangement-q lineage
+recombines at r q while the barrier is active (a crossover needs a
+homokaryotypic partner), so the r^2 reference for arrangement q is one deme of
+size qN with rate r q until t_inv, then size N with rate r. msprime has a single
+recombination rate, so ``_msprime_one_arrangement`` runs that model in a time
+scale where the rate is r throughout (size q^2 N until q t_inv) and maps node
+times back before adding mutations. Recombination does not change marginal
+trees, so pi and dxy still come from the two-deme run.
 """
 
 import math
@@ -90,6 +99,25 @@ def _msinv(cfg, seed, use_rust=True):
     return _stats(ts, i_nodes, s_nodes, (left, left + body), seed + 7)
 
 
+def _msprime_one_arrangement(q, n, cfg, seed):
+    """ARG of n arrangement-q haplotypes (body only): size qN, rate r q until
+    T_INV, then size N, rate r. Simulated in tau = q t (t < T_INV),
+    tau = q T_INV + (t - T_INV) after, where the rate is r throughout and the
+    first epoch has size q^2 N; node times are then mapped back to t."""
+    d = msprime.Demography()
+    d.add_population(name="X", initial_size=q * q * N)
+    d.add_population_parameters_change(q * T_INV, initial_size=N, population="X")
+    ts = msprime.sim_ancestry(
+        samples=[msprime.SampleSet(n, population="X", ploidy=1)],
+        demography=d, sequence_length=cfg["body"],
+        recombination_rate=cfg["r"], ploidy=2, model="smc", random_seed=seed)
+    tables = ts.dump_tables()
+    tau = tables.nodes.time
+    tables.nodes.time = np.where(tau < q * T_INV, tau / q,
+                                 T_INV + (tau - q * T_INV))
+    return tables.tree_sequence()
+
+
 def _msprime(cfg, seed):
     d = msprime.Demography()
     d.add_population(name="I", initial_size=P * N)
@@ -103,8 +131,18 @@ def _msprime(cfg, seed):
         demography=d, sequence_length=cfg["body"],
         recombination_rate=cfg["r"], ploidy=2, model="smc",
         random_seed=seed)
-    return _stats(ts, ts.samples(population=0), ts.samples(population=1),
-                  (0, cfg["body"]), seed + 7)
+    two_deme = _stats(ts, ts.samples(population=0), ts.samples(population=1),
+                      (0, cfg["body"]), seed + 7)
+    nb = len(BINS) - 1
+    r2 = []
+    for k, q in enumerate((P, 1 - P)):
+        one = _msprime_one_arrangement(q, n, cfg, seed + 11 + k)
+        mts = msprime.sim_mutations(one, rate=MU, random_seed=seed + 13 + k,
+                                    model=msprime.BinaryMutationModel(),
+                                    discrete_genome=False)
+        r2 += _r2_by_distance(mts, mts.samples(), (0, cfg["body"]))
+    assert len(r2) == 2 * nb
+    return r2 + two_deme[2 * nb:]
 
 
 def _z(a, b):

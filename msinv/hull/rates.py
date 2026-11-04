@@ -25,25 +25,50 @@ def coalescence_rate_same_class_pop(k: int, p_class: float, ne: float) -> float:
     return k * (k - 1) / 2.0 / max(p_class * ne, 1e-300)
 
 
-def recombination_rate_for_lineage(
-    lineage, rho_per_unit: float, bp_left: float, bp_right: float, p_class_in_pop: float
-) -> float:
+def crossover_weight(branch_class, tag_p) -> float:
+    """Crossover weight w of one segment while inversion barriers are active.
+
+    A crossover inside an inversion needs a homokaryotypic partner, so a
+    lineage carrying arrangement k there recombines at ``r * p_k``. The
+    weight is the product of ``tag_p[tag]`` over the segment's class tags
+    (one tag per containing inversion, a frozenset for nested inversions).
+    Panmictic segments ('P': collinear flanks, untagged material, or
+    inversions whose barrier has lifted) and tags missing from ``tag_p``
+    get weight 1. Untagged material inside an inversion (samples with a
+    ``None`` karyotype) is treated as panmictic, as in the coalescence rate.
+    The product over nested or overlapping inversions assumes the
+    arrangements are independent, again the coalescence convention.
+
+    Mirrors the Rust ``p_class_for_tag`` applied to the class at the
+    breakpoint (``simulator.rs``, Event::Recombination).
+    """
+    if branch_class is None or branch_class == "P":
+        return 1.0
+    if isinstance(branch_class, frozenset):
+        w = 1.0
+        for tag in branch_class:
+            w *= tag_p.get(tag, 1.0)
+        return w
+    return tag_p.get(branch_class, 1.0)
+
+
+def recombination_rate_for_lineage(lineage, rho_per_unit: float, tag_p) -> float:
     """Effective recombination rate for one lineage.
 
-    Out-of-inv intervals: full rho_per_unit per unit length.
-    In-inv intervals: rho_per_unit * p_class_in_pop (only homokaryotype
-        recombines normally).
+    ``rho_per_unit`` times the integral over the lineage's ancestral
+    material of the crossover weight (see ``crossover_weight``): the full
+    rate on panmictic material and ``rho_per_unit * p_k`` on material
+    tagged with arrangement k of an inversion whose barrier is active.
+    ``tag_p`` maps class tags ('S', 'I', 'S0', 'I1', ...) to the
+    arrangement frequency in the lineage's population; pass an empty dict
+    for the unsuppressed rate.
     """
     rate = 0.0
     seg = lineage.head
     while seg is not None:
-        out_left = max(0.0, min(seg.right, bp_left) - seg.left)
-        in_mid = max(0.0, min(seg.right, bp_right) - max(seg.left, bp_left))
-        out_right = max(0.0, seg.right - max(seg.left, bp_right))
-        rate += rho_per_unit * (out_left + out_right)
-        rate += rho_per_unit * p_class_in_pop * in_mid
+        rate += (seg.right - seg.left) * crossover_weight(seg.branch_class, tag_p)
         seg = seg.next
-    return rate
+    return rho_per_unit * rate
 
 
 def gene_flux_rate_for_lineage(

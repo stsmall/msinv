@@ -144,6 +144,31 @@ pub struct HullSimulator {
     /// together. SMC' matches the linkage of the exact coalescent much
     /// more closely but is slower (about 1.8x at Illex scale).
     pub smc_prime: bool,
+    /// Crossover suppression in heterokaryotypes (default true).
+    /// While an inversion's barrier is active, a crossover at a
+    /// position inside the inversion needs a homokaryotypic partner,
+    /// so a lineage carrying arrangement k there recombines at
+    /// `r * p_k(t)`. Conventions, shared with the coalescence rate
+    /// (`p_class_for_tag`):
+    /// - nested / overlapping inversions take the product of the
+    ///   per-inversion frequencies, which assumes the arrangements are
+    ///   independent;
+    /// - untagged material (samples with a `None` karyotype) is
+    ///   panmictic and gets weight 1, as do collinear flanks and
+    ///   everything older than t_inv.
+    /// The standard SLiM inversion recipe likewise drops crossovers
+    /// inside the inversion in a heterokaryotype. Implemented by
+    /// thinning: breakpoints are proposed at rate `r` per bp of
+    /// material and accepted with probability `w(x, t)` evaluated at
+    /// the proposal time, so recombination is exact for time-varying
+    /// trajectories (coalescence still evaluates p(t) at each event
+    /// and holds it until the next one).
+    /// Known limitation: the sweep hitchhiking escape probability in
+    /// `apply_sweep_finalize` still uses the full `r`, also inside an
+    /// active inversion.
+    /// false restores the msinv <= 0.3.5 behaviour (full `r`
+    /// everywhere) for reproducing earlier results.
+    pub crossover_suppression: bool,
 }
 
 impl HullSimulator {
@@ -185,6 +210,7 @@ impl HullSimulator {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         }
     }
 
@@ -213,6 +239,7 @@ impl HullSimulator {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         }
     }
 
@@ -335,6 +362,16 @@ impl HullSimulator {
     ) {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
+
+        // TODO(crossover_suppression): this disabled path draws every
+        // breakpoint at the full rate r. If it is revived, port the
+        // thinning step from `run_loop`'s Event::Recombination arm.
+        // Until then refuse to run it silently with the wrong rate.
+        assert!(
+            !self.crossover_suppression || inversions.is_empty(),
+            "run_loop_compound does not implement crossover_suppression; \
+             port the thinning from run_loop or set \
+             crossover_suppression=false");
 
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
@@ -1380,8 +1417,32 @@ impl HullSimulator {
                     let lin_len = active[chosen_idx].cached_len;
                     if lin_len <= 0.0 { continue; }
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
-                    let x = find_position(active, chosen_idx, x_offset,
-                                           arena, self.sequence_length);
+                    let (x, x_class) = find_position_and_class(
+                        active, chosen_idx, x_offset, arena,
+                        self.sequence_length);
+                    // Heterokaryotype crossover suppression, by thinning:
+                    // the event above was proposed at the full rate r per
+                    // bp of material; keep it with probability
+                    // w(x, t) = p_class(t) of the arrangement(s) the
+                    // lineage carries at x (1 in flanks, on untagged
+                    // material and once barriers are gone). Accepted
+                    // breakpoints then have rate r * w(x, t) at every
+                    // position and time, with w read at the event time.
+                    if self.crossover_suppression && any_barrier
+                        && !x_class.is_panmictic()
+                    {
+                        let w = p_class_for_tag(
+                            x_class, inversions, &barrier_active, t,
+                            active[chosen_idx].population);
+                        if w < 1.0 && rng.random::<f64>() >= w {
+                            // Rejected: no state change. Coalescence rates
+                            // are re-emitted at the new t, as after any
+                            // other event, so p_class(t) stays current.
+                            last_event = "recomb_rejected";
+                            coal_rates_dirty = true;
+                            continue;
+                        }
+                    }
                     let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid, Some(&mut a_tag), Some(&mut buckets));
@@ -2645,6 +2706,26 @@ fn find_position(
     seq_len
 }
 
+/// `find_position` plus the class tag of the segment that contains the
+/// returned position (`PANMICTIC` for the out-of-material fallback).
+fn find_position_and_class(
+    active: &[Lineage], idx: usize, offset: f64, arena: &SegmentArena,
+    seq_len: f64,
+) -> (f64, BranchClass) {
+    let mut remaining = offset;
+    let mut cur = active[idx].head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let seg_len = seg.right - seg.left;
+        if remaining < seg_len {
+            return (seg.left + remaining, seg.branch_class);
+        }
+        remaining -= seg_len;
+        cur = seg.next;
+    }
+    (seq_len, BranchClass::PANMICTIC)
+}
+
 /// Apply a deterministic boundary: cross barriers, fire demographic
 /// events (propagating any inversion frequency changes), and fire any
 /// pending sweep whose time matches.
@@ -3596,6 +3677,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 15);
@@ -3624,6 +3706,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // 6 samples, no recomb → 11 nodes.
@@ -3865,6 +3948,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -3905,6 +3989,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -3946,6 +4031,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);
@@ -4130,6 +4216,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         sim.record_events = true;
 
@@ -4298,6 +4385,7 @@ mod tests {
             seed: 7, stop_at: f64::INFINITY,
             compound_rate: false, iters_max: 1_000_000,
             gc_stride: 160, record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // The deepest internal node should fall inside the sweep window

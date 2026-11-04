@@ -117,5 +117,7 @@ fn build_multi_pop(
         iters_max: 10_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
+        crossover_suppression: true,
     }
 }

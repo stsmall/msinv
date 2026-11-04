@@ -10,7 +10,7 @@
 /// `swap_remove`, the last lineage moves to `idx` and all cache
 /// entries referencing the old last index are patched.
 
-use crate::class_tag::BranchClass;
+use crate::class_tag::{karyotypes_compatible, shared_karyotype, BranchClass};
 use crate::hull_index::HullIndex;
 use crate::lineage::Lineage;
 use crate::segment::SegmentArena;
@@ -833,7 +833,7 @@ impl RateCache {
                     && self.lineage_pos_bits[i] & self.lineage_pos_bits[j] == 0 {
                     continue;
                 }
-                let ovl = pair_overlap(
+                let ovl = pair_rate_classes(
                     &self.lineage_segs[i], &self.lineage_segs[j],
                     self.lineage_hulls[i], self.lineage_hulls[j], self.smc_prime);
                 if !ovl.is_empty() {
@@ -915,7 +915,7 @@ impl RateCache {
             if !both_pan && changed_bits & self.lineage_pos_bits[other] == 0 { continue; }
             let i = other.min(idx);
             let j = other.max(idx);
-            let ovl = pair_overlap(
+            let ovl = pair_rate_classes(
                 &self.lineage_segs[i], &self.lineage_segs[j],
                 self.lineage_hulls[i], self.lineage_hulls[j], self.smc_prime);
             if !ovl.is_empty() {
@@ -994,7 +994,7 @@ impl RateCache {
         // split, so they are an eligible pair (back-coalescence).
         if !self.smc_prime { return; }
         let (a, b) = (idx.min(new_idx), idx.max(new_idx));
-        let ovl = pair_overlap(
+        let ovl = pair_rate_classes(
             &self.lineage_segs[a], &self.lineage_segs[b],
             self.lineage_hulls[a], self.lineage_hulls[b], self.smc_prime);
         if !ovl.is_empty() {
@@ -1029,13 +1029,13 @@ impl RateCache {
         if self.smc_prime
             && segs_all_pan(&self.lineage_segs[idx]) && segs_all_pan(&self.lineage_segs[other]) {
             self.clear_pair(oi, oj);
-            let ovl = pair_overlap(
+            let ovl = pair_rate_classes(
                 &self.lineage_segs[oi], &self.lineage_segs[oj],
                 self.lineage_hulls[oi], self.lineage_hulls[oj], self.smc_prime);
             if !ovl.is_empty() {
                 self.store_pair(oi, oj, &ovl);
             }
-            let ovl = pair_overlap(
+            let ovl = pair_rate_classes(
                 &self.lineage_segs[ni], &self.lineage_segs[nj],
                 self.lineage_hulls[ni], self.lineage_hulls[nj], self.smc_prime);
             if !ovl.is_empty() {
@@ -1044,15 +1044,19 @@ impl RateCache {
             return;
         }
 
-        // Case A: other entirely left of split_pos — old pair with the
-        // left-half is unchanged; nothing to do.
+        // Case A: other entirely left of split_pos — the overlap with the
+        // left half is unchanged. Only the pair's karyotype key can change
+        // (the left half may have lost tagged material), so refresh it.
         if other_r <= split_pos {
+            self.refresh_karyotype_key(oi, oj);
             return;
         }
         // Case B: other entirely right of split_pos — old overlap used
-        // right-half only; move slot to (new_idx, other).
+        // right-half only; move slot to (new_idx, other), then refresh the
+        // karyotype key for the right half's signature.
         if other_l >= split_pos {
             self.move_pair(oi, oj, ni, nj);
+            self.refresh_karyotype_key(ni, nj);
             return;
         }
         // Case C: other spans split_pos. Clear old; recompute each half.
@@ -1063,8 +1067,9 @@ impl RateCache {
             .get(other).copied().unwrap_or(0);
         if other_r > left_hull_l && left_hull_r > other_l
             && left_bits & other_bits != 0 {
-            let ovl = compute_overlap(
-                &self.lineage_segs[oi], &self.lineage_segs[oj]);
+            let ovl = pair_rate_classes(
+                &self.lineage_segs[oi], &self.lineage_segs[oj],
+                self.lineage_hulls[oi], self.lineage_hulls[oj], self.smc_prime);
             if !ovl.is_empty() {
                 self.store_pair(oi, oj, &ovl);
             }
@@ -1073,11 +1078,36 @@ impl RateCache {
             .get(new_idx).copied().unwrap_or(0);
         if other_r > right_hull_l && right_hull_r > other_l
             && right_bits & other_bits != 0 {
-            let ovl = compute_overlap(
-                &self.lineage_segs[ni], &self.lineage_segs[nj]);
+            let ovl = pair_rate_classes(
+                &self.lineage_segs[ni], &self.lineage_segs[nj],
+                self.lineage_hulls[ni], self.lineage_hulls[nj], self.smc_prime);
             if !ovl.is_empty() {
                 self.store_pair(ni, nj, &ovl);
             }
+        }
+    }
+
+    /// Re-key a nonempty pair whose overlap is known to be unchanged but
+    /// whose lineages' karyotype signatures may have shrunk (recombination
+    /// split). A karyotype-compatible pair is stored under exactly one
+    /// class, its shared karyotype (`pair_rate_classes`); if that differs
+    /// from what is stored, recompute the entry. Incompatible pairs keep
+    /// their per-class overlap set, which a split does not change.
+    fn refresh_karyotype_key(&mut self, i: usize, j: usize) {
+        let pidx = pair_idx(i, j, self.capacity);
+        if !bit_get(&self.nonempty_bits, pidx) { return; }
+        let sa = segs_sig(&self.lineage_segs[i]);
+        let sb = segs_sig(&self.lineage_segs[j]);
+        if !karyotypes_compatible(sa, sb) { return; }
+        let want = shared_karyotype(sa, sb);
+        let refs = self.refs_slice(pidx);
+        if refs.len() == 1 && self.class_for_ref(refs[0].0) == want { return; }
+        self.clear_pair(i, j);
+        let ovl = pair_rate_classes(
+            &self.lineage_segs[i], &self.lineage_segs[j],
+            self.lineage_hulls[i], self.lineage_hulls[j], self.smc_prime);
+        if !ovl.is_empty() {
+            self.store_pair(i, j, &ovl);
         }
     }
 
@@ -1332,6 +1362,18 @@ impl RateCache {
                 }
                 if refs.is_empty() {
                     continue;
+                }
+                // Invariant 7: stored classes equal a fresh
+                // `pair_rate_classes` (same set, one entry per class).
+                let fresh = pair_rate_classes(
+                    &self.lineage_segs[i], &self.lineage_segs[j],
+                    self.lineage_hulls[i], self.lineage_hulls[j], self.smc_prime);
+                let stored: Vec<BranchClass> = refs.iter()
+                    .map(|&(slot, _)| self.class_for_ref(slot)).collect();
+                if stored.len() != fresh.len()
+                    || !fresh.iter().all(|c| stored.contains(c)) {
+                    panic!("[{}] pair ({},{}) classes {:?} ≠ fresh {:?}",
+                           label, i, j, stored, fresh);
                 }
                 let expected_pop = self.lineage_pop[i];
                 let expected_packed = pack_ij(i, j);
@@ -1588,6 +1630,44 @@ fn pair_overlap(a: &[FlatSeg], b: &[FlatSeg],
     compute_overlap(a, b)
 }
 
+/// Karyotype signature of a lineage: OR of its segments' class bits
+/// (see `class_tag::karyotypes_compatible`).
+#[inline]
+fn segs_sig(s: &[FlatSeg]) -> u64 {
+    s.iter().fold(0u64, |acc, &(_, _, c)| acc | c.bits())
+}
+
+/// Coalescence classes under which a pair is stored, i.e. the
+/// (pop, class) buckets whose rate `count / (2 N p_class)` it feeds.
+///
+/// Eligibility is unchanged (`pair_overlap`). The key depends on the
+/// pair's joint karyotype:
+///
+/// * Karyotype-compatible pair (no inversion where one lineage carries S
+///   and the other I): the two lineages descend from chromosomes of one
+///   arrangement, so they coalesce as a single Hudson event (full merge)
+///   at rate `1 / (2 N p_K)`, where K is their shared karyotype (the
+///   inversions tagged in both; PANMICTIC, rate `1 / (2N)`, when one
+///   lineage carries only untagged material). The pair is stored ONCE,
+///   under K, however many classes it overlaps in. Storing it under every
+///   overlapping class as well would add the rates of a body bucket and
+///   a margin bucket for the same pair and over-coalesce.
+/// * Incompatible pair (I x S, meeting in shared panmictic margin): one
+///   entry per overlapping class, each a partial merge restricted to that
+///   class (the barrier approximation).
+#[inline]
+fn pair_rate_classes(a: &[FlatSeg], b: &[FlatSeg],
+                     hull_a: (f64, f64), hull_b: (f64, f64),
+                     smc_prime: bool) -> ClassBuf {
+    let ovl = pair_overlap(a, b, hull_a, hull_b, smc_prime);
+    if ovl.is_empty() { return ovl; }
+    let (sa, sb) = (segs_sig(a), segs_sig(b));
+    if !karyotypes_compatible(sa, sb) { return ovl; }
+    let mut r: ClassBuf = SmallVec::new();
+    r.push(shared_karyotype(sa, sb));
+    r
+}
+
 /// Compute the set of branch classes for which two lineages' flat
 /// segment slices have any positive-length overlap. Two-pointer walk
 /// over contiguous `(left, right, class)` tuples; same algorithm as
@@ -1662,6 +1742,37 @@ mod tests {
         Lineage::new(s, s, pop, uid, arena)
     }
 
+    /// Build a lineage from `(left, right, class)` pieces (sorted, disjoint).
+    fn mk_chain(arena: &mut SegmentArena, pieces: &[(f64, f64, BranchClass)],
+                pop: u32, uid: crate::lineage::LinUid) -> Lineage {
+        use crate::segment::SEG_NIL;
+        let (mut head, mut tail) = (SEG_NIL, SEG_NIL);
+        for &(l, r, c) in pieces {
+            let s = arena.alloc(l, r, uid as i32, c);
+            if head == SEG_NIL { head = s; } else { arena.get_mut(tail).next = s; }
+            tail = s;
+        }
+        Lineage::new(head, tail, pop, uid, arena)
+    }
+
+    /// Random lineage: one interval, or a tagged body piece flanked by an
+    /// untagged margin piece (so a recombination split can change the
+    /// lineage's karyotype signature).
+    fn rand_lin<R: rand::Rng>(rng: &mut R, arena: &mut SegmentArena,
+                              seq_len: f64, classes: &[BranchClass],
+                              uid: crate::lineage::LinUid) -> Lineage {
+        let l = rng.random_range(0..seq_len as u64 / 2) as f64;
+        let r = l + rng.random_range(2..seq_len as u64 / 2) as f64;
+        let pop = rng.random_range(0..2u32);
+        let cls = classes[rng.random_range(0..classes.len())];
+        if rng.random_range(0..2u32) == 0 {
+            mk_chain(arena, &[(l, r, cls)], pop, uid)
+        } else {
+            let m = ((l + r) / 2.0).floor();
+            mk_chain(arena, &[(l, m, BranchClass::PANMICTIC), (m, r, cls)], pop, uid)
+        }
+    }
+
     /// Pre-peer-bitmap invariant fence: exercises rebuild, recompute_for,
     /// apply_recomb_split, swap_update, remove_lineage across a random
     /// stream and calls `debug_check_invariants` after every mutation.
@@ -1669,6 +1780,16 @@ mod tests {
     /// drift apart, this fires immediately with the mutation label.
     #[test]
     fn incremental_invariants_random_ops() {
+        // Seed 42 / 200 steps is the original fence; the extra seeds and
+        // longer streams reach recombination splits that change a pair's
+        // karyotype key (Case A/B in apply_recomb_split_body).
+        random_ops_run(42, 200);
+        for seed in 0..40u64 {
+            random_ops_run(seed, 600);
+        }
+    }
+
+    fn random_ops_run(seed: u64, steps: usize) {
         use crate::class_tag::Karyotype;
         use rand::{Rng, SeedableRng};
         use rand_xoshiro::Xoshiro256PlusPlus;
@@ -1679,7 +1800,7 @@ mod tests {
             BranchClass::single(0, Karyotype::S),
             BranchClass::single(0, Karyotype::I),
         ];
-        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
         let mut arena = SegmentArena::new();
         let mut cache = RateCache::new(64, seq_len);
         let mut active: Vec<Lineage> = Vec::new();
@@ -1687,17 +1808,13 @@ mod tests {
 
         // Seed: 8 lineages, random intervals, 2 pops, 3 classes.
         for _ in 0..8 {
-            let l = rng.random_range(0..seq_len as u64 / 2) as f64;
-            let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
-            let pop = rng.random_range(0..2u32);
-            let cls = classes[rng.random_range(0..classes.len())];
-            active.push(mk_lin(&mut arena, l, r, pop, cls, next_uid));
+            active.push(rand_lin(&mut rng, &mut arena, seq_len, &classes, next_uid));
             next_uid += 1;
         }
         cache.rebuild(&active, &arena);
         cache.debug_check_invariants("after initial rebuild");
 
-        for step in 0..200usize {
+        for step in 0..steps {
             if active.len() < 2 {
                 // Replenish so ops stay meaningful.
                 let pop = rng.random_range(0..2u32);
@@ -1713,11 +1830,7 @@ mod tests {
                 // recompute_for: replace a lineage at idx with a fresh one.
                 0 => {
                     let idx = rng.random_range(0..active.len());
-                    let l = rng.random_range(0..seq_len as u64 / 2) as f64;
-                    let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
-                    let pop = rng.random_range(0..2u32);
-                    let cls = classes[rng.random_range(0..classes.len())];
-                    active[idx] = mk_lin(&mut arena, l, r, pop, cls, next_uid);
+                    active[idx] = rand_lin(&mut rng, &mut arena, seq_len, &classes, next_uid);
                     next_uid += 1;
                     cache.recompute_for(idx, &active, &arena);
                     cache.debug_check_invariants(
@@ -1729,18 +1842,29 @@ mod tests {
                     let idx = rng.random_range(0..active.len());
                     let split_pos = rng.random_range(1..seq_len as u64 - 1) as f64;
                     let pop = active[idx].population;
-                    let cls = classes[rng.random_range(0..classes.len())];
-                    // Replace idx with left half, push right half.
+                    // Replace idx with left half, push right half; each
+                    // piece keeps its class (recombination never retags).
                     let old_hl = active[idx].cached_hull_l;
                     let old_hr = active[idx].cached_hull_r;
                     if !(old_hl < split_pos && split_pos < old_hr) {
                         continue;
                     }
-                    active[idx] = mk_lin(
-                        &mut arena, old_hl, split_pos, pop, cls, next_uid);
+                    let mut left = Vec::new();
+                    let mut right = Vec::new();
+                    let mut cur = active[idx].head;
+                    while cur != crate::segment::SEG_NIL {
+                        let sg = arena.get(cur);
+                        if sg.left < split_pos {
+                            left.push((sg.left, sg.right.min(split_pos), sg.branch_class));
+                        }
+                        if sg.right > split_pos {
+                            right.push((sg.left.max(split_pos), sg.right, sg.branch_class));
+                        }
+                        cur = sg.next;
+                    }
+                    active[idx] = mk_chain(&mut arena, &left, pop, next_uid);
                     next_uid += 1;
-                    active.push(mk_lin(
-                        &mut arena, split_pos, old_hr, pop, cls, next_uid));
+                    active.push(mk_chain(&mut arena, &right, pop, next_uid));
                     next_uid += 1;
                     let new_idx = active.len() - 1;
                     cache.apply_recomb_split(
@@ -1764,11 +1888,7 @@ mod tests {
                 }
                 // push a new lineage + recompute for it.
                 _ => {
-                    let l = rng.random_range(0..seq_len as u64 / 2) as f64;
-                    let r = l + rng.random_range(1..seq_len as u64 / 2) as f64;
-                    let pop = rng.random_range(0..2u32);
-                    let cls = classes[rng.random_range(0..classes.len())];
-                    active.push(mk_lin(&mut arena, l, r, pop, cls, next_uid));
+                    active.push(rand_lin(&mut rng, &mut arena, seq_len, &classes, next_uid));
                     next_uid += 1;
                     let idx = active.len() - 1;
                     cache.recompute_for(idx, &active, &arena);

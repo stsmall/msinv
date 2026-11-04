@@ -29,9 +29,13 @@ from .events import (
     apply_recombination,
     apply_gene_flux,
     apply_migration,
+    class_tags,
+    tags_conflict,
+    tags_to_class,
 )
 from .demography import Demography
 from .inversion import InversionSpec
+from .rates import crossover_weight, recombination_rate_for_lineage
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +187,44 @@ def _overlap_by_class(lin_a, lin_b) -> dict:
     return out
 
 
+def _karyotype_signature(lin):
+    """Set of inversion tags carried by any segment of ``lin``."""
+    sig = set()
+    seg = lin.head
+    while seg is not None:
+        sig.update(class_tags(seg.branch_class))
+        seg = seg.next
+    return sig
+
+
+def _pair_karyotype(lin_a, lin_b):
+    """Joint karyotype of a lineage pair while a barrier is active.
+
+    Returns ``(compatible, shared_class)``. The pair is compatible when no
+    inversion has S material on one side (or within one lineage) and I
+    material on the other: their common parent chromosome then has a
+    well-defined arrangement and a coalescence is a full Hudson merge.
+    ``shared_class`` holds the tags present in both lineages (``'P'`` if one
+    lineage carries only untagged material); the pair coalesces once, at
+    rate ``1 / (2 N p_shared)``. Incompatible pairs (I x S meeting in a
+    shared margin) return ``(False, None)`` and keep the per-class partial
+    merge. Mirrors ``pair_rate_classes`` / ``barrier_merge_class`` in the
+    Rust engine.
+    """
+    sa = _karyotype_signature(lin_a)
+    sb = _karyotype_signature(lin_b)
+    if tags_conflict(sa | sb):
+        return False, None
+    return True, tags_to_class(sa & sb)
+
+
 def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
     """Coalesce ``lin_a`` and ``lin_b`` ONLY at overlap positions where
     BOTH segments have class ``allowed_class``. Other overlap and
     non-overlap positions remain on the original lineages.
+
+    Used only for karyotype-incompatible pairs (see ``_pair_karyotype``);
+    compatible pairs take a full merge (``apply_coalescence``).
 
     Returns the new internal node id.
     """
@@ -340,6 +378,19 @@ class HullSimulator:
     tract_distribution : str, optional
         Tract-length distribution: 'geometric' (default) or 'fixed'.
     seed : int, optional
+    crossover_suppression : bool, optional
+        Default True. While an inversion's barrier is active, crossovers
+        inside the inversion need a homokaryotypic partner, so a lineage
+        carrying arrangement k at a position inside the inversion
+        recombines there at ``r * p_k(t)``; collinear flanks, untagged
+        material (``None`` karyotype, treated as panmictic) and times older
+        than ``t_inv`` keep ``r``. Nested inversions take the product of the
+        per-inversion frequencies (arrangements assumed independent). False
+        restores the msinv <= 0.3.5 behaviour (full ``r`` everywhere), for
+        reproducing earlier results. Known limitation: the sweep
+        hitchhiking escape probability (Rust ``apply_sweep_finalize``)
+        still uses the full ``r`` inside an active inversion; ``simulate``
+        warns when sweeps and inversions are combined with this on.
     """
 
     def __init__(
@@ -369,6 +420,7 @@ class HullSimulator:
         gc_stride: int = 160,
         record_events: bool = False,
         smc_prime: bool = False,
+        crossover_suppression: bool = True,
     ):
         """Resolve sample counts (Phase 1-3 args still supported for
         single-pop work; Phase 4 introduces ``sample_config`` and
@@ -569,6 +621,11 @@ class HullSimulator:
         # lineages without inversion tags; Rust engine only. Default off:
         # the original SMC rule (shared ancestral material required).
         self.smc_prime = bool(smc_prime)
+        # Heterokaryotype crossover suppression (default on): while an
+        # inversion's barrier is active, a lineage carrying arrangement k
+        # inside the inversion recombines at r * p_k. False restores the
+        # msinv <= 0.3.5 behaviour (full r everywhere). Both engines.
+        self.crossover_suppression = bool(crossover_suppression)
         self.event_log = None  # populated after simulate() when record_events=True
         self.sweep_a_count = (
             0  # count of A-tagged sample lineages after last simulate()
@@ -647,8 +704,10 @@ class HullSimulator:
 
         Two regimes:
         1. No active inversions → Hudson per-pop buckets, O(n).
-        2. Active inversions → per-pair overlap-by-class with
-           _coalesce_partial, O(n^2). Exact.
+        2. Active inversions → per-pair rates, O(n^2): a karyotype-
+           compatible pair is one event at its shared karyotype's rate
+           with a full merge; an incompatible pair gets one event per
+           overlapping class with _coalesce_partial.
 
         Returns list of (kind, rate, payload).
         """
@@ -772,7 +831,23 @@ class HullSimulator:
                     if lin_i.population != lin_j.population:
                         continue
                     ovl = _overlap_by_class(lin_i, lin_j)
+                    if not any(v > 0 for v in ovl.values()):
+                        continue
                     ne_pop = max(self.demography.size_at(lin_i.population, t), 1e-9)
+                    # Karyotype-compatible pair: ONE event at the shared
+                    # karyotype's rate, merged in full (payload class None).
+                    compatible, shared = _pair_karyotype(lin_i, lin_j)
+                    if compatible:
+                        p_class = _p_class_for(shared, lin_i.population)
+                        if p_class > 0:
+                            rates.append(
+                                (
+                                    f"coal_{shared}_{lin_i.population}",
+                                    1.0 / (2.0 * ne_pop * p_class),
+                                    (i, j, None),
+                                )
+                            )
+                        continue
                     for cls_key, ov_len in ovl.items():
                         if ov_len <= 0:
                             continue
@@ -809,19 +884,51 @@ class HullSimulator:
                     rates.append(("mig", m, (i, dst)))
         return rates
 
-    def _recomb_rates(self, active):
+    def _crossover_tag_p(self, t: float):
+        """Per-population map class tag -> crossover weight at time ``t``.
+
+        Returns ``{pop: {tag: p}}`` for the inversions whose barrier is
+        active (``t < t_inv``), or ``None`` when crossover suppression is off
+        or no barrier is active (every weight is then 1).
+        """
+        if not self.crossover_suppression:
+            return None
+        active_invs = [
+            inv for inv in self.inversions
+            if inv.t_inv is not None and t < inv.t_inv
+        ]
+        if not active_invs:
+            return None
+        pops = range(self.demography.n_pops)
+        out = {}
+        for pop in pops:
+            m = {}
+            for inv in active_invs:
+                m[inv.class_S()] = inv.p_std_for(pop)
+                m[inv.class_I()] = inv.p_inv_for(pop)
+            out[pop] = m
+        return out
+
+    def _recomb_rates(self, active, t: float = 0.0):
         """Per-lineage recombination rates.
 
-        Returns list of ('recomb', rate, lineage_idx) where
-        rate = total_length(lineage) * self.r.
+        Returns list of ('recomb', rate, lineage_idx) where rate is
+        ``self.r`` times the lineage's material weighted by the crossover
+        weight (``rates.recombination_rate_for_lineage``): the full length
+        when no barrier is active or crossover suppression is off.
         """
         if self.r <= 0:
             return []
+        tag_p = self._crossover_tag_p(t)
         rates = []
         for idx, lin in enumerate(active):
-            mat = total_length(lin.head)
-            if mat > 0:
-                rates.append(("recomb", mat * self.r, idx))
+            if tag_p is None:
+                rate = total_length(lin.head) * self.r
+            else:
+                rate = recombination_rate_for_lineage(
+                    lin, self.r, tag_p.get(lin.population, {}))
+            if rate > 0:
+                rates.append(("recomb", rate, idx))
         return rates
 
     def _offset_to_position(self, lineage, offset):
@@ -836,6 +943,24 @@ class HullSimulator:
             remaining -= seg_len
             seg = seg.next
         return self.L
+
+    def _weighted_offset_to_position(self, lineage, offset, tag_p):
+        """Like ``_offset_to_position`` with material weighted by the
+        crossover weight: ``offset`` lies in [0, sum(len * w))."""
+        remaining = offset
+        seg = lineage.head
+        last = None
+        while seg is not None:
+            w = crossover_weight(seg.branch_class, tag_p)
+            wlen = (seg.right - seg.left) * w
+            if wlen > 0:
+                last = seg
+                if remaining < wlen:
+                    return seg.left + remaining / w
+                remaining -= wlen
+            seg = seg.next
+        # FP overshoot: last point of the last weighted segment.
+        return last.right if last is not None else self.L
 
     def _flux_lineage_rate(self, lineage, inv):
         """Per-lineage flux rate with class resolved per segment.
@@ -1296,6 +1421,17 @@ class HullSimulator:
         if self.smc_prime and not use_rust:
             raise NotImplementedError(
                 "smc_prime=True is implemented in the Rust engine only")
+        if self.crossover_suppression and self.sweeps and self.inversions:
+            import warnings
+
+            warnings.warn(
+                "crossover_suppression=True with sweeps and an inversion: "
+                "recombination inside the active inversion is suppressed, "
+                "but the sweep hitchhiking escape probability still uses the "
+                "full recombination rate (see README, Known limitations).",
+                UserWarning,
+                stacklevel=2,
+            )
         if use_rust:
             from ._rust_bridge import rust_simulate
 
@@ -1337,7 +1473,7 @@ class HullSimulator:
             coal = self._coal_rates(active, t)
             flux = self._flux_rates(active)
             mig = self._migration_rates(active, t)
-            recomb = self._recomb_rates(active)
+            recomb = self._recomb_rates(active, t)
             all_events = coal + flux + mig + recomb
             total = sum(r for _, r, _ in all_events)
 
@@ -1428,11 +1564,17 @@ class HullSimulator:
                     )
                 else:
                     # Per-pair structured event: payload is
-                    # (i, j, allowed_class). Partial coalescence —
-                    # only merge at positions where both segments
-                    # have this class.
+                    # (i, j, allowed_class). allowed_class None is a
+                    # karyotype-compatible pair: full Hudson merge.
+                    # Otherwise partial coalescence — only merge at
+                    # positions where both segments have this class.
                     i, j, allowed = payload
-                    _coalesce_partial(active, active[i], active[j], t, tables, allowed)
+                    if allowed is None:
+                        apply_coalescence(active, active[i], active[j], t, tables)
+                    else:
+                        _coalesce_partial(
+                            active, active[i], active[j], t, tables, allowed
+                        )
             elif chosen_kind == "flux":
                 idx, inv_id = chosen_payload
                 lineage = active[idx]
@@ -1451,9 +1593,21 @@ class HullSimulator:
                 idx = chosen_payload
                 lineage = active[idx]
                 # Pick a breakpoint within this lineage's material.
-                mat_len = total_length(lineage.head)
-                x_offset = self.rng.random() * mat_len
-                x = self._offset_to_position(lineage, x_offset)
+                # The breakpoint density is the crossover weight: uniform
+                # on material without an active barrier, r * p_k inside
+                # an inversion while it is active (same weight as
+                # _recomb_rates; constant p, so t-independent between
+                # events).
+                tag_p = self._crossover_tag_p(t)
+                if tag_p is None:
+                    mat_len = total_length(lineage.head)
+                    x_offset = self.rng.random() * mat_len
+                    x = self._offset_to_position(lineage, x_offset)
+                else:
+                    tp = tag_p.get(lineage.population, {})
+                    w_len = recombination_rate_for_lineage(lineage, 1.0, tp)
+                    x_offset = self.rng.random() * w_len
+                    x = self._weighted_offset_to_position(lineage, x_offset, tp)
                 apply_recombination(active, lineage, x)
             elif chosen_kind == "mig":
                 idx, dst = chosen_payload

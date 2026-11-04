@@ -406,8 +406,8 @@ def test_class_mig_admixture_fst_monotonic():
 def test_class_mig_count_matches_binomial(p):
     """T3: per cmig event, n_moved ~ Binomial(n_eligible, p) within ±2σ.
 
-    For each p, run 30 seeds; assert ≥95% of seeds fall in the
-    np ± 2·sqrt(np(1-p)) band. This validates the per-lineage
+    For each p, run 200 seeds; assert ≥90% of seeds fall in the
+    np ± 2·sqrt(np(1-p)) band (nominal coverage ~95%). This validates the per-lineage
     Bernoulli(p) sampling inside apply_class_mig.
 
     n_samples=50 in pop 1 ensures n_eligible ≥ ~20 with p_inv=0.5, which
@@ -418,7 +418,7 @@ def test_class_mig_count_matches_binomial(p):
     """
     from msinv.hull._event_log import filter_cmig
 
-    n_seeds = 30
+    n_seeds = 200
     band_hits = 0
     seeds_with_eligible = 0
 
@@ -456,10 +456,12 @@ def test_class_mig_count_matches_binomial(p):
         f"p={p}: only {seeds_with_eligible}/{n_seeds} seeds had eligible "
         f"lineages — sample size or fixture is misconfigured"
     )
-    # For extreme p (0.1, 0.9) the discrete Binomial ±2σ band covers ~96%
-    # asymptotically, but with 30 seeds the Monte Carlo variance means we
-    # accept ≥93% hits.  All other p values use the full 95% threshold.
-    expected_threshold = 0.93 if p in (0.1, 0.9) else 0.95
+    # The discrete Binomial ±2σ band covers ~94-96% at n_eligible ~ 9, so a
+    # threshold at the nominal coverage fails by chance about one run in
+    # four whenever the coalescent realisation changes (seed lottery). With
+    # 200 seeds the coverage SE is ~0.016; require ≥ 0.90 (~3 SE below the
+    # nominal), which still flags a biased Bernoulli(p) sampler.
+    expected_threshold = 0.90
     assert band_hits >= expected_threshold * seeds_with_eligible, (
         f"p={p}: only {band_hits}/{seeds_with_eligible} within ±2σ band; "
         f"per-lineage Bernoulli(p) sampling may be biased"

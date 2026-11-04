@@ -106,6 +106,8 @@ fn sv2_simulator_completes_with_sv_phase() {
         iters_max: 100_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(

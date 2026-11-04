@@ -161,6 +161,30 @@ karyotypes (modulated by the *phi(x)* function from Peischl et al. 2013).
 The hull algorithm implements this through per-position ancestral
 material tracking under the SMC approximation described above.
 
+**Crossover suppression in heterokaryotypes** (default since 0.4.0). A
+crossover inside an inversion needs a homokaryotypic partner, so while
+the barrier is active a lineage carrying arrangement *k* at a position
+inside the inversion recombines there at `r · p_k(t)`, where `p_k(t)` is
+the frequency of its own arrangement at that time. For nested or
+overlapping inversions the weight is the product of the per-inversion
+frequencies, which assumes the arrangements are independent (the same
+convention as the coalescence rate). Collinear flanks, material without
+an arrangement tag (samples with a `None` karyotype; their material is
+treated as panmictic, as in coalescence) and times older than `t_inv`
+keep the full rate `r`. The standard SLiM inversion recipe does the same:
+it drops crossovers inside the inversion in a heterokaryotype. With a
+constant `p`, an inverted chromosome then behaves exactly like one
+population of size `p·N` with recombination rate `r·p`. For a
+time-varying trajectory the treatment of recombination is exact:
+breakpoints are proposed at rate `r` per bp and kept with probability
+`p_k(t)` at the proposal time. Coalescence, as before, evaluates `p(t)`
+at each event and holds it fixed until the next one. Up to 0.3.5 msinv used
+`r` everywhere. That over-estimates within-arrangement ρ by `1/p_k`
+(about 2.7x in the minority and 1.6x in the majority arrangement at
+`p = 0.626`) and under-estimates within-arrangement LD. Pass
+`HullSimulator(..., crossover_suppression=False)` to reproduce results
+from earlier versions. Both engines (Rust and Python) implement it.
+
 In the no-inversion limit, `msinv` reproduces msprime's SMC (default)
 or SMC′ (`smc_prime=True`) models, and single-site statistics match
 msprime's full (Hudson) coalescent.
@@ -201,6 +225,31 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 - **An. funestus Kiribina/Folonzo** — matches Fst patterns from Small et al. (2023) PNAS
 - **An. gambiae RDL introgression** — matches haplotype asymmetry from Grau-Bové et al. (2020) MBE
 - **An. gambiae 2La**, **Human MAPT H1/H2**, **Peischl et al. (2013) replication**
+
+## Known limitations
+
+- **Sweep escape probabilities ignore crossover suppression.** The
+  hitchhiking escape probability that partitions a lineage's segments
+  when a standing-variation sweep finalizes (`apply_sweep_finalize`)
+  still uses the full rate `r`, also inside an inversion whose barrier is
+  active. For a sweep linked to an arrangement it should use `r · p_k`
+  there, so escape is over-estimated. Recombination events during the
+  sweep window are suppressed correctly. `HullSimulator.simulate` warns
+  when sweeps are combined with an inversion while
+  `crossover_suppression=True`.
+
+- **Sweeps with more than one active inversion barrier.** While a
+  barrier is active, karyotype-compatible pairs (I x I, S x S, or with an
+  untagged lineage) coalesce by a full Hudson merge, which keeps
+  within-arrangement LD right. Inside a sweep window, AA / aa
+  coalescences pick any two lineages of the allele class, and the rule
+  that counts each compatible pair once is derived only for a single
+  active barrier. With two or more barriers active at the same time,
+  those sweep-window events use the earlier partial merge, restricted
+  to the cell's class. Marginal trees are unaffected, but
+  within-arrangement short-range LD inside the sweep window keeps the
+  old barrier-era deficit. Coalescences outside sweep windows are not
+  affected.
 
 ## Running the tests
 

@@ -41,6 +41,8 @@ fn simulator_builds_trajectory_from_demography_smoke() {
         iters_max: 1_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 4);

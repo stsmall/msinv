@@ -61,6 +61,8 @@ fn en_to_1m_after_ej_does_not_panic() {
         iters_max: 1_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
+        crossover_suppression: true,
     };
 
     let result = sim.simulate();

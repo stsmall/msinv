@@ -3,13 +3,15 @@
 #   Rscript illex/abc/misfit_diag.R --table results/illex/abc_pilot_noflux/abc_table.parquet \
 #       --observed results/illex/abc_observed.json --spec results/illex/abc_rf/spec.json \
 #       --out-dir results/illex/misfit_diag [--ntree 1000] [--ncores 16] [--p0-hi 0.5] [--tinv-lo 3e5] [--tinv-hi 1.5e6]
+#       [--p0-bins 0.001,0.01,0.1,0.5]   (p0 bin edges for step 2; default 1e-3, 0.01, 0.1, p0-hi)
 #
 # 1. Predictive check: for every statistic (fit keys from spec.json plus the PPC-only keys in the observed vector),
 #    the quantile of the observed value among the table rows of each model x class (hard rows weighted by w_est).
 #    The rows are already conditioned on p_now acceptance, so this is the prior predictive given p_now. A statistic
 #    is flagged when the observed value is outside the 2.5-97.5% range for EVERY model x class.
 # 2. Soft rows of N and D1: Spearman rho of each statistic with log10 p0 and with t_inv, binned means over p0 bins,
-#    and in which p0 bins the observed value is inside the bin's 2.5-97.5% range.
+#    and in which p0 bins the observed value is inside the bin's 2.5-97.5% range; needs_top_bin = inside only the
+#    highest p0 bin.
 # 3. Ablation: regAbcrf posterior median and 90% interval of p0 (log10 fit) and t_inv on N and D1 soft rows with
 #    cumulative statistic groups a = ratios (+ p_obs), b = a + per-class SFS, c = b + jSFS, d = c + LD, plus
 #    LD alone and d minus LD-I / LD-S, for comparison.
@@ -23,6 +25,7 @@ args <- local({
   v <- commandArgs(trailingOnly = TRUE); i <- 1
   while (i <= length(v)) { a[[gsub("-", "_", sub("^--", "", v[i]))]] <- v[i + 1]; i <- i + 2 }
   for (k in c("ntree", "ncores", "p0_lo", "p0_hi", "tinv_lo", "tinv_hi", "seed")) a[[k]] <- as.numeric(a[[k]])
+  a$p0_bins <- if (is.null(a$p0_bins)) c(1e-3, 0.01, 0.1, a$p0_hi) else as.numeric(strsplit(a$p0_bins, ",")[[1]])
   a
 })
 dir.create(args$out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -67,11 +70,12 @@ lines <- c(lines, "1. Predictive check (obs quantile among rows, per model x cla
            capture.output(print(summ, row.names = FALSE, digits = 4)), "")
 
 # ---- 2. dependence on p0 and t_inv (soft N, D1)
-bins <- c(1e-3, 0.01, 0.1, args$p0_hi + 1e-12)
+bins <- args$p0_bins; bins[length(bins)] <- bins[length(bins)] + 1e-12
+blab <- sprintf("p0_%g_%g", head(args$p0_bins, -1), args$p0_bins[-1])
 dep <- list()
 for (m in c("N", "D1")) {
   d <- tab[tab$model == m & tab$cls == "soft" & tab$flux == 0, ]
-  b <- cut(d$p0, bins, right = FALSE, labels = c("p0_1e-3_0.01", "p0_0.01_0.1", "p0_0.1_hi"))
+  b <- cut(d$p0, bins, right = FALSE, labels = blab)
   for (k in all_keys) {
     x <- d[[k]]
     r <- data.frame(model = m, stat = k, obs = obs[[k]],
@@ -84,16 +88,16 @@ for (m in c("N", "D1")) {
       r[[paste0("in_", lv)]] <- obs[[k]] >= qq[1] & obs[[k]] <= qq[2]
       r[[paste0("n_", lv)]] <- length(xb)
     }
-    r$needs_p0_gt_0.1 <- !r[["in_p0_1e-3_0.01"]] & !r[["in_p0_0.01_0.1"]] & r[["in_p0_0.1_hi"]]
+    ins <- unlist(r[paste0("in_", blab)])
+    r$needs_top_bin <- all(!ins[-length(ins)]) & ins[length(ins)]
     dep[[length(dep) + 1]] <- r
   }
 }
 dep <- do.call(rbind, dep)
 write.csv(dep, file.path(args$out_dir, "p0_tinv_dependence.csv"), row.names = FALSE)
 lines <- c(lines, "2. Soft N/D1: Spearman rho with log10 p0 and t_inv; binned means; obs inside bin 2.5-97.5%?",
-           capture.output(print(dep[, c("model", "stat", "obs", "rho_log_p0", "rho_t_inv", "mean_p0_1e-3_0.01",
-                                        "mean_p0_0.01_0.1", "mean_p0_0.1_hi", "in_p0_1e-3_0.01", "in_p0_0.01_0.1",
-                                        "in_p0_0.1_hi", "needs_p0_gt_0.1")], row.names = FALSE, digits = 3)), "")
+           capture.output(print(dep[, c("model", "stat", "obs", "rho_log_p0", "rho_t_inv", paste0("mean_", blab),
+                                        paste0("in_", blab), "needs_top_bin")], row.names = FALSE, digits = 3)), "")
 
 # ---- 3. ablation
 grp <- list(ratios = c("pi_ratio", "dxy_pi", "f1_ratio", "p_obs"))

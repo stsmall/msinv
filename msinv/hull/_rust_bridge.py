@@ -109,6 +109,8 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
         gc_stride=int(getattr(simulator, "gc_stride", 160)),
         record_events=bool(getattr(simulator, "_record_events", False)),
         smc_prime=bool(getattr(simulator, "smc_prime", False)),
+        crossover_suppression=bool(
+            getattr(simulator, "crossover_suppression", True)),
     )
 
     # --- Convert to tskit TreeSequence ---

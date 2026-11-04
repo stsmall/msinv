@@ -50,6 +50,7 @@ fn tr1_simulator_completes_with_in_window_recombination() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(
@@ -84,6 +85,7 @@ fn tr1_hard_sweep_unchanged() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(

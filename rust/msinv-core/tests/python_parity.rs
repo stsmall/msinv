@@ -172,6 +172,7 @@ fn no_migration_cross_pop_mrca_at_least_t_split() {
             gc_stride: 160,
             record_events: false,
             smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 15,
@@ -204,6 +205,7 @@ fn migration_allows_cross_pop_mrca_below_t_split() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     // With M=1e-3, mean migration time ~ 1/M = 1000 gen << 50000.
@@ -247,6 +249,7 @@ fn inversion_with_two_pops() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 21,
@@ -363,6 +366,7 @@ fn nested_inversions_run_without_crashing() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 11,
@@ -405,6 +409,7 @@ fn continuous_migration_with_inversion() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 17,
@@ -463,6 +468,7 @@ fn t_inv_and_demographic_event_at_same_time() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
     let result = sim.simulate();
     assert!(result.tables.num_nodes() >= 15,

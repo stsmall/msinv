@@ -6,6 +6,11 @@ Output ``DIR/{M}_{flux}_{class}_{i}.jsonl.gz`` (one row per accepted path) and `
 class plus run metadata: git HEAD, msinv / msprime versions). Both are written to temp files and ``os.replace``d only
 after every row is done, so a crashed run leaves nothing partial.
 
+Hard starts use exact importance sampling on establishment (``simulate_paths(condition_on_establishment=True)``):
+a lost single copy is redrawn with the same theta, and every row carries ``w_est`` = u(theta), the analytic probability
+that one copy reaches ESTABLISHED copies (1 for soft rows). The prior acceptance is (1 / drawn) * sum(w_est over
+accepted); ``collect.py`` reports it, plus accepted / attempts as a cross-check.
+
 Each row: all prior KEYS plus model / flux / cls / task_id, the path summary (p_max, p_now, path_len), STAT_KEYS,
 p_obs, n_nan, the engine used, the simulate_stats seed and wall_s.
 
@@ -106,13 +111,14 @@ def _flat(path, model, flux, cls, task_id, seed, stats, wall, engine):
     row = {"model": model, "flux": int(flux), "cls": cls, "task_id": int(task_id)}
     row.update({k: path.params[k] for k in KEYS})
     row["hard"] = bool(row["hard"])
+    row["w_est"] = float(path.params.get("w_est", 1.0))
     row.update(p_max=float(np.max(path.freqs)), p_now=float(path.p_now), path_len=int(len(path.times)))
     row.update({k: stats[k] for k in STAT_KEYS})
     row.update(p_obs=stats["p_obs"], n_nan=int(stats["n_nan"]), engine=engine, seed=int(seed), wall_s=float(wall))
     return row
 
 
-def run(model, flux, cls, n_accept, task_id, out, workers=1, max_drawn=20_000_000, verbose=True):
+def run(model, flux, cls, n_accept, task_id, out, workers=1, max_drawn=2_000_000, verbose=True):
     flux = int(flux)
     out = FsPath(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -127,7 +133,7 @@ def run(model, flux, cls, n_accept, task_id, out, workers=1, max_drawn=20_000_00
             break
         nb = min(_batch_size(n_accept - len(accepted), drawn, len(accepted)), max_drawn - drawn)
         prm = draw_prior(model, bool(flux), prior_rng, nb, cls)
-        paths, cnt = simulate_paths(prm, path_rng)
+        paths, cnt = simulate_paths(prm, path_rng, condition_on_establishment=True)
         for c in total:
             for f, v in asdict(cnt[c]).items():
                 setattr(total[c], f, getattr(total[c], f) + v)
@@ -180,7 +186,8 @@ def main(argv=None):
     ap.add_argument("--task-id", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=1)
-    ap.add_argument("--max-drawn", type=int, default=20_000_000, help="cap on prior draws; keep rows accepted so far")
+    ap.add_argument("--max-drawn", type=int, default=2_000_000,
+                    help="cap on prior (theta) draws; keep rows accepted so far")
     a = ap.parse_args(argv)
     n, tot = run(a.model, a.flux, a.cls, a.n_accept, a.task_id, a.out, a.workers, a.max_drawn)
     print(f"done {a.model} flux={a.flux} {a.cls} task={a.task_id}: {n} rows; counts={ {c: asdict(v) for c, v in tot.items()} }")

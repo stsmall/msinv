@@ -9,7 +9,7 @@ from illex.abc import collect, run_table
 from illex.abc.statvec import STAT_KEYS
 from illex.abc.trajectory import KEYS
 
-ROW_KEYS = (set(KEYS) | set(STAT_KEYS) | {"model", "flux", "cls", "task_id", "p_obs", "n_nan", "p_max", "p_now",
+ROW_KEYS = (set(KEYS) | set(STAT_KEYS) | {"model", "flux", "cls", "task_id", "w_est", "p_obs", "n_nan", "p_max", "p_now",
                                           "path_len", "engine", "seed", "wall_s"})
 
 
@@ -82,3 +82,17 @@ def test_collect_reports_missing(tmp_path):
     assert r["drawn"] == 300 and r["accepted"] == 9 and abs(r["acceptance"] - 0.03) < 1e-12
     assert r["ci_lo"] < 0.03 < r["ci_hi"] and r["lost"] == 120
     assert (res / "abc_table.parquet").exists() or (res / "abc_table.csv.gz").exists()
+
+
+def test_collect_weighted_acceptance(tmp_path):
+    with gzip.open(tmp_path / "N_0_hard_0.jsonl.gz", "wt") as f:
+        for i in range(2):
+            f.write(json.dumps({"model": "N", "flux": 0, "cls": "hard", "task_id": 0, "w_est": 0.002}) + "\n")
+    z = dict(lost=0, fixed=0, lost_establishing=0, est_failed=0)
+    (tmp_path / "N_0_hard_0_counts.json").write_text(json.dumps(
+        {"counts": {"hard": dict(drawn=1000, accepted=2, attempts=500_000, w_acc=0.004, w_acc_sq=8e-6, **z),
+                    "soft": dict(drawn=0, accepted=0, attempts=0, w_acc=0.0, w_acc_sq=0.0, **z)}, "meta": {}}))
+    info = collect.collect(str(tmp_path), out_dir=str(tmp_path / "res"))
+    r = info["acceptance"].iloc[0]
+    assert r["acceptance"] == pytest.approx(4e-6) and r["acceptance_attempts"] == pytest.approx(4e-6)
+    assert 0 <= r["ci_lo"] < 4e-6 < r["ci_hi"]

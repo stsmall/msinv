@@ -130,3 +130,58 @@ def test_filter():
     paths, c = simulate_paths(p, np.random.default_rng(10), n_e_fn=const_ne(1e5))
     assert c["soft"].accepted == len(paths) > 0
     assert all(abs(q.p_now - 0.626) <= 0.02 for q in paths)
+
+
+# ---- exact importance sampling on establishment (Task 6 fix round 1) -------------------------------------------
+
+def _const_ne(n):
+    return lambda t: np.full_like(np.asarray(t, dtype=float), float(n))
+
+
+@pytest.mark.parametrize("s", [0.0, 1e-4, 1e-3])
+def test_establishment_prob_matches_wf(s):
+    """u(theta) (Kimura) vs the fraction of single-copy WF runs reaching ESTABLISHED, same _establish code path."""
+    from illex.abc.trajectory import ESTABLISHED, _establish, establishment_prob
+    n, m = 10_000, 400_000
+    t_inv = np.full(m, 1e5)
+    prm = dict(t_inv=t_inv, s=np.full(m, s), t_sel=t_inv.copy(), t_stop=np.full(m, np.nan),
+               p_star=np.full(m, np.nan))
+    g, k, two_n, att = _establish("D1", prm, np.arange(m), np.random.default_rng(5), _const_ne(n), 1)
+    assert att.sum() == m and (k[g >= 0] >= ESTABLISHED).all()
+    u = float(establishment_prob("D1", s, 1e5, _const_ne(n))[0])
+    frac = float((g >= 0).mean())
+    se = np.sqrt(u * (1 - u) / m)
+    assert abs(frac - u) < 3 * se, (s, frac, u, se)
+    if s == 0.0:
+        assert u == pytest.approx(1.0 / ESTABLISHED)
+
+
+def test_conditional_attempts_and_weights():
+    from illex.abc.trajectory import draw_prior, simulate_paths
+    rng = np.random.default_rng(3)
+    prm = draw_prior("D1", False, rng, 300, "hard")
+    paths, cnt = simulate_paths(prm, np.random.default_rng(4), condition_on_establishment=True)
+    h = cnt["hard"]
+    assert h.drawn == 300 and h.lost_establishing == 0 and h.attempts >= 300
+    assert all(0 < q.params["w_est"] <= 1 for q in paths)
+    assert h.w_acc == pytest.approx(sum(q.params["w_est"] for q in paths))
+
+
+def test_weighted_acceptance_matches_bruteforce(monkeypatch):
+    """Hard D1 at a small constant N: (1/n) sum w_est * accepted from the conditional run == brute-force rate."""
+    from illex.abc import trajectory as T
+    monkeypatch.setitem(T.PRIOR, "t_inv", (300.0, 1000.0))
+    monkeypatch.setitem(T.PRIOR, "s", (3e-3, 1e-2))
+    ne = _const_ne(2000)
+    nb, nc = 800_000, 20_000
+    prm = T.draw_prior("D1", False, np.random.default_rng(1), nb, "hard")
+    _, c1 = T.simulate_paths(prm, np.random.default_rng(2), n_e_fn=ne)
+    p1 = c1["hard"].accepted / nb
+    se1 = np.sqrt(p1 * (1 - p1) / nb)
+    prm = T.draw_prior("D1", False, np.random.default_rng(11), nc, "hard")
+    _, c2 = T.simulate_paths(prm, np.random.default_rng(12), n_e_fn=ne, condition_on_establishment=True)
+    h = c2["hard"]
+    p2 = h.w_acc / nc
+    se2 = np.sqrt((h.w_acc_sq / nc - p2 ** 2) / nc)
+    assert c1["hard"].accepted > 60 and h.accepted > 100
+    assert abs(p1 - p2) < 3 * np.hypot(se1, se2), (p1, p2, se1, se2)

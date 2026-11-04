@@ -47,6 +47,9 @@ class Counts:
     lost_establishing: int = 0   # hard start: the single copy was lost before ESTABLISHED copies (max_attempts == 1)
     est_failed: int = 0          # hard start: every one of max_attempts > 1 attempts failed
     accepted: int = 0
+    attempts: int = 0            # total establishment attempts (condition_on_establishment: up to and incl. each success)
+    w_acc: float = 0.0           # sum of w_est over accepted paths (importance-weighted accepted count)
+    w_acc_sq: float = 0.0        # sum of w_est^2 over accepted paths (for the SE of the weighted acceptance)
 
 
 def _logu(rng, lo, hi, n):
@@ -84,6 +87,24 @@ def draw_prior(model: str, flux: bool, rng, n: int, cls: str = "mixed") -> dict:
     return out
 
 
+def establishment_prob(model, s, t_inv, n_e_fn=N_growth, established=ESTABLISHED):
+    """u(theta): probability that ONE copy reaches ``established`` copies (Kimura's diffusion, N = Ne(t_inv)).
+
+    u = (1 - exp(-4 N s p0)) / (1 - exp(-4 N s p1)), p0 = 1 / 2N, p1 = established / 2N; s is s (D1, D2) or s_het
+    (B, delta ~ s_het p at small p). Neutral (model N, s = 0 or NaN): the limit p0 / p1 = 1 / established.
+    Vectorised; expm1 keeps it stable at small s.
+    """
+    t_inv = np.atleast_1d(np.asarray(t_inv, float))
+    two_n = np.maximum(2.0 * np.asarray(n_e_fn(t_inv), float), 2.0)
+    n = two_n / 2.0
+    p0, p1 = 1.0 / two_n, established / two_n
+    s = np.zeros_like(t_inv) if model == "N" else np.nan_to_num(np.broadcast_to(np.asarray(s, float), t_inv.shape))
+    x0, x1 = -4.0 * n * s * p0, -4.0 * n * s * p1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = np.where(s == 0, p0 / p1, np.expm1(x0) / np.expm1(x1))
+    return np.clip(u, 0.0, 1.0)
+
+
 def _delta(model, p, s, p_star):
     """Per-generation change from selection (before multiplying by the on/off mask)."""
     d = s * p * (1.0 - p)
@@ -95,8 +116,9 @@ def _delta(model, p, s, p_star):
 def _establish(model, prm, idx, rng, n_e_fn, max_attempts, block=64, flat_max=2_000_000):
     """Exact WF from one copy for the hard draws ``idx``, all draws and attempt blocks at once.
 
-    Returns (g, k, two_n): generations elapsed and copies at the end of establishment, g = -1 where every
-    attempt failed (or establishment outlasted t_inv).
+    Returns (g, k, two_n, attempts): generations elapsed and copies at the end of establishment, g = -1 where every
+    attempt failed (or establishment outlasted t_inv), and the attempts used per draw (counted up to and including
+    the first success, so ``attempts.sum()`` is an unbiased attempt count).
     """
     m = idx.size
     t_inv = prm["t_inv"][idx]
@@ -108,6 +130,7 @@ def _establish(model, prm, idx, rng, n_e_fn, max_attempts, block=64, flat_max=2_
     g_out = np.full(m, -1, np.int64)
     k_out = np.zeros(m, np.int64)
     used = np.zeros(m, np.int64)
+    n_att = np.zeros(m, np.int64)
     pending = np.arange(m)
     while pending.size:
         nb = int(min(block, (max_attempts - used[pending]).max())) if max_attempts > 0 else 0
@@ -117,7 +140,9 @@ def _establish(model, prm, idx, rng, n_e_fn, max_attempts, block=64, flat_max=2_
             ch = pending[lo:lo + max(1, flat_max // nb)]
             take = np.minimum(nb, max_attempts - used[ch])      # attempts this block, per draw
             ids = np.repeat(ch, take)
+            gstart = np.cumsum(take) - take                      # first attempt of each draw within ids
             used[ch] += take
+            n_att[ch] += take
             k = np.ones(ids.size, np.int64)
             g = np.zeros(ids.size, np.int64)
             alive = np.arange(ids.size)
@@ -139,20 +164,29 @@ def _establish(model, prm, idx, rng, n_e_fn, max_attempts, block=64, flat_max=2_
             if sidx.size:
                 dd, first = np.unique(ids[sidx], return_index=True)
                 sel = sidx[first]
+                ci = np.searchsorted(ch, dd)                    # ch is ascending (pending is a filtered arange)
+                n_att[dd] -= take[ci] - (sel - gstart[ci] + 1)  # drop the attempts after the first success
                 g_out[dd] = g[sel]
                 k_out[dd] = k[sel]
         pending = pending[(g_out[pending] < 0) & (used[pending] < max_attempts)]
-    return g_out, k_out, two_n
+    return g_out, k_out, two_n, n_att
 
 
 def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
-                   n_e_fn=N_growth, apply_filter=True):
+                   n_e_fn=N_growth, apply_filter=True,
+                   condition_on_establishment=False, est_cap=1_000_000):
     """Simulate one path per parameter set. Returns (accepted paths, {"hard": Counts, "soft": Counts}).
 
     Default max_attempts=1: each hard draw gets ONE establishment attempt from a single copy, and a loss before
     ESTABLISHED copies is a rejection (Counts.lost_establishing). Accepted rows are then exact prior draws, so
     accepted/drawn includes the establishment probability. max_attempts > 1 redraws lost copies (conditioning
     on establishment; failures of the cap are Counts.est_failed) and is for diagnostics only.
+
+    ``condition_on_establishment=True`` (exact importance sampling, used by run_table): a hard draw whose copy is
+    lost is redrawn with the SAME theta until it reaches ESTABLISHED copies (safety cap ``est_cap`` attempts, then
+    Counts.est_failed). Every returned Path carries ``params["w_est"]`` = u(theta), ``establishment_prob``
+    (hard) or 1 (soft). The prior acceptance is (1 / drawn) * sum(w_est over accepted); Counts.w_acc / w_acc_sq
+    hold the sums, Counts.drawn is the number of theta draws, Counts.attempts the establishment attempts.
     """
     model = params["model"]
     n = len(params["t_inv"])
@@ -167,7 +201,8 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
     est_bad = np.zeros(n, bool)
     h = np.where(hard)[0]
     if h.size:
-        g, k, two_n = _establish(model, params, h, rng, n_e_fn, max_attempts)
+        g, k, two_n, n_att = _establish(model, params, h, rng, n_e_fn,
+                                        est_cap if condition_on_establishment else max_attempts)
         bad = g < 0
         ok[h[bad]] = False
         est_bad[h[bad]] = True
@@ -177,14 +212,27 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
             p_start[i] = k[j] / two_n[j]
             est_pt[i] = 1.0 / two_n[j]
     live = np.where(ok)[0]
+    w_est = np.ones(n)
+    if condition_on_establishment:
+        if h.size:
+            w_est[h] = establishment_prob(model, np.asarray(params["s"], float)[h] if model != "N" else 0.0,
+                                          t_inv[h], n_e_fn)
+            counts_att = int(n_att.sum())
+        else:
+            counts_att = 0
     stat = np.zeros(n, np.int8)             # 1 lost, 2 fixed
     counts = {"hard": Counts(drawn=int(hard.sum())), "soft": Counts(drawn=int((~hard).sum()))}
     for c, m in (("hard", hard), ("soft", ~hard)):
         nb = int((est_bad & m).sum())
-        if max_attempts == 1:
+        if condition_on_establishment:
+            counts[c].est_failed = nb
+        elif max_attempts == 1:
             counts[c].lost_establishing = nb
         else:
             counts[c].est_failed = nb
+    if condition_on_establishment:
+        counts["hard"].attempts = counts_att
+        counts["soft"].attempts = counts["soft"].drawn
     if live.size == 0:
         return [], counts
     s_all = np.nan_to_num(np.asarray(params["s"], float)) if model != "N" else np.zeros(n)
@@ -253,7 +301,14 @@ def simulate_paths(params: dict, rng, dt=10.0, rec_every=1000.0, max_attempts=1,
         times, freqs = np.concatenate(times), np.concatenate(freqs)
         pr = dict(scal, **{k: params[k][d] for k in KEYS})
         pr = {k: (v.item() if isinstance(v, np.generic) else v) for k, v in pr.items()}
+        if condition_on_establishment:
+            pr["w_est"] = float(w_est[d])
         paths.append(Path(params=pr, times=times, freqs=freqs, p_now=float(pn)))
     for c in counts:
         counts[c].accepted = sum(bool(q.params["hard"]) == (c == "hard") for q in paths)
+    if condition_on_establishment:
+        for q in paths:
+            c = counts["hard" if q.params["hard"] else "soft"]
+            c.w_acc += q.params["w_est"]
+            c.w_acc_sq += q.params["w_est"] ** 2
     return paths, counts

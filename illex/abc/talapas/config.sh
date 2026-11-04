@@ -11,8 +11,12 @@ export TABLE_FLUXES=${TABLE_FLUXES:-"0 1"}
 export TABLE_CLASSES=${TABLE_CLASSES:-"hard soft"}
 export K_PER_TASK=${K_PER_TASK:-250}        # accepted rows per array task
 export TASKS_PER_COMBO=${TASKS_PER_COMBO:-40}   # array tasks per (model, flux, class)
-export MAX_DRAWN=${MAX_DRAWN:-20000000}
+# Hard starts use importance sampling on establishment, so draws count thetas. Measured pilot conditional rates per theta
+# (flux 0): N ~2e-5, D1 ~4e-5, D2 ~1.2e-4, B ~1.9e-2 (soft: 0.2-2%); path generation runs ~850 thetas/s per task. MAX_DRAWN
+# 3e6 caps a task at ~1 h (N hard ~60 rows, D1 ~120, D2 ~250+/cap, B/soft finish at K in minutes); rows are
+# importance-weighted by w_est, so partial tasks are fine.
+export MAX_DRAWN=${MAX_DRAWN:-3000000}
 export CPUS_PER_TASK=${ABC_CPUS:-4}
 export MEM=${ABC_MEM:-16G}
-export WALLTIME=${ABC_WALLTIME:-12:00:00}
+export WALLTIME=${ABC_WALLTIME:-03:00:00}
 export MAX_CONCURRENT_TASKS=${ABC_MAX_CONCURRENT:-50}

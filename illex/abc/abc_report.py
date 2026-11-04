@@ -99,8 +99,7 @@ def report(raw_dir: str, out_dir: str) -> None:
     hs = rd("hardshare_raw.csv")
     hs_rows = []
     for _, h in hs.iterrows():
-        for name, col in (("hard_share_noacc", "hard_share_stats"), ("hard_share_acc", "hard_share_total"),
-                          ("hard_share_mix", "hard_share_mix")):
+        for name, col in (("hard_share_noacc", "hard_share_stats"), ("hard_share_acc", "hard_share_total")):
             hs_rows.append(dict(model=h["model"], flux=h["flux"], parameter=name, scale="prob", median=h[col]))
     post_all = pd.concat([post, pd.DataFrame(hs_rows)], ignore_index=True)
     post_all.to_csv(os.path.join(out_dir, "abc_posteriors.csv"), index=False)
@@ -114,6 +113,8 @@ def report(raw_dir: str, out_dir: str) -> None:
     cov.to_csv(os.path.join(out_dir, "abc_coverage.csv"), index=False)
     xc = rd("crosscheck_raw.csv")
     xc.to_csv(os.path.join(out_dir, "abc_crosscheck.csv"), index=False)
+    if os.path.exists(os.path.join(raw_dir, "draws_raw.csv")):
+        rd("draws_raw.csv").to_csv(os.path.join(out_dir, "abc_draws_summary.csv"), index=False)
     for f in glob.glob(os.path.join(raw_dir, "abc_post_*.csv")):
         shutil.copy(f, os.path.join(out_dir, os.path.basename(f)))
 
@@ -122,10 +123,13 @@ def report(raw_dir: str, out_dir: str) -> None:
         lines += [stale, ""]
     lines += [f"{k}: {v}" for k, v in meta.items()]
     lines += ["", f"HEADLINE model-choice accuracy (grouped 5-fold CV, mixture-weighted): "
-                  f"{meta.get('accuracy_grouped_cv_weighted')}  (OOB: {meta.get('accuracy_oob_weighted')})", ""]
-    lines += ["Model choice: prob_total(M) ∝ prior(M) x acc(M) x prob_stats(M); acc(M) = 0.5 acc_hard + "
-              "0.5 acc_soft (= p_now_term); prob_stats from abcrf on unique rows with case.weights = mixture "
-              "weights (models balanced)", _fmt(mc), ""]
+                  f"{meta.get('accuracy_grouped_cv_weighted')}  (OOB of the unweighted abcrf classifier, reference only: "
+                  f"{meta.get('accuracy_oob_unweighted_abcrf')})", ""]
+    lines += ["Model choice: prob_total(M) ∝ prior(M) x acc(M) x prob_stats(M); acc(M) = p_hard acc_hard + "
+              "(1 - p_hard) acc_soft (= p_now_term); prob_stats = P(M | stats) from unweighted indicator forests "
+              "with the mixture weights applied post hoc to the forest kernel (models balanced); "
+              "prob_total_acc_ci_lo/hi propagate the acceptance CIs; vote_unweighted = votes of an unweighted "
+              "abcrf classifier (reference only)", _fmt(mc), ""]
     for m in ("grouped_cv", "oob"):
         c = conf[conf.method == m]
         if len(c):
@@ -133,14 +137,18 @@ def report(raw_dir: str, out_dir: str) -> None:
                 tab = c.pivot_table(index="true", columns="predicted", values=col, aggfunc="sum", fill_value=0)
                 lines += [f"Confusion matrix ({m}, {lab}; rows = true model):",
                           tab.to_string(float_format=lambda x: f"{x:.3f}"), ""]
-    lines += ["Hard share: noacc = P(hard | stats) with class-balanced weights (prior 0.5); acc = combined with the "
-              "class acceptances, acc_h p / (acc_h p + acc_s (1 - p)); mix = regAbcrf on the hard indicator with "
-              "the acceptance-weighted mixture weights", _fmt(hs), ""]
-    cols = ["model", "flux", "parameter", "scale", "n_train", "ess_train", "median", "q025", "q25", "q75", "q975",
+    lines += ["Hard share (post hoc on one unweighted forest on the hard indicator): noacc = kernel x class-balanced "
+              "weights (prior p_hard); acc = kernel x mixture weights; bayes = acc_h p / (acc_h p + acc_s (1 - p)) "
+              "from noacc (equals acc by construction: a consistency check)", _fmt(hs), ""]
+    cols = ["model", "flux", "parameter", "scale", "n_train", "ess_train", "ess_post", "post_hard_mass", "median", "q025", "q25", "q75", "q975",
             "prior_lo", "prior_hi", "edge"]
     lines += ["Posteriors (regAbcrf per parameter per model; 50% and 95% intervals; edge = prior-edge flag)",
               _fmt(post[[c for c in cols if c in post.columns]]), ""]
-    lines += ["Coverage (grouped CV pods; nominal 0.50 and 0.95)", _fmt(cov), ""]
+    if os.path.exists(os.path.join(raw_dir, "draws_raw.csv")):
+        lines += ["Joint draws (abc_post_*.csv; hard rows expected vs drawn)", _fmt(rd("draws_raw.csv")), ""]
+    lines += ["Coverage (grouped CV pods; nominal 0.50 and 0.95). GLOBAL (prior-predictive) coverage: it does not "
+              "validate the intervals at the observed point, which lies outside the simulated cloud on some "
+              "statistics (misfit-diag-report.md)", _fmt(cov), ""]
     lines += ["Cross-check: abc rejection / loclinear medians (tol = abc_accept / n)", _fmt(xc), ""]
     flagged = post[post.edge != ""]
     lines += ["Prior-edge flags: " + ("none" if flagged.empty else

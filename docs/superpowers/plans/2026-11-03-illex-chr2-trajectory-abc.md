@@ -281,7 +281,7 @@ LD is computed with pg_gpu `GenotypeMatrix` on the accessible, depth-filtered si
   - `abc_modelchoice.csv`: model, prob_stats (RF), p_now_term and prob_total
   - `abc_posteriors.csv`: model, parameter, median, 50% and 95% bounds, plus `hard_share` with and
     without the p_now term
-  - per-model posterior draws, `abc_post_{M}_{flux}.csv`, 1,000 rows each, for Tasks 9 and 10
+  - per-model posterior draws, `abc_post_{M}_{flux}.csv`, 1,000 rows each after a leading `# NOTE` line (read with `comment="#"`), for Tasks 9 and 10
 
 The combination rule, fixed by the spec: prob_total ∝ prior × acceptance × prob_stats.
 

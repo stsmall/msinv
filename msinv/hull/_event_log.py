@@ -56,6 +56,35 @@ def coverage_count(flux_records, position):
     )
 
 
+def remap_event_log_nodes(log, node_map):
+    """Rewrite the log's node IDs from pre-simplify to post-simplify IDs.
+
+    ``node_map`` is the array ``ts.simplify(map_nodes=True)`` returns
+    (``node_map[old] == new``, ``-1`` for a removed node). Each flux
+    record's ``tract_segments`` entries are remapped in place; entries
+    whose node was removed (or whose ID is out of range) are dropped,
+    since they no longer name a node of the returned tree sequence.
+    Returns ``log`` for convenience.
+    """
+    if log is None:
+        return None
+    n = len(node_map)
+    for rec in log:
+        segs = rec.get("tract_segments")
+        if not segs:
+            continue
+        kept = []
+        for seg in segs:
+            old = int(seg["node_id"])
+            new = int(node_map[old]) if 0 <= old < n else -1
+            if new < 0:
+                continue
+            seg["node_id"] = new
+            kept.append(seg)
+        rec["tract_segments"] = kept
+    return log
+
+
 def samples_converted_at(flux_records, ts, position):
     """Fraction of samples whose ancestry at `position` was hit by ≥1
     flux event.

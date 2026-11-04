@@ -40,3 +40,6 @@ flamegraph*.svg
 # stay tracked; these full-tree dumps do not.
 results/validation/track4_vsimple/
 results/validation/track4_vsimple.pre_ws_fix.bak/
+
+# local assistant instructions (not part of the repo)
+CLAUDE.md

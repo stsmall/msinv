@@ -20,6 +20,8 @@ chr2 collinear control. Classes: I = 2a (inverted), S = 2+ (standard).
   tajd_{I,S}                   Tajima's D per class, site mode; body / control           (PPC only)
   edge_centre                  mean dxy/pi_mean in edge windows over core windows, the definition of
                                ``empirical_windowed.py`` (|rel| > 0.75 vs < 0.35); branch mode; no control (PPC only)
+  bnd_{piratio,dxypi}_b{0..3}  pi_I/pi_S and dxy/mean(pi_I, pi_S) in the collinear flanks 0-1, 1-5, 5-20 and
+                               20-100 kb outside the breakpoints (``boundary.py``); PPC only, and not in STAT_KEYS
 
 Nothing here raises on degenerate input: an undefined value is NaN.
 """
@@ -53,8 +55,13 @@ RATIO_KEYS = ("pi_ratio", "dxy_pi", "f1_ratio")
 SFS_KEYS = tuple(f"sfs_{c}_{b}" for c in ("I", "S") for b in SFS_BINS)
 JSFS_KEYS = tuple(f"jsfs_{a}{b}" for a, b in JSFS_CELLS)
 LD_KEYS = tuple(f"ld_{c}_{k + 1}" for c in ("I", "S") for k in range(len(LD_EDGES) - 1))
-STAT_KEYS_PPC_ONLY = ("tajd_I", "tajd_S", "edge_centre")
-STAT_KEYS = RATIO_KEYS + SFS_KEYS + JSFS_KEYS + LD_KEYS + STAT_KEYS_PPC_ONLY
+# Breakpoint boundary keys (``boundary.py``). PPC-only, and outside STAT_KEYS because they come from their own msinv run
+# with 100 kb margins (``simulate.boundary_ppc``) and their own data block (abc_observed.json "boundary"), so the
+# ABC row and the observed "stats" vector do not carry them.
+BND_KEYS = tuple(f"bnd_{s}_b{k}" for s in ("piratio", "dxypi") for k in range(4))
+_PPC_ROW_KEYS = ("tajd_I", "tajd_S", "edge_centre")
+STAT_KEYS_PPC_ONLY = _PPC_ROW_KEYS + BND_KEYS
+STAT_KEYS = RATIO_KEYS + SFS_KEYS + JSFS_KEYS + LD_KEYS + _PPC_ROW_KEYS
 MODEL_KEYS = tuple(k for k in STAT_KEYS if k not in STAT_KEYS_PPC_ONLY)  # the statistics the ABC fits
 
 assert PROJ == 20 and JSFS_BINS[-1][1] == PROJ
@@ -337,5 +344,5 @@ def assemble(body: dict, control: dict, edge: float) -> dict:
     return {k: out[k] for k in STAT_KEYS}
 
 
-__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "ld_block_sums",
+__all__ = ["STAT_KEYS", "STAT_KEYS_PPC_ONLY", "BND_KEYS", "MODEL_KEYS", "region_stats", "edge_centre", "assemble", "ld_block_sums",
            "MU"]

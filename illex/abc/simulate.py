@@ -49,8 +49,8 @@ import numpy as np
 
 from illex.abc import statvec as SV
 from illex.abc.error_model import LD_ERROR
-from illex.abc.constants import (BODY_BP, CONTROL_BP, GAMMA_FLOOR, MARGIN_BP, MU, N_INV, N_KARYO, N_STD,
-                                 REC_RATE, TRACT_BP)
+from illex.abc.constants import (BND_MARGIN_BP, BODY_BP, CONTROL_BP, GAMMA_FLOOR, MARGIN_BP, MU, N_INV, N_KARYO,
+                                 N_STD, REC_RATE, TRACT_BP)
 
 ENGINES = ("auto", "msprime", "msinv")
 MAX_EPOCH = 1000.0      # generations; the longest constant-size interval of the msprime I/S demography
@@ -71,21 +71,22 @@ def _mutate(ts, seed):
                                  discrete_genome=False)
 
 
-def _inversion_ts(path, seed):
+def _inversion_ts(path, seed, margin=MARGIN_BP):
+    """(sim, ts) from msinv, a BODY_BP inversion between two ``margin`` bp collinear margins."""
     from msinv import HullSimulator, InversionSpec
 
     from illex.demography import PRESENT_NE_GROWTH, growth_demography
     from illex.theory import N_growth
 
     t_inv = float(path.params["t_inv"])
-    spec = InversionSpec(bp_left=MARGIN_BP, bp_right=MARGIN_BP + BODY_BP,
+    spec = InversionSpec(bp_left=margin, bp_right=margin + BODY_BP,
                          gene_conversion_rate=gamma_from_c(path.params.get("gamma_eff", float("nan"))),
                          mean_tract_length=TRACT_BP, tract_distribution="geometric",
                          trajectory={"type": "precomputed", "times": np.asarray(path.times, float),
                                      "freqs": [np.asarray(path.freqs, float)],
                                      "n_e": [float(N_growth(t_inv))], "t_inv": [t_inv]})
     sim = HullSimulator(n_std=N_STD, n_inv=N_INV, population_size=PRESENT_NE_GROWTH,
-                        demography=growth_demography(), sequence_length=BODY_BP + 2 * MARGIN_BP,
+                        demography=growth_demography(), sequence_length=BODY_BP + 2 * margin,
                         recombination_rate=REC_RATE, inversions=[spec], seed=seed)
     return sim, sim.simulate()
 
@@ -177,6 +178,12 @@ def _control_ts(seed):
                                 ploidy=2, model="hudson", random_seed=int(seed))
 
 
+def _seed_words(seed):
+    """The 9 SeedSequence words of one row (inv, ctl, mut inv, mut ctl, pair inv, pair ctl, p_obs, err inv, err ctl)."""
+    ss = np.random.SeedSequence(int(seed))
+    return tuple(int(x) for x in ss.generate_state(9) % (2**31 - 1) + 1)
+
+
 def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> dict[str, float]:
     """``STAT_KEYS`` for one accepted path, plus ``p_obs`` and ``n_nan`` (the count of NaN statistics).
 
@@ -190,11 +197,9 @@ def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> 
     """
     from illex import stats as S
 
-    ss = np.random.SeedSequence(int(seed))
     # The first 7 words are the Task-3 stream (SeedSequence words are a prefix-stable stream); 8-9 are the LD error
     # draws, added so that every pre-existing draw is unchanged.
-    s_inv, s_ctl, s_mi, s_mc, s_pi, s_pc, s_obs, s_ei, s_ec = (
-        int(x) for x in ss.generate_state(9) % (2**31 - 1) + 1)
+    s_inv, s_ctl, s_mi, s_mc, s_pi, s_pc, s_obs, s_ei, s_ec = _seed_words(seed)
 
     if engine_for(path, engine) == "msprime":
         ts, i_nodes, s_nodes = _inversion_ts_msprime(path, s_inv)
@@ -219,3 +224,31 @@ def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> 
     out["p_obs"] = float(np.random.default_rng(s_obs).binomial(two_n, float(path.p_now)) / two_n)
     out["n_nan"] = int(sum(math.isnan(out[k]) for k in SV.MODEL_KEYS))  # PPC-only NaNs never flag a row
     return out
+
+
+def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR) -> dict:
+    """The breakpoint boundary statistic (``boundary.BND_KEYS``) of one path, for posterior predictive checks only.
+
+    msinv only, with a BODY_BP inversion between two BND_MARGIN_BP collinear margins at REC_RATE, the path's
+    trajectory and flux (c NaN uses GAMMA_FLOOR), and the seed words of ``simulate_stats`` (ancestry s_inv,
+    mutations s_mi, diploid pairing s_pi, genotype errors s_ei). The flanks are collinear, so the genotype errors
+    use the control-region parameters ``ld_error["control"]``. msprime is refused because its two-population
+    model links the whole sequence to the arrangement, which makes the boundary wrong by construction. So the
+    default engine is "msinv", and ``engine_for(path, engine) == "msprime"`` (engine "msprime", or "auto" on a
+    no-flux path) raises ValueError.
+
+    Needs the msinv barrier coalescence fix (msinv PR #19) before it is used for real PPCs.
+    """
+    from illex import stats as S
+    from illex.abc.boundary import boundary_stats
+
+    if engine_for(path, engine) == "msprime":
+        raise ValueError("boundary_ppc needs msinv: msprime's two-population model links the flanks fully to "
+                         "the arrangement")
+    s_inv, _, s_mi, _, s_pi, _, _, s_ei, _ = _seed_words(seed)
+    sim, ts = _inversion_ts(path, s_inv, margin=BND_MARGIN_BP)
+    i_nodes, s_nodes = S.sample_nodes_by_karyotype(sim, ts)
+    mts = _mutate(ts, s_mi)
+    return boundary_stats(mts, i_nodes, s_nodes, BND_MARGIN_BP, BND_MARGIN_BP + BODY_BP,
+                          rng=np.random.default_rng(s_pi), err=ld_error["control"],
+                          err_rng=np.random.default_rng(s_ei))

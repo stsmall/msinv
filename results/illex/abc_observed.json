@@ -2476,6 +2476,250 @@
       "length_bp": 40000.0
     },
     "polarization": "I = 2a = AA cluster (inverted), S = 2+ = BB cluster (standard)",
-    "runtime_s": 204.3
+    "runtime_s": 210.9
+  },
+  "boundary": {
+    "stats": {
+      "bnd_piratio_b0": null,
+      "bnd_piratio_b1": 0.6248598610766751,
+      "bnd_piratio_b2": 0.9288171996409648,
+      "bnd_piratio_b3": 0.9248212918591294,
+      "bnd_dxypi_b0": null,
+      "bnd_dxypi_b1": 1.0126204346694347,
+      "bnd_dxypi_b2": 1.0190922071115154,
+      "bnd_dxypi_b3": 1.0129373665575823
+    },
+    "se": {
+      "bnd_piratio_b0": null,
+      "bnd_piratio_b1": null,
+      "bnd_piratio_b2": 0.061068356211510536,
+      "bnd_piratio_b3": 0.05641683470160499,
+      "bnd_dxypi_b0": null,
+      "bnd_dxypi_b1": null,
+      "bnd_dxypi_b2": 0.005799557587418433,
+      "bnd_dxypi_b3": 0.0035396368770779156
+    },
+    "se_site_bootstrap": {
+      "bnd_piratio_b0": null,
+      "bnd_piratio_b1": 0.20896161790920084,
+      "bnd_piratio_b2": 0.036061827789734484,
+      "bnd_piratio_b3": 0.019407152238746964,
+      "bnd_dxypi_b0": null,
+      "bnd_dxypi_b1": 0.010321295818859195,
+      "bnd_dxypi_b2": 0.006523977281092914,
+      "bnd_dxypi_b3": 0.001880426057946744
+    },
+    "per_side": {
+      "left": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": null,
+        "bnd_piratio_b2": 1.0897538783077179,
+        "bnd_piratio_b3": 1.0778710186036442,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": null,
+        "bnd_dxypi_b2": 1.0081266608314432,
+        "bnd_dxypi_b3": 1.0083383270445363
+      },
+      "right": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": 0.6248598610766751,
+        "bnd_piratio_b2": 0.8533700115552008,
+        "bnd_piratio_b3": 0.8232250641068064,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": 1.0126204346694347,
+        "bnd_dxypi_b2": 1.0248885131060896,
+        "bnd_dxypi_b3": 1.0164166552732146
+      }
+    },
+    "se_per_side": {
+      "left": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": null,
+        "bnd_piratio_b2": 0.031786338098093316,
+        "bnd_piratio_b3": 0.03702379056696501,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": null,
+        "bnd_dxypi_b2": 0.0020021216306790736,
+        "bnd_dxypi_b3": 0.0023891422330732243
+      },
+      "right": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": null,
+        "bnd_piratio_b2": 0.03584262045833522,
+        "bnd_piratio_b3": 0.10699640089537842,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": null,
+        "bnd_dxypi_b2": 0.007730220179288185,
+        "bnd_dxypi_b3": 0.005625031048204801
+      }
+    },
+    "counts": {
+      "pooled": {
+        "n_sites": [
+          0,
+          24,
+          1053,
+          2388
+        ],
+        "n_seg": [
+          0,
+          16,
+          753,
+          1699
+        ],
+        "accessible_bp": [
+          183,
+          919,
+          13060,
+          38299
+        ],
+        "n_blocks": [
+          0,
+          1,
+          4,
+          15
+        ]
+      },
+      "left": {
+        "n_sites": [
+          0,
+          0,
+          439,
+          1468
+        ],
+        "n_seg": [
+          0,
+          0,
+          295,
+          986
+        ],
+        "accessible_bp": [
+          0,
+          318,
+          6014,
+          23635
+        ],
+        "n_blocks": [
+          0,
+          0,
+          2,
+          8
+        ]
+      },
+      "right": {
+        "n_sites": [
+          0,
+          24,
+          614,
+          920
+        ],
+        "n_seg": [
+          0,
+          16,
+          458,
+          713
+        ],
+        "accessible_bp": [
+          183,
+          601,
+          7046,
+          14664
+        ],
+        "n_blocks": [
+          0,
+          1,
+          2,
+          7
+        ]
+      }
+    },
+    "informative": {
+      "pooled": [
+        false,
+        false,
+        true,
+        true
+      ],
+      "left": [
+        false,
+        false,
+        true,
+        true
+      ],
+      "right": [
+        false,
+        false,
+        true,
+        true
+      ]
+    },
+    "se_site_bootstrap_per_side": {
+      "left": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": null,
+        "bnd_piratio_b2": 0.05374153833162774,
+        "bnd_piratio_b3": 0.030899984570670343,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": null,
+        "bnd_dxypi_b2": 0.005335603976972237,
+        "bnd_dxypi_b3": 0.001716545078216825
+      },
+      "right": {
+        "bnd_piratio_b0": null,
+        "bnd_piratio_b1": 0.22893890223864993,
+        "bnd_piratio_b2": 0.0446459832224808,
+        "bnd_piratio_b3": 0.027328440709093384,
+        "bnd_dxypi_b0": null,
+        "bnd_dxypi_b1": 0.011062747783157686,
+        "bnd_dxypi_b2": 0.00896236221054055,
+        "bnd_dxypi_b3": 0.003042117495220256
+      }
+    },
+    "ppc_keys": [
+      "bnd_piratio_b2",
+      "bnd_piratio_b3",
+      "bnd_dxypi_b2",
+      "bnd_dxypi_b3"
+    ],
+    "meta": {
+      "edges_bp": [
+        0,
+        1000,
+        5000,
+        20000,
+        100000
+      ],
+      "margin_bp": 100000,
+      "flanks": {
+        "flank_left": [
+          60450000,
+          60550000
+        ],
+        "flank_right": [
+          79520000,
+          79620000
+        ]
+      },
+      "vcf": "/sietch_colab/ssmall/projects/msinv_dir/inversion_sims/files/.tmp/illex_chr2/inv.vcf.gz",
+      "accessible_bed": "/sietch_colab/data_share/illex/popgen_data/analysis/steps/03_karyotype/chr2_mask/acc2.bed",
+      "vcf_variants": {
+        "left": 1907,
+        "right": 1558
+      },
+      "classes": "I = 2a = AA cluster (inverted), S = 2+ = BB cluster (reference arrangement)",
+      "estimator": "per-site pi_I, pi_S, dxy with per-site called n (site_stats), summed per bin, then bnd_piratio = sum pi_I / sum pi_S, bnd_dxypi = sum dxy / mean(sum pi_I, sum pi_S)",
+      "distance": "left d = BP_LEFT - (p0 + 0.5), right d = (p0 + 0.5) - BP_RIGHT, bin k when edges[k] <= d < edges[k + 1]",
+      "n_seg": "accessible sites with both alleles among the called I and S genotypes",
+      "n_sites": "accessible VCF sites with >= 1 called I or S genotype",
+      "bootstrap": {
+        "block_bp": 10000,
+        "replicates": 1000,
+        "seed": 20261104,
+        "blocks": "10-kb blocks from each bin's inner edge, within the bin, sides pooled for pooled"
+      },
+      "min_seg": 50,
+      "control": "none (raw values, as the simulated boundary_ppc)",
+      "undefined": "null (a bin with no sites, or a bootstrap with fewer than two blocks)"
+    }
   }
 }

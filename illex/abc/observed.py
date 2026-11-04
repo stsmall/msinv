@@ -29,6 +29,10 @@ Sources per statistic:
   tajd_*              ANGSD within-class spectra projected to the simulated n (100 per class) and evaluated as
                       Tajima's D of a BODY_BP = CONTROL_BP region with those per-site spectra
   edge_centre         called genotypes, N_WIN equal windows over the body, statvec.edge_centre's definition
+  boundary            (a separate "boundary" block, PPC-only, ``boundary_block``) called genotypes in the flanks
+                      [BP_LEFT - 100 kb, BP_LEFT) and [BP_RIGHT, BP_RIGHT + 100 kb), read from inv.vcf.gz, as
+                      pi_I/pi_S and dxy/mean(pi_I, pi_S) per distance bin, per side and pooled, with a 10-kb-block
+                      bootstrap SE within each bin
 SEs: delete-one 1-Mb-block jackknife over the body (19 blocks from BP_LEFT, the last 0.97 Mb), each statistic
 recomputed with its control held fixed. realSFS cannot drop a hole from a region, so the ANGSD statistics use
 per-block spectra summed over the retained blocks (the ``sfs_f1_jackknife.py`` route; its gate is recorded).
@@ -45,7 +49,8 @@ import numpy as np
 from illex.abc import statvec as SV
 from illex.abc.error_model import genotype_error_stats, h_from_ho_he
 from illex.abc.statvec import LD_KERNEL_VERSION, ld_block_sums  # noqa: F401  one kernel for sim and data
-from illex.abc.constants import BODY_BP, BP_LEFT, BP_RIGHT, CONTROL_BP, N_INV, N_STD, P_NOW
+from illex.abc.constants import (BND_EDGES_BP, BND_MARGIN_BP, BODY_BP, BP_LEFT, BP_RIGHT, CONTROL_BP, N_INV, N_STD,
+                                 P_NOW)
 
 ANA = Path("/sietch_colab/data_share/illex/popgen_data/analysis/steps")
 KARYO = {"I": ANA / "03_karyotype/AA_samples.txt", "S": ANA / "03_karyotype/BB_samples.txt"}
@@ -58,6 +63,13 @@ WORK = Path(".tmp/abc_observed")
 OUT = Path("results/illex/abc_observed.json")
 
 CTL_LO, CTL_HI = 10_000_000, 30_000_000
+# Breakpoint boundary flanks (0-based half-open), read from inv.vcf.gz (it spans 60-80 Mb). They are kept out of VCF
+# so that meta["inputs"] of the existing statistics is unchanged.
+FLANKS = {"flank_left": (BP_LEFT - BND_MARGIN_BP, BP_LEFT), "flank_right": (BP_RIGHT, BP_RIGHT + BND_MARGIN_BP)}
+FLANK_VCF = VCF["body"]
+BND_BLOCK = 10_000                 # boundary bootstrap block, bp of distance from the breakpoint
+BND_BOOT, BND_SEED = 1000, 20261104
+BND_MIN_SEG = 50                   # a bin with fewer accessible segregating sites is uninformative (dropped)
 BLOCK = 1_000_000
 BLOCK_STARTS = tuple(range(BP_LEFT, BP_RIGHT, BLOCK))
 BP_RIGHT_2D = 79_500_000                       # the AA40/BB40 SAFs end here
@@ -78,9 +90,17 @@ def _hash(d) -> str:
     return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
-def geno_params(label):
+def _span(label):
+    """(vcf, lo, hi) of the region label ``body``, ``control``, ``flank_left`` or ``flank_right``."""
+    if label in FLANKS:
+        return (FLANK_VCF, *FLANKS[label])
     lo, hi = (BP_LEFT, BP_RIGHT) if label == "body" else (CTL_LO, CTL_HI)
-    return {"vcf": str(VCF[label]), "region": [lo, hi], "layout": GENO_VERSION}
+    return VCF[label], lo, hi
+
+
+def geno_params(label):
+    vcf, lo, hi = _span(label)
+    return {"vcf": str(vcf), "region": [lo, hi], "layout": GENO_VERSION}
 
 
 def vcf_part_params():
@@ -182,8 +202,8 @@ def load_region(label):
         return z["pos"], z["dos"], [str(s) for s in z["samples"]]
     from pg_gpu import HaplotypeMatrix
 
-    lo, hi = (BP_LEFT, BP_RIGHT) if label == "body" else (CTL_LO, CTL_HI)
-    h = HaplotypeMatrix.from_vcf(str(VCF[label]), region=f"2:{lo + 1}-{hi}")
+    vcf, lo, hi = _span(label)
+    h = HaplotypeMatrix.from_vcf(str(vcf), region=f"2:{lo + 1}-{hi}")
     H = h.haplotypes
     H = np.asarray(H.get() if hasattr(H, "get") else H)
     pos = np.asarray(h.positions.get() if hasattr(h.positions, "get") else h.positions).astype(np.int64)
@@ -297,6 +317,148 @@ def estimate_error_model(names):
             out[lab][c] = {"call_rate": float(np.mean(cr)), "ho_he": ho_he, "h": h_from_ho_he(ho_he),
                            "call_rate_sd": float(np.std(cr)), "ho_he_sd": float(np.std(hh))}
     return out
+
+
+# ================================================================================ breakpoint boundary ====
+def accessible_bp(lo, hi):
+    """Accessible bases of [lo, hi) (0-based half-open) in the chr2 mask."""
+    bed = np.loadtxt(ACC_BED, usecols=(1, 2), dtype=np.int64)
+    return int(np.clip(np.minimum(bed[:, 1], hi) - np.maximum(bed[:, 0], lo), 0, None).sum())
+
+
+def bin_span(side, k):
+    """[lo, hi) 0-based bases of boundary bin k on a side ("left" / "right"), with sites binned at their centre."""
+    e = BND_EDGES_BP
+    if side == "left":
+        return BP_LEFT - e[k + 1], BP_LEFT - e[k]
+    return BP_RIGHT + e[k], BP_RIGHT + e[k + 1]
+
+
+def _flank_sites(lab, names):
+    """Per-site sums, bins and bootstrap blocks of the accessible called sites of one flank."""
+    from illex.abc import boundary as B
+
+    pos, dos, samples = load_region(lab)
+    col = {s: i for i, s in enumerate(samples)}
+    ii, ss = (np.array([col[s] for s in names[c]]) for c in ("I", "S"))
+    keep = accessible(pos) & ((dos[ii] >= 0).any(0) | (dos[ss] >= 0).any(0))
+    st = B.site_sums(dos[ii].T, dos[ss].T)          # = site_stats(dos, ii, ss), plus a segregating flag
+    x = pos - 1 + 0.5                               # 0-based base, at its centre
+    side, k = B.flank_bins(x, BP_LEFT, BP_RIGHT)
+    want = 0 if lab == "flank_left" else 1
+    if not np.all(side[keep] == want):
+        raise SystemExit(f"{lab}: sites outside the flank")
+    d = np.where(side == 0, BP_LEFT - x, x - BP_RIGHT)
+    lo_edge = np.asarray(BND_EDGES_BP, float)[np.maximum(k, 0)]
+    blk = ((d - lo_edge) // BND_BLOCK).astype(int)  # 10-kb blocks counted from each bin's inner edge
+    return {"st": {key: st[key][keep] for key in ("pi_I", "pi_S", "dxy", "seg")}, "k": k[keep],
+            "blk": blk[keep], "n_vcf": int(pos.size)}
+
+
+def _boot_se(units, rng):
+    """SE of (pi_I/pi_S, dxy/mean pi) from resampling the (n_units, 3) unit sums with replacement."""
+    from illex.abc import boundary as B
+
+    u = np.asarray(units, float)
+    if u.shape[0] < 2:
+        return {"piratio": float("nan"), "dxypi": float("nan")}
+    idx = rng.integers(0, u.shape[0], size=(BND_BOOT, u.shape[0]))
+    tot = u[idx].sum(1)                              # (BND_BOOT, 3)
+    r = [B.bin_ratios(dict(zip(("pi_I", "pi_S", "dxy"), t))) for t in tot]
+    out = {}
+    for key in ("piratio", "dxypi"):
+        v = np.array([x[key] for x in r])
+        v = v[np.isfinite(v)]
+        out[key] = float(v.std(ddof=1)) if v.size > 1 else float("nan")
+    return out
+
+
+def boundary_block(names):
+    """The abc_observed.json "boundary" block: BND_KEYS per bin pooled over the two flanks and per side.
+
+    The called-genotype estimator of pi_ratio / dxy_pi (``site_stats``, accessible sites with >= 1 called
+    genotype in I or S), summed per bin and divided. The SEs come from a bootstrap of 10-kb blocks (counted outward from each
+    bin's inner edge, so a block never straddles two bins) within each bin, the two sides' blocks pooled for
+    the pooled value. Bins 0-1 and 1-5 kb are narrower than a block, so they have one block per side, and their
+    pooled block SE rests on two blocks (their per-side block SE is undefined). A site-level bootstrap SE, which
+    ignores linkage, is recorded beside it. A bin with fewer than BND_MIN_SEG accessible segregating sites is
+    flagged uninformative and left out of "ppc_keys".
+    """
+    from illex.abc import boundary as B
+
+    rng = np.random.default_rng(BND_SEED)
+    fl = {"left": _flank_sites("flank_left", names), "right": _flank_sites("flank_right", names)}
+    keys3 = ("pi_I", "pi_S", "dxy")
+    res = {"stats": {}, "se": {}, "se_site_bootstrap": {}, "per_side": {"left": {}, "right": {}},
+           "se_per_side": {"left": {}, "right": {}}, "counts": {}, "informative": {}}
+    for group, sides in (("pooled", ("left", "right")), ("left", ("left",)), ("right", ("right",))):
+        cnt = {"n_sites": [], "n_seg": [], "accessible_bp": [], "n_blocks": []}
+        vals, ses, ses_site = {}, {}, {}
+        for b in range(B.N_BND):
+            units, sites = [], []
+            n_sites = n_seg = acc_bp = 0
+            for sd in sides:
+                f = fl[sd]
+                m = f["k"] == b
+                st = {key: f["st"][key][m] for key in f["st"]}
+                n_sites += int(m.sum())
+                n_seg += int(st["seg"].sum())
+                acc_bp += accessible_bp(*bin_span(sd, b))
+                blk = f["blk"][m]
+                for u in np.unique(blk):
+                    w = blk == u
+                    units.append([st[key][w].sum() for key in keys3])
+                sites.append(np.stack([st[key] for key in keys3], 1))
+            sites = np.concatenate(sites, 0)
+            r = B.bin_ratios(dict(zip(keys3, sites.sum(0))))
+            se_b, se_s = _boot_se(units, rng), _boot_se(sites, rng)
+            for key in ("piratio", "dxypi"):
+                name = f"bnd_{key}_b{b}"
+                vals[name], ses[name], ses_site[name] = r[key], se_b[key], se_s[key]
+            cnt["n_sites"].append(n_sites), cnt["n_seg"].append(n_seg)
+            cnt["accessible_bp"].append(acc_bp), cnt["n_blocks"].append(len(units))
+        order = list(B.BND_KEYS)
+        vals, ses, ses_site = ({k: d[k] for k in order} for d in (vals, ses, ses_site))
+        if group == "pooled":
+            res["stats"], res["se"], res["se_site_bootstrap"] = vals, ses, ses_site
+        else:
+            res["per_side"][group], res["se_per_side"][group] = vals, ses
+            res.setdefault("se_site_bootstrap_per_side", {})[group] = ses_site
+        res["counts"][group] = cnt
+        res["informative"][group] = [n >= BND_MIN_SEG for n in cnt["n_seg"]]
+    res["ppc_keys"] = [f"bnd_{key}_b{b}" for key in ("piratio", "dxypi") for b in range(B.N_BND)
+                       if res["informative"]["pooled"][b]]
+    res["meta"] = {
+        "edges_bp": list(BND_EDGES_BP), "margin_bp": BND_MARGIN_BP,
+        "flanks": {k: list(v) for k, v in FLANKS.items()}, "vcf": str(FLANK_VCF), "accessible_bed": str(ACC_BED),
+        "vcf_variants": {sd: fl[sd]["n_vcf"] for sd in fl},
+        "classes": "I = 2a = AA cluster (inverted), S = 2+ = BB cluster (reference arrangement)",
+        "estimator": "per-site pi_I, pi_S, dxy with per-site called n (site_stats), summed per bin, then "
+                     "bnd_piratio = sum pi_I / sum pi_S, bnd_dxypi = sum dxy / mean(sum pi_I, sum pi_S)",
+        "distance": "left d = BP_LEFT - (p0 + 0.5), right d = (p0 + 0.5) - BP_RIGHT, bin k when edges[k] <= d < "
+                    "edges[k + 1]",
+        "n_seg": "accessible sites with both alleles among the called I and S genotypes",
+        "n_sites": "accessible VCF sites with >= 1 called I or S genotype",
+        "bootstrap": {"block_bp": BND_BLOCK, "replicates": BND_BOOT, "seed": BND_SEED,
+                      "blocks": "10-kb blocks from each bin's inner edge, within the bin, sides pooled for pooled"},
+        "min_seg": BND_MIN_SEG, "control": "none (raw values, as the simulated boundary_ppc)",
+        "undefined": "null (a bin with no sites, or a bootstrap with fewer than two blocks)"}
+    return _json_safe(res)
+
+
+def _json_safe(x):
+    """Non-finite floats to None, so the block is strict JSON (jsonlite reads abc_observed.json)."""
+    if isinstance(x, dict):
+        return {k: _json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_json_safe(v) for v in x]
+    if isinstance(x, (float, np.floating)):
+        return float(x) if math.isfinite(x) else None
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, np.bool_):
+        return bool(x)
+    return x
 
 
 # ================================================================================================ main ====
@@ -460,12 +622,21 @@ def main() -> None:
     meta["runtime_s"] = round(time.time() - t0, 1)
     out = {"stats": stats, "se": se, "raw": {k: float(raw[k]) for k in SV.STAT_KEYS}, "p_obs": P_NOW,
            "meta": meta}
+    out["boundary"] = boundary_block(names)
+    print(f"boundary block done ({time.time() - t0:.0f}s)", flush=True)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, indent=2) + "\n")
     print(f"wrote {OUT} ({time.time() - t0:.0f}s)")
     for k in SV.STAT_KEYS:
         print(f"  {k:<12s} stat {stats[k]:10.5f}  se {se[k]:9.5f}  raw {raw[k]:10.5f}  "
               f"control {ctl.get(k, float('nan')):10.5f}")
+    bnd = out["boundary"]
+    for k in SV.BND_KEYS:
+        b = int(k[-1])
+        v = [bnd["stats"][k], bnd["se"][k], bnd["per_side"]["left"][k], bnd["per_side"]["right"][k]]
+        v = [float("nan") if x is None else x for x in v]
+        print(f"  {k:<16s} pooled {v[0]:8.4f} se {v[1]:7.4f}  left {v[2]:8.4f}  right {v[3]:8.4f}  "
+              f"n_seg {bnd['counts']['pooled']['n_seg'][b]}")
 
 
 if __name__ == "__main__":

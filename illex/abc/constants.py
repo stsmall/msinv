@@ -22,6 +22,8 @@ MU = 3e-9                # per-bp per-generation mutation rate
 TRACT_BP = 300.0         # mean tract, bp: Korunes & Noor 2019 ML 188-390 bp (doi:10.1111/mec.14921). The Task 5 sweep ran at 1000; c is per-site, so only the edge zone differs
 BODY_BP = 40_000.0       # simulated inversion body
 MARGIN_BP = 10_000.0     # collinear margin on each side of the body (sequence = BODY_BP + 2 * MARGIN_BP)
+BND_MARGIN_BP = 100_000   # collinear margin on each side of the inversion in the boundary PPC (boundary.py)
+BND_EDGES_BP = (0, 1_000, 5_000, 20_000, 100_000)   # boundary distance bins outward from each breakpoint, bp
 CONTROL_BP = 40_000.0    # separate no-inversion neutral control (the flank value of every statistic)
 N_INV, N_STD = 100, 100  # simulated chromosomes per class (50 diploids each for LD); data has 508 / 190
 N_KARYO = 633            # individuals karyotyped; p_obs = Binomial(2 * N_KARYO, p_now) / (2 * N_KARYO)

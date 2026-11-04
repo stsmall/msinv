@@ -197,3 +197,21 @@ def test_error_model_constants_match_observed(obs):
             cr, h = LD_ERROR[lab][c]
             assert cr == pytest.approx(em[lab][c]["call_rate"], abs=1e-4), (lab, c)
             assert h == pytest.approx(em[lab][c]["h"], abs=1e-4), (lab, c)
+
+
+def test_boundary_block(obs):
+    """Task 9c: the PPC-only breakpoint boundary block (strict JSON, undefined values as null)."""
+    b = obs["boundary"]
+    assert list(b["stats"]) == list(SV.BND_KEYS) == list(b["se"])
+    for side in ("left", "right"):
+        assert list(b["per_side"][side]) == list(SV.BND_KEYS)
+    for g in ("pooled", "left", "right"):
+        c = b["counts"][g]
+        assert len(c["n_seg"]) == 4 and all(s <= n for s, n in zip(c["n_seg"], c["n_sites"]))
+        assert b["informative"][g] == [n >= b["meta"]["min_seg"] for n in c["n_seg"]]
+    assert [x + y for x, y in zip(b["counts"]["left"]["n_seg"], b["counts"]["right"]["n_seg"])] == \
+        b["counts"]["pooled"]["n_seg"]
+    keep = [k for k in SV.BND_KEYS if b["informative"]["pooled"][int(k[-1])]]
+    assert b["ppc_keys"] == keep
+    assert all(b["stats"][k] is not None and math.isfinite(b["stats"][k]) for k in keep)
+    assert not set(SV.BND_KEYS) & set(obs["stats"])

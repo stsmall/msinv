@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from illex.abc.simulate import simulate_stats
-from illex.abc.statvec import STAT_KEYS, STAT_KEYS_PPC_ONLY
+from illex.abc.statvec import BND_KEYS, STAT_KEYS, STAT_KEYS_PPC_ONLY
 from illex.abc.trajectory import Path
 from illex.theory import N_growth
 
@@ -29,7 +29,7 @@ def path(t_inv, p_now=0.626, p_start=None, gamma_eff=NAN, hard=False):
 def test_keys_contract():
     out = simulate_stats(path(2e4), seed=11)
     assert set(out) == set(STAT_KEYS) | {"p_obs", "n_nan"}
-    assert set(STAT_KEYS_PPC_ONLY) <= set(STAT_KEYS)
+    assert set(STAT_KEYS_PPC_ONLY) - set(BND_KEYS) <= set(STAT_KEYS)   # boundary keys come from boundary_ppc
     assert len(set(STAT_KEYS)) == len(STAT_KEYS)
     assert all(isinstance(v, float) for k, v in out.items() if k != "n_nan")
     assert out["n_nan"] == sum(np.isnan(out[k]) for k in STAT_KEYS)

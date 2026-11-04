@@ -79,7 +79,7 @@ pub fn pair_idx(i: usize, j: usize, n: usize) -> usize {
 /// Number of entries in the triangular pair cache for n lineages.
 #[inline]
 pub fn tri_size(n: usize) -> usize {
-    n * (n - 1) / 2
+    n * n.saturating_sub(1) / 2
 }
 
 pub struct RateCache {
@@ -1089,17 +1089,18 @@ impl RateCache {
 
     /// Re-key a nonempty pair whose overlap is known to be unchanged but
     /// whose lineages' karyotype signatures may have shrunk (recombination
-    /// split). A karyotype-compatible pair is stored under exactly one
-    /// class, its shared karyotype (`pair_rate_classes`); if that differs
-    /// from what is stored, recompute the entry. Incompatible pairs keep
-    /// their per-class overlap set, which a split does not change.
+    /// split). Every eligible pair is stored under exactly one key
+    /// (`pair_rate_classes`): its shared karyotype if compatible,
+    /// `BLOCKED` if not. A split can turn an incompatible pair compatible
+    /// (the half that kept the pair's overlap lost its tagged material)
+    /// or change the shared karyotype; if the key differs from what is
+    /// stored, recompute the entry.
     fn refresh_karyotype_key(&mut self, i: usize, j: usize) {
         let pidx = pair_idx(i, j, self.capacity);
         if !bit_get(&self.nonempty_bits, pidx) { return; }
         let sa = segs_sig(&self.lineage_segs[i]);
         let sb = segs_sig(&self.lineage_segs[j]);
-        if !karyotypes_compatible(sa, sb) { return; }
-        let want = shared_karyotype(sa, sb);
+        let want = pair_key(sa, sb);
         let refs = self.refs_slice(pidx);
         if refs.len() == 1 && self.class_for_ref(refs[0].0) == want { return; }
         self.clear_pair(i, j);
@@ -1436,6 +1437,30 @@ impl RateCache {
         }
     }
 
+    /// Completeness check (test fence): every same-pop pair the cache
+    /// holds as empty must be ineligible under a fresh `pair_rate_classes`.
+    /// Catches an incremental path that dropped a pair, e.g. a split that
+    /// made an incompatible (`BLOCKED`) pair compatible without re-keying
+    /// it. Not valid between `remove_lineage` and `swap_update`.
+    #[cfg(test)]
+    pub fn debug_check_complete(&self, label: &str) {
+        for i in 0..self.n {
+            for j in (i + 1)..self.n {
+                if self.lineage_pop[i] != self.lineage_pop[j] { continue; }
+                let pidx = pair_idx(i, j, self.capacity);
+                if bit_get(&self.nonempty_bits, pidx) { continue; }
+                let fresh = pair_rate_classes(
+                    &self.lineage_segs[i], &self.lineage_segs[j],
+                    self.lineage_hulls[i], self.lineage_hulls[j], self.smc_prime);
+                if !fresh.is_empty() {
+                    panic!("[{}] pair ({},{}) stored empty but fresh {:?}",
+                           label, i, j, fresh);
+                }
+            }
+        }
+    }
+
+
     /// Iterate all non-empty pairs using the bitmap at word granularity:
     /// for each row we load 64-bit chunks and use `trailing_zeros` to
     /// step directly to the next set bit. Empty words cost a single
@@ -1652,20 +1677,40 @@ fn segs_sig(s: &[FlatSeg]) -> u64 {
 ///   under K, however many classes it overlaps in. Storing it under every
 ///   overlapping class as well would add the rates of a body bucket and
 ///   a margin bucket for the same pair and over-coalesce.
-/// * Incompatible pair (I x S, meeting in shared panmictic margin): one
-///   entry per overlapping class, each a partial merge restricted to that
-///   class (the barrier approximation).
+/// * Incompatible pair (one lineage carries S and the other I at some
+///   inversion, e.g. an I and an S chromosome that overlap in a shared
+///   untagged margin): rate 0. Each lineage is one chromosome of its
+///   arrangement, flanks included, and two chromosomes of different
+///   arrangements have no common ancestor while the barrier is active.
+///   Flank material escapes the arrangement only by a recombination in
+///   the flank, which yields an untagged lineage that is compatible with
+///   every other. The pair is stored ONCE under `BranchClass::BLOCKED`,
+///   whose rate is 0, so that it stays in the nonempty-pair set and a
+///   split that makes it compatible re-keys it (`refresh_karyotype_key`).
+///   Before msinv 0.4.1 such pairs partial-merged their shared margin at
+///   1/(2N), so margin material linked to an arrangement behaved as
+///   panmictic up to the breakpoints (dxy fell ~3x at the breakpoint
+///   even with full linkage).
 #[inline]
 fn pair_rate_classes(a: &[FlatSeg], b: &[FlatSeg],
                      hull_a: (f64, f64), hull_b: (f64, f64),
                      smc_prime: bool) -> ClassBuf {
-    let ovl = pair_overlap(a, b, hull_a, hull_b, smc_prime);
-    if ovl.is_empty() { return ovl; }
-    let (sa, sb) = (segs_sig(a), segs_sig(b));
-    if !karyotypes_compatible(sa, sb) { return ovl; }
-    let mut r: ClassBuf = SmallVec::new();
-    r.push(shared_karyotype(sa, sb));
+    let mut r = pair_overlap(a, b, hull_a, hull_b, smc_prime);
+    if r.is_empty() { return r; }
+    r.clear();
+    r.push(pair_key(segs_sig(a), segs_sig(b)));
     r
+}
+
+/// Rate-cache key of an eligible pair from its karyotype signatures: the
+/// shared karyotype for a compatible pair, `BLOCKED` otherwise.
+#[inline]
+fn pair_key(sa: u64, sb: u64) -> BranchClass {
+    if karyotypes_compatible(sa, sb) {
+        shared_karyotype(sa, sb)
+    } else {
+        BranchClass::BLOCKED
+    }
 }
 
 /// Compute the set of branch classes for which two lineages' flat
@@ -1835,6 +1880,7 @@ mod tests {
                     cache.recompute_for(idx, &active, &arena);
                     cache.debug_check_invariants(
                         &format!("step {}: recompute_for({})", step, idx));
+                    cache.debug_check_complete(&format!("step {}: complete", step));
                 }
                 // apply_recomb_split: push a new lineage (simulating the
                 // right-half of a recomb split) then update both.
@@ -1872,6 +1918,7 @@ mod tests {
                     cache.debug_check_invariants(
                         &format!("step {}: apply_recomb_split({},{})",
                                  step, idx, new_idx));
+                    cache.debug_check_complete(&format!("step {}: complete", step));
                 }
                 // swap_update: simulate swap_remove(idx) on the active list.
                 2 => {
@@ -1885,6 +1932,7 @@ mod tests {
                     cache.debug_check_invariants(
                         &format!("step {}: swap_update({},{})",
                                  step, idx, old_last));
+                    cache.debug_check_complete(&format!("step {}: complete", step));
                 }
                 // push a new lineage + recompute for it.
                 _ => {
@@ -1894,6 +1942,7 @@ mod tests {
                     cache.recompute_for(idx, &active, &arena);
                     cache.debug_check_invariants(
                         &format!("step {}: push + recompute({})", step, idx));
+                    cache.debug_check_complete(&format!("step {}: complete", step));
                 }
             }
         }

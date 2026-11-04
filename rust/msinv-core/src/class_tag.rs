@@ -35,6 +35,17 @@ impl BranchClass {
     /// Panmictic — no active inversion barriers.
     pub const PANMICTIC: Self = Self(0);
 
+    /// Rate-cache key of a karyotype-incompatible lineage pair (one lineage
+    /// carries S and the other I at some active inversion). Such a pair
+    /// cannot coalesce while the barrier is active, so its coalescence
+    /// rate is 0 (`p_class_for_tag` returns 0 for this key). The pair is
+    /// still stored in the rate cache under this key so that a later
+    /// recombination split, which can make it compatible, re-keys it
+    /// (`RateCache::refresh_karyotype_key`). All bits set: every per-
+    /// inversion slot holds the reserved `11` pattern, so no segment ever
+    /// carries this class.
+    pub const BLOCKED: Self = Self(u64::MAX);
+
     /// Maximum number of inversions supported by the bitmask.
     pub const MAX_INVERSIONS: usize = 32;
 

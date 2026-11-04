@@ -185,6 +185,20 @@ at each event and holds it fixed until the next one. Up to 0.3.5 msinv used
 `HullSimulator(..., crossover_suppression=False)` to reproduce results
 from earlier versions. Both engines (Rust and Python) implement it.
 
+**Flank linkage** (since 0.4.1). A lineage that carries arrangement
+material is one chromosome of that arrangement, flanks included, so an
+I-carrying and an S-carrying lineage cannot coalesce while the barrier is
+active, also where they overlap in the collinear flank. Flank material
+leaves its arrangement only through a recombination in the flank, which
+gives an untagged (panmictic) lineage. Such an escaped flank lineage
+coalesces with lineages of either arrangement, or with other untagged
+ones, at the panmictic rate `1/(2N)`: its chromosome carries arrangement `k`
+with probability `p_k` and then meets a given `k` chromosome at
+`1/(2N p_k)`, so the product is `1/(2N)`. When it coalesces with a
+tagged lineage it rejoins that lineage's arrangement.
+Flank dxy therefore decays from the body level at the breakpoint toward
+the panmictic value with distance, on the scale `1 / (r · t)`.
+
 In the no-inversion limit, `msinv` reproduces msprime's SMC (default)
 or SMC′ (`smc_prime=True`) models, and single-site statistics match
 msprime's full (Hudson) coalescent.
@@ -246,10 +260,29 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
   that counts each compatible pair once is derived only for a single
   active barrier. With two or more barriers active at the same time,
   those sweep-window events use the earlier partial merge, restricted
-  to the cell's class. Marginal trees are unaffected, but
-  within-arrangement short-range LD inside the sweep window keeps the
-  old barrier-era deficit. Coalescences outside sweep windows are not
-  affected.
+  to the cell's class. Marginal trees inside the inversion bodies are
+  unaffected, but within-arrangement short-range LD inside the sweep
+  window keeps the old barrier-era deficit, and a partial merge can
+  leave a remnant that holds only margin material, so flank
+  differentiation inside the sweep window is slightly understated.
+  I x S pairs are never merged there. Coalescences outside sweep
+  windows are not affected.
+
+- **Sweep forced merges ignore karyotype.** When a sweep finalizes, the
+  de-novo merge of standing-variation sweeps and the hard-sweep
+  collapse of the remaining A-tagged lineages (`still_a`) join lineages
+  without a karyotype check, so with an active inversion barrier they
+  can join an I and an S lineage.
+
+## Changes in 0.4.1
+
+- **Flank linkage while a barrier is active** (see "What msinv uniquely
+  provides"). Earlier versions merged the shared flank of I x S pairs at
+  1/(2N), so dxy fell about 3-fold at the breakpoints even with the
+  flank fully linked to the body. Both engines.
+- **Python high-rho path** (4 N r L > 100): an untagged (margin-only)
+  lineage now coalesces with tagged lineages at 1/(2N), as in the Rust
+  engine; before, only lineages of the same karyotype bucket coalesced.
 
 ## Running the tests
 

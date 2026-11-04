@@ -161,6 +161,25 @@ karyotypes (modulated by the *phi(x)* function from Peischl et al. 2013).
 The hull algorithm implements this through per-position ancestral
 material tracking under the SMC approximation described above.
 
+**Crossover suppression in heterokaryotypes** (default since 0.3.6). A
+crossover inside an inversion needs a homokaryotypic partner, so while
+the barrier is active a lineage carrying arrangement *k* at a position
+inside the inversion recombines there at `r · p_k(t)`, where `p_k(t)` is
+the frequency of its own arrangement at that time (the product over
+inversions for nested or overlapping ones). Collinear flanks, material
+without an arrangement tag and times older than `t_inv` keep the full
+rate `r`. Forward simulators behave the same way (SLiM drops every
+crossover inside the inversion in a heterokaryotype). With a constant
+`p`, an inverted chromosome then behaves exactly like one population of
+size `p·N` with recombination rate `r·p`. Time-varying trajectories are
+handled exactly: breakpoints are proposed at rate `r` per bp and kept
+with probability `p_k(t)` at the proposal time. Up to 0.3.5 msinv used
+`r` everywhere. That over-estimates within-arrangement ρ by `1/p_k`
+(about 2.7x in the minority and 1.6x in the majority arrangement at
+`p = 0.626`) and under-estimates within-arrangement LD. Pass
+`HullSimulator(..., crossover_suppression=False)` to reproduce results
+from earlier versions. Both engines (Rust and Python) implement it.
+
 In the no-inversion limit, `msinv` reproduces msprime's SMC (default)
 or SMC′ (`smc_prime=True`) models, and single-site statistics match
 msprime's full (Hudson) coalescent.

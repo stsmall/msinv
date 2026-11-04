@@ -67,6 +67,11 @@
 //   (genic, the trajectory model's s p (1-p) to first order in sQ); B  w1 = 1 + sQ,
 //   w2 = 1 + sQ (2 - 1/p*), so dp = sQ p q (p* - p) / p* / wbar; LEGACY w1 = 1 + DOM SEL Q,
 //   w2 = 1 + SEL Q. The validity guard is SEL*Q < 0.1 for every model.
+// Diagnostics (tests only; both off by default):
+//   LOG_EVERY  > 0: print "[slim] PFREQ tick=<t> b=<backward gen> p=<freq>" every LOG_EVERY ticks
+//              from TINTRO (lines before a restart are superseded by the later ones for the same tick)
+//   COUNT_GC   T: count gametes, heterokaryotype gametes and conversion tracts (reported in the
+//              INVERSION_RESULT line as gametes= het_gametes= gc_tracts=); slows the callback
 // Seed: `slim -s <seed>`.
 // ============================================================================
 
@@ -102,6 +107,8 @@ initialize() {
     if (!exists("T_STOP"))       defineConstant("T_STOP", 0.0);
     if (!exists("GC_C"))         defineConstant("GC_C", 0.0);
     if (!exists("GC_TRACT"))     defineConstant("GC_TRACT", 300.0);
+    if (!exists("LOG_EVERY"))    defineConstant("LOG_EVERY", 0);
+    if (!exists("COUNT_GC"))     defineConstant("COUNT_GC", F);
 
     if (!any(MODEL == c("LEGACY", "N", "D1", "D2", "B")))
         stop("[slim] ERROR: MODEL must be LEGACY, N, D1, D2 or B, got " + MODEL);
@@ -207,6 +214,13 @@ initialize() {
         community.rescheduleScriptBlock(s4, TS_ON, TS_OFF);  // selection window
     else
         community.deregisterScriptBlock(s4);
+    defineGlobal("n_gam", 0);
+    defineGlobal("n_het", 0);
+    defineGlobal("n_tract", 0);
+    if (LOG_EVERY > 0)
+        community.rescheduleScriptBlock(s5, TINTRO, G);
+    else
+        community.deregisterScriptBlock(s5);
 }
 
 // ---- demography: N(b) / Q at backward time b = (G - tick) * Q ---------------
@@ -277,8 +291,12 @@ s4 903 mutationEffect(m2) {
 recombination() {
     h1 = haplosome1.containsMarkerMutation(m2, INV_START);
     h2 = haplosome2.containsMarkerMutation(m2, INV_START);
+    if (COUNT_GC)
+        defineGlobal("n_gam", n_gam + 1);
     if (h1 == h2)
         return F;                       // homokaryotype: unmodified recombination
+    if (COUNT_GC)
+        defineGlobal("n_het", n_het + 1);
 
     // Heterokaryotype: a single crossover inside the inversion yields an
     // unbalanced (duplication/deletion) gamete, so those breakpoints are removed.
@@ -319,10 +337,21 @@ recombination() {
             if (!any(breakpoints == a) & !any(breakpoints == b)) {
                 breakpoints = sort(c(breakpoints, asInteger(a), asInteger(b)));
                 changed = T;
+                if (COUNT_GC)
+                    defineGlobal("n_tract", n_tract + 1);
             }
         }
     }
     return changed;
+}
+
+// ---- s5: frequency log (LOG_EVERY > 0, tests only) ---------------------------
+s5 904 late() {
+    if ((community.tick - TINTRO) % LOG_EVERY != 0)
+        return;
+    mut = sim.mutationsOfType(m2);
+    f = (mut.size() == 0) ? 0.0 else sim.mutationFrequencies(p1, mut);
+    catn("[slim] PFREQ tick=" + community.tick + " b=" + ((G - community.tick) * Q) + " p=" + f);
 }
 
 // ---- s3: finalize at the present -------------------------------------------
@@ -350,6 +379,7 @@ s3 902 late() {
             "w_het", W_HET, "w_hom", W_HOM, "ts_on", TS_ON, "ts_off", TS_OFF));
     catn("[slim] INVERSION_RESULT status=SEGREGATING freq=" + freq +
          " nrestart=" + nrestart + " final_tick=" + community.tick +
+         " gametes=" + n_gam + " het_gametes=" + n_het + " gc_tracts=" + n_tract +
          " final_size=" + p1.individualCount);
     catn("[slim] wrote " + OUTPATH);
     sim.simulationFinished();

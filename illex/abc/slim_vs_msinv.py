@@ -41,6 +41,8 @@ from illex.abc import statvec as SV
 from illex.abc.constants import P_NOW, P_TOL
 
 DELTA_MAX = 0.25
+HARD_MAX_ATTEMPTS = 20_000   # establishment attempts per hard draw (iid for a fixed theta, as SLiM's restarts)
+SET_SEED_STRIDE = 10_000_000  # seed offset per set index (both sides), so sets never share controls or pairings
 COMPARE_KEYS = tuple(SV.STAT_KEYS) + tuple(SV.BND_KEYS)
 PATH_KEYS = ("t_inv", "p0", "t_sel", "s", "t_stop", "p_star", "gamma_eff")
 
@@ -62,6 +64,17 @@ def _ok_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[keep]
 
 
+def null_fail_prob(n1: int, n2: int, delta_max: float = DELTA_MAX) -> float:
+    """P(|delta| >= delta_max) when both sides come from one normal distribution: delta / sqrt(1/n1 + 1/n2) is
+    Student t with n1 + n2 - 2 df. The expected FAIL count of a table with no real difference is the sum of this
+    over its non-NA statistics (correlated statistics: an expectation, not a binomial count)."""
+    from scipy.stats import t as student_t
+
+    if n1 < 2 or n2 < 2:
+        return float("nan")
+    return float(2.0 * student_t.sf(delta_max / math.sqrt(1.0 / n1 + 1.0 / n2), n1 + n2 - 2))
+
+
 def compare_stat(a, b, delta_max: float = DELTA_MAX) -> dict:
     """KS and pooled-SD mean difference of SLiM values ``a`` against simulator values ``b`` (NaN dropped)."""
     from scipy.stats import ks_2samp
@@ -70,7 +83,8 @@ def compare_stat(a, b, delta_max: float = DELTA_MAX) -> dict:
     b = np.asarray(b, float)
     a, b = a[np.isfinite(a)], b[np.isfinite(b)]
     out = dict(n_slim=int(a.size), n_sim=int(b.size), mean_slim=np.nan, mean_sim=np.nan, sd_slim=np.nan,
-               sd_sim=np.nan, sd_pooled=np.nan, delta_sd=np.nan, ks_D=np.nan, ks_p=np.nan, verdict="NA")
+               sd_sim=np.nan, sd_pooled=np.nan, delta_sd=np.nan, ks_D=np.nan, ks_p=np.nan, p_fail_null=np.nan,
+               verdict="NA")
     if a.size:
         out["mean_slim"] = float(a.mean())
     if b.size:
@@ -82,6 +96,7 @@ def compare_stat(a, b, delta_max: float = DELTA_MAX) -> dict:
     ks = ks_2samp(a, b)
     out.update(sd_slim=float(math.sqrt(va)), sd_sim=float(math.sqrt(vb)), sd_pooled=float(sp),
                ks_D=float(ks.statistic), ks_p=float(ks.pvalue))
+    out["p_fail_null"] = null_fail_prob(a.size, b.size, delta_max)
     if sp > 0:
         d = (out["mean_slim"] - out["mean_sim"]) / sp
         out["delta_sd"] = float(d)
@@ -118,7 +133,10 @@ def compare_sets(slim: pd.DataFrame, sim: pd.DataFrame, sets: dict | None = None
 def report_text(table: pd.DataFrame, slim: pd.DataFrame, sim: pd.DataFrame, sets: dict | None = None) -> str:
     """Plain-text summary: per set, the rows before / after the window, PASS / FAIL / NA counts and the FAILs."""
     lines = [f"SLiM vs ABC simulator (Task 9). PASS = |mean_slim - mean_sim| / sd_pooled < {DELTA_MAX}; "
-             f"both sides filtered on |p_now - {P_NOW}| <= {P_TOL}. KS p reported, not used in the verdict.", ""]
+             f"both sides filtered on |p_now - {P_NOW}| <= {P_TOL}. KS p reported, not used in the verdict.",
+             f"The rule has a null FAIL rate: P(|delta| >= {DELTA_MAX}) with no real difference is 2 t_sf("
+             f"{DELTA_MAX} / sqrt(1/n1 + 1/n2)), ~7.7% per statistic at n = 100 per side, so a set's expected FAIL "
+             "count under no difference is printed with its counts (a sum over correlated statistics).", ""]
     for name, t in table.groupby("set", sort=False):
         a, b = slim[slim["set"] == name], sim[sim["set"] == name]
         a_ok = int((a["status"].astype(str) == "ok").sum()) if "status" in a.columns else len(a)
@@ -129,7 +147,10 @@ def report_text(table: pd.DataFrame, slim: pd.DataFrame, sim: pd.DataFrame, sets
         lines.append(f"  SLiM rows {len(a)} (ok {a_ok}, in window {int(t['n_slim_rows'].iloc[0])}); "
                      f"simulator rows {len(b)} (in window {int(t['n_sim_rows'].iloc[0])})")
         vc = t["verdict"].value_counts()
-        lines.append(f"  PASS {int(vc.get('PASS', 0))}  FAIL {int(vc.get('FAIL', 0))}  NA {int(vc.get('NA', 0))}")
+        scored = t[t["verdict"] != "NA"]
+        exp_fail = float(scored["p_fail_null"].sum()) if len(scored) else 0.0
+        lines.append(f"  PASS {int(vc.get('PASS', 0))}  FAIL {int(vc.get('FAIL', 0))}  NA {int(vc.get('NA', 0))}  "
+                     f"(expected FAIL under no difference at these n: {exp_fail:.1f} of {len(scored)})")
         for _, r in t[t["verdict"] == "FAIL"].iterrows():
             lines.append(f"    FAIL {r['stat']:<16} delta={r['delta_sd']:+.3f} SD  slim={r['mean_slim']:.4g} "
                          f"sim={r['mean_sim']:.4g}  KS D={r['ks_D']:.3f} p={r['ks_p']:.2g}")
@@ -161,14 +182,20 @@ def path_params(pset: dict, n: int) -> dict:
 
 
 def draw_paths(pset: dict, n: int, rng, batch: int = 2000, max_draws: int = 5_000_000):
-    """``n`` accepted paths (the p_now window applied) of one parameter set, and the draw counts."""
+    """``n`` accepted paths (the p_now window applied) of one parameter set, and the draw counts.
+
+    A hard set gets up to HARD_MAX_ATTEMPTS establishment attempts per draw (``simulate_paths(max_attempts=...)``).
+    For a fixed theta the attempts are iid, so the accepted paths are exactly the paths conditioned on
+    establishment, the conditioning of SLiM's restart-on-loss (and of ``choose_slim_sets.py``'s acceptance).
+    """
     from illex.abc.trajectory import simulate_paths
 
     paths, drawn, surv = [], 0, 0
     while len(paths) < n:
         if drawn >= max_draws:
             raise RuntimeError(f"{len(paths)} of {n} paths after {drawn} draws (window too rare for this set)")
-        got, counts = simulate_paths(path_params(pset, batch), rng, apply_filter=True)
+        got, counts = simulate_paths(path_params(pset, batch), rng, apply_filter=True,
+                                     max_attempts=HARD_MAX_ATTEMPTS if pset["hard"] else 1)
         drawn += batch
         c = counts["hard" if pset["hard"] else "soft"]
         surv += c.drawn - c.lost - c.fixed - c.lost_establishing - c.est_failed
@@ -195,12 +222,22 @@ def _sim_one(args):
     return row
 
 
-def simulate_side(pset: dict, name: str, n_reps: int, seed: int, workers: int = 1) -> tuple[pd.DataFrame, dict]:
+def set_index(sets: dict, name: str) -> int:
+    """Position of ``name`` in the sets file (the seed offset unit, ``SET_SEED_STRIDE``)."""
+    return list(sets).index(name)
+
+
+def simulate_side(pset: dict, name: str, n_reps: int, seed: int, workers: int = 1,
+                  index: int = 0) -> tuple[pd.DataFrame, dict]:
     """(rows, draw counts) of the ABC simulator for one parameter set: ``n_reps`` window-accepted paths, each
-    through ``simulate_stats`` on ``engine_for(path)`` (plus ``boundary_ppc`` once BND_PPC_READY)."""
-    rng = np.random.default_rng(seed)
+    through ``simulate_stats`` on ``engine_for(path)`` (plus ``boundary_ppc`` once BND_PPC_READY).
+
+    Seeds: base = seed + index * SET_SEED_STRIDE draws the paths, and replicate j uses base * 1000 + j.
+    """
+    base = int(seed) + int(index) * SET_SEED_STRIDE
+    rng = np.random.default_rng(base)
     paths, counts = draw_paths(pset, n_reps, rng)
-    jobs = [(p, int(seed) * 1000 + j, name) for j, p in enumerate(paths)]
+    jobs = [(p, base * 1000 + j, name) for j, p in enumerate(paths)]
     if workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as ex:
             rows = list(ex.map(_sim_one, jobs))
@@ -242,7 +279,8 @@ def main(argv=None) -> None:
         if args.workers > 16:
             raise SystemExit("--workers is capped at 16 on the shared box")
         t0 = time.time()
-        df, counts = simulate_side(sets[args.set], args.set, args.reps, args.seed, args.workers)
+        df, counts = simulate_side(sets[args.set], args.set, args.reps, args.seed, args.workers,
+                                   index=set_index(sets, args.set))
         args.out.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(args.out, sep="\t", index=False)
         print(f"wrote {args.out}: {len(df)} rows, {counts['drawn']} paths drawn, {counts['survived']} survived, "

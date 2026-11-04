@@ -239,3 +239,146 @@ def test_run_replicate_abc_end_to_end(tmp_path):
     assert row["slim_wall_s"] > 0 and row["slim_maxrss_mb"] > 0
     assert all(k in row for k in SV.STAT_KEYS + SV.BND_KEYS)
     assert not list(tmp_path.glob("*.trees*"))                    # scratch cleaned
+
+
+# ------------------------------------------------------------------ fix round 1 ----
+def test_null_fail_prob_and_report_line():
+    p = V.null_fail_prob(100, 100)
+    assert p == pytest.approx(0.077, abs=0.003)                     # the review's ~7.7% at n = 100 per side
+    assert V.null_fail_prob(1000, 1000) < 1e-6 and math.isnan(V.null_fail_prob(1, 5))
+    rng = np.random.default_rng(0)
+    sims = []
+    for _ in range(400):                                            # the null FAIL rate is what it claims
+        r = V.compare_stat(rng.standard_normal(30), rng.standard_normal(30))
+        sims.append(r["verdict"] == "FAIL")
+    assert np.mean(sims) == pytest.approx(V.null_fail_prob(30, 30), abs=0.06)
+    slim = pd.DataFrame(dict(set="a", status="ok", p_now=P_NOW, pi_ratio=rng.standard_normal(100)))
+    sim = pd.DataFrame(dict(set="a", status="ok", p_now=P_NOW, pi_ratio=rng.standard_normal(100)))
+    t = V.compare_sets(slim, sim, {"a": {}}, keys=("pi_ratio",))
+    assert "expected FAIL under no difference at these n: 0.1 of 1" in V.report_text(t, slim, sim, {"a": {}})
+
+
+def test_seed_offset_per_set(monkeypatch):
+    f = Path(__file__).resolve().parents[2] / "results/illex/abc_slim_sets.json"
+    if not f.exists():
+        pytest.skip("results/illex/abc_slim_sets.json not present")
+    sets = V.load_sets(f)
+    idx = [R.load_params(str(f), n)["set_index"] for n in sets]
+    assert idx == list(range(len(sets)))
+    seen = []
+    monkeypatch.setattr(V, "draw_paths", lambda pset, n, rng, **k: ([_tpath(NAN)] * n, dict(drawn=n, survived=n)))
+    monkeypatch.setattr(V, "_sim_one", lambda job: seen.append(job[1]) or dict(set=job[2], wall_s=0.0))
+    V.simulate_side({"model": "N", "hard": False}, "x", 2, 9000, index=0)
+    V.simulate_side({"model": "N", "hard": False}, "x", 2, 9000, index=3)
+    assert len(set(seen)) == 4                                      # no seed shared across sets
+
+
+def test_draw_paths_hard_conditions_on_establishment():
+    """hard_D1-like: with one attempt per draw (s = 1.6e-5) this is ~1e-7 per draw; with iid attempts it finishes."""
+    pset = dict(model="B", hard=True, t_inv=635219.0, s=1.09e-3, p_star=0.621)
+    paths, counts = V.draw_paths(pset, 3, np.random.default_rng(1), batch=100)
+    assert len(paths) == 3 and all(abs(p.p_now - P_NOW) <= P_TOL for p in paths)
+    assert all(p.params["hard"] and p.params["t_sel"] == p.params["t_inv"] for p in paths)
+
+
+# Forward dynamics of the ABC models at a tiny scale (constant N = NS diploids, Q = 1): the mean SLiM frequency
+# path against the trajectory model's deterministic recursion p <- p + _delta(p) while T_STOP < b <= T_SEL.
+NS, REPS = 5000, 24
+
+
+def _slim_pfreq(tmp, seed, **d):
+    base = dict(Q=1.0, N0=float(NS), NREF=float(NS), TGROW=float(d["T_INV"] + 50.0), INV_LEN=1000, FLANK_LEN=1000,
+                LOG_EVERY=10)
+    base.update(d)
+    cmd = [SLIM, "-s", str(seed)]
+    for k, v in base.items():
+        cmd += ["-d", f'{k}="{v}"' if k == "MODEL" else (f"{k}={v}" if not isinstance(v, bool) else
+                                                           f"{k}={'T' if v else 'F'}")]
+    cmd += ["-d", f'OUTPATH="{tmp}/o{seed}.trees"', "-d", f'SAVEPATH="{tmp}/o{seed}.r"',
+            str(R.SLIM_SCRIPT)]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _parse(out):
+    traj, res = {}, {}
+    for line in out.splitlines():
+        if "PFREQ" in line:
+            kv = dict(tok.split("=") for tok in line.split()[2:])
+            traj[float(kv["b"])] = float(kv["p"])             # a restart's later lines supersede
+        elif "INVERSION_RESULT" in line:
+            res = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
+    return traj, res
+
+
+def _run_reps(tmp, n=REPS, workers=8, **d):
+    out = []
+    for lo in range(0, n, workers):
+        procs = [_slim_pfreq(tmp, 100 + j, **d) for j in range(lo, min(n, lo + workers))]
+        for p in procs:
+            so, se = p.communicate(timeout=600)
+            assert p.returncode == 0, se[-500:]
+            out.append(_parse(so))
+    return out
+
+
+def _recursion(model, p0, s, t_inv, t_sel, t_stop=0.0, p_star=1.0):
+    from illex.abc.trajectory import _delta
+
+    p, out = p0, {float(t_inv): p0}
+    for b in range(int(t_inv), 0, -1):                 # selection on the generation at b acts on b - 1
+        if t_stop < b <= t_sel:
+            p = p + _delta(model, p, s, p_star)
+        out[float(b - 1)] = p
+    return out
+
+
+def _mean_path(runs):
+    bs = sorted(runs[0][0])
+    return {b: float(np.mean([r[0][b] for r in runs])) for b in bs}
+
+
+@pytest.mark.skipif(not HAVE_SLIM, reason="no slim binary")
+@pytest.mark.parametrize("model, kw", [
+    ("D1", dict(P_START=0.3, SEL=0.02, T_INV=100.0, T_SEL=100.0)),
+    ("B", dict(P_START=0.2, SEL=0.05, P_STAR=0.5, T_INV=150.0, T_SEL=150.0)),
+    ("D2", dict(P_START=0.3, SEL=0.02, T_INV=150.0, T_SEL=120.0, T_STOP=50.0)),
+])
+def test_forward_dynamics_match_delta_recursion(tmp_path, model, kw):
+    runs = _run_reps(tmp_path, MODEL=model, **kw)
+    m = _mean_path(runs)
+    exp = _recursion(model, kw["P_START"], kw["SEL"], kw["T_INV"], kw["T_SEL"], kw.get("T_STOP", 0.0),
+                     kw.get("P_STAR", 1.0))
+    # Drift SE of the mean <= ~0.015; the 1 / wbar factor (first order in sQ) is <= ~0.01 here.
+    for b, v in m.items():
+        assert v == pytest.approx(exp[b], abs=0.04), (model, b, v, exp[b])
+    assert m[0.0] - m[kw["T_INV"]] > 0.15                          # selection moved p
+    if model == "D2":                                              # neutral after T_STOP: the mean stays put
+        assert abs(m[0.0] - m[kw["T_STOP"]]) < 0.03
+        assert m[kw["T_STOP"]] - m[kw["T_SEL"]] > 0.15
+
+
+@pytest.mark.skipif(not HAVE_SLIM, reason="no slim binary")
+def test_gene_conversion_only_in_heterokaryotypes(tmp_path):
+    """No crossing over (R ~ 0): the body is one tree without conversion; with GC_C the tract count is
+    Poisson(lambda) per HETEROKARYOTYPE gamete (lambda = c Q L / T), not per gamete, and the tracts appear as body
+    breakpoints."""
+    common = dict(MODEL="N", P_START=0.5, T_INV=100.0, INV_LEN=10_000, R=1e-12, N0=2000.0, NREF=2000.0,
+                  COUNT_GC=True, LOG_EVERY=0)
+    (so0, _), = [p.communicate(timeout=600) for p in [_slim_pfreq(tmp_path, 1, GC_C=0.0, **common)]]
+    (so1, _), = [p.communicate(timeout=600) for p in [_slim_pfreq(tmp_path, 2, GC_C=1e-3, **common)]]
+    _, r0 = _parse(so0)
+    _, r1 = _parse(so1)
+    assert int(r0["gc_tracts"]) == 0
+    lam = 1e-3 * 1.0 * 10_000 / 300.0
+    het, gam, tr = int(r1["het_gametes"]), int(r1["gametes"]), int(r1["gc_tracts"])
+    assert 0 < het < gam
+    assert abs(tr - lam * het) < 5.0 * math.sqrt(lam * het)
+    assert abs(tr - lam * gam) > 10.0 * math.sqrt(lam * gam)      # not every gamete
+    body = (1000.0, 11_000.0)
+
+    def body_trees(path):
+        ts = tskit.load(path)
+        return sum(1 for t in ts.trees() if t.interval.right > body[0] and t.interval.left < body[1])
+
+    assert body_trees(f"{tmp_path}/o1.trees") == 1
+    assert body_trees(f"{tmp_path}/o2.trees") > 10

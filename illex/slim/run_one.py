@@ -177,8 +177,11 @@ def load_params(spec: str, set_name: str | None = None) -> dict:
     if "sets" in obj:
         if set_name is None:
             raise ValueError(f"{spec} holds several sets ({', '.join(obj['sets'])}); pass --set")
+        from illex.abc.slim_vs_msinv import set_index
+
         prm = dict(obj["sets"][set_name])
         prm.setdefault("name", set_name)
+        prm["set_index"] = set_index(obj["sets"], set_name)
     else:
         prm = dict(obj)
     return check_params(prm)
@@ -340,11 +343,14 @@ def main_abc(args) -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.scratch.mkdir(parents=True, exist_ok=True)
     out = args.out_dir / f"slim_{prm.get('name', 'set')}_task{args.task_id:06d}.tsv"
+    from illex.abc.slim_vs_msinv import SET_SEED_STRIDE
+
+    set_offset = int(prm.get("set_index", 0)) * SET_SEED_STRIDE   # different sets never share seeds
     with out.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=abc_fields(), delimiter="\t", extrasaction="ignore")
         w.writeheader()
         for r in range(args.reps):
-            seed = args.seed_base + args.task_id * 10_000 + r
+            seed = args.seed_base + set_offset + args.task_id * 10_000 + r
             row = run_replicate_abc(prm, r, seed, args.slim, args.scratch, args.timeout,
                                     mask=None if args.no_mask else "data")
             w.writerow(row)

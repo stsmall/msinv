@@ -8,7 +8,7 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use smallvec::SmallVec;
 
-use crate::class_tag::{BranchClass, Karyotype};
+use crate::class_tag::{karyotypes_compatible, shared_karyotype, BranchClass, Karyotype};
 use crate::demography::Demography;
 use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
@@ -1150,28 +1150,35 @@ impl HullSimulator {
                         let target = rng.random_range(0..matching.len());
                         crate::rate_index::unpack_ij(matching[target])
                     };
+                    // Karyotype-compatible pairs are stored once, under
+                    // their shared karyotype (`pair_rate_classes`), so the
+                    // overlap-bucket pickers above never see them in a
+                    // second cell. The sweep any-pair picker selects by
+                    // lineage class membership instead: a compatible pair
+                    // that is also a candidate in its shared-karyotype
+                    // cell is counted there, so reject it here to keep one
+                    // rate per pair.
+                    // (Signatures are only needed while a barrier is
+                    // active; afterwards every merge is a full merge.)
+                    let mut compatible = true;
+                    if any_barrier {
+                        let sig_i = lineage_sig(active[i].head, arena);
+                        let sig_j = lineage_sig(active[j].head, arena);
+                        compatible = karyotypes_compatible(sig_i, sig_j);
+                        if compatible {
+                            let shared = shared_karyotype(sig_i, sig_j);
+                            if shared != cls
+                                && lineage_has_class(active[i].head, shared, arena)
+                                && lineage_has_class(active[j].head, shared, arena) {
+                                continue;
+                            }
+                        }
+                    }
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
-                    // Post-barrier (all inversions inactive) everything
-                    // is PAN, so fall into Hudson's full merge: non-
-                    // overlap segments fold into merged, lineage count
-                    // drops by 1 per event. Barrier-era Some(cls) keeps
-                    // class-mismatched regions on remainder lineages so
-                    // S/I can't coalesce via a PAN-class event.
-                    // Two all-panmictic lineages (no inversion tags) take a
-                    // full Hudson merge even while a barrier is active, so
-                    // pairs made eligible by the SMC' hull rule (no shared
-                    // material) actually merge.
-                    let allowed = if any_barrier
-                        && !(self.smc_prime && cls.is_panmictic()
-                             && lineage_all_pan(active[i].head, arena)
-                             && lineage_all_pan(active[j].head, arena)) {
-                        Some(cls)
-                    } else {
-                        None
-                    };
+                    let allowed = barrier_merge_class(any_barrier, compatible, cls);
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         allowed, Some(&mut a_tag), Some(&mut buckets));
@@ -1227,20 +1234,11 @@ impl HullSimulator {
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
-                    // See CoalAggregate above — post-barrier wants
-                    // Hudson full merge.
-                    // Two all-panmictic lineages (no inversion tags) take a
-                    // full Hudson merge even while a barrier is active, so
-                    // pairs made eligible by the SMC' hull rule (no shared
-                    // material) actually merge.
-                    let allowed = if any_barrier
-                        && !(self.smc_prime && cls.is_panmictic()
-                             && lineage_all_pan(active[i].head, arena)
-                             && lineage_all_pan(active[j].head, arena)) {
-                        Some(cls)
-                    } else {
-                        None
-                    };
+                    // Same merge rule as CoalAggregate above.
+                    let compatible = !any_barrier || karyotypes_compatible(
+                        lineage_sig(active[i].head, arena),
+                        lineage_sig(active[j].head, arena));
+                    let allowed = barrier_merge_class(any_barrier, compatible, cls);
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         allowed, Some(&mut a_tag), Some(&mut buckets));
@@ -2083,20 +2081,44 @@ fn emit_coal_events_from_cache(
     }
 }
 
-/// Helper: true if any segment in the lineage's chain has
-/// `branch_class == cls`. Used by the per-allele rate emitter to
-/// decide which (pop, cls) cells a lineage participates in.
-/// True if every segment of the lineage is panmictic (no inversion tag).
-fn lineage_all_pan(head: SegIdx, arena: &SegmentArena) -> bool {
+/// Karyotype signature of a lineage: OR of its segments' class bits
+/// (see `class_tag::karyotypes_compatible`).
+fn lineage_sig(head: SegIdx, arena: &SegmentArena) -> u64 {
+    let mut sig = 0u64;
     let mut cur = head;
     while cur != SEG_NIL {
         let seg = arena.get(cur);
-        if !seg.branch_class.is_panmictic() { return false; }
+        sig |= seg.branch_class.bits();
         cur = seg.next;
     }
-    true
+    sig
 }
 
+/// Merge mode for a coalescence event in cell class `cls`.
+///
+/// `None` is a full Hudson merge: every segment of both lineages, overlap
+/// and non-overlap, folds into the parent. It applies after the barriers
+/// are gone and, while a barrier is active, to karyotype-compatible pairs
+/// (I x I, S x S, either with an untagged lineage, two untagged lineages):
+/// their common parent chromosome has a well-defined arrangement and
+/// inherits all of their material, exactly as in a two-deme coalescent.
+///
+/// `Some(cls)` is the partial merge, kept only for incompatible pairs
+/// (I x S meeting in a shared panmictic margin): only the overlap of class
+/// `cls` merges, everything else stays on remainder lineages. Up to
+/// msinv 0.3.5 every barrier-era coalescence was partial, which left
+/// same-arrangement non-overlap and margin material on remainder
+/// lineages, added spurious breakpoints at the overlap edges and cut
+/// within-arrangement LD about 3-fold.
+#[inline]
+fn barrier_merge_class(any_barrier: bool, compatible: bool, cls: BranchClass)
+    -> Option<BranchClass> {
+    if any_barrier && !compatible { Some(cls) } else { None }
+}
+
+/// Helper: true if any segment in the lineage's chain has
+/// `branch_class == cls`. Used by the per-allele rate emitter to
+/// decide which (pop, cls) cells a lineage participates in.
 fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bool {
     let mut cur = head;
     while cur != SEG_NIL {

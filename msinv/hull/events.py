@@ -9,6 +9,51 @@ from .lineage import Lineage
 from .segment import Segment
 
 
+def class_tags(bc):
+    """Inversion tags carried by a segment class.
+
+    ``'P'``/``None`` carry none; a string tag (``'S'``, ``'I'``, ``'S0'``,
+    ``'I1'``, ...) is one tag; a frozenset (nested inversions) is several.
+    A tag's first character is the karyotype, the rest is the inversion id
+    (empty for the legacy single-inversion tags).
+    """
+    if bc is None or bc == "P":
+        return ()
+    if isinstance(bc, frozenset):
+        return bc
+    return (bc,)
+
+
+def tags_conflict(tags):
+    """True if ``tags`` hold both S and I for some inversion."""
+    seen = {}
+    for tag in tags:
+        if seen.setdefault(tag[1:], tag[0]) != tag[0]:
+            return True
+    return False
+
+
+def tags_to_class(tags):
+    """Inverse of :func:`class_tags`: ``'P'``, one string tag or a frozenset."""
+    if not tags:
+        return "P"
+    if len(tags) == 1:
+        return next(iter(tags))
+    return frozenset(tags)
+
+
+def _merged_class(a, b):
+    """Class of a fully merged segment: the union of the two inputs' tags
+    when they are compatible (an untagged side takes the tagged side's
+    karyotype), otherwise ``a`` (the historical behaviour)."""
+    if a == b:
+        return a
+    u = set(class_tags(a)) | set(class_tags(b))
+    if tags_conflict(u):
+        return a
+    return tags_to_class(u)
+
+
 def apply_coalescence(active, lin_a, lin_b, t, tables, skip_if_no_overlap=False):
     """Coalesce two lineages.
 
@@ -77,7 +122,12 @@ def apply_coalescence(active, lin_a, lin_b, t, tables, skip_if_no_overlap=False)
             # Overlap → coalesces here. Add edges from new_node to both.
             tables.add_edge(l, r, new_node, sa.node_id)
             tables.add_edge(l, r, new_node, sb.node_id)
-            _append(Segment(l, r, new_node, branch_class=sa.branch_class))
+            _append(
+                Segment(
+                    l, r, new_node,
+                    branch_class=_merged_class(sa.branch_class, sb.branch_class),
+                )
+            )
             # Advance whichever ended at r; keep the other's tail
             if sa.right == r:
                 sa = sa.next

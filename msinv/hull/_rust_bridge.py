@@ -128,4 +128,12 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
     # (time[parent] asc, parent, child, left); skip tc.sort().
     ts = tc.tree_sequence()
     # event_log is None when record_events=False, or a list of dicts when True.
-    return ts.simplify(), event_log, int(raw.get("sweep_a_count", 0))
+    # Event-log records name the node a lineage carried at a position (e.g.
+    # flux tract_segments). A full (Hudson) merge passes each lineage's
+    # non-overlapping material through the new parent node as a unary edge,
+    # and a default simplify() erases those edges, so the logged node would no
+    # longer appear in the marginal tree there. Keep unary nodes when the log
+    # is requested so its node IDs resolve against the returned ts.
+    keep_unary = event_log is not None
+    return (ts.simplify(keep_unary=keep_unary), event_log,
+            int(raw.get("sweep_a_count", 0)))

@@ -226,8 +226,10 @@ def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> 
     return out
 
 
-# Set to True once the msinv barrier coalescence fix (msinv PR #19) is in this branch. Until then boundary_ppc
-# refuses to run unless the caller passes allow_unfixed=True (the tests do).
+# Set to True only once BOTH msinv fixes are in this branch: the barrier coalescence fix (msinv PR #19) and the
+# follow-up flank-merge fix (I x S lineage pairs must not merge their shared flank material while each flank is
+# still linked to its arrangement; before it, the flanks act panmictic up to the breakpoints). Until then
+# boundary_ppc refuses to run unless the caller passes allow_unfixed=True (the tests do).
 BND_PPC_READY = False
 
 
@@ -247,7 +249,8 @@ def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR, mask
     breakpoint (``boundary.load_flank_mask``), so every bin and side has the data's accessible bp. ``mask=None``
     keeps every flank site, and a {"left", "right"} dict is used as given.
 
-    Needs the msinv barrier coalescence fix (msinv PR #19) before it is used for real PPCs. Until BND_PPC_READY is
+    Needs both msinv fixes (the barrier coalescence fix, PR #19, and the follow-up I x S flank-merge fix) before
+    it is used for real PPCs. Until BND_PPC_READY is
     True it raises RuntimeError unless ``allow_unfixed=True``.
     """
     from illex import stats as S
@@ -257,7 +260,7 @@ def boundary_ppc(path, seed: int, engine: str = "msinv", ld_error=LD_ERROR, mask
         raise ValueError("boundary_ppc needs msinv: msprime's two-population model links the flanks fully to "
                          "the arrangement")
     if not (BND_PPC_READY or allow_unfixed):
-        raise RuntimeError("boundary_ppc needs the msinv barrier coalescence fix (msinv PR #19), so it runs only "
+        raise RuntimeError("boundary_ppc needs the msinv barrier coalescence fix (PR #19) and the I x S flank-merge fix, so it runs only "
                            "with allow_unfixed=True until BND_PPC_READY is set")
     if isinstance(mask, str):
         if mask != "data":

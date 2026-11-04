@@ -176,7 +176,7 @@ def test_boundary_ppc_refuses_msprime():
 def test_boundary_ppc_refuses_unfixed_msinv():
     from illex.abc import simulate
 
-    assert simulate.BND_PPC_READY is False          # flip only once msinv PR #19 is in this branch
+    assert simulate.BND_PPC_READY is False          # flip only once msinv PR #19 and the I x S flank-merge fix are both in this branch
     with pytest.raises(RuntimeError):
         simulate.boundary_ppc(path(1e5), seed=1)
 

@@ -4,7 +4,8 @@
 #
 #   Rscript illex/abc/abc_infer.R --table T.parquet --acceptance A.csv --observed abc_observed.json \
 #       --spec spec.json --out-dir results/illex/abc_rf [--ntree 1000] [--seed 1] [--ncores 16]
-#       [--n-pods 200] [--folds 5] [--n-draws 1000] [--abc-accept 100]
+#       [--n-pods 200] [--folds 5] [--n-draws 1000] [--abc-accept 100] [--param-sample-fraction 1]
+#       [--mc-min-node-size 50]
 #
 # Model unit = (model, flux); hard/soft are classes within a model, each simulated separately. A row of class c gets
 # mixture weight  P(c) * acc_c * w_est / sum_{c} w_est  (P(hard) = spec p_hard; hard rows carry the establishment
@@ -15,17 +16,21 @@
 # multiplied by the mixture weights cw and renormalised. That applies w_est and the class acceptances exactly at any
 # class mass (ranger case.weights could not: with ~1 hard row per tree a 1% class was over-weighted ~300x at the
 # observed point). Uses:
-#   prob_stats(M)   P(model = M | stats) from a regression forest on the indicator 1[M] per model, kernel x cw with
-#                   each unit's cw summing to 1 (balanced models), normalised over models. prob_total(M) ∝ prior(M) *
-#                   acc(M) * prob_stats(M), acc(M) = p_hard acc_hard + (1 - p_hard) acc_soft.
+#   prob_stats(M)   P(model = M | stats) from the abcrf model-choice classifier (ntree trees, its LDA axes appended as
+#                   abcrf builds them): its own forest kernel at the observed point (per tree, in-bag counts of the
+#                   training rows sharing the observation's leaf, normalised; averaged over trees) x cw, each unit's
+#                   cw summing to 1 (balanced models); one kernel, so the model probabilities sum to 1 by
+#                   construction (fix round 3, ruling N1). prob_total(M) ∝ prior(M) * acc(M) * prob_stats(M),
+#                   acc(M) = p_hard acc_hard + (1 - p_hard) acc_soft.
 #   hard share      kernel of an unweighted forest on the hard indicator within the model, x class-balanced weights
-#                   (noacc, prior p_hard) or x cw (acc); acc equals the Bayes combination of noacc with the
-#                   acceptances, acc_h p / (acc_h p + acc_s (1 - p)), up to rounding.
-#   parameters      regAbcrf per parameter per model; posterior = kernel x cw; weighted quantiles.
+#                   (noacc, prior p_hard) or x cw (acc).
+#   parameters      regAbcrf per parameter per model (per-tree subsample --param-sample-fraction); posterior =
+#                   kernel x cw; weighted quantiles.
 #   joint draws     rows resampled by the posterior weights averaged over the model's all-row parameter forests.
-#   confusion       grouped K-fold CV of the argmax of prob_stats (headline) and, for reference, the OOB confusion of
-#                   an unweighted abcrf classifier (its LDA axes are fitted on all rows: slightly optimistic).
+#   confusion       grouped K-fold CV of the argmax of prob_stats (headline) and, for reference, the plain OOB
+#                   allocation of the abcrf classifier (unweighted; LDA fitted on all rows: slightly optimistic).
 # abcrf's own post.prob is an aggregate of an error forest and cannot be reweighted post hoc, so it is not used.
+# A kernel whose whole mass falls on zero-weight rows is an error (posthoc / model_probs stop), never a silent NA.
 # Functions are sourceable (tests); main() runs under Rscript.
 
 suppressPackageStartupMessages({
@@ -64,7 +69,9 @@ posthoc <- function(alpha, cw) {
   # alpha: n_train x n_obs forest weights; cw: n_train importance weights. Columns renormalised to 1.
   a <- alpha * cw
   s <- colSums(a)
-  sweep(a, 2, ifelse(s > 0, s, 1), "/")
+  if (any(!(s > 0)))
+    stop(sprintf("posthoc: the forest kernel of %d point(s) falls entirely on zero-weight rows", sum(!(s > 0))))
+  sweep(a, 2, s, "/")
 }
 
 wquantile <- function(y, w, qs) {
@@ -73,7 +80,9 @@ wquantile <- function(y, w, qs) {
 }
 
 # ------------------------------------------------------------------------------------------------ forest kernel --
-reg_rf <- function(d, ntree, ncores) regAbcrf(y ~ ., data = d, ntree = ntree, paral = ncores > 1, ncores = ncores)
+reg_rf <- function(d, ntree, ncores, sample_fraction = 1)
+  regAbcrf(y ~ ., data = d, ntree = ntree, paral = ncores > 1, ncores = ncores,
+           sampsize = max(10L, as.integer(ceiling(sample_fraction * nrow(d)))))
 
 rf_kernel <- function(rf, newdata, training, ncores = 1) {
   # n_train x n_new forest weights (abcrf findweights over in-bag counts; each column sums to 1)
@@ -90,16 +99,51 @@ indicator_share <- function(stats_df, is_target, cw, newdata, ntree = 1000, ncor
 }
 
 # ------------------------------------------------------------------------------------------------- model choice --
-model_probs <- function(train, obs, cw, ncores = 1, resp = "model", ntree = 1000) {
-  # prob_stats(M) = P(M | stats) with per-unit weights cw (each unit summing to 1 = balanced prior over models),
-  # from one indicator forest per model; normalised over models. obs may have several rows.
-  lab <- droplevels(factor(train[[resp]]))
-  levs <- levels(lab)
+MC_MIN_NODE_SIZE <- 50  # ranger min.node.size of the abcrf model-choice classifier (--mc-min-node-size; abcrf default 1).
+# 50 (fix round 3): with pure leaves (1) the classifier kernel is a vote share, high-variance and over-confident
+# (1-D Gaussian test, 6 datasets: RMSE 0.196 at 1, 0.097 at 50); v3 grouped-CV accuracy 0.534 at 1, 0.542 at 50.
+
+fit_model_choice <- function(train, ntree = 1000, ncores = 1, resp = "model", min_node_size = MC_MIN_NODE_SIZE) {
+  train[[resp]] <- droplevels(factor(train[[resp]]))
+  abcrf(as.formula(paste(resp, "~ .")), data = train, lda = nlevels(train[[resp]]) > 1, ntree = ntree,
+        paral = ncores > 1, ncores = ncores, min.node.size = min_node_size)
+}
+
+class_kernel <- function(fit, train, newdata, ncores = 1, resp = "model") {
+  # Kernel of the abcrf classifier at each row of newdata (n_train x n_new; columns sum to 1): the LDA axes are
+  # appended as abcrf builds them; per tree, the in-bag counts (keep.inbag) of the training rows that share the new
+  # point's leaf, normalised; averaged over trees.
   st <- train[, setdiff(names(train), resp), drop = FALSE]
-  p <- sapply(levs, function(m) indicator_share(st, lab == m, cw, obs, ntree, ncores)$p)
-  p <- matrix(p, nrow = nrow(obs), dimnames = list(NULL, levs))
-  p <- p / pmax(rowSums(p), 1e-300)
-  list(prob_stats = p, map = levs[max.col(p, ties.method = "first")])
+  xtr <- if (fit$lda) cbind(st, predict(fit$model.lda, st)$x) else st
+  xnew <- if (fit$lda) cbind(newdata, predict(fit$model.lda, newdata)$x) else newdata
+  tn_tr <- predict(fit$model.rf, xtr, type = "terminalNodes", num.threads = ncores)$predictions
+  tn_new <- matrix(predict(fit$model.rf, xnew, type = "terminalNodes", num.threads = ncores)$predictions,
+                   nrow = nrow(newdata))
+  inb <- do.call(cbind, fit$model.rf$inbag.counts)
+  if (is.null(inb) || !all(dim(inb) == dim(tn_tr))) stop("class_kernel: abcrf forest lacks in-bag counts")
+  K <- matrix(0, nrow(st), nrow(newdata))
+  for (j in seq_len(nrow(newdata))) {
+    w <- inb * (tn_tr == rep(tn_new[j, ], each = nrow(tn_tr)))
+    cs <- colSums(w)
+    K[, j] <- rowSums(w[, cs > 0, drop = FALSE] / rep(cs[cs > 0], each = nrow(w))) / ncol(w)
+  }
+  sweep(K, 2, colSums(K), "/")
+}
+
+model_probs <- function(train, obs, cw, ncores = 1, resp = "model", ntree = 1000, fit = NULL) {
+  # prob_stats(M) = sum over M's rows of (abcrf classifier kernel x cw), renormalised; cw sums to 1 per unit
+  # (balanced prior over models). obs may have several rows. Stops if a kernel has no mass on positive weights.
+  train[[resp]] <- droplevels(factor(train[[resp]]))
+  if (is.null(fit)) fit <- fit_model_choice(train, ntree, ncores, resp)
+  a <- class_kernel(fit, train, obs, ncores, resp) * cw
+  tot <- colSums(a)
+  if (any(!(tot > 0)))
+    stop(sprintf("model_probs: the classifier kernel of %d point(s) falls entirely on zero-weight rows",
+                 sum(!(tot > 0))))
+  p <- t(rowsum(a, train[[resp]], reorder = TRUE)) / tot
+  levs <- levels(train[[resp]])
+  p <- matrix(p[, levs, drop = FALSE], nrow = nrow(obs), dimnames = list(NULL, levs))
+  list(prob_stats = p, map = levs[max.col(p, ties.method = "first")], fit = fit)
 }
 
 confusion_df <- function(true, pred, w = NULL) {
@@ -147,11 +191,11 @@ param_frame <- function(d, param, stats, log) {
 
 QS <- c(0.025, 0.25, 0.5, 0.75, 0.975)
 
-fit_param <- function(d, param, stats, log, obs, ntree = 1000, ncores = 1, case_w = NULL) {
+fit_param <- function(d, param, stats, log, obs, ntree = 1000, ncores = 1, case_w = NULL, sample_fraction = 1) {
   # Unweighted forest; posterior weights = kernel at obs x case_w (renormalised). Quantiles on the fitting scale.
   pf <- param_frame(d, param, stats, log)
   if (is.null(case_w)) case_w <- rep(1, nrow(pf))
-  rf <- reg_rf(pf, ntree, ncores)
+  rf <- reg_rf(pf, ntree, ncores, sample_fraction)
   a <- posthoc(rf_kernel(rf, obs, pf, ncores), case_w)[, 1]
   bt <- if (log) function(x) 10^x else identity
   q <- bt(wquantile(pf$y, a, QS))
@@ -161,7 +205,7 @@ fit_param <- function(d, param, stats, log, obs, ntree = 1000, ncores = 1, case_
 }
 
 coverage_cv <- function(d, src_id, param, stats, log, n_pods = 200, folds = 5, ntree = 1000, ncores = 1, seed = 1,
-                        case_w = NULL) {
+                        case_w = NULL, sample_fraction = 1) {
   # Pods: n_pods rows with distinct source ids, drawn without replacement in proportion to case_w (uniform if NULL),
   # i.e. from the weighted reference distribution. Grouped K-fold: each pod is predicted by an unweighted forest
   # trained without its fold; its posterior = kernel x case_w (training rows). Coverage is global, not local.
@@ -177,7 +221,7 @@ coverage_cv <- function(d, src_id, param, stats, log, n_pods = 200, folds = 5, n
     if (!length(pk)) next
     tri <- fold != k
     tr <- pf[tri, ]
-    rf <- reg_rf(tr, ntree, ncores)
+    rf <- reg_rf(tr, ntree, ncores, sample_fraction)
     a <- posthoc(rf_kernel(rf, pf[pk, stats, drop = FALSE], tr, ncores), case_w[tri])
     for (j in seq_along(pk)) {
       q <- wquantile(tr$y, a[, j], QS); y <- pf$y[pk[j]]
@@ -218,13 +262,18 @@ abc_crosscheck <- function(d, param, stats, log, obs, n_accept = 100, case_w = N
 }
 
 # --------------------------------------------------------------------------------------------------------- main --
+PARAM_SAMPLE_FRACTION <- 1   # per-tree subsample of the parameter forests (--param-sample-fraction)
+
 parse_args <- function(argv) {
-  a <- list(ntree = 1000, seed = 1, ncores = 16, n_pods = 200, folds = 5, n_draws = 1000, abc_accept = 100)
+  a <- list(ntree = 1000, seed = 1, ncores = 16, n_pods = 200, folds = 5, n_draws = 1000, abc_accept = 100,
+            param_sample_fraction = PARAM_SAMPLE_FRACTION, mc_min_node_size = MC_MIN_NODE_SIZE)
   i <- 1
   while (i <= length(argv)) {
     k <- gsub("-", "_", sub("^--", "", argv[i])); a[[k]] <- argv[i + 1]; i <- i + 2
   }
-  for (k in c("ntree", "seed", "ncores", "n_pods", "folds", "n_draws", "abc_accept")) a[[k]] <- as.numeric(a[[k]])
+  for (k in c("ntree", "seed", "ncores", "n_pods", "folds", "n_draws", "abc_accept", "param_sample_fraction",
+             "mc_min_node_size"))
+    a[[k]] <- as.numeric(a[[k]])
   a
 }
 
@@ -247,6 +296,7 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
   t0 <- Sys.time()
   options(warn = 1)
   a <- parse_args(argv)
+  MC_MIN_NODE_SIZE <<- a$mc_min_node_size
   dir.create(a$out_dir, recursive = TRUE, showWarnings = FALSE)
   spec <- fromJSON(a$spec, simplifyVector = FALSE)
   file.copy(a$spec, file.path(a$out_dir, "spec_used.json"), overwrite = TRUE)
@@ -314,7 +364,7 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
     cat("model choice ...\n")
     mp <- model_probs(mtab, obs_s, tab$cw, ncores = a$ncores, ntree = a$ntree)
     ps <- mp$prob_stats[1, ]
-    fit <- abcrf(model ~ ., data = mtab, lda = TRUE, ntree = a$ntree, paral = a$ncores > 1, ncores = a$ncores)
+    fit <- mp$fit
     pv <- predict(fit, obs_s, training = mtab, ntree = a$ntree, paral = a$ncores > 1, ncores = a$ncores)$vote
     vote <- setNames(as.numeric(pv[1, ]) / sum(pv[1, ]), colnames(pv))[units]
     oob <- confusion_df(mtab$model, as.character(fit$model.rf$predictions), tab$cw)
@@ -358,7 +408,6 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
       s2 <- indicator_share(d[, stats], isd, d$cw, obs_s, rf = s1$rf, ncores = a$ncores)
       hs[[u]] <- data.frame(model = d$model[1], flux = d$flux[1], n_hard = ir$n_hard, n_soft = ir$n_soft,
                             ess_hard = ir$ess_hard, hard_share_stats = s1$p, hard_share_total = s2$p,
-                            hard_share_bayes = hard_share_acc(s1$p, ir$acc_hard, ir$acc_soft),
                             prior_mix_hard = ir$mix_hard)
     }
     wsum <- numeric(nrow(d)); nw <- 0
@@ -371,7 +420,8 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
       pd <- d[sel, ]
       if (nrow(pd) < 20 || length(unique(pd[[p]])) < 2) next
       cw <- pd$cw / sum(pd$cw)
-      fp <- fit_param(pd, p, stats, sp$log, obs_s, ntree = a$ntree, ncores = a$ncores, case_w = cw)
+      fp <- fit_param(pd, p, stats, sp$log, obs_s, ntree = a$ntree, ncores = a$ncores, case_w = cw,
+                      sample_fraction = a$param_sample_fraction)
       post[[paste(u, p)]] <- data.frame(model = d$model[1], flux = d$flux[1], parameter = p,
                                         scale = if (sp$log) "log10" else "linear", rows = sp$rows,
                                         n_train = nrow(pd), ess_train = ess(cw), ess_post = ess(fp$weights),
@@ -381,7 +431,8 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
                                         post_hard_mass = sum(fp$weights[pd$cls == "hard"]))
       if (sp$rows == "all") { wsum[sel] <- wsum[sel] + fp$weights; nw <- nw + 1 }
       cv <- coverage_cv(pd, pd$src, p, stats, sp$log, n_pods = a$n_pods, folds = a$folds, ntree = a$ntree,
-                        ncores = a$ncores, seed = a$seed + j, case_w = cw)
+                        ncores = a$ncores, seed = a$seed + j, case_w = cw,
+                        sample_fraction = a$param_sample_fraction)
       cov[[paste(u, p)]] <- data.frame(model = d$model[1], flux = d$flux[1], parameter = p, n_pods = cv$n_pods,
                                        cover50 = cv$cover50, cover95 = cv$cover95)
       x <- abc_crosscheck(pd, p, stats, sp$log, obs_s, a$abc_accept, cw, lo = sp$lo, hi = sp$hi)
@@ -409,14 +460,14 @@ main <- function(argv = commandArgs(trailingOnly = TRUE)) {
   write.csv(do.call(rbind, xc), file.path(a$out_dir, "crosscheck_raw.csv"), row.names = FALSE)
   write.csv(do.call(rbind, dmeta), file.path(a$out_dir, "draws_raw.csv"), row.names = FALSE)
   hsd <- if (length(hs)) do.call(rbind, hs) else data.frame(model = character(), flux = numeric(),
-    hard_share_stats = numeric(), hard_share_total = numeric(), hard_share_bayes = numeric())
+    hard_share_stats = numeric(), hard_share_total = numeric())
   write.csv(hsd, file.path(a$out_dir, "hardshare_raw.csv"), row.names = FALSE)
   meta <- list(table = a$table, spec = a$spec, n_rows_in = n0, n_dropped_nan = sum(drop_nan),
                n_dropped_na_key = n_dropped_na, models = paste(units, collapse = " "), p_hard = p_hard,
                training = "unweighted forests on unique rows; importance weights applied post hoc to the forest kernel",
                accuracy_grouped_cv_weighted = acc_cv, accuracy_oob_unweighted_abcrf = acc_oob_unw,
                coverage_note = "coverage is global (prior predictive), not local to the observed point",
-               ntree = a$ntree, seed = a$seed, folds = a$folds, n_pods = a$n_pods, abc_accept = a$abc_accept,
+               param_sample_fraction = a$param_sample_fraction, mc_min_node_size = a$mc_min_node_size, ntree = a$ntree, seed = a$seed, folds = a$folds, n_pods = a$n_pods, abc_accept = a$abc_accept,
                n_stats = length(stats), stats_dropped_constant = paste(setdiff(keys, stats), collapse = " "),
                R = R.version.string, abcrf = as.character(packageVersion("abcrf")),
                ranger = as.character(packageVersion("ranger")), abc = as.character(packageVersion("abc")),

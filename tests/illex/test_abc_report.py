@@ -48,8 +48,7 @@ def _raw_dir(tmp_path, spec):
                   dict(model="N", flux=0, parameter="t_inv", scale="linear", n_train=280, median=8e5, q025=5e5,
                        q25=7e5, q75=9e5, q975=1.2e6, prior_lo=1e5, prior_hi=1.5e6)]).to_csv(
         d / "posteriors_raw.csv", index=False)
-    pd.DataFrame(dict(model=["N"], flux=[0], hard_share_stats=[0.2], hard_share_total=[1e-5],
-                      hard_share_bayes=[1e-5])).to_csv(d / "hardshare_raw.csv", index=False)
+    pd.DataFrame(dict(model=["N"], flux=[0], hard_share_stats=[0.2], hard_share_total=[1e-5])).to_csv(d / "hardshare_raw.csv", index=False)
     pd.DataFrame(dict(true=["N", "N", "B", "B"], predicted=["N", "B", "N", "B"], n=[9, 1, 2, 8],
                       w=[0.9, 0.1, 0.2, 0.8])).to_csv(d / "confusion_cv.csv", index=False)
     pd.DataFrame(dict(model=["N"], flux=[0], parameter=["p0"], n_pods=[200], cover50=[0.5],

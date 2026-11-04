@@ -126,8 +126,8 @@ def report(raw_dir: str, out_dir: str) -> None:
                   f"{meta.get('accuracy_grouped_cv_weighted')}  (OOB of the unweighted abcrf classifier, reference only: "
                   f"{meta.get('accuracy_oob_unweighted_abcrf')})", ""]
     lines += ["Model choice: prob_total(M) ∝ prior(M) x acc(M) x prob_stats(M); acc(M) = p_hard acc_hard + "
-              "(1 - p_hard) acc_soft (= p_now_term); prob_stats = P(M | stats) from unweighted indicator forests "
-              "with the mixture weights applied post hoc to the forest kernel (models balanced); "
+              "(1 - p_hard) acc_soft (= p_now_term); prob_stats = P(M | stats) from the abcrf classifier's own "
+              "forest kernel (LDA axes included) x mixture weights, renormalised (models balanced); "
               "prob_total_acc_ci_lo/hi propagate the acceptance CIs; vote_unweighted = votes of an unweighted "
               "abcrf classifier (reference only)", _fmt(mc), ""]
     for m in ("grouped_cv", "oob"):
@@ -138,8 +138,7 @@ def report(raw_dir: str, out_dir: str) -> None:
                 lines += [f"Confusion matrix ({m}, {lab}; rows = true model):",
                           tab.to_string(float_format=lambda x: f"{x:.3f}"), ""]
     lines += ["Hard share (post hoc on one unweighted forest on the hard indicator): noacc = kernel x class-balanced "
-              "weights (prior p_hard); acc = kernel x mixture weights; bayes = acc_h p / (acc_h p + acc_s (1 - p)) "
-              "from noacc (equals acc by construction: a consistency check)", _fmt(hs), ""]
+              "weights (prior p_hard); acc = kernel x mixture weights", _fmt(hs), ""]
     cols = ["model", "flux", "parameter", "scale", "n_train", "ess_train", "ess_post", "post_hard_mass", "median", "q025", "q25", "q75", "q975",
             "prior_lo", "prior_hi", "edge"]
     lines += ["Posteriors (regAbcrf per parameter per model; 50% and 95% intervals; edge = prior-edge flag)",

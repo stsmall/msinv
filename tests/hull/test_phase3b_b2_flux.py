@@ -517,6 +517,14 @@ def test_andolfatto_sample_fraction_matches_closed_form():
     flips. See memory/project_andolfatto_closed_form_correction.md
     for theory direction.
 
+    Note (barrier-coalescence fix, after 0.3.5): most of that ~25% gap
+    came from the partial merges of same-arrangement lineages, which kept
+    the ancestry at x_center split across fragments. With full merges the
+    simulator sits ~5-10% below the closed form (60 seeds: 0.13, 0.45,
+    0.63, 0.88 vs 0.11, 0.36, 0.68, 0.94). Reading f̂ needs the flux node
+    IDs to resolve in the returned ts, which keeps unary nodes when
+    record_events=True.
+
     The test catches order-of-magnitude rate errors (e.g., a missed
     factor of λ in the rate calc, or a sign flip in p_other), not
     fine-grained accuracy. For tighter validation, derive the

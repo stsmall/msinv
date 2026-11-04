@@ -159,8 +159,12 @@ pub fn apply_coalescence_partial(
             if class_ok {
                 tables.add_edge(l, r, new_node, a_node);
                 tables.add_edge(l, r, new_node, b_node);
+                // Full merge of a karyotype-compatible pair: where one
+                // side is untagged and the other tagged, the parent keeps
+                // the tag (union), independent of argument order.
+                let m_bc = if a_bc == b_bc { a_bc } else { a_bc.union_compatible(b_bc) };
                 chain_append!(merged_head, merged_tail, arena,
-                               l, r, new_node, a_bc);
+                               l, r, new_node, m_bc);
             } else {
                 chain_append!(a_rem_head, a_rem_tail, arena,
                                l, r, a_node, a_bc);

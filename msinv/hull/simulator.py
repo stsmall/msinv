@@ -29,6 +29,9 @@ from .events import (
     apply_recombination,
     apply_gene_flux,
     apply_migration,
+    class_tags,
+    tags_conflict,
+    tags_to_class,
 )
 from .demography import Demography
 from .inversion import InversionSpec
@@ -183,10 +186,44 @@ def _overlap_by_class(lin_a, lin_b) -> dict:
     return out
 
 
+def _karyotype_signature(lin):
+    """Set of inversion tags carried by any segment of ``lin``."""
+    sig = set()
+    seg = lin.head
+    while seg is not None:
+        sig.update(class_tags(seg.branch_class))
+        seg = seg.next
+    return sig
+
+
+def _pair_karyotype(lin_a, lin_b):
+    """Joint karyotype of a lineage pair while a barrier is active.
+
+    Returns ``(compatible, shared_class)``. The pair is compatible when no
+    inversion has S material on one side (or within one lineage) and I
+    material on the other: their common parent chromosome then has a
+    well-defined arrangement and a coalescence is a full Hudson merge.
+    ``shared_class`` holds the tags present in both lineages (``'P'`` if one
+    lineage carries only untagged material); the pair coalesces once, at
+    rate ``1 / (2 N p_shared)``. Incompatible pairs (I x S meeting in a
+    shared margin) return ``(False, None)`` and keep the per-class partial
+    merge. Mirrors ``pair_rate_classes`` / ``barrier_merge_class`` in the
+    Rust engine.
+    """
+    sa = _karyotype_signature(lin_a)
+    sb = _karyotype_signature(lin_b)
+    if tags_conflict(sa | sb):
+        return False, None
+    return True, tags_to_class(sa & sb)
+
+
 def _coalesce_partial(active, lin_a, lin_b, t, tables, allowed_class):
     """Coalesce ``lin_a`` and ``lin_b`` ONLY at overlap positions where
     BOTH segments have class ``allowed_class``. Other overlap and
     non-overlap positions remain on the original lineages.
+
+    Used only for karyotype-incompatible pairs (see ``_pair_karyotype``);
+    compatible pairs take a full merge (``apply_coalescence``).
 
     Returns the new internal node id.
     """
@@ -647,8 +684,10 @@ class HullSimulator:
 
         Two regimes:
         1. No active inversions → Hudson per-pop buckets, O(n).
-        2. Active inversions → per-pair overlap-by-class with
-           _coalesce_partial, O(n^2). Exact.
+        2. Active inversions → per-pair rates, O(n^2): a karyotype-
+           compatible pair is one event at its shared karyotype's rate
+           with a full merge; an incompatible pair gets one event per
+           overlapping class with _coalesce_partial.
 
         Returns list of (kind, rate, payload).
         """
@@ -772,7 +811,23 @@ class HullSimulator:
                     if lin_i.population != lin_j.population:
                         continue
                     ovl = _overlap_by_class(lin_i, lin_j)
+                    if not any(v > 0 for v in ovl.values()):
+                        continue
                     ne_pop = max(self.demography.size_at(lin_i.population, t), 1e-9)
+                    # Karyotype-compatible pair: ONE event at the shared
+                    # karyotype's rate, merged in full (payload class None).
+                    compatible, shared = _pair_karyotype(lin_i, lin_j)
+                    if compatible:
+                        p_class = _p_class_for(shared, lin_i.population)
+                        if p_class > 0:
+                            rates.append(
+                                (
+                                    f"coal_{shared}_{lin_i.population}",
+                                    1.0 / (2.0 * ne_pop * p_class),
+                                    (i, j, None),
+                                )
+                            )
+                        continue
                     for cls_key, ov_len in ovl.items():
                         if ov_len <= 0:
                             continue
@@ -1428,11 +1483,17 @@ class HullSimulator:
                     )
                 else:
                     # Per-pair structured event: payload is
-                    # (i, j, allowed_class). Partial coalescence —
-                    # only merge at positions where both segments
-                    # have this class.
+                    # (i, j, allowed_class). allowed_class None is a
+                    # karyotype-compatible pair: full Hudson merge.
+                    # Otherwise partial coalescence — only merge at
+                    # positions where both segments have this class.
                     i, j, allowed = payload
-                    _coalesce_partial(active, active[i], active[j], t, tables, allowed)
+                    if allowed is None:
+                        apply_coalescence(active, active[i], active[j], t, tables)
+                    else:
+                        _coalesce_partial(
+                            active, active[i], active[j], t, tables, allowed
+                        )
             elif chosen_kind == "flux":
                 idx, inv_id = chosen_payload
                 lineage = active[idx]

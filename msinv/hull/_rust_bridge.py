@@ -7,6 +7,8 @@ conditionally imports from here when the Rust extension is available.
 
 import tskit
 
+from ._event_log import remap_event_log_nodes
+
 try:
     from msinv._msinv_core import simulate_raw as _simulate_raw
 
@@ -128,4 +130,17 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
     # (time[parent] asc, parent, child, left); skip tc.sort().
     ts = tc.tree_sequence()
     # event_log is None when record_events=False, or a list of dicts when True.
-    return ts.simplify(), event_log, int(raw.get("sweep_a_count", 0))
+    # Event-log records name the node a lineage carried at a position (e.g.
+    # flux tract_segments). A full (Hudson) merge passes each lineage's
+    # non-overlapping material through the new parent node as a unary edge,
+    # and a default simplify() erases those edges, so the logged node would no
+    # longer appear in the marginal tree there. Keep unary nodes when the log
+    # is requested so its node IDs resolve against the returned ts.
+    # simplify() can still drop nodes (e.g. an orphan node left by a
+    # no-overlap partial merge, or nodes above the root) and renumbers the
+    # rest, so the log's raw IDs are remapped through simplify's node map.
+    keep_unary = event_log is not None
+    ts, node_map = ts.simplify(keep_unary=keep_unary, map_nodes=True)
+    if event_log is not None:
+        remap_event_log_nodes(event_log, node_map)
+    return ts, event_log, int(raw.get("sweep_a_count", 0))

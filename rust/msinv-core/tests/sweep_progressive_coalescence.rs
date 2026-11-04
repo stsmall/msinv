@@ -46,6 +46,7 @@ fn progressive_sweep_sim(seed: u64) -> HullSimulator {
         iters_max: 10_000_000,
         gc_stride: 160,
         record_events: false,
+        smc_prime: false,
     }
 }
 

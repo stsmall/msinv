@@ -53,10 +53,7 @@ The Rust build takes about 5–10 minutes.
 
 If conda-forge has no `redis-server` for this platform, try `module avail redis`. Failing that, build redis from source into `$HOME/.local/bin` (`make` and `make PREFIX=$HOME/.local install`) and put it on PATH. Report what you did.
 
-Check the msinv version the script prints:
-
-- **0.4.0:** fine for the smoke tests in Steps 2–3.
-- **0.4.1 or later:** required for production (Step 4). This version holds a flank-merge fix that is being merged now. To pick it up, run `git pull` in the repo and rerun `install_env.sh`.
+Check the msinv version the script prints. The branch now carries 0.4.1, which includes the flank-merge fix, and production (Step 4) requires 0.4.1 or later. If the script prints 0.4.0, run `git pull` in the repo and rerun `install_env.sh`.
 
 **STOP:** report the version table the script printed, and any install problems.
 

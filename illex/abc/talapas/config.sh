@@ -8,6 +8,10 @@ source "$HERE_CFG/../../slim/config.sh"
 export OUTROOT=${ABC_OUTROOT:-/gpfs/projects/$ACCOUNT/$USER/illex_traj_abc}
 # CHECK BEFORE SUBMITTING: the Talapas env (ENV from slim/config.sh, illex_slimsim) is not verified to hold msinv
 # and msprime of the versions used on the box; array.sbatch fails fast with exit 3 if the import preflight fails.
+# msinv must be >= 0.4.0 (0.4.1 once the I x S flank-merge fix lands): every inversion body, flux 0 and flux 1, runs on
+# msinv with crossover suppression (illex/abc/simulate.py); msprime runs only the neutral control.
+# The Task 8 results/illex/abc_modelchoice.csv is STALE (computed with the biased pre-msinv no-flux engine):
+# model-choice SMC runs must pass SMC_MODELS explicitly until ABC-RF is rerun (smc.sbatch enforces it).
 export TABLE_MODELS=${TABLE_MODELS:-"N D1 D2 B"}
 export TABLE_FLUXES=${TABLE_FLUXES:-"0 1"}
 export TABLE_CLASSES=${TABLE_CLASSES:-"hard soft"}

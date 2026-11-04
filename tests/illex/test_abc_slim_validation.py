@@ -109,7 +109,7 @@ def _tpath(gamma_eff):
     return TPath(params=prm, times=np.array([0.0, 5e5]), freqs=np.array([0.62, 0.05]), p_now=0.62)
 
 
-@pytest.mark.parametrize("c, engine", [(NAN, "msprime"), (1e-7, "msinv")])
+@pytest.mark.parametrize("c, engine", [(NAN, "msinv"), (1e-7, "msinv")])
 def test_simulator_engine_from_engine_for(monkeypatch, c, engine):
     seen = {}
 

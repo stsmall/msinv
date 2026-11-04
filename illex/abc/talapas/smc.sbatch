@@ -8,12 +8,18 @@
 # Submit (from the repo root) with the variables that pick the run, for example
 #   SMC_MODEL=B SMC_FLUX=0 SMC_CLS=mixed sbatch --account=kernlab --partition=compute \
 #       --export=ALL,ABC_TALAPAS_DIR=$PWD/illex/abc/talapas illex/abc/talapas/smc.sbatch
-#   SMC_ALL_MODELS=1 SMC_FLUX=0 sbatch ... illex/abc/talapas/smc.sbatch
+#   SMC_ALL_MODELS=1 SMC_MODELS="N D1 D2 B" SMC_FLUX=0 sbatch ... illex/abc/talapas/smc.sbatch
 # DRYRUN=1 bash illex/abc/talapas/smc.sbatch prints the commands without starting anything.
 #
-# CHECK BEFORE SUBMITTING. The env (ENV from slim/config.sh) must hold pyabc 0.13.1, redis-py, msprime, msinv and a
-# redis-server binary (conda install -c conda-forge redis-server, or a site module). The preflight below exits 3 if
-# not. The flux engine (msinv) still lacks msinv PR #19, so flux=1 runs wait for it.
+# CHECK BEFORE SUBMITTING. The env (ENV from slim/config.sh) must hold pyabc 0.13.1, redis-py, msprime, msinv >= 0.4.0
+# (0.4.1 once the I x S flank-merge fix lands) and a redis-server binary (conda install -c conda-forge redis-server, or
+# a site module). Every inversion body (flux 0 and flux 1) runs on msinv with crossover suppression; msprime only
+# runs the neutral control. The preflight below exits 3 if the imports fail or msinv is older than 0.4.0.
+#
+# MODEL CHOICE: results/illex/abc_modelchoice.csv (Task 8 ABC-RF) is STALE: it was computed with the biased no-flux
+# engine (msprime, no crossover suppression). Until ABC-RF is rerun on the msinv engine, SMC_ALL_MODELS=1 runs MUST
+# list the models explicitly, e.g. SMC_ALL_MODELS=1 SMC_MODELS="N D1 D2 B"; without SMC_MODELS the job exits 2
+# (override, not recommended: SMC_ALLOW_STALE_MODELCHOICE=1).
 #SBATCH --job-name=illex_smc
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
@@ -40,6 +46,10 @@ if [[ -n "${SMC_ALL_MODELS:-}" ]]; then
     # survivors of Task 8 from SMC_MODELCHOICE (prob_total >= SMC_MIN_MODEL_PROB) unless SMC_MODELS lists them
     TAG=mc; SEL=(--all-models --modelchoice "${SMC_MODELCHOICE:-$REPO/results/illex/abc_modelchoice.csv}"
                  --min-model-prob "${SMC_MIN_MODEL_PROB:-0.01}")
+    if [[ -z "${SMC_MODELS:-}" && -z "${SMC_ALLOW_STALE_MODELCHOICE:-}" ]]; then
+        echo "FATAL: SMC_ALL_MODELS needs SMC_MODELS: abc_modelchoice.csv is stale (biased pre-msinv engine)." >&2
+        exit 2
+    fi
     [[ -n "${SMC_MODELS:-}" ]] && SEL+=(--models $SMC_MODELS)
 else
     TAG=${SMC_MODEL:?set SMC_MODEL or SMC_ALL_MODELS}; SEL=(--model "$SMC_MODEL")
@@ -66,8 +76,8 @@ activate_env
 mkdir -p "$SMC_OUT" logs
 cd "$REPO"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
-if ! python -c "import pyabc, redis, msprime, msinv, illex.abc.smc" || ! command -v redis-server >/dev/null; then
-    echo "FATAL: preflight failed: env '$ENV' needs pyabc, redis, msprime, msinv, illex.abc.smc and redis-server (REPO=$REPO)." >&2
+if ! python -c "import pyabc, redis, msprime, msinv, illex.abc.smc; from illex.abc.simulate import MSINV_MIN, _version_tuple; assert _version_tuple(msinv.__version__) >= MSINV_MIN, msinv.__version__" || ! command -v redis-server >/dev/null; then
+    echo "FATAL: preflight failed: env '$ENV' needs pyabc, redis, msprime, msinv >= 0.4.0, illex.abc.smc and redis-server (REPO=$REPO)." >&2
     exit 3
 fi
 

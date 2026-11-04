@@ -166,17 +166,17 @@ def test_boundary_ppc_refuses_msprime():
     from illex.abc.simulate import boundary_ppc, engine_for
 
     p = path(1e5)
-    assert engine_for(p, "auto") == "msprime"
+    assert engine_for(p, "auto") == "msinv"                 # every inversion body runs on msinv (0.4.0)
     with pytest.raises(ValueError):
         boundary_ppc(p, seed=1, engine="msprime")
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError):                       # auto is msinv, gated by BND_PPC_READY
         boundary_ppc(p, seed=1, engine="auto")
 
 
 def test_boundary_ppc_refuses_unfixed_msinv():
     from illex.abc import simulate
 
-    assert simulate.BND_PPC_READY is False          # flip only once msinv PR #19 and the I x S flank-merge fix are both in this branch
+    assert simulate.BND_PPC_READY is False          # PR #19 is in (0.4.0); flip once the I x S flank-merge fix (0.4.1) lands
     with pytest.raises(RuntimeError):
         simulate.boundary_ppc(path(1e5), seed=1)
 

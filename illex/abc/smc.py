@@ -8,7 +8,8 @@ soft-only or hard-only run. A hard draw ignores p0 and f_sel (t_sel = t_inv).
 Model. One trajectory per particle with ``max_attempts=1``, so a lost hard copy is a rejection and the establishment
 probability enters through the acceptance. A lost, fixed or off-target path (|p_now - P_NOW| > P_TOL) returns
 ``SENTINEL``, whose distance is +inf. Otherwise the particle carries ``simulate_stats`` restricted to MODEL_KEYS,
-plus ``p_obs``, ``p_now`` and ``n_nan``.
+plus ``p_obs``, ``p_now`` and ``n_nan``. Engine "auto" runs every inversion body (flux 0 and flux 1) on msinv >= 0.4.0
+with crossover suppression and the neutral control on msprime (``illex.abc.simulate``).
 
 Distance. Adaptive weighted L2 over MODEL_KEYS with NaN-aware MAD scales (Prangle 2017, all particles of the last
 generation, sentinels excluded). A NaN statistic gets weight 0 in that particle, and more than MAX_NAN NaNs give +inf.
@@ -31,6 +32,8 @@ those with prob_total >= --min-model-prob (default MIN_MODEL_PROB = 0.01) at the
 file. A model-choice run carries the run tag "mc" (db abc_smc_mc_{flux}.db, abc_smc_trace_mc_{flux}.csv,
 abc_smc_post_mc_{M}_{flux}.csv and run = "mc" in the upserted tables), so it never overwrites a single-model run
 (run = "single", abc_smc_post_{M}_{flux}.csv).
+The Task 8 abc_modelchoice.csv is STALE (ABC-RF on the biased pre-msinv no-flux engine): pass --models explicitly
+until ABC-RF is rerun.
 """
 from __future__ import annotations
 

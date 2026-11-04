@@ -5,7 +5,8 @@ steps, plus a no-flux baseline on the SAME engine (msinv, c = GAMMA_FLOOR), for 
   (a) a soft D1 pilot-posterior path (t_inv in 7.5-8.5e5, closest to 8.2e5) from results/illex/abc_traj_p1_paths.jsonl.gz
   (b) a hard B path (seeded draw_prior + simulate_paths, first accepted)
   (c) a soft N path with t_inv forced to 1.2e6 (same way)
-Only pi_ratio and dxy_pi are used (msinv's within-arrangement LD is biased). c* is the smallest c whose mean
+Only pi_ratio and dxy_pi are used (msinv's within-arrangement LD was biased before msinv 0.4.0; the Task 5
+sweep predates the fix). c* is the smallest c whose mean
 dxy_pi differs from the baseline mean by more than one observed SE; GAMMA_MAX = min(100 c*, 1e-5).
 
 Rerunnable: rows already in the CSV (same path, c, rep) are skipped; --workers sets the pool size.

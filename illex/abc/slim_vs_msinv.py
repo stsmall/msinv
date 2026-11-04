@@ -3,7 +3,8 @@
 For each fixed parameter set (``results/illex/abc_slim_sets.json``) the forward model ``illex/slim/inversion_abc.slim``
 (``python -m illex.slim.run_one --params ... --set NAME``) and the ABC simulator (paths from
 ``trajectory.simulate_paths`` with the same parameters, statistics from ``simulate.simulate_stats`` on the engine
-``simulate.engine_for`` picks: msprime for a no-flux set, msinv for a flux set) are compared statistic by
+``simulate.engine_for`` picks: msinv >= 0.4.0 with crossover suppression for every set since the msinv
+integration; the Task 9 results were computed with the earlier msprime no-flux engine) are compared statistic by
 statistic.
 
   * Both sides are filtered on the same window |p_now - P_NOW| <= P_TOL. SLiM conditions only on segregation,
@@ -14,8 +15,8 @@ statistic.
     |delta| < DELTA_MAX = 0.25, FAIL otherwise, NA when either side has fewer than 2 finite values or the pooled
     SD is 0. The KS p-value is reported, not used in the verdict. Disagreements are reported, not tuned.
   * The boundary keys need ``simulate.boundary_ppc`` (msinv) on the simulator side, which is gated by
-    ``simulate.BND_PPC_READY`` until the msinv barrier coalescence fix (PR #19) and the I x S flank-merge fix are
-    in this branch. While it is closed the simulator's boundary keys are NaN and their verdict is NA.
+    ``simulate.BND_PPC_READY`` until the msinv barrier coalescence fix (PR #19, in 0.4.0) and the I x S
+    flank-merge fix (0.4.1) are in this branch. While it is closed the simulator's boundary keys are NaN and their verdict is NA.
 
 Usage:
   python -m illex.abc.slim_vs_msinv simulate --sets results/illex/abc_slim_sets.json --set soft_D1 \\

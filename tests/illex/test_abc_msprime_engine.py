@@ -45,7 +45,8 @@ def hard_path(t_inv=6e5, g_est=2000.0, p_now=0.626):
 
 
 def test_engine_dispatch():
-    assert SIM.engine_for(path(2e4)) == "msprime"
+    assert SIM.engine_for(path(2e4)) == "msinv"                  # auto: msinv for every inversion body
+    assert SIM.engine_for(path(2e4), "msprime") == "msprime"     # validation engine, no-flux only
     assert SIM.engine_for(path(2e4, gamma_eff=1e-6)) == "msinv"
     with pytest.raises(ValueError):
         SIM.engine_for(path(2e4, gamma_eff=1e-6), "msprime")      # msprime has no flux
@@ -55,7 +56,7 @@ def test_engine_dispatch():
 
 
 def test_keys_contract_msprime():
-    out = simulate_stats(path(2e4), seed=11)
+    out = simulate_stats(path(2e4), seed=11, engine="msprime")
     assert set(out) == set(STAT_KEYS) | {"p_obs", "n_nan"}
     assert all(isinstance(v, float) for k, v in out.items() if k != "n_nan")
     assert out["n_nan"] == sum(np.isnan(out[k]) for k in STAT_KEYS)
@@ -64,15 +65,15 @@ def test_keys_contract_msprime():
 
 def test_seed_deterministic_msprime():
     p = path(8e5, p_start=0.3)
-    a, b = simulate_stats(p, seed=5), simulate_stats(p, seed=5)
+    a, b = simulate_stats(p, seed=5, engine="msprime"), simulate_stats(p, seed=5, engine="msprime")
     for k in a:
         assert (np.isnan(a[k]) and np.isnan(b[k])) or a[k] == b[k], k
-    c = simulate_stats(p, seed=6)
+    c = simulate_stats(p, seed=6, engine="msprime")
     assert any(a[k] != c[k] for k in STAT_KEYS if not np.isnan(a[k]))
 
 
 def test_auto_uses_msprime_body_window():
-    """auto on a no-flux row is the msprime engine: a body-only BODY_BP sequence."""
+    """The msprime validation engine simulates a body-only BODY_BP sequence."""
     ts, i_nodes, s_nodes = SIM._inversion_ts_msprime(path(2e4), seed=3)
     assert ts.sequence_length == BODY_BP
     assert len(i_nodes) == 100 and len(s_nodes) == 100
@@ -130,11 +131,13 @@ def test_hard_path_tmrca_before_t_inv(seed):
 @pytest.mark.slow
 @pytest.mark.timeout(3600)
 def test_msprime_matches_msinv_pi_dxy():
-    """msinv's marginal trees are correct (debug report), so pi and dxy must agree with msprime on a soft path."""
+    """msinv without crossover suppression (msprime has none) must agree with msprime on pi and dxy (soft path);
+    test_abc_engine_switch.py runs the full 200-rep equivalence over every body statistic."""
     p = path(8e5, p_now=0.626, p_start=0.3)
     res = {}
     for eng in ("msprime", "msinv"):
-        res[eng] = [simulate_stats(p, seed=300 + r, engine=eng, ld_error=NO_ERR) for r in range(20)]
+        res[eng] = [simulate_stats(p, seed=300 + r, engine=eng, ld_error=NO_ERR, crossover_suppression=False)
+                    for r in range(20)]
     for k in ("pi_ratio", "dxy_pi"):
         a = np.array([r[k] for r in res["msprime"]])
         b = np.array([r[k] for r in res["msinv"]])

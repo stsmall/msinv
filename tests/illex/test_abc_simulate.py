@@ -1,7 +1,8 @@
 """Task 3: simulator and statistic vector for the trajectory ABC.
 
-Engine dispatch is ``engine="auto"``: no-flux paths (gamma_eff NaN) run on msprime, flux paths on msinv
-(``test_abc_msprime_engine.py`` covers the msprime engine itself).
+Engine dispatch is ``engine="auto"``: every inversion body (no-flux and flux) runs on msinv >= 0.4.0 with crossover
+suppression; ``test_abc_msprime_engine.py`` covers the msprime validation engine and ``test_abc_engine_switch.py``
+the msinv-vs-msprime equivalence and the suppression effect.
 
 The rep-heavy tests (no-barrier limit, flux scaling) run 20 sims each and are marked slow.
 ``gamma_eff`` in a path's params is c, the per-site conversion probability per generation in heterokaryotypes.

@@ -22,8 +22,9 @@ TID=$((idx % TASKS_PER_COMBO))
 
 mkdir -p "$OUTROOT/table" logs
 cd "$REPO"
-# Preflight: the env must import everything the driver needs (msinv for flux rows, msprime for no-flux rows).
-if ! PYTHONPATH="$REPO" python -c "import msinv, msprime, illex.abc.run_table"; then
+# Preflight: the env must import everything the driver needs (msinv >= 0.4.0 for every inversion body, msprime for
+# the neutral control).
+if ! PYTHONPATH="$REPO" python -c "import msinv, msprime, illex.abc.run_table; from illex.abc.simulate import MSINV_MIN, _version_tuple; assert _version_tuple(msinv.__version__) >= MSINV_MIN, msinv.__version__"; then
     echo "FATAL: preflight failed: python in env '$ENV' cannot import msinv, msprime and illex.abc.run_table (REPO=$REPO)." >&2
     echo "       Install msinv and msprime in that env (see illex/abc/talapas/config.sh) and make REPO a checkout of this branch." >&2
     exit 3

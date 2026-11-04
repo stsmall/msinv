@@ -1,4 +1,4 @@
-"""Task 6: reference-table driver (run_table.py) and collector (collect.py). Soft D1, K = 3 on msprime (~0.5 s/row)."""
+"""Task 6: reference-table driver (run_table.py) and collector (collect.py). Soft D1, K = 3 on msinv (auto; ~1-3 s/row)."""
 import gzip
 import json
 import math
@@ -29,7 +29,7 @@ def test_small_run_roundtrip(tmp_path):
     assert len(rows) == 3
     for r in rows:
         assert ROW_KEYS <= set(r)
-        assert r["engine"] == "msprime" and r["model"] == "D1" and r["cls"] == "soft"
+        assert r["engine"] == "msinv" and r["model"] == "D1" and r["cls"] == "soft"
         assert r["wall_s"] > 0 and r["n_nan"] >= 0
     c = json.loads((tmp_path / "D1_0_soft_0_counts.json").read_text())
     assert c["counts"]["soft"]["accepted"] >= 3 and c["counts"]["soft"]["drawn"] >= 3

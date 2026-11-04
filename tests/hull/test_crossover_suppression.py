@@ -257,3 +257,120 @@ def test_crossover_weight_helper():
     assert crossover_weight("I0", tag_p) == 0.6
     assert crossover_weight(frozenset({"I0", "S1"}), tag_p) == pytest.approx(0.42)
     assert crossover_weight("I2", tag_p) == 1.0   # no active barrier
+
+
+# ---------------------------------------------------------------------------
+# Time-varying trajectory (precomputed, the Illex configuration)
+# ---------------------------------------------------------------------------
+
+TV_T_INV = 3_000.0
+TV_TIMES = np.linspace(0.0, TV_T_INV, 61)
+TV_P_I = 0.6 + (0.05 - 0.6) * TV_TIMES / TV_T_INV     # p_I falls 0.6 -> 0.05
+
+
+def _cum_p(p, T):
+    """integral_0^min(T, t_inv) p(s) ds for the piecewise-linear p."""
+    T = min(T, TV_T_INV)
+    g = np.append(TV_TIMES[TV_TIMES < T], T)
+    return np.trapezoid(np.interp(g, TV_TIMES, p), g)
+
+
+def _tv_ratios(kary, reps, seed0, N=1_000, L=300_000, r=1e-6):
+    """Observed / expected breakpoints [left flank, body, right flank] for
+    n = 2 same-arrangement samples under a precomputed p(t); the body
+    compensator integrates p over each branch below t_inv. Also returns the
+    body ratio against a compensator that freezes p at its t = 0 value."""
+    p = TV_P_I if kary == "I" else 1.0 - TV_P_I
+    lo, hi = L / 3, 2 * L / 3
+    regions = [(0, lo), (lo, hi), (hi, L)]
+    obs, exp = np.zeros(3), np.zeros(3)
+    exp_frozen = 0.0
+    for s in range(reps):
+        spec = InversionSpec(
+            bp_left=lo, bp_right=hi, gene_conversion_rate=1e-15,
+            mean_tract_length=1.0,
+            trajectory={"type": "precomputed", "times": list(TV_TIMES),
+                        "freqs": [list(TV_P_I)], "n_e": [float(N)],
+                        "t_inv": [TV_T_INV]})
+        n_std, n_inv = (0, 2) if kary == "I" else (2, 0)
+        ts = HullSimulator(n_std=n_std, n_inv=n_inv, population_size=N,
+                           sequence_length=L, recombination_rate=r,
+                           inversions=[spec], seed=seed0 + s
+                           ).simulate().simplify()
+        bps = np.asarray(ts.breakpoints(as_array=True))
+        for k, (a, b) in enumerate(regions):
+            obs[k] += ((bps > a) & (bps < b)).sum()
+        for tree in ts.trees():
+            T = tree.time(tree.root)
+            for k, (a, b) in enumerate(regions):
+                span = min(tree.interval.right, b) - max(tree.interval.left, a)
+                if span <= 0:
+                    continue
+                if k == 1:
+                    above = max(T - TV_T_INV, 0.0)
+                    exp[k] += span * r * 2 * (_cum_p(p, T) + above)
+                    exp_frozen += span * r * 2 * (p[0] * min(T, TV_T_INV) + above)
+                else:
+                    exp[k] += span * r * 2 * T
+    return obs / exp, np.sqrt(obs) / exp, obs[1] / exp_frozen
+
+
+def _check_tv(kary, reps, seed0):
+    ratio, se, vs_frozen = _tv_ratios(kary, reps, seed0)
+    z = (ratio - 1.0) / se
+    assert np.all(np.abs(z) < Z_TOL), (ratio, se, z)
+    return vs_frozen
+
+
+@pytest.mark.parametrize("kary", ["I", "S"])
+def test_time_varying_trajectory_compensator(kary):
+    """Fast version (40 reps): flanks at r, body at r * p(t) with p read at
+    the event time, for a precomputed trajectory."""
+    _check_tv(kary, 40, 900)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("kary", ["I", "S"])
+def test_time_varying_trajectory_compensator_many_reps(kary):
+    """400 reps: SE ~0.4% on the body. Freezing p at p(0) would be off by
+    ~20% (I, p falls) and ~30% (S, p rises), far outside the band."""
+    vs_frozen = _check_tv(kary, 400, 10_000)
+    if kary == "I":
+        assert vs_frozen < 0.9, vs_frozen
+    else:
+        assert vs_frozen > 1.15, vs_frozen
+
+
+# ---------------------------------------------------------------------------
+# On / off byte identity where the flag must not matter
+# ---------------------------------------------------------------------------
+
+def _table_bytes(ts):
+    t = ts.dump_tables()
+    return (t.nodes.time.tobytes(), t.edges.left.tobytes(),
+            t.edges.right.tobytes(), t.edges.parent.tobytes(),
+            t.edges.child.tobytes())
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_flag_is_byte_identical_without_inversion(seed):
+    ts = [HullSimulator(samples=8, population_size=1_000, sequence_length=1e5,
+                        recombination_rate=1e-7, seed=seed,
+                        crossover_suppression=flag).simulate()
+          for flag in (True, False)]
+    assert _table_bytes(ts[0]) == _table_bytes(ts[1])
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_flag_is_byte_identical_for_untagged_samples(seed):
+    """Samples with a None karyotype carry no arrangement tag, so their
+    material has weight 1 even under an active barrier."""
+    ts = []
+    for flag in (True, False):
+        spec = _spec(3e4, 7e4, 1e9, p=0.4)
+        ts.append(HullSimulator(sample_config={(None, 0): 8},
+                                population_size=1_000, sequence_length=1e5,
+                                recombination_rate=1e-7, inversions=[spec],
+                                seed=seed, crossover_suppression=flag
+                                ).simulate())
+    assert _table_bytes(ts[0]) == _table_bytes(ts[1])

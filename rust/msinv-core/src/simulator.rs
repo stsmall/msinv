@@ -148,14 +148,24 @@ pub struct HullSimulator {
     /// While an inversion's barrier is active, a crossover at a
     /// position inside the inversion needs a homokaryotypic partner,
     /// so a lineage carrying arrangement k there recombines at
-    /// `r * p_k(t)` (the product over every active inversion tagged
-    /// at that position). Collinear flanks, untagged material and
-    /// everything older than t_inv keep the full rate `r`. This
-    /// matches forward simulators (SLiM drops every crossover inside
-    /// the inversion in a heterokaryotype). Implemented by thinning:
-    /// breakpoints are proposed at rate `r` per bp of material and
-    /// accepted with probability `w(x, t)` evaluated at the proposal
-    /// time, so time-varying trajectories are handled exactly.
+    /// `r * p_k(t)`. Conventions, shared with the coalescence rate
+    /// (`p_class_for_tag`):
+    /// - nested / overlapping inversions take the product of the
+    ///   per-inversion frequencies, which assumes the arrangements are
+    ///   independent;
+    /// - untagged material (samples with a `None` karyotype) is
+    ///   panmictic and gets weight 1, as do collinear flanks and
+    ///   everything older than t_inv.
+    /// The standard SLiM inversion recipe likewise drops crossovers
+    /// inside the inversion in a heterokaryotype. Implemented by
+    /// thinning: breakpoints are proposed at rate `r` per bp of
+    /// material and accepted with probability `w(x, t)` evaluated at
+    /// the proposal time, so recombination is exact for time-varying
+    /// trajectories (coalescence still evaluates p(t) at each event
+    /// and holds it until the next one).
+    /// Known limitation: the sweep hitchhiking escape probability in
+    /// `apply_sweep_finalize` still uses the full `r`, also inside an
+    /// active inversion.
     /// false restores the msinv <= 0.3.5 behaviour (full `r`
     /// everywhere) for reproducing earlier results.
     pub crossover_suppression: bool,
@@ -352,6 +362,16 @@ impl HullSimulator {
     ) {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
+
+        // TODO(crossover_suppression): this disabled path draws every
+        // breakpoint at the full rate r. If it is revived, port the
+        // thinning step from `run_loop`'s Event::Recombination arm.
+        // Until then refuse to run it silently with the wrong rate.
+        assert!(
+            !self.crossover_suppression || inversions.is_empty(),
+            "run_loop_compound does not implement crossover_suppression; \
+             port the thinning from run_loop or set \
+             crossover_suppression=false");
 
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();

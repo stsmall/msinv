@@ -21,11 +21,16 @@ const REPS: u64 = 300;
 
 fn sim(inverted: bool, pop_size: f64, r: f64, suppress: bool, seed: u64)
     -> HullSimulator {
+    sim_k(inverted, Karyotype::I, pop_size, r, suppress, seed)
+}
+
+fn sim_k(inverted: bool, kary: Karyotype, pop_size: f64, r: f64, suppress: bool,
+         seed: u64) -> HullSimulator {
     let (inversions, karyotypes) = if inverted {
         let mut inv = InversionSpec::with_p_inv(0.0, L, vec![P], 1e12);
         inv.gene_conversion_rate = 1e-15;
         inv.mean_tract_length = 1.0;
-        (vec![inv], vec![Some(Karyotype::I)])
+        (vec![inv], vec![Some(kary)])
     } else {
         (vec![], vec![])
     };
@@ -71,8 +76,13 @@ fn z(a: &[f64], b: &[f64]) -> f64 {
 }
 
 fn compare(inv_r: f64, suppress: bool, pan_n: f64, pan_r: f64) -> [(f64, f64, f64); 2] {
+    compare_k(Karyotype::I, inv_r, suppress, pan_n, pan_r)
+}
+
+fn compare_k(kary: Karyotype, inv_r: f64, suppress: bool, pan_n: f64, pan_r: f64)
+    -> [(f64, f64, f64); 2] {
     let a: Vec<(f64, f64)> = (0..REPS)
-        .map(|s| stats(&sim(true, N, inv_r, suppress, 1_000 + s))).collect();
+        .map(|s| stats(&sim_k(true, kary, N, inv_r, suppress, 1_000 + s))).collect();
     let b: Vec<(f64, f64)> = (0..REPS)
         .map(|s| stats(&sim(false, pan_n, pan_r, true, 9_000 + s))).collect();
     let mut out = [(0.0, 0.0, 0.0); 2];
@@ -105,4 +115,14 @@ fn suppression_reduces_breakpoints() {
     let on: Vec<f64> = (0..REPS).map(|s| stats(&sim(true, N, R, true, 1_000 + s)).1).collect();
     let off: Vec<f64> = (0..REPS).map(|s| stats(&sim(true, N, R, false, 1_000 + s)).1).collect();
     assert!(z(&off, &on) > 10.0, "off {} on {}", mean_var(&off).0, mean_var(&on).0);
+}
+
+#[test]
+fn standard_class_matches_rescaled_panmictic() {
+    // Arrangement S has frequency 1 - p.
+    let q = 1.0 - P;
+    for (k, (ma, mb, zz)) in compare_k(Karyotype::S, R, true, q * N, R * q)
+        .iter().enumerate() {
+        assert!(zz.abs() < 4.0, "stat {k}: inverted {ma} vs panmictic {mb}, z={zz}");
+    }
 }

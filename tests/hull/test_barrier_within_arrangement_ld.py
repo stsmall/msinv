@@ -23,7 +23,7 @@ msinv's default is the SMC (coalescence needs shared material), so the LD
 reference is msprime's ``model="smc"``. Hudson gives about 3-5% higher r^2 at
 these recombination rates, for msinv-independent reasons.
 
-Crossover suppression (msinv 0.3.6): inside the body an arrangement-q lineage
+Crossover suppression (msinv 0.4.0): inside the body an arrangement-q lineage
 recombines at r q while the barrier is active (a crossover needs a
 homokaryotypic partner), so the r^2 reference for arrangement q is one deme of
 size qN with rate r q until t_inv, then size N with rate r. msprime has a single

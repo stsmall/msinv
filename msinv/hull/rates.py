@@ -34,7 +34,10 @@ def crossover_weight(branch_class, tag_p) -> float:
     (one tag per containing inversion, a frozenset for nested inversions).
     Panmictic segments ('P': collinear flanks, untagged material, or
     inversions whose barrier has lifted) and tags missing from ``tag_p``
-    get weight 1.
+    get weight 1. Untagged material inside an inversion (samples with a
+    ``None`` karyotype) is treated as panmictic, as in the coalescence rate.
+    The product over nested or overlapping inversions assumes the
+    arrangements are independent, again the coalescence convention.
 
     Mirrors the Rust ``p_class_for_tag`` applied to the class at the
     breakpoint (``simulator.rs``, Event::Recombination).

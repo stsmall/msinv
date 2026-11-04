@@ -1,0 +1,365 @@
+{
+ "note": "Task 9 SLiM-validation parameter sets (illex/scripts/choose_slim_sets.py). Q keeps s Q < 0.1, Q <= 200. p_win = P(|p_now - 0.626| <= 0.02) per drawn path; p_win_given_surv is the SLiM acceptance (SLiM restarts on loss/fixation, then the window is applied).",
+ "sets": {
+  "soft_D1": {
+   "model": "D1",
+   "hard": false,
+   "t_inv": 507749.7730514274,
+   "p0": 0.0717513557813562,
+   "t_sel": 376670.4807539862,
+   "s": 7.174456346537943e-06,
+   "t_stop": null,
+   "p_star": null,
+   "gamma_eff": null,
+   "Q": 200.0,
+   "provisional": false,
+   "provenance": {
+    "source": "results/illex/abc_smc_pilot/abc_smc_posteriors.csv",
+    "rule": "Task 8b ABC-SMC soft D1 no-flux pilot: marginal posterior medians",
+    "n_draws": 4000,
+    "n_survived": 3590,
+    "n_window": 252,
+    "p_win": 0.063,
+    "p_win_given_surv": 0.0701949860724234
+   }
+  },
+  "hard_D1": {
+   "model": "D1",
+   "hard": true,
+   "t_inv": 383713.9982867361,
+   "p0": null,
+   "t_sel": 383713.9982867361,
+   "s": 1.6424029402381518e-05,
+   "t_stop": null,
+   "p_star": null,
+   "gamma_eff": null,
+   "Q": 200.0,
+   "provisional": false,
+   "provenance": {
+    "source": "results/illex/abc_pilot_noflux_v3/abc_table.parquet",
+    "rule": "nearest accepted hard row (observed-SE RMS distance over 39 MODEL_KEYS) with Q >= 50.0 and P(win | survival) >= 0.05 (>= 20 survivors)",
+    "table_row": 511,
+    "dist": 25.453059106858845,
+    "dist_rank": 2,
+    "candidates": [
+     {
+      "row": 559,
+      "dist": 22.384332879056533,
+      "s": 5.140678768962729e-06,
+      "Q": 200.0,
+      "n_draws": 2000,
+      "n_survived": 19,
+      "n_window": 3,
+      "p_win": 0.0015,
+      "p_win_given_surv": 0.15789473684210525
+     },
+     {
+      "row": 511,
+      "dist": 25.453059106858845,
+      "s": 1.6424029402381518e-05,
+      "Q": 200.0,
+      "n_draws": 2000,
+      "n_survived": 43,
+      "n_window": 4,
+      "p_win": 0.002,
+      "p_win_given_surv": 0.09302325581395349
+     }
+    ],
+    "n_draws": 2000,
+    "n_survived": 43,
+    "n_window": 4,
+    "p_win": 0.002,
+    "p_win_given_surv": 0.09302325581395349
+   }
+  },
+  "hard_B": {
+   "model": "B",
+   "hard": true,
+   "t_inv": 635219.0691720038,
+   "p0": null,
+   "t_sel": 635219.0691720038,
+   "s": 0.0010895079008509374,
+   "t_stop": null,
+   "p_star": 0.6208668188595872,
+   "gamma_eff": null,
+   "Q": 80.0,
+   "provisional": false,
+   "provenance": {
+    "source": "results/illex/abc_pilot_noflux_v3/abc_table.parquet",
+    "rule": "nearest accepted hard row (observed-SE RMS distance over 39 MODEL_KEYS) with Q >= 50.0 and P(win | survival) >= 0.05 (>= 20 survivors)",
+    "table_row": 8,
+    "dist": 24.439152811163783,
+    "dist_rank": 2,
+    "candidates": [
+     {
+      "row": 76,
+      "dist": 24.13309520170965,
+      "s": 0.0059342905132443195,
+      "Q": 10.0,
+      "skipped": "Q < 50.0"
+     },
+     {
+      "row": 8,
+      "dist": 24.439152811163783,
+      "s": 0.0010895079008509374,
+      "Q": 80.0,
+      "n_draws": 2000,
+      "n_survived": 1339,
+      "n_window": 1338,
+      "p_win": 0.669,
+      "p_win_given_surv": 0.9992531740104555
+     }
+    ],
+    "n_draws": 2000,
+    "n_survived": 1339,
+    "n_window": 1338,
+    "p_win": 0.669,
+    "p_win_given_surv": 0.9992531740104555
+   }
+  },
+  "soft_B": {
+   "model": "B",
+   "hard": false,
+   "t_inv": 480410.994976621,
+   "p0": 0.051549396231542,
+   "t_sel": 432373.531413708,
+   "s": 0.0002648306091358,
+   "t_stop": null,
+   "p_star": 0.622041255917047,
+   "gamma_eff": null,
+   "Q": 200.0,
+   "provisional": false,
+   "provenance": {
+    "source": "results/illex/abc_rf_v3/abc_post_B_0.csv",
+    "rule": "highest-weight soft draw with P(win) >= 0.05",
+    "src_row": 414,
+    "weight": 51,
+    "n_draws_total": 1000,
+    "candidates": [
+     {
+      "src": 414,
+      "weight": 51,
+      "n_draws": 4000,
+      "n_survived": 3994,
+      "n_window": 3818,
+      "p_win": 0.9545,
+      "p_win_given_surv": 0.9559339008512769
+     }
+    ],
+    "n_draws": 4000,
+    "n_survived": 3994,
+    "n_window": 3818,
+    "p_win": 0.9545,
+    "p_win_given_surv": 0.9559339008512769
+   }
+  },
+  "D2_flux": {
+   "model": "D2",
+   "hard": false,
+   "t_inv": 567078.250521729,
+   "p0": 0.0764615736423589,
+   "t_sel": 492555.975164248,
+   "s": 8.18170187330818e-06,
+   "t_stop": 137663.167444183,
+   "p_star": null,
+   "gamma_eff": 1e-07,
+   "Q": 200.0,
+   "provisional": true,
+   "provenance": {
+    "source": "results/illex/abc_rf_v3/abc_post_D2_0.csv",
+    "rule": "highest-weight soft draw with P(win) >= 0.05",
+    "src_row": 1316,
+    "weight": 29,
+    "n_draws_total": 1000,
+    "candidates": [
+     {
+      "src": 1255,
+      "weight": 48,
+      "n_draws": 4000,
+      "n_survived": 3695,
+      "n_window": 119,
+      "p_win": 0.02975,
+      "p_win_given_surv": 0.03220568335588633
+     },
+     {
+      "src": 1307,
+      "weight": 42,
+      "n_draws": 4000,
+      "n_survived": 3077,
+      "n_window": 5,
+      "p_win": 0.00125,
+      "p_win_given_surv": 0.0016249593760155996
+     },
+     {
+      "src": 1220,
+      "weight": 39,
+      "n_draws": 4000,
+      "n_survived": 3709,
+      "n_window": 106,
+      "p_win": 0.0265,
+      "p_win_given_surv": 0.028579131841466703
+     },
+     {
+      "src": 1104,
+      "weight": 37,
+      "n_draws": 4000,
+      "n_survived": 3553,
+      "n_window": 139,
+      "p_win": 0.03475,
+      "p_win_given_surv": 0.03912186884323107
+     },
+     {
+      "src": 1316,
+      "weight": 29,
+      "n_draws": 4000,
+      "n_survived": 3695,
+      "n_window": 237,
+      "p_win": 0.05925,
+      "p_win_given_surv": 0.06414073071718539
+     }
+    ],
+    "n_draws": 4000,
+    "n_survived": 3695,
+    "n_window": 237,
+    "p_win": 0.05925,
+    "p_win_given_surv": 0.06414073071718539,
+    "gamma_eff": "PLACEHOLDER 1e-07: log-midpoint of the prior [1e-09, 1e-05] (= the Task 5 c* of hard B / soft N); no flux posterior yet. P(win) above is the no-flux path acceptance (paths carry no flux)."
+   }
+  },
+  "N_soft": {
+   "model": "N",
+   "hard": false,
+   "t_inv": 1205414.12553869,
+   "p0": 0.0899854929656466,
+   "t_sel": null,
+   "s": null,
+   "t_stop": null,
+   "p_star": null,
+   "gamma_eff": null,
+   "Q": 200.0,
+   "provisional": false,
+   "provenance": {
+    "source": "results/illex/abc_rf_v3/abc_post_N_0.csv",
+    "rule": "no draw reaches P(win) >= 0.05: the draw with the largest P(win)",
+    "src_row": 1410,
+    "weight": 2,
+    "n_draws_total": 1000,
+    "candidates": [
+     {
+      "src": 1410,
+      "weight": 2,
+      "n_draws": 4000,
+      "n_survived": 1082,
+      "n_window": 40,
+      "p_win": 0.01,
+      "p_win_given_surv": 0.036968576709796676
+     },
+     {
+      "src": 1430,
+      "weight": 2,
+      "n_draws": 4000,
+      "n_survived": 1370,
+      "n_window": 29,
+      "p_win": 0.00725,
+      "p_win_given_surv": 0.021167883211678833
+     },
+     {
+      "src": 1573,
+      "weight": 2,
+      "n_draws": 4000,
+      "n_survived": 1682,
+      "n_window": 29,
+      "p_win": 0.00725,
+      "p_win_given_surv": 0.017241379310344827
+     },
+     {
+      "src": 1537,
+      "weight": 10,
+      "n_draws": 4000,
+      "n_survived": 1606,
+      "n_window": 28,
+      "p_win": 0.007,
+      "p_win_given_surv": 0.017434620174346202
+     },
+     {
+      "src": 1598,
+      "weight": 6,
+      "n_draws": 4000,
+      "n_survived": 1497,
+      "n_window": 26,
+      "p_win": 0.0065,
+      "p_win_given_surv": 0.01736806947227789
+     },
+     {
+      "src": 1461,
+      "weight": 2,
+      "n_draws": 4000,
+      "n_survived": 1116,
+      "n_window": 26,
+      "p_win": 0.0065,
+      "p_win_given_surv": 0.023297491039426525
+     },
+     {
+      "src": 1427,
+      "weight": 21,
+      "n_draws": 4000,
+      "n_survived": 1731,
+      "n_window": 25,
+      "p_win": 0.00625,
+      "p_win_given_surv": 0.014442518775274409
+     },
+     {
+      "src": 1592,
+      "weight": 1,
+      "n_draws": 4000,
+      "n_survived": 1265,
+      "n_window": 25,
+      "p_win": 0.00625,
+      "p_win_given_surv": 0.019762845849802372
+     },
+     {
+      "src": 1377,
+      "weight": 5,
+      "n_draws": 4000,
+      "n_survived": 1412,
+      "n_window": 24,
+      "p_win": 0.006,
+      "p_win_given_surv": 0.0169971671388102
+     },
+     {
+      "src": 1503,
+      "weight": 10,
+      "n_draws": 4000,
+      "n_survived": 1840,
+      "n_window": 23,
+      "p_win": 0.00575,
+      "p_win_given_surv": 0.0125
+     },
+     {
+      "src": 1480,
+      "weight": 2,
+      "n_draws": 4000,
+      "n_survived": 1348,
+      "n_window": 21,
+      "p_win": 0.00525,
+      "p_win_given_surv": 0.015578635014836795
+     },
+     {
+      "src": 1409,
+      "weight": 1,
+      "n_draws": 4000,
+      "n_survived": 804,
+      "n_window": 21,
+      "p_win": 0.00525,
+      "p_win_given_surv": 0.026119402985074626
+     }
+    ],
+    "n_draws": 4000,
+    "n_survived": 1082,
+    "n_window": 40,
+    "p_win": 0.01,
+    "p_win_given_surv": 0.036968576709796676
+   }
+  }
+ }
+}

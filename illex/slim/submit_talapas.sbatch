@@ -4,6 +4,10 @@
 #   sbatch --array=0-1999%50 --account=kernlab --partition=compute \
 #          illex/slim/submit_talapas.sbatch
 #
+# Task 9 validation array (fixed parameters, one set per submission; not yet submitted):
+#   VALIDATION_SET=soft_B N_SIMS=200 CHUNK=2 bash illex/slim/submit.sh
+# (submit.sh forwards the environment; sbatch exports it by default.)
+#
 # Mirrors 14_sweep_seqmodel/scripts/harness/talapas/gen_array.sbatch.
 #SBATCH --job-name=illex_inv_abc
 #SBATCH --output=logs/%x_%A_%a.out
@@ -39,6 +43,19 @@ cd "$REPO"
 echo "[task $t] chunk=$CHUNK Q=$QSCALE seed_base=$((BASE + t * CHUNK)) host=$(hostname) $(date)"
 
 # Run as a module: `illex` is only importable with the repo root on sys.path.
+if [[ -n "${VALIDATION_SET:-}" ]]; then
+    # Task 9 SLiM validation: fixed parameters from the sets file (Q comes from the set, not QSCALE).
+    # Seed base 4.5e8, distinct from the prior-draw campaign's 4e8.
+    python -m illex.slim.run_one \
+        --params "${VALIDATION_SETS:-results/illex/abc_slim_sets.json}" \
+        --set "$VALIDATION_SET" \
+        --task-id "$t" \
+        --reps "$CHUNK" \
+        --seed-base 450000000 \
+        --out-dir "$OUTROOT/slim_validation" \
+        --slim "$SLIM_BIN" \
+        --scratch "$SCRATCH"
+else
 python -m illex.slim.run_one \
     --task-id "$t" \
     --reps "$CHUNK" \
@@ -47,5 +64,6 @@ python -m illex.slim.run_one \
     --out-dir "$OUTROOT/sims" \
     --slim "$SLIM_BIN" \
     --scratch "$SCRATCH"
+fi
 
 echo "[task $t] done $(date)"

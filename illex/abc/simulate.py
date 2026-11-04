@@ -178,6 +178,18 @@ def _control_ts(seed):
                                 ploidy=2, model="hudson", random_seed=int(seed))
 
 
+def control_stats(s_ctl, s_mc, s_pc, s_ec, ld_err) -> dict:
+    """Raw ``region_stats`` of the neutral no-inversion control (``_control_ts``), the divisor of every ABC row.
+
+    Seed words: ancestry ``s_ctl``, mutations ``s_mc``, diploid pairing ``s_pc``, genotype errors ``s_ec``. The
+    first N_STD samples are S and the next N_INV are I. Shared with the SLiM validation (``illex.slim.summarize``).
+    """
+    cts = _mutate(_control_ts(s_ctl), s_mc)
+    smp = cts.samples()
+    return SV.region_stats(cts, smp[N_STD:N_STD + N_INV], smp[:N_STD], (0.0, CONTROL_BP),
+                           np.random.default_rng(s_pc), ld_err=ld_err, err_rng=np.random.default_rng(s_ec))
+
+
 def _seed_words(seed):
     """The 9 SeedSequence words of one row (inv, ctl, mut inv, mut ctl, pair inv, pair ctl, p_obs, err inv, err ctl)."""
     ss = np.random.SeedSequence(int(seed))
@@ -213,11 +225,7 @@ def simulate_stats(path, seed: int, ld_error=LD_ERROR, engine: str = "auto") -> 
                            ld_err=ld_error["body"], err_rng=np.random.default_rng(s_ei))
     edge = SV.edge_centre(ts, i_nodes, s_nodes, body_win)
 
-    cts = _mutate(_control_ts(s_ctl), s_mc)
-    smp = cts.samples()
-    control = SV.region_stats(cts, smp[N_STD:N_STD + N_INV], smp[:N_STD], (0.0, CONTROL_BP),
-                              np.random.default_rng(s_pc), ld_err=ld_error["control"],
-                              err_rng=np.random.default_rng(s_ec))
+    control = control_stats(s_ctl, s_mc, s_pc, s_ec, ld_error["control"])
 
     out = SV.assemble(body, control, edge)
     two_n = 2 * N_KARYO

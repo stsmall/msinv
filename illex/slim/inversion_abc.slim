@@ -52,6 +52,21 @@
 //   P_START (founding frequency at T_INV), SEL, DOM (dominance; >1 = overdominant),
 //   P_FLUX (per-gamete flux probability), TRACT_FRAC (tract/INV_LEN, fixed w),
 //   MAX_RESTARTS, OUTPATH, SAVEPATH
+// Trajectory-ABC models (Task 9 validation; MODEL != "LEGACY"), the forward versions of
+// illex/abc/trajectory.py. The marker-carrying arrangement is I = 2a, the arrangement whose
+// trajectory the ABC models; p = its frequency.
+//   MODEL    "LEGACY" (default: SEL/DOM fitness from T_INV, P_FLUX flux) | "N" | "D1" | "D2" | "B"
+//   HARD     T: one copy at T_INV (P_START ignored); F: P_START = p0 (soft start)
+//   SEL      the model's s (genic for D1/D2, s_het for B), UNSCALED
+//   P_STAR   B equilibrium frequency
+//   T_SEL, T_STOP  selection is on while T_STOP < t <= T_SEL (t backward, generations);
+//                  defaults T_SEL = T_INV, T_STOP = 0
+//   GC_C     per-site conversion probability per generation in heterokaryotypes (the prior's
+//            c = gamma_eff), UNSCALED; 0 = no flux.  GC_TRACT  mean tract length, bp (geometric)
+// Fitness by copies of I (w0 = 1): D1/D2  w1 = 1 + sQ, w2 = 1 + 2sQ, so dp = sQ p q / wbar
+//   (genic, the trajectory model's s p (1-p) to first order in sQ); B  w1 = 1 + sQ,
+//   w2 = 1 + sQ (2 - 1/p*), so dp = sQ p q (p* - p) / p* / wbar; LEGACY w1 = 1 + DOM SEL Q,
+//   w2 = 1 + SEL Q. The validity guard is SEL*Q < 0.1 for every model.
 // Seed: `slim -s <seed>`.
 // ============================================================================
 
@@ -79,6 +94,25 @@ initialize() {
     if (!exists("MAX_RESTARTS")) defineConstant("MAX_RESTARTS", 20000);
     if (!exists("OUTPATH"))      defineConstant("OUTPATH", "inversion.trees");
     if (!exists("SAVEPATH"))     defineConstant("SAVEPATH", "inversion_restart.trees");
+    // trajectory-ABC models (see the header)
+    if (!exists("MODEL"))        defineConstant("MODEL", "LEGACY");
+    if (!exists("HARD"))         defineConstant("HARD", F);
+    if (!exists("P_STAR"))       defineConstant("P_STAR", 0.5);
+    if (!exists("T_SEL"))        defineConstant("T_SEL", T_INV);
+    if (!exists("T_STOP"))       defineConstant("T_STOP", 0.0);
+    if (!exists("GC_C"))         defineConstant("GC_C", 0.0);
+    if (!exists("GC_TRACT"))     defineConstant("GC_TRACT", 300.0);
+
+    if (!any(MODEL == c("LEGACY", "N", "D1", "D2", "B")))
+        stop("[slim] ERROR: MODEL must be LEGACY, N, D1, D2 or B, got " + MODEL);
+    if (MODEL == "LEGACY" & (HARD | GC_C > 0.0))
+        stop("[slim] ERROR: HARD and GC_C need a trajectory-ABC MODEL (N/D1/D2/B)");
+    if (MODEL != "LEGACY" & P_FLUX > 0.0)
+        stop("[slim] ERROR: P_FLUX is the LEGACY flux; the ABC models use GC_C");
+    if (T_SEL > T_INV | T_STOP < 0.0 | T_STOP > T_SEL)
+        stop("[slim] ERROR: need 0 <= T_STOP <= T_SEL <= T_INV");
+    if (MODEL == "B" & (P_STAR <= 0.0 | P_STAR >= 1.0))
+        stop("[slim] ERROR: P_STAR must be in (0, 1)");
 
     // ---- rescaled quantities ----------------------------------------------
     defineConstant("N0s",   asInteger(round(N0 / Q)));
@@ -86,13 +120,29 @@ initialize() {
     defineConstant("Rs",    R * Q);
     defineConstant("MUs",   MU * Q);              // provenance; forward rate is 0
     defineConstant("SELs",  SEL * Q);
+    defineConstant("GC_Cs", GC_C * Q);
 
-    if (SELs >= 0.1)
+    if (abs(SELs) >= 0.1)
         stop("[slim] ERROR: scaled SEL*Q = " + SELs + " >= 0.1; Q-rescaling is "
              + "invalid here. Lower Q (or the s prior), do not raise Q.");
     if (NREFs < 100)
         stop("[slim] ERROR: scaled NREF = " + NREFs + " < 100; Q too large for "
              + "the ancestral phase.");
+
+    // Genotype fitnesses by copies of the marker (w0 = 1); see the header.
+    if (MODEL == "LEGACY") {
+        defineConstant("W_HET", 1.0 + DOM * SELs);
+        defineConstant("W_HOM", 1.0 + SELs);
+    } else if (MODEL == "B") {
+        defineConstant("W_HET", 1.0 + SELs);
+        defineConstant("W_HOM", 1.0 + SELs * (2.0 - 1.0 / P_STAR));
+    } else if (MODEL == "N") {
+        defineConstant("W_HET", 1.0);
+        defineConstant("W_HOM", 1.0);
+    } else {
+        defineConstant("W_HET", 1.0 + SELs);
+        defineConstant("W_HOM", 1.0 + 2.0 * SELs);
+    }
 
     // Forward duration. The sweep recipes cover exactly the growth epoch; an
     // inversion can be OLDER than the growth epoch, so the forward window is
@@ -101,10 +151,15 @@ initialize() {
     defineConstant("G_GROW", asInteger(round(TGROW / Q)));
     defineConstant("T_INV_T", asInteger(round(T_INV / Q)));
     defineConstant("G", max(G_GROW, T_INV_T) + 1);        // total forward ticks
-    defineConstant("PRE", G - G_GROW);       // ticks at constant NREFs before growth
     defineConstant("TINTRO", G - T_INV_T);   // tick the inversion is introduced
-    // Per-tick growth so size(PRE) = NREFs and size(G) = N0s.
-    defineConstant("GROWTH", log(N0 / NREF) / (G_GROW - 1));
+    // Tick t holds the population at backward time (G - t) * Q generations; its size is
+    // N(b) / Q with N(b) = N0 exp(-ALPHA b) for b < TGROW and NREF before (theory.N_growth).
+    defineConstant("ALPHA", log(N0 / NREF) / TGROW);
+    // Selection acts on the parents of tick t + 1 (fitness is computed at the end of tick t),
+    // i.e. on the generation at backward time b = (G - t) Q, while T_STOP < b <= T_SEL.
+    defineConstant("TS_ON", max(TINTRO, G - asInteger(round(T_SEL / Q))));
+    defineConstant("TS_OFF", G - asInteger(round(T_STOP / Q)) - 1);
+    defineConstant("SEL_ON", (W_HET != 1.0 | W_HOM != 1.0) & (TS_OFF >= TS_ON));
     defineConstant("SEED_STRIDE", 7919);                 // prime restart stride
 
     // ---- sequence layout: flank | inversion | flank -----------------------
@@ -112,27 +167,30 @@ initialize() {
     defineConstant("INV_END", asInteger(FLANK_LEN + INV_LEN - 1));
     defineConstant("L", asInteger(2 * FLANK_LEN + INV_LEN));
     defineConstant("TRACT_BP", max(1, asInteger(round(INV_LEN * TRACT_FRAC))));
+    // Conversion tracts per gamete of a heterokaryotype: c * INV_LEN converted bp per gamete
+    // in expectation, in tracts of mean GC_TRACT, so Poisson(c Q INV_LEN / GC_TRACT) tracts.
+    defineConstant("GC_LAMBDA", GC_Cs * INV_LEN / GC_TRACT);
 
     // ---- genetic architecture ---------------------------------------------
     initializeTreeSeq();
     initializeMutationRate(0.0);               // neutral variation overlaid later
-    // The inversion marker IS the selected element. dominanceCoeff = DOM, so
-    // heterozygote fitness is 1 + DOM*s and inverted homozygote 1 + s:
-    // DOM > 1 is OVERDOMINANCE, the classic mechanism for a stable intermediate
-    // frequency, which is the point of the p_inv = 0.626 question.
-    initializeMutationType("m2", DOM, "f", SELs);
+    // The inversion marker. Its fitness comes from the mutationEffect callback s4 (W_HET in
+    // heterokaryotypes, W_HOM in I homokaryotypes) during the selection window only, so the
+    // mutation type itself is neutral.
+    initializeMutationType("m2", 0.5, "f", 0.0);
     m2.convertToSubstitution = F;              // keep trackable at freq 1
     m2.color = "red";
     initializeGenomicElementType("g1", m2, 1.0);
     initializeGenomicElement(g1, 0, L - 1);
     initializeRecombinationRate(Rs);
 
-    catn("[slim] INVERSION Q=" + Q + " N0s=" + N0s + " NREFs=" + NREFs +
-         " G=" + G + " PRE=" + PRE + " TINTRO=" + TINTRO +
-         " GROWTH=" + GROWTH + " Rs=" + Rs + " SELs=" + SELs + " DOM=" + DOM +
-         " P_START=" + P_START + " P_FLUX=" + P_FLUX +
+    catn("[slim] INVERSION MODEL=" + MODEL + " HARD=" + HARD + " Q=" + Q +
+         " N0s=" + N0s + " NREFs=" + NREFs + " G=" + G + " TINTRO=" + TINTRO +
+         " TS_ON=" + TS_ON + " TS_OFF=" + TS_OFF + " SEL_ON=" + SEL_ON +
+         " Rs=" + Rs + " SELs=" + SELs + " W_HET=" + W_HET + " W_HOM=" + W_HOM +
+         " P_START=" + P_START + " P_FLUX=" + P_FLUX + " GC_LAMBDA=" + GC_LAMBDA +
          " L=" + L + " inv=[" + INV_START + "," + INV_END + "]" +
-         " TRACT_BP=" + TRACT_BP);
+         " TRACT_BP=" + TRACT_BP + " GC_TRACT=" + GC_TRACT);
 }
 
 // ---- tick 1: found the population, schedule the control blocks -------------
@@ -140,36 +198,48 @@ initialize() {
     sim.addSubpop("p1", NREFs);
     defineGlobal("nrestart", 0);
     community.rescheduleScriptBlock(s1, TINTRO, TINTRO);     // introduce + save
-    community.rescheduleScriptBlock(s2, TINTRO + 1, G - 1);  // loss/fixation monitor
+    if (TINTRO + 1 <= G - 1)
+        community.rescheduleScriptBlock(s2, TINTRO + 1, G - 1);  // loss/fixation monitor
+    else
+        community.deregisterScriptBlock(s2);
     community.rescheduleScriptBlock(s3, G, G);               // finalize
+    if (SEL_ON)
+        community.rescheduleScriptBlock(s4, TS_ON, TS_OFF);  // selection window
+    else
+        community.deregisterScriptBlock(s4);
 }
 
-// ---- demography: constant NREFs, then the growth epoch ---------------------
+// ---- demography: N(b) / Q at backward time b = (G - tick) * Q ---------------
 2: early() {
-    t = community.tick;
-    if (t <= PRE) {
-        p1.setSubpopulationSize(NREFs);
-    } else {
-        newSize = asInteger(round(NREFs * exp(GROWTH * (t - PRE))));
-        p1.setSubpopulationSize(max(2, newSize));
-    }
+    b = (G - community.tick) * Q;
+    n = (b >= TGROW) ? NREF else N0 * exp(-ALPHA * b);
+    p1.setSubpopulationSize(max(2, asInteger(round(n / Q))));
 }
 
-// ---- s1: introduce the inversion at founding frequency P_START -------------
-s1 900 late() {
-    sim.treeSeqOutput(SAVEPATH);                 // pre-introduction snapshot
-    k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
+// ---- introduction of the inversion (shared by s1 and the restarts) ----------
+function (void)introduce(void) {
+    if (HARD)
+        k = 1;
+    else
+        k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
     targets = sample(p1.haplosomes, k);
     mut = targets[0].addNewDrawnMutation(m2, INV_START);
     if (k > 1)
         targets[1:(k - 1)].addMutations(mut);
     // ONE mutation object on k haplosomes: a single inversion ORIGIN whose
-    // founding FREQUENCY is P_START. This is the phenomenological soft origin
-    // documented in NOTES sec 7.1 -- not a claim of k independent inversion
-    // events. Both endpoints of the continuum (k=1, and constant p) are already
-    // excluded by the data, so the prior must span them.
-    catn("[slim] introduced inversion at tick " + community.tick +
-         " on " + k + " of " + (2 * p1.individualCount) + " haplosomes");
+    // founding FREQUENCY is P_START (soft), or one copy (HARD). The soft start is the
+    // phenomenological origin of NOTES sec 7.1 -- not a claim of k independent inversion
+    // events -- and matches the trajectory ABC's soft start (frequency p0 at t_inv on a
+    // random set of chromosomes).
+}
+
+// ---- s1: introduce the inversion at TINTRO ----------------------------------
+s1 900 late() {
+    sim.treeSeqOutput(SAVEPATH);                 // pre-introduction snapshot
+    introduce();
+    catn("[slim] introduced inversion at tick " + community.tick + " on " +
+         sum(sim.mutationCounts(p1, sim.mutationsOfType(m2))) + " of " +
+         (2 * p1.individualCount) + " haplosomes");
 }
 
 // ---- s2: restart on loss OR fixation ---------------------------------------
@@ -195,11 +265,12 @@ s2 901 late() {
     }
     sim.readFromPopulationFile(SAVEPATH);        // restores population AND tick
     setSeed(getSeed() + SEED_STRIDE);
-    k = max(1, asInteger(round(P_START * 2 * p1.individualCount)));
-    targets = sample(p1.haplosomes, k);
-    mut2 = targets[0].addNewDrawnMutation(m2, INV_START);
-    if (k > 1)
-        targets[1:(k - 1)].addMutations(mut2);
+    introduce();
+}
+
+// ---- s4: selection on the inversion, within the selection window -----------
+s4 903 mutationEffect(m2) {
+    return homozygous ? W_HOM else W_HET;
 }
 
 // ---- recombination: barrier in heterokaryotypes, plus optional flux --------
@@ -219,7 +290,7 @@ recombination() {
         changed = T;
     }
 
-    // Gene flux: a double crossover (or conversion tract) inside the inversion
+    // LEGACY gene flux: a double crossover (or conversion tract) inside the inversion
     // transfers a tract between arrangements WITHOUT creating an unbalanced
     // gamete. Added as a PAIR of breakpoints, which is what makes it a tract
     // swap rather than a crossover. Placed uniformly in the inversion, which
@@ -229,6 +300,23 @@ recombination() {
             a = INV_START + rdunif(1, 0, asInteger(INV_LEN) - 1);
             b = min(a + rgeom(1, 1.0 / TRACT_BP) + 1, INV_END);
             if (b > a) {
+                breakpoints = sort(c(breakpoints, asInteger(a), asInteger(b)));
+                changed = T;
+            }
+        }
+    }
+
+    // Trajectory-ABC gene conversion: Poisson(GC_LAMBDA) tracts per gamete, each starting
+    // uniformly in the body with a geometric length of mean GC_TRACT, cut at the body's end.
+    // The gamete takes [a, b) from the other parental haplosome (the other arrangement).
+    // A tract whose endpoint coincides with an existing breakpoint is skipped (probability
+    // ~ 1 / INV_LEN per tract), so the breakpoints stay unique.
+    if (GC_LAMBDA > 0.0) {
+        nt = rpois(1, GC_LAMBDA);
+        for (i in seqLen(nt)) {
+            a = INV_START + rdunif(1, 0, asInteger(INV_LEN) - 1);
+            b = min(a + rgeom(1, 1.0 / GC_TRACT) + 1, INV_END + 1);
+            if (!any(breakpoints == a) & !any(breakpoints == b)) {
                 breakpoints = sort(c(breakpoints, asInteger(a), asInteger(b)));
                 changed = T;
             }
@@ -256,7 +344,10 @@ s3 902 late() {
             "mu", MU, "n_anc", NREF, "n_now", N0, "t_grow", TGROW,
             "inv_start", INV_START, "inv_end", INV_END, "l_tot", L,
             "p_final", freq, "n_restarts", nrestart,
-            "g_total", G, "tintro", TINTRO));
+            "g_total", G, "tintro", TINTRO,
+            "model", MODEL, "hard", HARD, "p_star", P_STAR, "t_sel", T_SEL,
+            "t_stop", T_STOP, "gc_c", GC_C, "gc_tract", GC_TRACT,
+            "w_het", W_HET, "w_hom", W_HOM, "ts_on", TS_ON, "ts_off", TS_OFF));
     catn("[slim] INVERSION_RESULT status=SEGREGATING freq=" + freq +
          " nrestart=" + nrestart + " final_tick=" + community.tick +
          " final_size=" + p1.individualCount);

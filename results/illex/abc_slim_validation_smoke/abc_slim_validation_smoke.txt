@@ -1,0 +1,25 @@
+SLiM vs ABC simulator (Task 9). PASS = |mean_slim - mean_sim| / sd_pooled < 0.25; both sides filtered on |p_now - 0.626| <= 0.02. KS p reported, not used in the verdict.
+
+[soft_D1] model=D1 hard=False Q=200.0 provisional=False engine=msprime
+  SLiM rows 5 (ok 5, in window 0); simulator rows 10 (in window 10)
+  PASS 0  FAIL 0  NA 50
+
+[hard_D1] model=D1 hard=True Q=200.0 provisional=False engine=?
+  SLiM rows 0 (ok 0, in window 0); simulator rows 0 (in window 0)
+  PASS 0  FAIL 0  NA 50
+
+[hard_B] model=B hard=True Q=80.0 provisional=False engine=?
+  SLiM rows 1 (ok 1, in window 1); simulator rows 0 (in window 0)
+  PASS 0  FAIL 0  NA 50
+
+[soft_B] model=B hard=False Q=200.0 provisional=False engine=?
+  SLiM rows 0 (ok 0, in window 0); simulator rows 0 (in window 0)
+  PASS 0  FAIL 0  NA 50
+
+[D2_flux] model=D2 hard=False Q=200.0 provisional=True engine=?
+  SLiM rows 0 (ok 0, in window 0); simulator rows 0 (in window 0)
+  PASS 0  FAIL 0  NA 50
+
+[N_soft] model=N hard=False Q=200.0 provisional=False engine=msprime
+  SLiM rows 5 (ok 5, in window 0); simulator rows 10 (in window 10)
+  PASS 0  FAIL 0  NA 50

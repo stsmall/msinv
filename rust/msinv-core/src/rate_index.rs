@@ -79,7 +79,7 @@ pub fn pair_idx(i: usize, j: usize, n: usize) -> usize {
 /// Number of entries in the triangular pair cache for n lineages.
 #[inline]
 pub fn tri_size(n: usize) -> usize {
-    n * (n - 1) / 2
+    n * n.saturating_sub(1) / 2
 }
 
 pub struct RateCache {
@@ -1687,7 +1687,7 @@ fn segs_sig(s: &[FlatSeg]) -> u64 {
 ///   every other. The pair is stored ONCE under `BranchClass::BLOCKED`,
 ///   whose rate is 0, so that it stays in the nonempty-pair set and a
 ///   split that makes it compatible re-keys it (`refresh_karyotype_key`).
-///   Before msinv 0.3.6 such pairs partial-merged their shared margin at
+///   Before msinv 0.4.1 such pairs partial-merged their shared margin at
 ///   1/(2N), so margin material linked to an arrangement behaved as
 ///   panmictic up to the breakpoints (dxy fell ~3x at the breakpoint
 ///   even with full linkage).

@@ -18,7 +18,7 @@ use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 /// lineages, the pair contributes `1 / (2 · ne · p_eff(class))`. Classes
 /// blocked by an active S-vs-I barrier contribute 0.
 ///
-/// This matches `compute_coal_rates_structured` on the bucket path:
+/// This matched the (since removed) per-pair structured emitter:
 /// coalescence rate is per-pair-per-class with any eligible overlap,
 /// not overlap-length-weighted. Overlap-weighting would make rates
 /// vanish as recombination fragments lineages into tiny pieces — the

@@ -71,9 +71,6 @@ pub(crate) enum AlleleTag {
 }
 
 enum Event {
-    /// Per-pair coalescence (used by the non-cache structured fallback
-    /// `compute_coal_rates_structured`). Hot path uses CoalAggregate.
-    CoalPair { i: usize, j: usize, class: BranchClass },
     /// Aggregate coalescence rate for all pairs in `pop` whose overlap
     /// lies in `class`. Firing samples the specific (i, j) pair from
     /// RateCache proportional to overlap length in that class — avoids
@@ -1279,60 +1276,6 @@ impl HullSimulator {
                         }
                     }
                 }
-                Event::CoalPair { i, j, class: _ } => {
-                    let (i, j) = (*i, *j);
-                    last_event = "coal_pair";
-                    let pre_len = active.len();
-                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                    let old_i_len = active[i].cached_len;
-                    let old_j_len = active[j].cached_len;
-                    // Same merge rule as CoalAggregate above.
-                    let compatible = !any_barrier || karyotypes_compatible(
-                        lineage_sig(active[i].head, arena),
-                        lineage_sig(active[j].head, arena));
-                    let Some(allowed) = barrier_merge_class(any_barrier, compatible)
-                    else { continue; };
-                    apply_coalescence_partial(
-                        active, i, j, t, arena, tables, next_uid,
-                        allowed, Some(&mut a_tag), Some(&mut buckets));
-                    let post_len = active.len();
-                    let mut delta = -old_i_len - old_j_len;
-                    for new_idx in (pre_len - 2)..post_len {
-                        delta += active[new_idx].cached_len;
-                    }
-                    total_material += delta;
-                    tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
-                    tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
-                    for new_idx in (pre_len - 2)..post_len {
-                        lin_len_tree.grow(new_idx + 1);
-                        lin_len_tree.set(new_idx, active[new_idx].cached_len);
-                    }
-                    engine_dirty = true;
-
-                    if !cache_dirty {
-                        rate_cache.remove_lineage(hi);
-                        rate_cache.swap_update(hi, pre_len - 1);
-                        rate_cache.remove_lineage(lo);
-                        rate_cache.swap_update(lo, pre_len - 2);
-                        for new_idx in (pre_len - 2)..post_len {
-                            rate_cache.recompute_for(new_idx, active, arena);
-                        }
-                    }
-                    if any_barrier && !flux_dirty {
-                        flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
-                        flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
-                        for new_idx in (pre_len - 2)..post_len {
-                            if cache_dirty {
-                                rate_cache.rebuild_segs_for(new_idx, active, arena);
-                            }
-                            let pop = active[new_idx].population;
-                            let segs = rate_cache.lineage_segs(new_idx);
-                            flux_push(&mut flux_per_lin,
-                                      &mut flux_total, segs, pop,
-                                      inversions, &barrier_active, t);
-                        }
-                    }
-                }
                 Event::CoalPanmicticPop { pop } => {
                     let pop = *pop;
                     last_event = "coal_pan";
@@ -1675,43 +1618,6 @@ impl HullSimulator {
         }
         self.warn_cap_hit(t, inversions, "bucket");
         count_a_samples(&a_tag)
-    }
-
-    // ---------------------------------------------------------------
-    // Per-pair, per-class coalescence rates
-    // ---------------------------------------------------------------
-    #[allow(dead_code)]
-    fn compute_coal_rates_structured(
-        inversions: &[InversionSpec],
-        active: &[Lineage],
-        arena: &SegmentArena,
-        demo: &Demography,
-        t: f64,
-        barrier_active: &[bool],
-        events: &mut Vec<(f64, Event)>,
-    ) {
-        let n = active.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if active[i].population != active[j].population {
-                    continue;
-                }
-                let ne_pop = demo.size_at(active[i].population, t).max(1e-9);
-                let overlaps = overlap_by_class(
-                    active[i].head, active[j].head, arena);
-                for (cls, ov_len) in &overlaps {
-                    if *ov_len <= 0.0 { continue; }
-                    let pop = active[i].population;
-                    let p_class = p_class_for_tag(
-                        *cls, inversions, barrier_active, t, pop);
-                    if p_class <= 0.0 { continue; }
-                    let rate = 1.0 / (2.0 * ne_pop * p_class);
-                    events.push((rate, Event::CoalPair {
-                        i, j, class: *cls,
-                    }));
-                }
-            }
-        }
     }
 
     fn sample_flux_position(
@@ -2237,7 +2143,7 @@ enum AnyPairAction {
 /// pair is never rejected and would full-merge in every cell where both
 /// lineages are candidates, i.e. at the sum of several cell rates. No
 /// single-cell rule is derived for this case, so the picker falls back to
-/// the pre-0.3.6 behaviour: the partial merge restricted to `cls`, which
+/// the pre-0.4.0 behaviour: the partial merge restricted to `cls`, which
 /// is consistent with the per-cell lineage-count rate the sweep emitter
 /// uses. Only compatible pairs reach this fallback (incompatible pairs
 /// are rejected first), so it never merges material across arrangements.
@@ -2276,66 +2182,6 @@ fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bo
         cur = seg.next;
     }
     false
-}
-
-/// Compute coal events list. Post-t_inv: Hudson per-pop buckets, O(n).
-/// Active inversions: per-pair overlap-by-class, O(n^2).
-fn compute_coal_events(
-    active: &[Lineage],
-    arena: &SegmentArena,
-    demo: &Demography,
-    t: f64,
-    inversions: &[InversionSpec],
-    barrier_active: &[bool],
-    pop_buckets: &[Vec<u32>],
-    events: &mut Vec<(f64, Event)>,
-) {
-    let any_inv_active = barrier_active.iter().any(|&b| b);
-
-    if !any_inv_active {
-        // Hudson per-pop coalescence rate — read counts directly from
-        // the precomputed `pop_buckets` instead of rebuilding a local
-        // association list with linear-scan finds (~6% of multi-pop
-        // run_loop self-time).
-        if demo.n_pops >= 2 {
-            for (pop, bucket) in pop_buckets.iter().enumerate() {
-                let k = bucket.len();
-                if k < 2 { continue; }
-                let ne = demo.size_at(pop as u32, t).max(1e-9);
-                let kf = k as f64;
-                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-                events.push((rate,
-                    Event::CoalPanmicticPop { pop: pop as u32 }));
-            }
-        } else {
-            // Single-pop: no buckets built — use active.len() directly.
-            let k = active.len();
-            if k >= 2 {
-                let ne = demo.size_at(0, t).max(1e-9);
-                let kf = k as f64;
-                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-                events.push((rate, Event::CoalPanmicticPop { pop: 0 }));
-            }
-        }
-        return;
-    }
-
-    // Structured: per-pair overlap-by-class.
-    let n = active.len();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if active[i].population != active[j].population { continue; }
-            let ne = demo.size_at(active[i].population, t).max(1e-9);
-            let overlaps = overlap_by_class(active[i].head, active[j].head, arena);
-            for (cls, _ov_len) in &overlaps {
-                let pop = active[i].population;
-                let p_class = p_class_for_tag(*cls, inversions, barrier_active, t, pop);
-                if p_class <= 0.0 { continue; }
-                let rate = 1.0 / (2.0 * ne * p_class);
-                events.push((rate, Event::CoalPair { i, j, class: *cls }));
-            }
-        }
-    }
 }
 
 /// Effective sub-population frequency for a BranchClass tag,
@@ -2412,46 +2258,6 @@ fn make_initial_segments(
         tail = idx;
     }
     (head, tail)
-}
-
-/// Compute overlap between two segment chains, bucketed by matching
-/// BranchClass. Only counts positions where BOTH have material AND
-/// their classes agree.
-fn overlap_by_class(
-    head_a: SegIdx, head_b: SegIdx, arena: &SegmentArena,
-) -> Vec<(BranchClass, f64)> {
-    let mut result: Vec<(BranchClass, f64)> = Vec::new();
-    let mut sa = head_a;
-    let mut sb = head_b;
-    while sa != SEG_NIL && sb != SEG_NIL {
-        let a = arena.get(sa);
-        let b = arena.get(sb);
-        if a.right <= b.left {
-            sa = a.next;
-            continue;
-        }
-        if b.right <= a.left {
-            sb = b.next;
-            continue;
-        }
-        let l = a.left.max(b.left);
-        let r = a.right.min(b.right);
-        if r > l && a.branch_class == b.branch_class {
-            let cls = a.branch_class;
-            // Accumulate into result.
-            if let Some(entry) = result.iter_mut().find(|(c, _)| *c == cls) {
-                entry.1 += r - l;
-            } else {
-                result.push((cls, r - l));
-            }
-        }
-        if a.right < b.right {
-            sa = a.next;
-        } else {
-            sb = b.next;
-        }
-    }
-    result
 }
 
 /// Arena-walking counterpart to `lineage_class_for_inv_segs`. Used by
@@ -3556,12 +3362,10 @@ mod tests {
 
     #[test]
     fn barrier_merge_class_blocks_incompatible() {
-        let p = BranchClass::PANMICTIC;
         assert_eq!(barrier_merge_class(true, false), None);
         assert_eq!(barrier_merge_class(true, true), Some(None));
         assert_eq!(barrier_merge_class(false, false), Some(None));
         assert_eq!(p_class_for_tag(BranchClass::BLOCKED, &[], &[], 0.0, 0), 0.0);
-        let _ = p;
     }
 
     /// Two active barriers: with two disjoint inversions, lineages that

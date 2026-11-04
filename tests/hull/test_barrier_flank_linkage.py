@@ -128,13 +128,35 @@ def test_flank_dxy_decays_with_distance_rust():
     assert abs(flank[-1] - DXY_PAN) < 0.15 * DXY_PAN, flank
 
 
-def test_flank_dxy_decay_python_matches_rust():
-    """Python per-pair path (4 N r L = 100) against the Rust engine."""
-    a = np.array([_decay(300 + k, False) for k in range(20)])
-    b = np.array([_decay(400 + k, True) for k in range(200)])
+# 4 N r L for the decay setup (L = 250 kb) is 1e9 * r: r = 8e-9 gives 80, the
+# Python per-pair path; r = 2e-8 gives 200, the Python high-rho bucket path.
+# Both stay clear of the 4 N r L = 100 switch (HullSimulator._RHO_THRESHOLD).
+R_LOW_RHO = 8e-9
+R_HIGH_RHO = 2e-8
+
+
+def _engine_parity(r, n_py, n_rust, high_rho):
+    sim_l = 2 * 100_000 + 50_000
+    rho = 4 * N * r * sim_l
+    assert (rho > HullSimulator._RHO_THRESHOLD) == high_rho, rho
+    a = np.array([_decay(300 + k, False, r) for k in range(n_py)])
+    b = np.array([_decay(400 + k, True, r) for k in range(n_rust)])
     se = np.sqrt(a.var(axis=0, ddof=1) / len(a) + b.var(axis=0, ddof=1) / len(b))
     z = (a.mean(axis=0) - b.mean(axis=0)) / se
     assert np.all(np.abs(z) < Z_TOL), (a.mean(axis=0), b.mean(axis=0), z)
+
+
+def test_flank_dxy_decay_python_matches_rust():
+    """Python per-pair path (4 N r L = 80) against the Rust engine."""
+    _engine_parity(R_LOW_RHO, 20, 200, high_rho=False)
+
+
+@pytest.mark.slow
+def test_flank_dxy_decay_python_high_rho_matches_rust():
+    """Python high-rho bucket path (4 N r L = 200), including the
+    cross-bucket events that pair untagged flank lineages with tagged
+    ones, against the Rust engine. About 7 min (Python ~10 s/rep)."""
+    _engine_parity(R_HIGH_RHO, 40, 300, high_rho=True)
 
 
 def test_python_high_rho_pairs_untagged_with_tagged():

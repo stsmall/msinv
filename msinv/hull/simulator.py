@@ -701,7 +701,7 @@ class HullSimulator:
             # low-rho path and the Rust engine; e.g. an untagged
             # (margin-only) lineage pairs with an I lineage at 1/(2N).
             # Incompatible bucket pairs (I x S) get no event. Before
-            # msinv 0.3.6 only same-bucket pairs coalesced here, so a
+            # msinv 0.4.1 only same-bucket pairs coalesced here, so a
             # margin-only lineage could never rejoin a tagged one.
             buckets = {}
             for i, lin in enumerate(active):

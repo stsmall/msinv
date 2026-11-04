@@ -17,7 +17,7 @@ phase 4, the class barrier was applied globally to the whole lineage,
 giving wrongly-elevated outside-inv dxy_SI even with free recombination.
 The opposite extreme, outside material that is panmictic regardless of
 linkage (I x S pairs merging their shared flank at 1/(2N)), was fixed
-in 0.3.6; see test_barrier_flank_linkage.py. The outside-panmictic
+in 0.4.1; see test_barrier_flank_linkage.py. The outside-panmictic
 checks below therefore use a high recombination rate (4 N r = 0.04 per
 bp, so linkage to the breakpoint decays within ~100 bp).
 """

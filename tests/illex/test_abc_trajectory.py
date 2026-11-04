@@ -199,7 +199,7 @@ def test_establishment_grid_matches_direct_offgrid():
     from illex.abc.establishment import direct_u, establishment_prob
     from illex.theory import N_growth
     rng = np.random.default_rng(0)
-    for t in (4e5, 6.1e5, 1.2e6):
+    for t in (1.2e5, 2.5e5, 4e5, 6.1e5, 1.2e6):
         two_n = int(np.floor(2 * float(N_growth(t))))
         for s in np.exp(rng.uniform(np.log(1.1e-6), np.log(9e-3), 3)).tolist() + [3e-7, 0.0]:
             d = establishment_prob("D1", s, t)[0]
@@ -208,6 +208,15 @@ def test_establishment_grid_matches_direct_offgrid():
                 b = establishment_prob("B", s, t, None, ps)[0]
                 assert b == pytest.approx(direct_u(two_n, s, ps), rel=1e-4), (t, s, ps)
     assert establishment_prob("N", 0.0, 7e5)[0] == pytest.approx(direct_u(int(2 * float(N_growth(7e5))), 0.0), rel=1e-4)
+
+
+def test_establishment_grid_covers_prior():
+    """Every prior t_inv maps to a 2N inside the grid (off-grid draws fall back to slow exact solves)."""
+    from illex.abc.constants import PRIOR
+    from illex.abc.establishment import TWO_N_NODES
+    from illex.theory import N_growth
+    lo, hi = PRIOR["t_inv"]
+    assert TWO_N_NODES[0] <= 2 * float(N_growth(hi)) and 2 * float(N_growth(lo)) <= TWO_N_NODES[-1]
 
 
 def test_hard_draws_have_t_sel_equal_t_inv():

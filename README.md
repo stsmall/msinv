@@ -202,6 +202,21 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 - **An. gambiae RDL introgression** — matches haplotype asymmetry from Grau-Bové et al. (2020) MBE
 - **An. gambiae 2La**, **Human MAPT H1/H2**, **Peischl et al. (2013) replication**
 
+## Known limitations
+
+- **Sweeps with more than one active inversion barrier.** While a
+  barrier is active, karyotype-compatible pairs (I x I, S x S, or with an
+  untagged lineage) coalesce by a full Hudson merge, which keeps
+  within-arrangement LD right. Inside a sweep window, AA / aa
+  coalescences pick any two lineages of the allele class, and the rule
+  that counts each compatible pair once is derived only for a single
+  active barrier. With two or more barriers active at the same time,
+  those sweep-window events use the earlier partial merge, restricted
+  to the cell's class. Marginal trees are unaffected, but
+  within-arrangement short-range LD inside the sweep window keeps the
+  old barrier-era deficit. Coalescences outside sweep windows are not
+  affected.
+
 ## Running the tests
 
 ```bash

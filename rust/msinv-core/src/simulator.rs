@@ -808,10 +808,12 @@ impl HullSimulator {
 
             // Check for barrier crossings.
             let mut any_barrier = false;
+            let mut n_active_barriers = 0usize;
             let mut earliest_barrier = f64::INFINITY;
             for (k, inv) in inversions.iter().enumerate() {
                 if barrier_active[k] {
                     any_barrier = true;
+                    n_active_barriers += 1;
                     earliest_barrier = earliest_barrier.min(inv.t_inv_max());
                 }
             }
@@ -1153,32 +1155,39 @@ impl HullSimulator {
                     // Karyotype-compatible pairs are stored once, under
                     // their shared karyotype (`pair_rate_classes`), so the
                     // overlap-bucket pickers above never see them in a
-                    // second cell. The sweep any-pair picker selects by
-                    // lineage class membership instead: a compatible pair
-                    // that is also a candidate in its shared-karyotype
-                    // cell is counted there, so reject it here to keep one
-                    // rate per pair.
+                    // second cell and always take the plain
+                    // `barrier_merge_class` rule. The sweep any-pair
+                    // picker selects by lineage class membership instead;
+                    // see `sweep_any_pair_action` for how it keeps one
+                    // rate per pair (and why it falls back to the partial
+                    // merge with more than one active barrier).
                     // (Signatures are only needed while a barrier is
                     // active; afterwards every merge is a full merge.)
-                    let mut compatible = true;
-                    if any_barrier {
+                    let any_pair_pick = in_any_sweep_for_aa
+                        && matches!(allele, AlleleTag::A | AlleleTag::ALower);
+                    let allowed = if !any_barrier {
+                        None
+                    } else {
                         let sig_i = lineage_sig(active[i].head, arena);
                         let sig_j = lineage_sig(active[j].head, arena);
-                        compatible = karyotypes_compatible(sig_i, sig_j);
-                        if compatible {
-                            let shared = shared_karyotype(sig_i, sig_j);
-                            if shared != cls
-                                && lineage_has_class(active[i].head, shared, arena)
-                                && lineage_has_class(active[j].head, shared, arena) {
-                                continue;
+                        if any_pair_pick {
+                            let (hi_, hj_) = (active[i].head, active[j].head);
+                            match sweep_any_pair_action(
+                                n_active_barriers, sig_i, sig_j, cls,
+                                |k| lineage_has_class(hi_, k, arena)
+                                    && lineage_has_class(hj_, k, arena)) {
+                                AnyPairAction::Reject => continue,
+                                AnyPairAction::Merge(a) => a,
                             }
+                        } else {
+                            barrier_merge_class(
+                                true, karyotypes_compatible(sig_i, sig_j), cls)
                         }
-                    }
+                    };
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
-                    let allowed = barrier_merge_class(any_barrier, compatible, cls);
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         allowed, Some(&mut a_tag), Some(&mut buckets));
@@ -2114,6 +2123,60 @@ fn lineage_sig(head: SegIdx, arena: &SegmentArena) -> u64 {
 fn barrier_merge_class(any_barrier: bool, compatible: bool, cls: BranchClass)
     -> Option<BranchClass> {
     if any_barrier && !compatible { Some(cls) } else { None }
+}
+
+/// What the sweep any-pair picker does with a pair drawn in cell `cls`.
+#[derive(Debug, PartialEq, Eq)]
+enum AnyPairAction {
+    /// Drop the event: the pair is counted in another cell.
+    Reject,
+    /// Coalesce with this merge mode (see `barrier_merge_class`).
+    Merge(Option<BranchClass>),
+}
+
+/// Merge rule for the sweep any-pair picker (in-sweep AA / aa events in
+/// cell `(pop, cls)`), which draws any two lineages of the allele subgroup
+/// that carry class `cls` on some segment, with no overlap test. Called
+/// only while at least one barrier is active. `both_have(k)` is true when
+/// both lineages carry a segment of class `k`.
+///
+/// Exactly one active barrier (the case the full-merge rule is argued
+/// for): every tagged segment carries that one inversion's tag, so the
+/// cell classes are `P`, `S` and `I`, and the shared karyotype `K` of a
+/// compatible pair is `P` or a class that both lineages carry. A
+/// compatible pair is then a candidate in cell `K` (if `K = P`, one
+/// lineage is untagged and carries only `P` material, so `P` is the only
+/// cell in which it is a candidate with the other), and in cell `K` it
+/// takes a full merge; drawn in any other cell it is rejected so the pair
+/// fires at one rate. Incompatible pairs (I x S) take the partial merge
+/// in the cell they were drawn in.
+///
+/// More than one active barrier: a lineage's signature ORs tags carried
+/// by different segments (e.g. S0 material in one body and S1 in another),
+/// so the shared karyotype can be a class that no segment carries. Such a
+/// pair is never rejected and would full-merge in every cell where both
+/// lineages are candidates, i.e. at the sum of several cell rates. No
+/// single-cell rule is derived for this case, so the picker falls back to
+/// the pre-0.3.6 behaviour: the partial merge restricted to `cls`, which
+/// is consistent with the per-cell lineage-count rate the sweep emitter
+/// uses. Marginal trees are unaffected; within-arrangement short-range LD
+/// keeps the old barrier-era deficit inside sweep windows only.
+fn sweep_any_pair_action(n_active_barriers: usize, sig_i: u64, sig_j: u64,
+                         cls: BranchClass,
+                         both_have: impl FnOnce(BranchClass) -> bool)
+    -> AnyPairAction {
+    debug_assert!(n_active_barriers >= 1);
+    if n_active_barriers > 1 {
+        return AnyPairAction::Merge(Some(cls));
+    }
+    if !karyotypes_compatible(sig_i, sig_j) {
+        return AnyPairAction::Merge(Some(cls));
+    }
+    let shared = shared_karyotype(sig_i, sig_j);
+    if shared != cls && both_have(shared) {
+        return AnyPairAction::Reject;
+    }
+    AnyPairAction::Merge(None)
 }
 
 /// Helper: true if any segment in the lineage's chain has
@@ -3337,6 +3400,60 @@ fn segments_overlap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Single active barrier: every compatible pair full-merges in exactly
+    /// one cell (its shared karyotype) and is rejected in the others;
+    /// I x S pairs take the partial merge in the cell they were drawn in.
+    #[test]
+    fn sweep_any_pair_action_single_barrier() {
+        let p = BranchClass::PANMICTIC;
+        let s = BranchClass::single(0, Karyotype::S);
+        let i = BranchClass::single(0, Karyotype::I);
+        // Lineages carry body + margin material: classes {S, P} / {I, P}.
+        let sig_sp = s.bits();
+        let sig_ip = i.bits();
+        let sig_p = 0u64;
+        // S x S, both carry S and P: counted in cell S only.
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_sp, s, |_| true),
+                   AnyPairAction::Merge(None));
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_sp, p, |_| true),
+                   AnyPairAction::Reject);
+        // S x untagged: shared = P, the only cell where both are candidates.
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_p, p, |k| k == p),
+                   AnyPairAction::Merge(None));
+        // I x S meeting in the margin: partial merge restricted to P.
+        assert_eq!(sweep_any_pair_action(1, sig_ip, sig_sp, p, |k| k == p),
+                   AnyPairAction::Merge(Some(p)));
+    }
+
+    /// Two active barriers: with two disjoint inversions, lineages that
+    /// each carry S0 body, S1 body and P margins have shared karyotype
+    /// S0|S1, which no segment carries. The single-barrier rule would
+    /// full-merge such a pair in each of the cells S0, S1 and P (three
+    /// rates for one pair); the multi-barrier fallback instead gives each
+    /// cell the partial merge restricted to its own class.
+    #[test]
+    fn sweep_any_pair_action_multi_barrier_falls_back_to_partial() {
+        let p = BranchClass::PANMICTIC;
+        let s0 = BranchClass::single(0, Karyotype::S);
+        let s1 = BranchClass::single(1, Karyotype::S);
+        let sig = s0.bits() | s1.bits();
+        let carried = [p, s0, s1];
+        let both_have = |k: BranchClass| carried.contains(&k);
+        let shared = shared_karyotype(sig, sig);
+        assert!(!carried.contains(&shared));
+        // What the single-barrier rule would do: full merge in all 3 cells.
+        let full_merges = carried.iter()
+            .filter(|&&c| sweep_any_pair_action(1, sig, sig, c, both_have)
+                    == AnyPairAction::Merge(None))
+            .count();
+        assert_eq!(full_merges, 3, "single-barrier rule over-counts here");
+        // With two barriers active the picker partial-merges per cell.
+        for &c in &carried {
+            assert_eq!(sweep_any_pair_action(2, sig, sig, c, both_have),
+                       AnyPairAction::Merge(Some(c)));
+        }
+    }
 
     #[test]
     fn panmictic_no_recomb_gives_single_tree() {

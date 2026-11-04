@@ -85,8 +85,8 @@ Both are the p_now acceptance rates of model N (call 1 below) and go into the ne
 
 | Parameter | Prior | Basis |
 |---|---|---|
-| t_inv | U(0.3, 1.5 Ma) | grid fit ~850 ka, best at the lower edge of the tested range, so widened both ways |
-| founding | P(hard) = 0.5. Soft p0 ~ logU(1e-3, 0.5) | the grid fit wanted soft ~0.3 and rejected one copy (D ≈ 2,000) |
+| t_inv | U(0.1, 1.5 Ma) | grid fit ~850 ka; widened from 0.3 Ma after the ABC-RF pilot piled up at the 0.3 Ma edge in D1, D2 and N |
+| founding | P(hard) = 0.5. Soft p0 ~ logU(1e-3, 0.9) | the grid fit wanted soft ~0.3; upper widened from 0.5 after the pilot piled up at 0.5 in N and D1 |
 | t_sel (soft) | U(0, t_inv) | |
 | s, s_het | logU(1e-6, 1e-2) | up to strong selection, so the "super-strong" case is reachable |
 | t_stop (D2) | U(0, t_sel) | |

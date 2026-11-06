@@ -97,10 +97,14 @@ def _one(job):
     from illex.demography import PRESENT_NE_GROWTH
     from illex.slim.config import REC_RATE
 
-    t_inv, p_hist, t_dec, t_fall, rep = job
+    t_inv, p_hist, t_dec, t_fall, rep, cell, seed_offset = job
     L = int(round(2000.0 / (4.0 * PRESENT_NE_GROWTH * REC_RATE)))
-    seed = (9_000_000 + 100_000 * int(t_inv / 1e5) + 1000 * int(p_hist * 100)
-            + 10 * int(t_dec / 1e4) + int(t_fall / 1e4) + rep)
+    if seed_offset:
+        # one seed block per cell, so no two cells (or reruns of a cell) share replicates
+        seed = seed_offset + 1000 * cell + rep
+    else:
+        seed = (9_000_000 + 100_000 * int(t_inv / 1e5) + 1000 * int(p_hist * 100)
+                + 10 * int(t_dec / 1e4) + int(t_fall / 1e4) + rep)
     t0 = time.time()
     sim = B.build_decline_sim(seq_length=L, t_inv=t_inv, t_decline=t_dec,
                               t_fall=t_fall, p_hist=p_hist, gamma=GAMMA,
@@ -135,6 +139,8 @@ def main() -> None:
     ap.add_argument("--t-decline")
     ap.add_argument("--t-fall")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="if set, seeds are offset + 1000*cell + rep (unique per cell)")
     a = ap.parse_args()
     global T_INV, P_HIST, T_DECLINE, T_FALL
     if a.t_inv:
@@ -146,10 +152,10 @@ def main() -> None:
     if a.t_fall:
         T_FALL = [float(x) for x in a.t_fall.split(",")]
 
-    jobs = [(t, p, d, f, r)
-            for t, p, d, f in itertools.product(T_INV, P_HIST, T_DECLINE,
-                                                T_FALL)
-            if d + f <= t
+    cells = [c for c in itertools.product(T_INV, P_HIST, T_DECLINE, T_FALL)
+             if c[2] + c[3] <= c[0]]
+    jobs = [(t, p, d, f, r, i, a.seed_offset)
+            for i, (t, p, d, f) in enumerate(cells)
             for r in range(a.reps)]
     print(f"{len(jobs):,} sims  (p_now={empirical.P_INV}, "
           f"{len(T_FALL)} t_fall values)", flush=True)

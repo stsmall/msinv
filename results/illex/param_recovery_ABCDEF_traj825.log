@@ -1,0 +1,61 @@
+Inversion grid (ABCDEF, 1012 cells): covariance-aware fit and parameter recovery, 400 pseudo-datasets
+corr(pi_I/pi_S, dxy/pi_I) = -0.71 from 20 1-Mb jackknife blocks; singleton ratio independent
+trajectory SD 0.1256 0.0134 0.0256  measurement SE 0.0481 0.0214 0.0076  total SD 0.1345 0.0253 0.0267
+trajectory correlation
+[[ 1.   -0.79 -0.94]
+ [-0.79  1.    0.75]
+ [-0.94  0.75  1.  ]]
+
+=== distance: diag ===
+best cell {'t_inv': 825000.0, 'p_hist': 0.72, 't_decline': 250000.0, 't_fall': 50000.0}, D = 0.07
+  t_inv: c95 0.78  profile 700000:12.9  750000:3.7  775000:1.6  800000:0.5  825000:0.0  850000:0.2  875000:1.4  900000:3.6
+      calibrated 95% set ['800000', '825000', '850000']
+  p_hist: c95 6.46  profile 0.62:6.5  0.64:4.6  0.66:2.7  0.68:1.7  0.7:0.4  0.72:0.0  0.74:0.1  0.76:1.1  0.78:2.6  0.82:8.7
+      calibrated 95% set ['0.64', '0.66', '0.68', '0.7', '0.72', '0.74', '0.76', '0.78']
+  t_decline: c95 0.56  profile 0:3.7  25000:1.9  50000:0.6  100000:0.1  150000:0.1  175000:0.2  200000:0.1  250000:0.0
+      calibrated 95% set ['100000', '150000', '175000', '200000', '250000']
+  t_fall: c95 0.42  profile 50000:0.0  100000:0.1  150000:0.1  200000:0.1  400000:1.6  600000:23.0
+      calibrated 95% set ['50000', '100000', '150000', '200000']
+  recovery over all truths (median and 10th percentile across truths):
+    t_inv: best cell has the true value in 50% (p10 38%), calibrated set covers it in 92% (p10 79%)
+    p_hist: best cell has the true value in 20% (p10 13%), calibrated set covers it in 97% (p10 94%)
+    t_decline: best cell has the true value in 30% (p10 18%), calibrated set covers it in 95% (p10 74%)
+    t_fall: best cell has the true value in 29% (p10 19%), calibrated set covers it in 94% (p10 74%)
+  barrier-age confusion (rows = true t_inv, columns = recovered best t_inv, % of pseudo-datasets):
+         700     750     775     800     825     850     875     900
+     700    81.2    11.3     7.4     0.2     0.0     0.0     0.0     0.0
+     750    12.5    36.2    47.5     3.8     0.0     0.0     0.0     0.0
+     775     0.7     8.1    62.4    24.8     3.9     0.2     0.0     0.0
+     800     0.0     0.7    21.1    54.0    18.5     5.3     0.4     0.1
+     825     0.0     0.0     3.0    29.1    42.1    22.2     3.5     0.1
+     850     0.0     0.0     0.2     9.3    17.9    50.3    17.5     4.8
+     875     0.0     0.0     0.0     5.3     2.9    26.1    41.1    24.6
+     900     0.0     0.0     0.0     3.5     0.2     7.8    20.6    67.9
+  truths at least 100 ky younger than the best fit (18 cells) recovered within 50 ky of it: 7.5% (worst cell 21.5%)
+
+=== distance: cov ===
+best cell {'t_inv': 825000.0, 'p_hist': 0.72, 't_decline': 250000.0, 't_fall': 50000.0}, D = 0.19
+  t_inv: c95 3.09  profile 700000:34.0  750000:12.8  775000:5.4  800000:2.2  825000:0.0  850000:0.7  875000:4.8  900000:11.6
+      calibrated 95% set ['800000', '825000', '850000']
+  p_hist: c95 3.65  profile 0.62:3.2  0.64:2.4  0.66:1.3  0.68:0.6  0.7:0.2  0.72:0.0  0.74:0.0  0.76:0.4  0.78:1.8  0.82:7.9
+      calibrated 95% set ['0.62', '0.64', '0.66', '0.68', '0.7', '0.72', '0.74', '0.76', '0.78']
+  t_decline: c95 2.65  profile 0:17.1  25000:11.2  50000:4.4  100000:0.0  150000:0.1  175000:0.9  200000:0.0  250000:0.0
+      calibrated 95% set ['100000', '150000', '175000', '200000', '250000']
+  t_fall: c95 1.94  profile 50000:0.0  100000:0.0  150000:0.1  200000:0.0  400000:6.0  600000:15.8
+      calibrated 95% set ['50000', '100000', '150000', '200000']
+  recovery over all truths (median and 10th percentile across truths):
+    t_inv: best cell has the true value in 52% (p10 40%), calibrated set covers it in 96% (p10 94%)
+    p_hist: best cell has the true value in 20% (p10 13%), calibrated set covers it in 97% (p10 94%)
+    t_decline: best cell has the true value in 30% (p10 19%), calibrated set covers it in 99% (p10 94%)
+    t_fall: best cell has the true value in 30% (p10 19%), calibrated set covers it in 98% (p10 92%)
+  barrier-age confusion (rows = true t_inv, columns = recovered best t_inv, % of pseudo-datasets):
+         700     750     775     800     825     850     875     900
+     700    87.9    11.6     0.5     0.0     0.0     0.0     0.0     0.0
+     750    14.2    53.8    29.0     3.0     0.0     0.0     0.0     0.0
+     775     0.7    14.6    60.9    20.9     2.8     0.0     0.0     0.0
+     800     0.0     1.2    22.5    54.5    16.7     4.5     0.4     0.2
+     825     0.0     0.1     3.5    29.7    42.7    21.1     3.0     0.0
+     850     0.0     0.0     0.2     7.6    18.6    52.5    16.6     4.5
+     875     0.0     0.0     0.0     3.2     3.1    27.9    41.9    23.9
+     900     0.0     0.0     0.0     1.9     0.2     7.7    21.0    69.2
+  truths at least 100 ky younger than the best fit (18 cells) recovered within 50 ky of it: 0.5% (worst cell 1.2%)

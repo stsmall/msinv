@@ -16,7 +16,7 @@ P_TOL = 0.02             # acceptance half-width on p_now
 GAMMA_MAX = 1e-5
 GAMMA_MIN = 1e-9   # lower end of the logU prior on c (trajectory.draw_prior)
 
-PRIOR = dict(t_inv=(1e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.10), s=(1e-6, 1e-2), p_star=(0.3, 0.95))
+PRIOR = dict(t_inv=(1e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.10), s=(1e-6, 1e-1), p_star=(0.3, 0.95))  # s ceiling 1e-1: run set B (2026-11-08)
 
 MU = 3e-9                # per-bp per-generation mutation rate
 TRACT_BP = 300.0         # mean tract, bp: Korunes & Noor 2019 ML 188-390 bp (doi:10.1111/mec.14921). The Task 5 sweep ran at 1000; c is per-site, so only the edge zone differs

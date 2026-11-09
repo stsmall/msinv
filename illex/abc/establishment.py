@@ -8,7 +8,7 @@ probability from k = 1 of the transient chain k = 1 .. ESTABLISHED - 1 (absorbin
 (I - Q) u = r, solved directly (``direct_u``).
 
 Over the prior's range (t_inv 1e5 to 1.5e6) 2N runs 1.1e6 to 9.8e6; u depends on N only at the 1e-4 level, but it is kept exactly: a cached
-grid (``establishment_grid.npz``: log-spaced s 1e-6 .. 1e-2, plus s = 0, x 5 values of 2N [x 4 values of 1 / p* for B])
+grid (``establishment_grid.npz``: log-spaced s 1e-6 .. 1e-1, plus s = 0, x 5 values of 2N [x 4 values of 1 / p* for B])
 is interpolated (cubic spline in log s, linear in 1 / 2N and 1 / p*, both exactly smooth). The grid is built by
 ``build_grid`` and regenerated if absent. Outside the grid's 2N range (tests with a small constant N) ``direct_u``
 is used per unique (2N, s, p*).
@@ -22,7 +22,7 @@ from scipy.interpolate import CubicSpline
 from scipy.stats import binom
 
 ESTABLISHED = 500
-S_LO, S_HI, N_S = 1e-6, 1e-2, 200
+S_LO, S_HI, N_S = 1e-6, 1e-1, 250   # s ceiling 1e-1 (run set B); 250 nodes keeps the 1e-2 node spacing
 TWO_N_NODES = (1.0e6, 2.2e6, 5.2e6, 1.0e7, 1.4e7)   # to 1.4e7 = above 2 N0, so every prior t_inv is on the grid
 INV_PSTAR_NODES = (1.0, 1.0 / 0.95 * 1.0, 1 / 0.6, 1 / 0.3)   # 1 / p* over the prior (0.3, 0.95); sorted below
 GRID_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "establishment_grid.npz")
@@ -65,6 +65,10 @@ def _grid():
         if not os.path.exists(GRID_PATH):
             build_grid()
         z = np.load(GRID_PATH)
+        sn = z["s"][1:]
+        if sn.size != N_S or not (np.isclose(sn[0], S_LO) and np.isclose(sn[-1], S_HI)):
+            build_grid()                       # a grid built for another s range would be extrapolated silently
+            z = np.load(GRID_PATH)
         s = z["s"]
         _GRID["g"] = dict(
             s=s, inv_n=1.0 / z["two_n"], inv_p=z["inv_pstar"], u0=z["genic"][0], b0=z["balancing"][0],

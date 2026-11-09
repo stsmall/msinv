@@ -28,6 +28,8 @@ OBS_DEFAULT = "results/illex/abc_observed_ctl2.json"
 PRIOR = dict(n_anc=(1e5, 3e6), fold=(1.0, 200.0), t_grow=(1e4, 3e6), r=(1e-10, 1e-8))   # all log-uniform
 BINS = ["1", "2", "3", "4", "5", "6p"]
 FEATS = [f"sfs_{b}" for b in BINS] + [f"ld_{k}" for k in range(1, 7)] + ["tajd", "log10_pi"]
+JSFS = ["jsfs_01", "jsfs_02", "jsfs_03", "jsfs_04", "jsfs_10", "jsfs_11", "jsfs_12", "jsfs_13", "jsfs_14",
+        "jsfs_20", "jsfs_21", "jsfs_22"]   # statvec JSFS cells; in a collinear region I and S are random sample sets
 
 
 def control_ts(n_anc, n0, t_grow, r, seed, length=SIM_BP):
@@ -62,12 +64,15 @@ def one(task):
     raw = SV.region_stats(ts, smp[N_STD:N_STD + N_INV], smp[:N_STD], (0.0, length), np.random.default_rng(ss[2]),
                           ld_err=LD_ERROR["control"], err_rng=np.random.default_rng(ss[3]))
     pi = float(ts.diversity(mode="site"))
-    return dict(n_anc=n_anc, n0=n0, t_grow=t_grow, r=r, seed=seed, **features(raw, pi), pi=pi)
+    return dict(n_anc=n_anc, n0=n0, t_grow=t_grow, r=r, seed=seed, **features(raw, pi), pi=pi,
+                **{k: float(raw[k]) for k in JSFS})
 
 
 def observed(path: str = OBS_DEFAULT) -> dict:
     m = json.load(open(path))["meta"]
-    return features(m["control"], m["control_pi"]["mean"])
+    out = features(m["control"], m["control_pi"]["mean"])
+    out.update(m.get("jsfs_control", {}))          # control AA40 x BB40 JSFS, when built (run_jsfs_control2.sh)
+    return out
 
 
 def set_ld_error(path: str = OBS_DEFAULT):
@@ -99,17 +104,21 @@ def cmd_sim(a):
 
 
 def cmd_fit(a):
-    d = pd.read_csv(a.draws).replace([np.inf, -np.inf], np.nan).dropna(subset=FEATS)
     obs = pd.Series(observed(a.observed))
-    X = d[FEATS].to_numpy(float)
+    feats = FEATS + (JSFS if a.with_jsfs else [])
+    if a.with_jsfs and not set(JSFS) <= set(obs.index):
+        raise SystemExit("--with-jsfs needs meta['jsfs_control'] in the observed file")
+    d = pd.read_csv(a.draws).replace([np.inf, -np.inf], np.nan).dropna(subset=feats)
+    X = d[feats].to_numpy(float)
     mad = np.median(np.abs(X - np.median(X, 0)), 0)
-    dist = np.sqrt((((X - obs[FEATS].to_numpy(float)) / mad) ** 2).sum(1))
-    k = max(int(a.accept * len(d)), 50)
+    mad = np.where(mad > 0, mad, 1.0)
+    dist = np.sqrt((((X - obs[feats].to_numpy(float)) / mad) ** 2).sum(1))
+    k = min(max(int(a.accept * len(d)), 50), len(d))
     idx = np.argsort(dist)[:k]
     h = dist[idx].max()
     w = 1 - (dist[idx] / h) ** 2                                   # Epanechnikov
     theta = np.log10(d[["n_anc", "n0", "t_grow", "r"]].to_numpy(float)[idx])
-    Z = np.column_stack([np.ones(k), (X[idx] - obs[FEATS].to_numpy(float)) / mad])
+    Z = np.column_stack([np.ones(k), (X[idx] - obs[feats].to_numpy(float)) / mad])
     W = np.diag(w)
     beta = np.linalg.lstsq(np.sqrt(W) @ Z, np.sqrt(W) @ theta, rcond=None)[0]
     adj = theta - Z[:, 1:] @ beta[1:]
@@ -121,6 +130,15 @@ def cmd_fit(a):
         res["params"][name]["rejection_median"] = 10 ** wq(theta[:, j], .5)
     fold = adj[:, 1] - adj[:, 0]
     res["params"]["fold"] = {lab: 10 ** wq(fold, q) for lab, q in (("q025", .025), ("median", .5), ("q975", .975))}
+    res["features"] = feats
+    # predictive check of every statistic (fit features and JSFS) over the accepted draws, weighted
+    chk = {}
+    for c in FEATS + [j for j in JSFS if j in d.columns]:
+        x = d[c].to_numpy(float)[idx]
+        o = obs.get(c, np.nan)
+        chk[c] = dict(observed=None if not np.isfinite(o) else float(o), q025=wq(x, .025), median=wq(x, .5),
+                      q975=wq(x, .975), obs_quantile=None if not np.isfinite(o) else float((w * (x < o)).sum() / w.sum()))
+    res["check_accepted"] = chk
     json.dump(res, open(a.out, "w"), indent=1)
     print(json.dumps(res["params"], indent=1))
 
@@ -136,6 +154,7 @@ def main():
     f = sp.add_parser("fit")
     f.add_argument("--draws", required=True); f.add_argument("--out", required=True)
     f.add_argument("--accept", type=float, default=0.01); f.add_argument("--observed", default=OBS_DEFAULT)
+    f.add_argument("--with-jsfs", action="store_true", help="add the 12 control JSFS cells to the fit")
     a = ap.parse_args()
     {"sim": cmd_sim, "fit": cmd_fit}[a.cmd](a)
 

@@ -16,6 +16,10 @@ databases; the machine-readable versions are the CSVs in this directory.
   included, misses an excess of low-frequency variants shared by both arrangements and a faster LD decay than
   modelled, which is a process outside the trajectory models to flag as a limitation. The held-out Tajima's D fits
   all models and does not discriminate.
+- **The shared misfit is in the neutral baseline:** in collinear chr2 (10–30 Mb) the model's neutral control
+  already gives too few rare variants, too many common ones, a Tajima's D that is not negative enough (−1.7 vs
+  −2.0) and 1.2–1.6× too little LD. The demography and/or recombination rate behind the control do not fit the
+  collinear background, and the undivided JSFS inherits this. See "Collinear control check".
 - **B parameters are stable across flux settings and priors:** t_inv about 4.4-4.7e5 generations, t_sel about
   3.5-3.8e5 generations, founding frequency p0 about 0.04, equilibrium frequency p* = 0.618 [0.606, 0.64].
 - **s (B) has a lower bound only:** s >~ 1.3e-4 (2.5% quantile). Above that the posterior is close to flat in log s
@@ -254,7 +258,57 @@ not from one clean diagnostic. With the wider s prior and no gene flux, B and D2
   missing process outside the trajectory, which the paper should name as a limitation.
 - The held-out Tajima's D does not discriminate between the models.
 
-### Minor models (for completeness; too few particles to interpret)
+### Collinear control check
+
+**Question.** Is the shared misfit in the posterior predictive checks specific to the inversion, or is it already
+in the collinear background?
+
+**Method** (`collinear/collinear_check.py`). The observed chr2 10–30 Mb collinear statistics (`meta["control"]` in
+`abc_observed.json`; these are the divisors of every fitted SFS, LD and ratio statistic) are compared with 2,000
+replicates of the ABC's own neutral control simulation:
+- msprime, no inversion, 40 kb
+- growth from N_anc 5.5e5 to N0 6.8e6 over 7.7e5 generations
+- r = 2.158e-9, mu = 3e-9
+- the data's genotype error model applied to the LD diploids
+
+There is no observed control JSFS (realSFS 2D was run on the body only), so the JSFS cells cannot be checked here.
+Raw data for other chromosomes is not on Talapas.
+
+**Result.** The neutral baseline does not fit the collinear data:
+
+| statistic | observed / simulated median | two-sided p |
+|---|---|---|
+| singletons-class SFS bin (sfs_*_1) | 1.12–1.14 | 0.001 |
+| common-variant bin (sfs_*_6p) | 0.65–0.66 | ≤ 0.003 |
+| Tajima's D | −2.02 / −2.08 vs −1.71 | 0.001 |
+| LD, 100–580 bp | 1.2–1.3× | ≤ 0.002 |
+| LD, 0.6–8.3 kb | 1.4–1.6× | < 0.001 |
+| LD, 8.3–20 kb | 1.2–1.3× | < 0.001 |
+| pi_ratio, dxy_pi, f1_ratio (I vs S labels) | ≈ 1 | 0.06–0.19 |
+
+The two karyotype groups behave identically in the collinear region, as expected.
+
+**Interpretation.**
+- The collinear data carry more rare variation, fewer common variants and a more negative Tajima's D than the
+  growth model gives. This points to stronger or more recent expansion than the demography in `illex.theory`, or
+  to background selection or genome-wide linked selection. It is not a property of the inversion.
+- Collinear LD is elevated at every distance. This could come from a lower effective recombination rate than the
+  2.158e-9 used here (a male-map value), from population structure, or from an error model that misses some LD.
+- The fitted SFS and LD statistics are divided by the control, so a background misfit cancels to first order. It
+  does not cancel exactly when the distortion differs between body and control.
+- The JSFS is not divided by the control. A genome-wide excess of rare variants therefore carries straight into the
+  shared low-frequency cells (jsfs_11, jsfs_13), which is the main shared misfit in the predictive checks.
+- The LD excess peaks at intermediate distances (1.4–1.6× at 0.6–8.3 kb). Dividing body LD by this inflated
+  control can produce the pattern the predictive checks show in 2+ (ratio high at short range, low at 3.4–20 kb).
+  This is consistent with the misfit but not shown.
+- **Bottom line:** the shared misfit most likely comes from the neutral baseline (demography and/or recombination),
+  not from the trajectory models. The comparisons between models share that baseline. A fix would refit the
+  baseline demography and recombination rate to collinear windows before rerunning the ABC.
+- Sweeps: diploS/HIC found no sweeping genes in either fixed karyotype. Sweeps in the collinear background would
+  have to be pervasive to shift the whole 20 Mb control this much, which is closer to genome-wide linked selection
+  than to discrete sweeps.
+
+## Minor models (for completeness; too few particles to interpret)
 
 D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-5.9e5. Per-parameter values are in
 `posterior_summary.csv`.
@@ -291,14 +345,16 @@ D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-
 
 ## Files
 
-In the repo, `illex/abc/smc_results/` holds this README and the predictive-check scripts (`ppc/ppc_run.py`,
+In the repo, `illex/abc/smc_results/` holds this README, the predictive-check scripts (`ppc/ppc_run.py`,
 `ppc/ppc.sbatch`, `ppc/ppc_analyze.py`; `ppc_analyze.py` reads the observed statistics from
-`results/illex/abc_observed.json`). The CSVs listed below are on Talapas only, in
+`results/illex/abc_observed.json`) and `collinear/collinear_check.py`. The CSVs listed below are on Talapas only, in
 `/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
 - `README.md`: this document
 - `model_probabilities.csv`: final P(m), particle counts and hard-start mass per run set, flux and model
 - `posterior_summary.csv`: median and 2.5/97.5% quantiles for every parameter of every surviving model
 - `generation_trace.csv`: per-generation epsilon, simulations and P(m)
+- `collinear/`: collinear control check. `collinear_check.py`; `collinear_check.csv` (per statistic),
+  `collinear_sims.csv` (replicates).
 - `ppc/`: posterior predictive checks. `ppc_run.py` and `ppc.sbatch` simulate; `ppc_analyze.py` summarises.
   Replicates are in `ppc_{A,B}_f{0,1}.csv`. Summaries are in `ppc_per_stat.csv` (per statistic), `ppc_joint.csv`
   (joint check) and `ppc_separation.csv` (B vs D1/D2 separation per statistic).

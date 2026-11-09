@@ -192,6 +192,13 @@ def test_modelchoice_outputs_distinct(tmp_path):
     cmp = pd.read_csv(out / "abc_rf_vs_smc.csv")
     assert set(cmp[cmp.model == "D1"]["run"]) == {"single", "mc"}
     assert set(pd.read_csv(out / "abc_smc_modelchoice.csv")["model"]) == {"N", "D1"}
+    # model probabilities are P(m), not 0.0: they match the History and sum to 1 in every generation
+    mc = pd.read_csv(out / "abc_smc_modelchoice.csv")
+    assert abs(mc["prob"].sum() - 1.0) < 1e-9
+    want = h2.get_model_probabilities().loc[h2.max_t]
+    assert all(abs(mc.set_index("model").loc[m, "prob"] - want.get(i, 0.0)) < 1e-12 for i, m in enumerate(["N", "D1"]))
+    tr = pd.read_csv(out / "abc_smc_trace_mc_0.csv")
+    assert ((tr["prob_N"] + tr["prob_D1"] - 1.0).abs() < 1e-9).all()
     # a rerun of the single-model write replaces only its own rows
     smc.write_outputs(h1, ["D1"], False, "soft", out, abc=abc1, n_post=20, rf_path=rf)
     post = pd.read_csv(out / "abc_smc_posteriors.csv")

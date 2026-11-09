@@ -334,6 +334,12 @@ PAR_SCALE = dict(t_inv="linear", s="log10", p0="log10", t_sel="linear", t_stop="
                  gamma_eff="log10")
 
 
+def _model_probs(h, t) -> pd.Series:
+    """P(m) at generation t, indexed by model index (0 for a model dead at t). Taken from the all-generations (t x m)
+    frame: with t given, pyABC 0.13.1 returns an (m x "p") frame, whose .iloc[0] is one model's row, not P(m)."""
+    return h.get_model_probabilities().loc[t].fillna(0.0)
+
+
 def run_tag(models, model_choice=None) -> tuple[bool, str]:
     """(model_choice, file tag). Model choice is the default for more than one model, and its tag is "mc"."""
     mc = len(models) > 1 if model_choice is None else bool(model_choice)
@@ -358,7 +364,7 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
     counts = getattr(abc.distance_function, "gen_counts", {}) if abc is not None else {}
     trace = []
     for t in range(h.max_t + 1):
-        probs = h.get_model_probabilities(t).iloc[0] if len(models) > 1 else None
+        probs = _model_probs(h, t) if len(models) > 1 else None
         row = dict(t=t, eps=float(pops.loc[t, "epsilon"]), samples=int(pops.loc[t, "samples"]),
                    accepted=int(pops.loc[t, "particles"]))
         row["acc_raw"] = row["accepted"] / row["samples"]
@@ -419,7 +425,7 @@ def write_outputs(h, models, flux, cls, out_dir, abc=None, n_post=1000, seed=1, 
         _upsert(out_dir / "abc_smc_posteriors.csv", summ, ["run", "model", "flux", "cls_run"])
 
     if mc_run:
-        probs = h.get_model_probabilities(h.max_t).iloc[0]
+        probs = _model_probs(h, h.max_t)
         mc = pd.DataFrame([dict(flux=fl, cls_run=cls, model=m, prob=float(probs.get(mi, 0.0)), t=h.max_t)
                            for mi, m in enumerate(models)])
         _upsert(out_dir / "abc_smc_modelchoice.csv", mc, ["flux", "cls_run"])

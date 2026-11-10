@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from illex.abc.statvec import MODEL_KEYS, ROW_PPC_KEYS
 
-OBS = Path(__file__).resolve().parents[4] / "results" / "illex" / "abc_observed.json"
+from illex.abc.smc import OBSERVED as OBS   # the observed file the SMC fitted (abc_observed_ctl2.json on illex/baseline-refit)
 
 
 def scaled_distance_check(sim: np.ndarray, obs: np.ndarray):

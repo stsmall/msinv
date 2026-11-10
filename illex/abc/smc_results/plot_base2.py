@@ -9,7 +9,9 @@ results/illex/smc_summary/figs/:
   base2_ppc.png              per-statistic predictive quantile of the observed value, B / D1 / D2, flux 0 and 1
   baseline_refit.png         baseline posteriors (regression-adjusted, 8 JSFS cells) and accepted-draw checks
   control_jsfs_check.png     control JSFS against the baseline's accepted draws, inversion JSFS against B (flux 1)
-  traj_quantiles_f{0,1}.csv  pointwise quantiles of the re-simulated B trajectories (main-text Fig. 4b)
+  traj_quantiles_f{0,1}.csv  pointwise quantiles and 200 example paths of the re-simulated B trajectories (Fig. 4b)
+  traj_aligned_f{0,1}.csv    the same trajectories aligned on the onset of selection (forward generations since t_sel)
+  traj_params_f{0,1}.csv     t_inv, t_sel, p0 and start class of each re-simulated trajectory
 
     OMP_NUM_THREADS=1 PYTHONNOUSERSITE=1 PYTHONPATH=$PWD python illex/abc/smc_results/plot_base2.py
 """
@@ -92,7 +94,7 @@ def fig_posteriors():
 
 
 # ------------------------------------------------------------------------------------------------- trajectory
-def fig_trajectory(n_target=400, seed=20261110):
+def fig_trajectory(n_target=400, n_show=200, seed=20261110):
     import illex.theory as T
     from illex.abc.trajectory import simulate_paths
     sys.path.insert(0, str(Path(__file__).resolve().parent / "baseline"))
@@ -112,7 +114,7 @@ def fig_trajectory(n_target=400, seed=20261110):
                 prm[k] = pd.to_numeric(take[k], errors="coerce").to_numpy(float)
             prm["hard"] = take["hard"].astype(str).str.lower().eq("true").to_numpy()
             prm["t_sel"] = np.where(prm["hard"], prm["t_inv"], prm["t_sel"])
-            paths, _ = simulate_paths(prm, rng, dt=10.0, rec_every=1000.0, n_e_fn=T.N_growth)
+            paths, _ = simulate_paths(prm, rng, dt=10.0, rec_every=100.0, n_e_fn=T.N_growth)
             got += paths
             if len(got) >= n_target:
                 break
@@ -127,15 +129,33 @@ def fig_trajectory(n_target=400, seed=20261110):
         x = grid / 1e3
         q = np.nanquantile(F, [0.025, 0.25, 0.5, 0.75, 0.975], axis=0)
         out = pd.DataFrame({"t_gen": grid, "q025": q[0], "q25": q[1], "q50": q[2], "q75": q[3], "q975": q[4]})
-        for i in range(min(12, len(got))):
-            out[f"path{i}"] = F[i]
-        out.to_csv(OUT / f"traj_quantiles_f{f}.csv", index=False, float_format="%.5g")
+        paths_df = pd.DataFrame({f"path{i}": F[i] for i in range(min(n_show, len(got)))})
+        out = pd.concat([out, paths_df], axis=1)
+        out.to_csv(OUT / f"traj_quantiles_f{f}.csv", index=False, float_format="%.4g")
+        # per-path parameters, and the same paths aligned on the onset of selection (forward time since t_sel)
+        onset = np.array([pth.params["t_sel"] for pth in got], float)
+        pd.DataFrame({"t_inv": [pth.params["t_inv"] for pth in got], "t_sel": onset,
+                      "p0": [pth.params["p0"] for pth in got], "hard": [bool(pth.params["hard"]) for pth in got]}
+                     ).to_csv(OUT / f"traj_params_f{f}.csv", index=False, float_format="%.6g")
+        u = np.arange(-20_000.0, 60_000.0 + 1, 100.0)
+        A = np.full((len(got), u.size), np.nan)
+        for i, pth in enumerate(got):
+            o = np.argsort(pth.times)
+            t, fr = pth.times[o], pth.freqs[o]
+            tb = onset[i] - u                       # backward time of each aligned point
+            m = (tb >= 0) & (tb <= t[-1])
+            A[i, m] = np.interp(tb[m], t, fr)
+            A[i, tb > t[-1]] = 0.0
+        qa = np.nanquantile(A, [0.025, 0.25, 0.5, 0.75, 0.975], axis=0)
+        al = pd.DataFrame({"u_gen": u, "q025": qa[0], "q25": qa[1], "q50": qa[2], "q75": qa[3], "q975": qa[4]})
+        al = pd.concat([al, pd.DataFrame({f"path{i}": A[i] for i in range(min(n_show, len(got)))})], axis=1)
+        al.to_csv(OUT / f"traj_aligned_f{f}.csv", index=False, float_format="%.4g")
         col = FLUX_COL[f]
         ax.fill_between(x, q[0], q[4], color=col, alpha=0.15, lw=0, label="95%")
         ax.fill_between(x, q[1], q[3], color=col, alpha=0.30, lw=0, label="50%")
         ax.plot(x, q[2], color=col, lw=1.6, label="median")
-        for i in range(min(12, len(got))):
-            ax.plot(x, F[i], color=C["ink"], lw=0.4, alpha=0.35)
+        for i in range(min(n_show, len(got))):
+            ax.plot(x, F[i], color=C["ink"], lw=0.3, alpha=0.12)
         ax.axhline(0.626, color=C["muted"], lw=0.8, ls=":")
         ax.set_xlim(x[-1], 0)
         ax.set_xlabel("thousand generations ago")

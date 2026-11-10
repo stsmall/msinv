@@ -1,6 +1,6 @@
 """Figures for the SMC rerun on the refitted neutral baseline (base2) and the baseline refit.
 
-Reads results/illex/smc_summary/{runs_base2,ppc_base2,baseline_refit,collinear/ctl2} and writes PNGs to
+Reads results/illex/smc_summary/{runs_base2,ppc_base2,baseline_refit} and results/illex/abc_observed_ctl2.json and writes PNGs to
 results/illex/smc_summary/figs/:
 
   base2_model_probs.png      model probabilities over SMC generations
@@ -8,7 +8,8 @@ results/illex/smc_summary/figs/:
   base2_trajectory_B.png     2a frequency through time, posterior particles of B re-simulated on the base2 baseline
   base2_ppc.png              per-statistic predictive quantile of the observed value, B / D1 / D2, flux 0 and 1
   baseline_refit.png         baseline posteriors (regression-adjusted, 8 JSFS cells) and accepted-draw checks
-  control_jsfs_check.png     control JSFS against the baseline, and the inversion JSFS against B
+  control_jsfs_check.png     control JSFS against the baseline's accepted draws, inversion JSFS against B (flux 1)
+  traj_quantiles_f{0,1}.csv  pointwise quantiles of the re-simulated B trajectories (main-text Fig. 4b)
 
     OMP_NUM_THREADS=1 PYTHONNOUSERSITE=1 PYTHONPATH=$PWD python illex/abc/smc_results/plot_base2.py
 """
@@ -125,6 +126,10 @@ def fig_trajectory(n_target=400, seed=20261110):
             F[i, grid > t[-1]] = 0.0
         x = grid / 1e3
         q = np.nanquantile(F, [0.025, 0.25, 0.5, 0.75, 0.975], axis=0)
+        out = pd.DataFrame({"t_gen": grid, "q025": q[0], "q25": q[1], "q50": q[2], "q75": q[3], "q975": q[4]})
+        for i in range(min(12, len(got))):
+            out[f"path{i}"] = F[i]
+        out.to_csv(OUT / f"traj_quantiles_f{f}.csv", index=False, float_format="%.5g")
         col = FLUX_COL[f]
         ax.fill_between(x, q[0], q[4], color=col, alpha=0.15, lw=0, label="95%")
         ax.fill_between(x, q[1], q[3], color=col, alpha=0.30, lw=0, label="50%")
@@ -260,22 +265,35 @@ def fig_baseline_refit():
 
 # ------------------------------------------------------------------------------------------ control JSFS check
 def fig_control_jsfs():
-    d = pd.read_csv(R / "collinear" / "ctl2" / "collinear_jsfs_check.csv").set_index("stat")
-    cells = list(d.index)
+    """Control JSFS against the refitted baseline's accepted draws (fit_jsfs8.json; the 8 cells it fits), and the
+    inversion JSFS against the balancing model with gene flux (ppc_base2)."""
+    obs = json.load(open("results/illex/abc_observed_ctl2.json"))
+    ctl = obs["meta"]["jsfs_control"]
+    chk = json.load(open(R / "baseline_refit" / "fit_jsfs8.json"))["check_accepted"]
+    pp = pd.read_csv(R / "ppc_base2" / "ppc_per_stat.csv")
+    pp = pp[(pp.flux == 1) & (pp.model == "B")].set_index("stat")
+    cells = [c for c in STAT_ORDER if c.startswith("jsfs_")]
     x = np.arange(len(cells))
-    fig, ax = plt.subplots(figsize=(9, 3.6))
-    ax.vlines(x - 0.15, d["sim_q025"], d["sim_q975"], color=C["muted"], lw=4, alpha=0.6)
-    ax.plot(x - 0.15, d["sim_ctl_med"], "_", color=C["muted"], ms=10, label="baseline, collinear (median, 95%)")
-    ax.plot(x - 0.15, d["obs_ctl"], "o", color=C["ink"], ms=5, label="observed control")
-    ax.plot(x + 0.15, d["B_pred_body"], "s", color="#0072B2", ms=5, mfc="white", label="B predicted, inversion")
-    ax.plot(x + 0.15, d["obs_body"], "o", color="#D55E00", ms=5, label="observed inversion")
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    for i, c in enumerate(cells):
+        if c in chk:
+            ax.vlines(i - 0.15, chk[c]["q025"], chk[c]["q975"], color=C["muted"], lw=4, alpha=0.6)
+            ax.plot(i - 0.15, chk[c]["median"], "_", color=C["muted"], ms=10)
+        ax.vlines(i + 0.15, pp.loc[c, "pred_q025"], pp.loc[c, "pred_q975"], color="#0072B2", lw=4, alpha=0.35)
+        ax.plot(i + 0.15, pp.loc[c, "pred_median"], "_", color="#0072B2", ms=10)
+    ax.plot(x - 0.15, [ctl[c] for c in cells], "o", color=C["ink"], ms=5, zorder=3)
+    ax.plot(x + 0.15, [pp.loc[c, "observed"] for c in cells], "o", color="#D55E00", ms=5, zorder=3)
+    ax.plot([], [], color=C["muted"], lw=4, alpha=0.6, label="baseline, accepted draws (median, 95%)")
+    ax.plot([], [], "o", color=C["ink"], ms=5, label="observed collinear flanks")
+    ax.plot([], [], color="#0072B2", lw=4, alpha=0.35, label="balancing model with gene flux (median, 95%)")
+    ax.plot([], [], "o", color="#D55E00", ms=5, label="observed inversion")
     ax.set_yscale("symlog", linthresh=1e-3)
     ax.set_ylim(0, 0.6)
     ax.set_xticks(x)
     ax.set_xticklabels([c.replace("jsfs_", "") for c in cells])
     ax.set_xlabel("JSFS cell (2a bin, 2+ bin; bins 0, 1-4, 5-15, 16-19, 20 of 20)")
     ax.set_ylabel("fraction of variable sites")
-    ax.legend(fontsize=8, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.2))
+    ax.legend(fontsize=8, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.2))
     despine(ax)
     save(fig, OUT / "control_jsfs_check.png")
     plt.close(fig)

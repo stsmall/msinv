@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from illex.abc.statvec import MODEL_KEYS, ROW_PPC_KEYS
 
-from illex.abc.smc import OBSERVED as OBS   # the observed file the SMC fitted (abc_observed_ctl2.json on illex/baseline-refit)
+import illex
+from illex.abc.smc import OBSERVED
+
+# the observed file the SMC fitted (abc_observed_ctl2.json on illex/baseline-refit); smc.OBSERVED is relative to the
+# checkout root, so resolve it there and the script runs from any directory
+OBS = Path(illex.__file__).resolve().parents[1] / OBSERVED
 
 
 def scaled_distance_check(sim: np.ndarray, obs: np.ndarray):

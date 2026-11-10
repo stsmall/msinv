@@ -365,6 +365,33 @@ model; `collinear/ctl2/`) gives observed ÷ simulated median:
   below). This matches 2a's 6% lower collinear diversity: structure correlated with karyotype, or call-rate
   differences between the groups.
 
+### Baseline refit (representative control)
+
+`illex/abc/smc_results/baseline/baseline_refit.py` (job 48429847): 20,000 log-uniform prior draws of N_anc, the
+growth fold, T_grow and r (mu fixed at 3e-9), 200 kb each, the control's genotype error model; rejection at 1% (200
+draws) with local-linear regression adjustment, against the representative control
+(`results/illex/abc_observed_ctl2.json`). Outputs are in `baseline_refit/`.
+
+| parameter | current baseline | refit, no JSFS (`fit.json`) | refit, + 8 JSFS cells (`fit_jsfs8.json`) |
+|---|---|---|---|
+| N_anc | 5.48e5 | 5.15e5 [3.87e5, 6.52e5] | 5.07e5 [3.78e5, 6.36e5] |
+| N0 | 6.81e6 | 5.79e6 [4.90e6, 7.96e6] | 9.11e6 [7.63e6, 1.17e7] |
+| growth fold | 12.4 | 11.3 [9.3, 16] | 17.8 [14.2, 26.1] |
+| T_grow (generations) | 7.70e5 | 4.66e5 [3.63e5, 5.82e5] | 3.83e5 [3.15e5, 4.72e5] |
+| r (per bp per generation) | 2.158e-9 | 4.94e-10 [4.04e-10, 5.83e-10] | 5.51e-10 [4.61e-10, 6.49e-10] |
+
+- **The main change is recombination:** r drops about 4x, to about 5e-10 (r/mu about 0.17 against 0.72 now). With
+  mu fixed only r/mu is identified. The growth history moves less: the same ancestral size, a similar or somewhat
+  larger fold, and growth starting about 1.7–2x more recently.
+- **Fit of the refitted baseline:** the accepted draws reproduce the SFS, Tajima's D, pi, LD from 240 bp to 20 kb and
+  the symmetric JSFS cells (observed quantiles 0.2–0.7). Two exceptions remain: LD at 100–240 bp (observed 0.167,
+  above every accepted draw), and the private-rare asymmetry (jsfs_01 above, jsfs_10 below every accepted draw), which
+  a single panmictic population cannot produce.
+- **The 12-cell JSFS fit (`fit_jsfs.json`) is not usable.** The four near-fixed-in-one-group cells (jsfs_03, 04, 13,
+  14) are ~1e-9 to 1e-14 in collinear sequence; the observed jsfs_04 is 830 MADs from the draws' median and swamps
+  the distance, giving a 860-fold expansion that misses the SFS and Tajima's D. `fit_jsfs8.py` drops those four cells
+  (it overrides the cell list; `baseline_refit.py` is unchanged).
+
 ## Minor models (for completeness; too few particles to interpret)
 
 D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-5.9e5. Per-parameter values are in
@@ -404,13 +431,15 @@ D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-
 
 In the repo, `illex/abc/smc_results/` holds this README, the predictive-check scripts (`ppc/ppc_run.py`,
 `ppc/ppc.sbatch`, `ppc/ppc_analyze.py`; `ppc_analyze.py` reads the observed statistics from
-`results/illex/abc_observed.json`) and the collinear checks (`collinear/collinear_check.py`,
-`collinear/collinear_jsfs_check.py`). The CSVs listed below are on Talapas only, in
-`/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
+`results/illex/abc_observed.json`), the collinear checks (`collinear/collinear_check.py`,
+`collinear/collinear_jsfs_check.py`) and the baseline refit (`baseline/`, including `fit_jsfs8.py`). The CSVs and
+JSON fits listed below are on Talapas only, in `/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
 - `README.md`: this document
 - `model_probabilities.csv`: final P(m), particle counts and hard-start mass per run set, flux and model
 - `posterior_summary.csv`: median and 2.5/97.5% quantiles for every parameter of every surviving model
 - `generation_trace.csv`: per-generation epsilon, simulations and P(m)
+- `baseline_refit/`: baseline refit. `draws.csv` (20,000 draws), `fit.json`, `fit_jsfs8.json` (+ `fit_jsfs8.py`),
+  `fit_jsfs.json` (12 cells, not usable).
 - `collinear/`: collinear control check. `collinear_check.py`; `collinear_check.csv` (per statistic),
   `collinear_sims.csv` (replicates).
 - `ppc/`: posterior predictive checks. `ppc_run.py` and `ppc.sbatch` simulate; `ppc_analyze.py` summarises.

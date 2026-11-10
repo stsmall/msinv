@@ -2,10 +2,12 @@
 control simulation (simulate._control_ts: msprime, growth demography from illex.theory, no inversion), with the
 data's genotype error model applied to the LD diploids exactly as in every ABC row.
 
-    PYTHONNOUSERSITE=1 PYTHONPATH=<checkout> python collinear_check.py --n 1000 --procs 32
+    PYTHONNOUSERSITE=1 PYTHONPATH=<checkout> python collinear_check.py --n 1000 --procs 32 [--obs <observed json>]
 
-The observed values are meta["control"] of results/illex/abc_observed.json (the divisors of the fitted
-statistics). Writes collinear_sims.csv (one row per replicate) and collinear_check.csv (observed vs predictive
+The observed values are meta["control"] of the observed JSON (default results/illex/abc_observed.json, the chr2
+10-30 Mb control; results/illex/abc_observed_ctl2.json is the 40-55 + 85-115 Mb control). The simulated LD diploids
+take that JSON's control genotype error model (meta["ld_error_model"]["control"]).
+Writes collinear_sims.csv (one row per replicate) and collinear_check.csv (observed vs predictive
 median, 95% range, quantile and two-sided p per statistic). The JSFS has no observed control (realSFS 2D was run on
 the body only), so the shared low-frequency cells cannot be checked here.
 """
@@ -20,11 +22,12 @@ import numpy as np
 import pandas as pd
 
 
-def _one(seed):
-    from illex.abc.simulate import LD_ERROR, _seed_words, control_stats
+def _one(task):
+    from illex.abc.simulate import _seed_words, control_stats
 
+    seed, ld_err = task
     w = _seed_words(seed)
-    return control_stats(w[1], w[3], w[5], w[8], LD_ERROR["control"])
+    return control_stats(w[1], w[3], w[5], w[8], ld_err)
 
 
 def main():
@@ -32,14 +35,17 @@ def main():
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--procs", type=int, default=32)
     ap.add_argument("--seed", type=int, default=20261109)
+    ap.add_argument("--obs", default=None)
     a = ap.parse_args()
 
     import illex
-    obs_file = Path(illex.__file__).resolve().parents[1] / "results" / "illex" / "abc_observed.json"
-    obs = json.load(open(obs_file))["meta"]["control"]
+    obs_file = a.obs or Path(illex.__file__).resolve().parents[1] / "results" / "illex" / "abc_observed.json"
+    meta = json.load(open(obs_file))["meta"]
+    obs = meta["control"]
+    ld_err = {c: (float(v["call_rate"]), float(v["h"])) for c, v in meta["ld_error_model"]["control"].items()}
     seeds = np.random.default_rng(a.seed).integers(1, 2**31 - 1, size=a.n)
     with mp.get_context("fork").Pool(a.procs) as pool:
-        res = pool.map(_one, [int(s) for s in seeds], chunksize=4)
+        res = pool.map(_one, [(int(s), ld_err) for s in seeds], chunksize=4)
     sims = pd.DataFrame(res)
     sims.to_csv("collinear_sims.csv", index=False)
     rows = []

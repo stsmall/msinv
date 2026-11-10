@@ -16,10 +16,11 @@ databases; the machine-readable versions are the CSVs in this directory.
   included, misses an excess of low-frequency variants shared by both arrangements and a faster LD decay than
   modelled, which is a process outside the trajectory models to flag as a limitation. The held-out Tajima's D fits
   all models and does not discriminate.
-- **The shared misfit is in the neutral baseline:** in collinear chr2 (10–30 Mb) the model's neutral control
-  already gives too few rare variants, too many common ones, a Tajima's D that is not negative enough (−1.7 vs
-  −2.0) and 1.2–1.6× too little LD. The demography and/or recombination rate behind the control do not fit the
-  collinear background, and the undivided JSFS inherits this. See "Collinear control check".
+- **Collinear baseline:** against the representative collinear control (chr2 40–55 + 85–115 Mb) the model's
+  neutral SFS fits; LD is 1.6–1.8× too high at short range, pointing to the recombination rate. The old control's
+  rare-variant excess came from a high-diversity block at 24–36 Mb. The control JSFS fits the baseline in the
+  shared low-frequency cells, so the inversion's 3–3.6x excess there is specific to the inversion, not a 2D realSFS
+  or baseline artefact. See "Collinear control check".
 - **B parameters are stable across flux settings and priors:** t_inv about 4.4-4.7e5 generations, t_sel about
   3.5-3.8e5 generations, founding frequency p0 about 0.04, equilibrium frequency p* = 0.618 [0.606, 0.64].
 - **s (B) has a lower bound only:** s >~ 1.3e-4 (2.5% quantile). Above that the posterior is close to flat in log s
@@ -308,6 +309,62 @@ The two karyotype groups behave identically in the collinear region, as expected
   have to be pervasive to shift the whole 20 Mb control this much, which is closer to genome-wide linked selection
   than to discrete sweeps.
 
+#### Rerun on the representative control (chr2 40–55 + 85–115 Mb)
+
+The old control (10–30 Mb) overlaps a block with doubled diversity and low alignability (24.1–35.9 Mb). Repeating
+the check against `results/illex/abc_observed_ctl2.json` (same baseline simulation, that control's genotype error
+model; `collinear/ctl2/`) gives observed ÷ simulated median:
+
+| statistic | old control | representative control | p (representative) |
+|---|---|---|---|
+| rarest SFS bin (I, S) | 1.12, 1.14 | 1.04, 1.08 | 0.19, 0.02 |
+| commonest SFS bin (I, S) | 0.66, 0.65 | 0.86, 0.81 | 0.23, 0.09 |
+| Tajima's D (I, S) | −2.02, −2.08 | −1.85, −1.90 (sim −1.71) | 0.13, 0.04 |
+| LD, 100–580 bp | 1.2–1.3× | 1.6–1.8× | < 0.001 |
+| LD, 0.6–3.4 kb | 1.45–1.64× | 1.44–1.75× | < 0.001 |
+| LD, 8.3–20 kb | 1.20–1.31× | 1.04–1.18× | < 0.001 |
+| pi_ratio, dxy_pi, f1_ratio | 0.99, 1.01, 0.98 | 0.94, 1.03, 0.97 | < 0.001, < 0.001, 0.005 |
+
+- **SFS:** the current growth demography fits the representative control within its range or close to it. Most of
+  the rare-variant excess in the old control came from the 24–36 Mb block, not from the demography.
+- **LD:** still too high, now most at short range (1.6–1.8×) and close to the model by 8–20 kb. This steeper decay
+  points to the recombination side of the baseline (a lower population-scaled recombination rate than the model's
+  4·N·2.158e-9) more than to the growth history.
+- **Karyotype groups in collinear sequence:** 2a homokaryotypes have 6% lower diversity than 2+ ones, and dxy
+  exceeds within-group diversity by 3.5%. Far from the inversion the groups should be exchangeable, so this
+  suggests population structure correlated with karyotype, or a difference in data quality (call rates 0.62 vs
+  0.67). The fitted ratios are divided by this control, which removes it to first order.
+- **The shared JSFS misfit is not explained by the baseline SFS any more:** the representative collinear SFS fits,
+  so the excess of low-frequency variants shared by both arrangements is more likely specific to the inversion or
+  to the 2D realSFS. There is still no control JSFS to test this.
+
+#### Control JSFS (AA40 x BB40, chr2 40–55 + 85–115 Mb)
+
+`meta["jsfs_control"]` in `abc_observed_ctl2.json` against the 12 JSFS cells of the same 2,000 baseline replicates
+(`collinear/ctl2/collinear_jsfs_check.csv`). Cell `jsfs_ab` = 2a count bin a, 2+ count bin b, with bins 0, 1–4,
+5–15, 16–19 and 20 of 20 projected chromosomes. The spectrum is folded, so each cell also counts its mirror image
+(bin 4−a, bin 4−b):
+
+| cell | observed control | baseline median [95%] | p | observed inversion | B predicted inversion | p |
+|---|---|---|---|---|---|---|
+| jsfs_11 (low in both, or high in both) | 0.233 | 0.247 [0.229, 0.264] | 0.15 | 0.073 | 0.020 | 0.008 |
+| jsfs_13 (low in one arrangement, high in the other) | ~0 | ~0 | 0.59 | 0.0185 | 0.0062 | 0.05 |
+| jsfs_01 (absent in 2a, low in 2+; or mirror) | 0.352 | 0.293 [0.276, 0.311] | < 0.001 | 0.376 | 0.418 | 0.31 |
+| jsfs_10 (low in 2a, absent in 2+; or mirror) | 0.272 | 0.293 [0.277, 0.311] | 0.011 | 0.331 | 0.330 | 0.97 |
+
+(B predictions: run set B, flux 1.)
+
+- **The shared low-frequency excess is specific to the inversion.** In collinear sequence the baseline reproduces
+  the cells for variants at low frequency in both groups (jsfs_11, jsfs_13), with the same individuals, the same
+  2D realSFS pipeline and the same projection. So the inversion's excess (3.6x in jsfs_11, 3x in jsfs_13) is not
+  an artefact of the 2D realSFS, of the baseline demography or of collinear population structure.
+- **What it could be** (untested): more exchange of low-frequency variants between arrangements than the
+  gene-conversion model (flux 1) allows, or a few misassigned chromosomes in the AA/BB groups; each misassigned
+  chromosome carries the other arrangement's variants into a group at low frequency.
+- **Collinear asymmetry:** 2+ carries more private rare variants than 2a (jsfs_01 above the baseline, jsfs_10
+  below). This matches 2a's 6% lower collinear diversity: structure correlated with karyotype, or call-rate
+  differences between the groups.
+
 ## Minor models (for completeness; too few particles to interpret)
 
 D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-5.9e5. Per-parameter values are in
@@ -347,7 +404,8 @@ D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-
 
 In the repo, `illex/abc/smc_results/` holds this README, the predictive-check scripts (`ppc/ppc_run.py`,
 `ppc/ppc.sbatch`, `ppc/ppc_analyze.py`; `ppc_analyze.py` reads the observed statistics from
-`results/illex/abc_observed.json`) and `collinear/collinear_check.py`. The CSVs listed below are on Talapas only, in
+`results/illex/abc_observed.json`) and the collinear checks (`collinear/collinear_check.py`,
+`collinear/collinear_jsfs_check.py`). The CSVs listed below are on Talapas only, in
 `/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
 - `README.md`: this document
 - `model_probabilities.csv`: final P(m), particle counts and hard-start mass per run set, flux and model

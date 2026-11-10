@@ -39,10 +39,12 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import brentq, minimize_scalar
 
-# --- moments exponential-growth model (analysis/steps/08_demography) ---
-N_ANC = 547_928.0
-N0 = 6_808_096.0
-T_GROW = 769_519.0
+# --- exponential-growth baseline, REFIT 2026-11-10 (illex/abc/smc_results/baseline/fit_jsfs8.py: posterior medians
+# against the representative collinear control chr2 40-55 + 85-115 Mb, SFS + LD + Tajima's D + pi + 8 JSFS cells).
+# The moments fit (analysis/steps/08_demography) was N_ANC 547,928, N0 6,808,096, T_GROW 769,519.
+N_ANC = 507288.1
+N0 = 9112695.6
+T_GROW = 382957.0
 ALPHA = np.log(N0 / N_ANC) / T_GROW
 
 MU = 3e-9

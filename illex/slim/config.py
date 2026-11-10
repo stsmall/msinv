@@ -43,7 +43,8 @@ MU = 3e-9
 # interior 2.539e-9 (ratio 1.18, SNP-density confounded, not used). The
 # window-weighted rec_rate_for_inversion(CHR2_RMAP_MALE_UF) gives 2.157e-9.
 # chr2 / genome-wide male median (2.41e-9) = 0.90. Old value 1.977e-9 (autonet).
-REC_RATE = 2.158e-9
+REC_RATE = 5.507e-10   # REFIT 2026-11-10 (baseline/fit_jsfs8.py, representative collinear control); was 2.158e-9 (ReLERNN male)
+REC_RATE_PRE_REFIT = 2.158e-9
 REC_RATE_OLD_AUTONET = 1.977e-9           # superseded 2026-11-03; kept for provenance
 REC_RATE_BRACKET = (1.977e-9, 2.248e-9)   # OLD autonet chr2 collinear male, female
 REC_RATE_PROXY_OLD = 2.52e-9              # superseded; kept for provenance

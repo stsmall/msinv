@@ -188,10 +188,12 @@ def test_error_model_reproduces_call_rate_and_ho_he():
     assert hohe == pytest.approx(1.0 - h, abs=0.02)
 
 
-def test_error_model_constants_match_observed(obs):
+def test_error_model_constants_match_observed():
+    """LD_ERROR matches the observed file the SMC uses (smc.OBSERVED: the representative control, abc_observed_ctl2)."""
     from illex.abc.error_model import LD_ERROR
+    from illex.abc.smc import OBSERVED
 
-    em = obs["meta"]["ld_error_model"]
+    em = json.load(open(OBSERVED))["meta"]["ld_error_model"]
     for lab in ("body", "control"):
         for c in ("I", "S"):
             cr, h = LD_ERROR[lab][c]

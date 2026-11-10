@@ -23,7 +23,7 @@ from scipy.stats import binom
 
 ESTABLISHED = 500
 S_LO, S_HI, N_S = 1e-6, 1e-1, 250   # s ceiling 1e-1 (run set B); 250 nodes keeps the 1e-2 node spacing
-TWO_N_NODES = (1.0e6, 2.2e6, 5.2e6, 1.0e7, 1.4e7)   # to 1.4e7 = above 2 N0, so every prior t_inv is on the grid
+TWO_N_NODES = (1.0e6, 2.2e6, 5.2e6, 1.0e7, 1.4e7, 2.0e7)   # to 2.0e7 = above 2 N0 (refit N0 9.1e6), so every prior t_inv is on the grid
 INV_PSTAR_NODES = (1.0, 1.0 / 0.95 * 1.0, 1 / 0.6, 1 / 0.3)   # 1 / p* over the prior (0.3, 0.95); sorted below
 GRID_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "establishment_grid.npz")
 

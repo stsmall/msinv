@@ -22,7 +22,7 @@ import numpy as np
 # region -> class -> (call_rate, h). From results/illex/abc_observed.json meta["ld_error_model"].
 LD_ERROR = {
     "body": {"I": (0.6155, 0.6904), "S": (0.6741, 0.6757)},
-    "control": {"I": (0.6345, 0.6390), "S": (0.6821, 0.6494)},
+    "control": {"I": (0.6240, 0.6656), "S": (0.6720, 0.6843)},   # abc_observed_ctl2.json (chr2 40-55 + 85-115 Mb)
 }
 
 

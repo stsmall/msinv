@@ -11,7 +11,7 @@ def test_constants_match_spec():
     assert C.PRIOR == dict(t_inv=(1e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.10), s=(1e-6, 1e-1), p_star=(0.3, 0.95))
     assert C.TARGETS == dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)
     assert C.REC_RATE is config.REC_RATE
-    assert float(f"{C.REC_RATE:.4g}") == 2.158e-9
+    assert float(f"{C.REC_RATE:.4g}") == 5.507e-10   # baseline refit 2026-11-10 (was 2.158e-9)
 
 
 def test_rec_rate_matches_male_map():

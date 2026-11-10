@@ -392,6 +392,47 @@ draws) with local-linear regression adjustment, against the representative contr
   the distance, giving a 860-fold expansion that misses the SFS and Tajima's D. `fit_jsfs8.py` drops those four cells
   (it overrides the cell list; `baseline_refit.py` is unchanged).
 
+## Rerun on the refitted baseline (base2)
+
+Branch `illex/baseline-refit` (worktree `/gpfs/projects/kernlab/ssmall/msinv_illex_abc_base2`): N_ANC 507,288,
+N0 9,112,696, T_GROW 382,957, REC_RATE 5.507e-10 (`fit_jsfs8.json` medians); observed
+`results/illex/abc_observed_ctl2.json` (divided by the representative control) and that control's LD error model.
+Same SMC design as run set B (s prior to 1e-1, N D1 D2 B, mixed, pop 1,000, max 15 generations, `--min-eps-rel 0`).
+Jobs 48439233 (flux 0, 56 min) and 48439234 (flux 1, 45 min); both stopped at max_gen. Outputs:
+`/gpfs/projects/kernlab/ssmall/illex_traj_abc_base2/smc/`.
+
+| | flux 0 | flux 1 |
+|---|---|---|
+| P(B) | 0.993 | 0.997 |
+| P(D2) | 0.007 | 0.002 |
+| P(D1) | 0.0005 | 0.001 |
+| p* | 0.621 [0.607, 0.641] | 0.623 [0.608, 0.641] |
+| s | 4.5e-3 [1.2e-4, 6.9e-2] | 5.7e-3 [1.4e-4, 7.7e-2] |
+| t_inv | 4.3e5 [2.1e5, 6.3e5] | 4.1e5 [1.8e5, 1.4e6] |
+| t_sel (soft) | 3.9e5 [1.7e5, 6.2e5] | 3.7e5 [1.6e5, 1.3e6] |
+| p0 (soft) | 0.063 [0.014, 0.098] | 0.058 [0.022, 0.096] |
+| gamma_eff | n/a | 3.9e-7 [9.9e-8, 8.6e-7] (run set B: 4.3e-8) |
+| hard-start mass | 0.017 | 0.020 |
+
+**Predictive checks** (`ppc_base2/`; 1,000 particles per surviving model, scored against `abc_observed_ctl2.json`):
+
+| model | joint ppp, flux 0 | joint ppp, flux 1 | distinct particles |
+|---|---|---|---|
+| B | 0.40 (run set B 0.18) | 0.30 (run set B 0.13) | 981 / 989 |
+| D1 | 0.17 | 0.06 | 12 / 4 |
+| D2 | 0.20 | 0.30 | 7 / 7 |
+
+- **B now fits almost everything.** Statistics with ppp < 0.05: flux 0 jsfs_11 and ld_S_6; flux 1 only ld_S_6 (LD at
+  8–20 kb in 2+, predicted higher than observed). Under the old baseline seven statistics failed, mostly LD.
+- **The shared low-frequency excess (jsfs_11) is explained by gene flux.** With flux on, B predicts 0.039 against
+  0.073 observed (ppp 0.25); with flux off, 0.008 (ppp 0.016). The fitted gene-flux rate rose about 9x to make this
+  happen. Every D1 and D2 fit still fails jsfs_11 (ppp 0.000–0.012), with or without flux.
+- **The directional models are no longer rejected by the joint check** (joint ppp 0.06–0.30), although they rest on
+  4–12 distinct particles. B's lead now comes from the model probabilities and from jsfs_11, not from overall
+  adequacy. B vs D separation runs through the private-rare cells (jsfs_01, jsfs_10), 2+ long-range LD and pi_ratio.
+- **Flux 1, B:** LD in 2a at 100–580 bp is at the edge (ppp 0.05–0.08; observed 1.6, predicted 1.0). Gene flux
+  that brings in the shared variants also breaks down short-range LD in 2a.
+
 ## Minor models (for completeness; too few particles to interpret)
 
 D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-5.9e5. Per-parameter values are in
@@ -432,14 +473,16 @@ D1 and D2 survive with 1-22 particles, with s about 4-20e-6 and t_inv about 4.9-
 In the repo, `illex/abc/smc_results/` holds this README, the predictive-check scripts (`ppc/ppc_run.py`,
 `ppc/ppc.sbatch`, `ppc/ppc_analyze.py`; `ppc_analyze.py` reads the observed statistics from
 `results/illex/abc_observed.json`), the collinear checks (`collinear/collinear_check.py`,
-`collinear/collinear_jsfs_check.py`) and the baseline refit (`baseline/`, including `fit_jsfs8.py`). The CSVs and
-JSON fits listed below are on Talapas only, in `/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
+`collinear/collinear_jsfs_check.py`) and the baseline refit (`baseline/`, including `fit_jsfs8.py`). The
+refitted-baseline rerun's code is on branch `illex/baseline-refit`. The CSVs and JSON fits listed below are on
+Talapas only, in `/gpfs/projects/kernlab/ssmall/illex_traj_abc_summary/`:
 - `README.md`: this document
 - `model_probabilities.csv`: final P(m), particle counts and hard-start mass per run set, flux and model
 - `posterior_summary.csv`: median and 2.5/97.5% quantiles for every parameter of every surviving model
 - `generation_trace.csv`: per-generation epsilon, simulations and P(m)
 - `baseline_refit/`: baseline refit. `draws.csv` (20,000 draws), `fit.json`, `fit_jsfs8.json` (+ `fit_jsfs8.py`),
   `fit_jsfs.json` (12 cells, not usable).
+- `ppc_base2/`: predictive checks of the refitted-baseline runs (`ppc_base2_f{0,1}.csv`, summaries as in `ppc/`).
 - `collinear/`: collinear control check. `collinear_check.py`; `collinear_check.csv` (per statistic),
   `collinear_sims.csv` (replicates).
 - `ppc/`: posterior predictive checks. `ppc_run.py` and `ppc.sbatch` simulate; `ppc_analyze.py` summarises.

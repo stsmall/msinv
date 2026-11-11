@@ -274,10 +274,8 @@ class HullSimulator:
         than ``t_inv`` keep ``r``. Nested inversions take the product of the
         per-inversion frequencies (arrangements assumed independent). False
         restores the msinv <= 0.3.5 behaviour (full ``r`` everywhere), for
-        reproducing earlier results. Known limitation: the sweep
-        hitchhiking escape probability (Rust ``apply_sweep_finalize``)
-        still uses the full ``r`` inside an active inversion; ``simulate``
-        warns when sweeps and inversions are combined with this on.
+        reproducing earlier results. Sweep hitchhiking escape inside an
+        active inversion uses the same suppressed rate.
     """
 
     def __init__(
@@ -1331,17 +1329,6 @@ class HullSimulator:
         if self.smc_prime and not use_rust:
             raise NotImplementedError(
                 "smc_prime=True is implemented in the Rust engine only")
-        if self.crossover_suppression and self.sweeps and self.inversions:
-            import warnings
-
-            warnings.warn(
-                "crossover_suppression=True with sweeps and an inversion: "
-                "recombination inside the active inversion is suppressed, "
-                "but the sweep hitchhiking escape probability still uses the "
-                "full recombination rate (see README, Known limitations).",
-                UserWarning,
-                stacklevel=2,
-            )
         if use_rust:
             from ._rust_bridge import rust_simulate
 

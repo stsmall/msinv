@@ -242,16 +242,6 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 
 ## Known limitations
 
-- **Sweep escape probabilities ignore crossover suppression.** The
-  hitchhiking escape probability that partitions a lineage's segments
-  when a standing-variation sweep finalizes (`apply_sweep_finalize`)
-  still uses the full rate `r`, also inside an inversion whose barrier is
-  active. For a sweep linked to an arrangement it should use `r · p_k`
-  there, so escape is over-estimated. Recombination events during the
-  sweep window are suppressed correctly. `HullSimulator.simulate` warns
-  when sweeps are combined with an inversion while
-  `crossover_suppression=True`.
-
 - **Sweeps with more than one active inversion barrier.** While a
   barrier is active, karyotype-compatible pairs (I x I, S x S, or with an
   untagged lineage) coalesce by a full Hudson merge, which keeps
@@ -268,11 +258,31 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
   I x S pairs are never merged there. Coalescences outside sweep
   windows are not affected.
 
-- **Sweep forced merges ignore karyotype.** When a sweep finalizes, the
-  de-novo merge of standing-variation sweeps and the hard-sweep
-  collapse of the remaining A-tagged lineages (`still_a`) join lineages
-  without a karyotype check, so with an active inversion barrier they
-  can join an I and an S lineage.
+- **A sweep allele carried by both arrangements.** With gene flux
+  between arrangements (`gamma_flux > 0`) the A allele can reach the
+  arrangement it did not arise on. Those A lineages are not merged into
+  the founder when a hard sweep finalizes: their path back to it runs
+  through a conversion event the coalescent does not track.
+
+- **Standing-variation sweep escape probability ignores the frequency
+  path.** It uses the length of the selection phase, not the A-allele
+  trajectory, so deterministic and stochastic trajectories of equal
+  length give the same escape probability (issue #24).
+
+## Changes in 0.4.2
+
+- **Sweeps inside an active inversion** (issue #22). The hitchhiking
+  escape probability of standing-variation sweeps uses the suppressed
+  crossover rate: inside the inversion a linked lineage of arrangement k
+  escapes at `r · p_k(t)`, integrated over the selection phase, and at
+  `r` in the flanks. Recombination during the sweep window draws the
+  non-carrier's allele from the A frequency of its own arrangement
+  instead of the founder's, so A no longer spreads to the arrangement it
+  did not arise on. The forced merges at the sweep origin (the de novo
+  merge and the hard-sweep collapse) only join karyotype-compatible
+  lineages; the founder carries `origin_kary`. Sweeps without an
+  inversion are unchanged. The warning for sweeps combined with an
+  inversion is removed.
 
 ## Changes in 0.4.1
 

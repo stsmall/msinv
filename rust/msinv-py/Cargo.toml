@@ -1,6 +1,6 @@
 [package]
 name = "msinv-py"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "PyO3 bindings for msinv-core"
 license = "MIT"

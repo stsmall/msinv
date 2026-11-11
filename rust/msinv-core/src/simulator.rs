@@ -160,9 +160,8 @@ pub struct HullSimulator {
     /// the proposal time, so recombination is exact for time-varying
     /// trajectories (coalescence still evaluates p(t) at each event
     /// and holds it until the next one).
-    /// Known limitation: the sweep hitchhiking escape probability in
-    /// `apply_sweep_finalize` still uses the full `r`, also inside an
-    /// active inversion.
+    /// The sweep hitchhiking escape probability in
+    /// `apply_sweep_finalize` uses the same suppressed rate.
     /// false restores the msinv <= 0.3.5 behaviour (full `r`
     /// everywhere) for reproducing earlier results.
     pub crossover_suppression: bool,
@@ -480,7 +479,7 @@ impl HullSimulator {
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                        self.sequence_length, rng, self.recombination_rate,
+                        self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                         &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
@@ -499,7 +498,7 @@ impl HullSimulator {
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                    self.sequence_length, rng, self.recombination_rate,
+                    self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                     &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
@@ -635,7 +634,7 @@ impl HullSimulator {
                     let swap_indices: [usize; 2] = [chosen_idx, len_after - 1];
                     apply_sweep_recomb_tag_swap(
                         active, &swap_indices, &finalized_sweeps,
-                        t, rng, &mut a_tag, &mut buckets, x);
+                        t, rng, &mut a_tag, &mut buckets, x, inversions, arena);
                 }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -958,7 +957,7 @@ impl HullSimulator {
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                        self.sequence_length, rng, self.recombination_rate,
+                        self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                         &mut sweep_cursor,
                         event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                     total_material = active.iter()
@@ -1011,7 +1010,7 @@ impl HullSimulator {
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                    self.sequence_length, rng, self.recombination_rate,
+                    self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                     &mut sweep_cursor,
                     event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                 total_material = active.iter()
@@ -1406,7 +1405,7 @@ impl HullSimulator {
                         let swap_indices: [usize; 2] = [chosen_idx, len_after_split - 1];
                         apply_sweep_recomb_tag_swap(
                             active, &swap_indices, &finalized_sweeps,
-                            t, rng, &mut a_tag, &mut buckets, x);
+                            t, rng, &mut a_tag, &mut buckets, x, inversions, arena);
                     }
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -2579,11 +2578,20 @@ fn apply_boundary(
     seq_len: f64,
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
+    crossover_suppression: bool,
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
+    // Integrate the crossover-suppression weights of every sweep in its
+    // selection phase up to `t`, before anything at `t` (a demographic
+    // inversion-frequency change, a barrier crossing) alters them.
+    if crossover_suppression && !inversions.is_empty() {
+        for sw in finalized_sweeps.iter_mut() {
+            sw.accumulate_suppression(t, inversions);
+        }
+    }
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
     // scheduled at the same t as an Ej must still see the pre-merge
@@ -2610,8 +2618,11 @@ fn apply_boundary(
         && (finalized_sweeps[0].t_de_novo() - t).abs() < 1e-9
     {
         let sweep = finalized_sweeps.remove(0);
+        let supp_inversions: &[InversionSpec] =
+            if crossover_suppression { inversions } else { &[] };
         apply_sweep_finalize(active, &sweep, t, arena, tables,
-                              next_uid, rng, recomb_rate, sweep_cursor, a_tag, buckets);
+                              next_uid, rng, recomb_rate, supp_inversions,
+                              sweep_cursor, a_tag, buckets);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2864,10 +2875,17 @@ fn apply_sweep_finalize(
     next_uid: &mut LinUid,
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
+    supp_inversions: &[InversionSpec],
     sweep_cursor: &mut (f64, u64),
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
+    // `supp_inversions` is non-empty only with crossover suppression on.
+    // Then the escape probability uses the suppressed crossover exposure
+    // (`Sweep::escape_exposure`): inside an active inversion only
+    // homokaryotype crossovers happen, at rate r · p_k(t). Otherwise it
+    // is the unsuppressed `exp(-r · d · T_eff)`.
+    //
     // For SV-phase sweeps only: per-segment partition into linked
     // vs escaped using `p_hh = exp(-r·d·T_eff)`. Hard sweeps
     // (`t_de_novo == t_origin`) skip the partition — the spatial
@@ -2908,7 +2926,20 @@ fn apply_sweep_finalize(
         };
         let pop = active[idx].population;
         let head = active[idx].head;
-        let p_hh_for = |l: f64, r: f64| sweep.p_hh_for_segment(l, r, recomb_rate);
+        // The lineage's arrangement at each inversion, read before the
+        // partition re-links its chain.
+        let karys: Vec<(u16, Option<Karyotype>)> = supp_inversions.iter()
+            .map(|inv| (inv.inv_id,
+                        lineage_class_for_inv_id_arena(head, inv.inv_id, arena)))
+            .collect();
+        let kary_at = |id: u16| karys.iter().find(|e| e.0 == id).and_then(|e| e.1);
+        let p_hh_for = |l: f64, r: f64| if supp_inversions.is_empty() {
+            sweep.p_hh_for_segment(l, r, recomb_rate)
+        } else if sweep.trajectory.is_none() {
+            1.0
+        } else {
+            (-recomb_rate * sweep.escape_exposure(l, r, supp_inversions, &kary_at)).exp()
+        };
         // Partition: each segment independently rolls Bernoulli with
         // p_hh based on its distance from x_sel.
         let (linked_head, escaped_head) =
@@ -2990,11 +3021,17 @@ fn apply_sweep_finalize(
                 None => continue,
             };
             let a_pop = active[a_idx].population;
+            // The founder is one chromosome with one arrangement: only
+            // karyotype-compatible targets (same arrangement at every
+            // inversion both carry, or untagged there) qualify. Tags are
+            // cleared once a barrier ends, so this is no restriction then.
+            let a_sig = lineage_sig(active[a_idx].head, arena);
             let candidates: Vec<usize> = active.iter().enumerate()
                 .filter(|(j, lin)| {
                     *j != a_idx
                         && lin.population == a_pop
                         && !a_tag.contains_key(&lin.uid)
+                        && karyotypes_compatible(a_sig, lineage_sig(lin.head, arena))
                 })
                 .map(|(j, _)| j)
                 .collect();
@@ -3013,6 +3050,9 @@ fn apply_sweep_finalize(
             } else {
                 (target_idx, a_idx)
             };
+            debug_assert!(karyotypes_compatible(
+                lineage_sig(active[lo].head, arena), lineage_sig(active[hi].head, arena)),
+                "sweep de novo merge would join incompatible lineages");
             let t_merge = next_sweep_merge_t(sweep_cursor, t);
             apply_coalescence_partial(
                 active, lo, hi, t_merge, arena, tables, next_uid,
@@ -3035,15 +3075,37 @@ fn apply_sweep_finalize(
     // that match the soft-sweep π expectation. Force-coalescing them
     // at `t_de_novo` collapses T_2 → 0 and under-estimates π
     // (the D3 failure mode).
+    //
+    // The founder carries `origin_kary` at `target_inv`, so A lineages
+    // tagged with the other arrangement there are left out. They can
+    // only exist with gene flux between arrangements (`gamma_flux > 0`);
+    // their path back to the founder runs through a conversion event the
+    // coalescent does not track, so they continue unmerged.
+    // `coalesce_uid_group` also skips any pair that is incompatible at
+    // another inversion.
+    let mut n_still_a_other_kary: u32 = 0;
+    let mut n_still_a_left: u32 = 0;
     if !has_sv_phase {
         let still_a: Vec<LinUid> = active.iter()
             .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+            .filter(|lin| {
+                let other = matches!(
+                    lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena),
+                    Some(k) if k != sweep.origin_kary);
+                if other { n_still_a_other_kary += 1; }
+                !other
+            })
             .map(|lin| lin.uid)
             .collect();
         if still_a.len() >= 2 {
             coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor,
                                 Some(buckets));
         }
+        // Group members still present were not merged (a merge replaces
+        // both lineages with a new one).
+        n_still_a_left = active.iter()
+            .filter(|lin| still_a.contains(&lin.uid))
+            .count() as u32;
     }
     // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial
@@ -3064,6 +3126,8 @@ fn apply_sweep_finalize(
             ("n_de_novo_merge", &n_de_novo_merge.to_string()),
             ("n_de_novo_skip_no_target", &n_de_novo_skip_no_target.to_string()),
             ("n_de_novo_skip_no_overlap", &n_de_novo_skip_no_overlap.to_string()),
+            ("n_still_a_other_kary", &n_still_a_other_kary.to_string()),
+            ("n_still_a_left", &n_still_a_left.to_string()),
         ]);
     }
 }
@@ -3122,6 +3186,8 @@ fn apply_sweep_recomb_tag_swap(
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
     breakpoint_x: f64,
+    inversions: &[InversionSpec],
+    arena: &SegmentArena,
 ) {
     let sweep = match sweeps.iter().find(|s| s.covers(t)) {
         Some(s) => s,
@@ -3131,7 +3197,25 @@ fn apply_sweep_recomb_tag_swap(
         Some(t) => t,
         None => return,
     };
-    let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
+    let p_a_origin = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
+    let has_target_inv = inversions.iter().any(|inv| inv.inv_id == sweep.target_inv);
+    // The non-carrier child takes the allele of the other parent at
+    // x_sel. Where the child carries material inside the swept
+    // inversion, an accepted crossover there means a homokaryotype, so
+    // the other parent has the child's arrangement k: draw against
+    // P(A | k). Where it carries none (flank-only material, or the
+    // barrier is over and tags are cleared) the other parent's
+    // arrangement is random: draw against the population P(A). With no
+    // inversion configured this is the single-background P(A | origin).
+    let p_a_for = |head: SegIdx| -> f64 {
+        if !has_target_inv {
+            return p_a_origin;
+        }
+        match lineage_class_for_inv_id_arena(head, sweep.target_inv, arena) {
+            Some(k) => traj.p_allele_given_kary(t, sweep.origin_pop, k),
+            None => traj.p_allele_overall(t, sweep.origin_pop),
+        }
+    };
     // Position-based carrier rule mirrors discoal
     // `recombineAtTimePopnSweep` (`discoalFunctions.c:2735-2746`):
     // the child whose chromosomal range includes `x_sel` keeps its
@@ -3155,6 +3239,7 @@ fn apply_sweep_recomb_tag_swap(
         let pop = active[idx].population;
         let was_present = a_tag.contains_key(&uid);
         let was_a = a_tag.get(&uid).copied().unwrap_or(false);
+        let p_a = p_a_for(active[idx].head);
         let stay_prob = if was_a { p_a } else { 1.0 - p_a };
         if rng.random::<f64>() < stay_prob {
             a_tag.entry(uid).or_insert(was_a);
@@ -3277,6 +3362,14 @@ fn coalesce_uid_group(
                 // manufacture ancestry correlation (orphan node +
                 // fictitious lineage).
                 if !segments_overlap(active[mi].head, active[oi].head, arena) {
+                    next_pending.push(other_uid);
+                    continue;
+                }
+                // Never force-merge karyotype-incompatible lineages (one
+                // chromosome cannot carry both arrangements). Such a pair
+                // stays pending; a later merge cannot make it compatible.
+                if !karyotypes_compatible(lineage_sig(active[mi].head, arena),
+                                          lineage_sig(active[oi].head, arena)) {
                     next_pending.push(other_uid);
                     continue;
                 }
@@ -4295,5 +4388,264 @@ mod tests {
             partition_lineage_segments(s1, &mut arena, |_l, _r| true);
         assert_eq!(linked_head, s1);
         assert_eq!(escaped_head, SEG_NIL);
+    }
+}
+
+/// Sweeps inside an active inversion (issue #22): the escape probability
+/// uses the suppressed crossover rate, the tag swap draws against the
+/// child's own arrangement, and forced founder merges never join an I
+/// lineage with an S lineage.
+#[cfg(test)]
+mod sweep_inversion_tests {
+    use super::*;
+    use crate::class_tag::sig_has_conflict;
+    use crate::sweep_trajectory::{JointSample, JointSweepSpec, JointSweepTrajectory};
+
+    const L: f64 = 1_000_000.0;
+
+    fn inv_full(p_inv: f64, t_inv: f64) -> InversionSpec {
+        let mut s = InversionSpec::with_p_inv(0.0, L, vec![p_inv], t_inv);
+        s.inv_id = 0;
+        s
+    }
+
+    /// Sweep at x_sel on inversion 0 with a constant hand-built trajectory.
+    /// `freq` = [(S,a), (S,A), (I,a), (I,A)].
+    fn mk_sweep(x_sel: f64, origin_kary: Karyotype, t_origin: f64, t_de_novo: f64,
+                freq: [f64; 4]) -> Sweep {
+        let mut sw = Sweep::new(x_sel, 0.0, 0, origin_kary, 0,
+                                JointSweepSpec { t_origin, ..Default::default() });
+        sw.trajectory = Some(JointSweepTrajectory {
+            t_origin, t_de_novo, tau: 0.0, n_pops: 1,
+            samples: vec![
+                JointSample { t: t_de_novo, freq: vec![freq] },
+                JointSample { t: 0.0, freq: vec![freq] },
+            ],
+        });
+        sw
+    }
+
+    fn mk_lin(arena: &mut SegmentArena, tables: &mut TableBuilder, cls: BranchClass,
+              l: f64, r: f64, uid: LinUid) -> Lineage {
+        let node = tables.add_sample(0.0, 0);
+        let s = arena.alloc(l, r, node, cls);
+        Lineage::new(s, s, 0, uid, arena)
+    }
+
+    fn tag(active: &mut [Lineage], a_tag: &mut ATagMap, buckets: &mut SweepBuckets,
+           idx: usize, is_a: bool) {
+        let uid = active[idx].uid;
+        a_tag.insert(uid, is_a);
+        active[idx].a_tag = Some(is_a);
+        buckets.set_tag(uid, idx as u32, 0, is_a);
+    }
+
+    fn no_conflicts(active: &[Lineage], arena: &SegmentArena) -> bool {
+        active.iter().all(|l| !sig_has_conflict(lineage_sig(l.head, arena)))
+    }
+
+    // ---- escape exposure --------------------------------------------
+
+    #[test]
+    fn exposure_inside_constant_inversion_scales_by_p_of_arrangement() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        let d = 10_000.0;
+        let (l, r) = (510_000.0, 520_000.0);
+        let i = sw.escape_exposure(l, r, &invs, &|_| Some(Karyotype::I));
+        let s = sw.escape_exposure(l, r, &invs, &|_| Some(Karyotype::S));
+        let none = sw.escape_exposure(l, r, &invs, &|_| None);
+        assert!((i - d * 0.3 * 1000.0).abs() < 1e-3 * i, "I: {i}");
+        assert!((s - d * 0.7 * 1000.0).abs() < 1e-3 * s, "S: {s}");
+        // Untagged at the swept inversion: linked to A, which is on I.
+        assert!((none - i).abs() < 1e-6 * i, "untagged: {none}");
+        // A segment spanning x_sel has no exposure.
+        assert_eq!(sw.escape_exposure(490_000.0, 510_000.0, &invs, &|_| None), 0.0);
+    }
+
+    #[test]
+    fn exposure_across_a_breakpoint_splits_full_and_suppressed_parts() {
+        let mut inv = InversionSpec::with_p_inv(500_000.0, L, vec![0.3], 1e9);
+        inv.inv_id = 0;
+        let invs = vec![inv];
+        let mut sw = mk_sweep(400_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        // Gap [400k, 700k): 100 kb of flank at r, 200 kb inside at r p_I.
+        let e = sw.escape_exposure(700_000.0, 800_000.0, &invs, &|_| Some(Karyotype::I));
+        let want = 100_000.0 * 1000.0 + 200_000.0 * 0.3 * 1000.0;
+        assert!((e - want).abs() < 1e-6 * want, "{e} vs {want}");
+    }
+
+    #[test]
+    fn exposure_without_inversions_matches_unsuppressed_formula() {
+        let sw = mk_sweep(500_000.0, Karyotype::S, 1000.0, 1000.0, [1.0, 0.0, 0.0, 0.0]);
+        let r = 1e-8;
+        let e = sw.escape_exposure(560_000.0, 570_000.0, &[], &|_| None);
+        let p_old = sw.p_hh_for_segment(560_000.0, 570_000.0, r);
+        assert!(((-r * e).exp() - p_old).abs() < 1e-12);
+    }
+
+    #[test]
+    fn suppression_weight_is_one_after_the_inversion_arises() {
+        // t_inv = 600 inside a 1000-generation selection phase.
+        let invs = vec![inv_full(0.3, 600.0)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        let (_, s, i) = sw.supp_int[0];
+        assert!((i - (0.3 * 600.0 + 400.0)).abs() < 1e-6, "int_I = {i}");
+        assert!((s - (0.7 * 600.0 + 400.0)).abs() < 1e-6, "int_S = {s}");
+    }
+
+    #[test]
+    fn suppression_integrates_frequency_changes_at_their_times() {
+        // A demographic event sets p_I from 0.3 to 0.6 at t = 400.
+        let mut invs = vec![inv_full(0.3, 1e9)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(400.0, &invs);
+        invs[0].set_p_inv_for(0, 0.6);
+        sw.accumulate_suppression(1500.0, &invs); // capped at t_origin
+        let (_, _, i) = sw.supp_int[0];
+        assert!((i - (0.3 * 400.0 + 0.6 * 600.0)).abs() < 1e-6, "int_I = {i}");
+        assert_eq!(sw.supp_t, 1000.0);
+    }
+
+    /// End to end through `apply_sweep_finalize`: the linked fraction of
+    /// an I lineage 50 kb from x_sel is exp(-r · p_I · d · T), not
+    /// exp(-r · d · T).
+    #[test]
+    fn finalize_linked_fraction_uses_suppressed_rate() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let r = 1e-8;
+        let n = 4000;
+        let mut linked = 0;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        for _ in 0..n {
+            // SV-phase sweep so the partition runs.
+            let mut sw = mk_sweep(100_000.0, Karyotype::I, 1000.0, 2000.0,
+                                  [0.7, 0.0, 0.15, 0.15]);
+            sw.accumulate_suppression(1000.0, &invs);
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            let mut active = vec![mk_lin(&mut arena, &mut tables, i_cls,
+                                         150_000.0, 160_000.0, 0)];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, true);
+            let mut next_uid: LinUid = 10;
+            let mut cursor = (f64::NAN, 0u64);
+            apply_sweep_finalize(&mut active, &sw, 2000.0, &mut arena, &mut tables,
+                                 &mut next_uid, &mut rng, r, &invs, &mut cursor,
+                                 &mut a_tag, &mut buckets);
+            if a_tag.get(&0).copied() == Some(true) { linked += 1; }
+        }
+        let frac = linked as f64 / n as f64;
+        let want = (-r * 0.3 * 50_000.0 * 1000.0_f64).exp();
+        assert!((frac - want).abs() < 0.025, "linked {frac} vs {want}");
+    }
+
+    // ---- tag swap ---------------------------------------------------
+
+    /// Fraction of trials in which the non-carrier child (class `cls`)
+    /// of an a-tagged lineage comes out A.
+    fn tag_swap_a_rate(cls: BranchClass, n: usize) -> f64 {
+        let invs = vec![inv_full(0.3, 1e9)];
+        // A at 50% on I, absent on S; population P(A) = 0.15.
+        let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.15, 0.15]);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(11);
+        let mut n_a = 0;
+        for _ in 0..n {
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            let mut active = vec![
+                mk_lin(&mut arena, &mut tables, cls, 0.0, 600_000.0, 0),
+                mk_lin(&mut arena, &mut tables, cls, 600_000.0, L, 1),
+            ];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, false);
+            tag(&mut active, &mut a_tag, &mut buckets, 1, false);
+            apply_sweep_recomb_tag_swap(&mut active, &[0, 1], std::slice::from_ref(&sw),
+                                        100.0, &mut rng, &mut a_tag, &mut buckets,
+                                        600_000.0, &invs, &arena);
+            if a_tag.get(&1).copied() == Some(true) { n_a += 1; }
+        }
+        n_a as f64 / n as f64
+    }
+
+    #[test]
+    fn tag_swap_never_gives_a_to_the_arrangement_without_it() {
+        assert_eq!(tag_swap_a_rate(BranchClass::single(0, Karyotype::S), 2000), 0.0);
+    }
+
+    #[test]
+    fn tag_swap_draws_against_the_childs_arrangement_or_the_population() {
+        let i = tag_swap_a_rate(BranchClass::single(0, Karyotype::I), 4000);
+        assert!((i - 0.5).abs() < 0.04, "I child: {i}");
+        let p = tag_swap_a_rate(BranchClass::PANMICTIC, 4000);
+        assert!((p - 0.15).abs() < 0.03, "untagged child: {p}");
+    }
+
+    // ---- founder merges ---------------------------------------------
+
+    #[test]
+    fn hard_sweep_collapse_merges_only_the_founder_arrangement() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.6, 0.1, 0.0, 0.3]);
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(L, 1);
+        let mut active = vec![
+            mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 0),
+            mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 1),
+            mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 2),
+        ];
+        let mut a_tag = ATagMap::default();
+        let mut buckets = SweepBuckets::new(1);
+        for k in 0..3 { tag(&mut active, &mut a_tag, &mut buckets, k, true); }
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
+        let mut next_uid: LinUid = 10;
+        let mut cursor = (f64::NAN, 0u64);
+        apply_sweep_finalize(&mut active, &sw, 1000.0, &mut arena, &mut tables,
+                             &mut next_uid, &mut rng, 1e-8, &invs, &mut cursor,
+                             &mut a_tag, &mut buckets);
+        assert!(no_conflicts(&active, &arena), "a lineage carries both I and S");
+        assert_eq!(active.len(), 2, "the two I lineages merge, the S one stays");
+        assert!(active.iter().any(|l| l.uid == 1), "S lineage was merged");
+    }
+
+    #[test]
+    fn de_novo_merge_only_targets_compatible_lineages() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        for seed in 0..40 {
+            let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 2000.0,
+                              [0.7, 0.0, 0.15, 0.15]);
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            // The A lineage spans x_sel, so it stays linked.
+            let mut active = vec![
+                mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 0),
+                mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 1),
+                mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 2),
+                mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 3),
+            ];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, true);
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+            let mut next_uid: LinUid = 10;
+            let mut cursor = (f64::NAN, 0u64);
+            apply_sweep_finalize(&mut active, &sw, 2000.0, &mut arena, &mut tables,
+                                 &mut next_uid, &mut rng, 1e-8, &invs, &mut cursor,
+                                 &mut a_tag, &mut buckets);
+            assert!(no_conflicts(&active, &arena), "seed {seed}: I x S merge");
+            assert_eq!(active.len(), 3, "seed {seed}: expected one merge with the I target");
+            assert!(active.iter().any(|l| l.uid == 1) && active.iter().any(|l| l.uid == 2),
+                    "seed {seed}: an S lineage was merged");
+        }
     }
 }

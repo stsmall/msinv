@@ -8,6 +8,7 @@
 //! coalescent event loop in subsequent tasks (Task 12+).
 
 use crate::class_tag::Karyotype;
+use crate::inversion::InversionSpec;
 use crate::sweep_trajectory::{
     build_joint_trajectory, JointSweepSpec, JointSweepTrajectory,
 };
@@ -25,6 +26,16 @@ pub struct Sweep {
     pub joint: JointSweepSpec,
     /// Pre-computed trajectory; populated by `with_trajectory`.
     pub trajectory: Option<JointSweepTrajectory>,
+    /// Crossover-suppression exposure over the selection phase, per
+    /// inversion: `(inv_id, ∫ w_S dt, ∫ w_I dt)` over
+    /// `[tau, supp_t]`, where `w_k(t)` is the arrangement frequency
+    /// `p_k(t)` in `origin_pop` while the inversion exists and 1 after
+    /// `t_inv`. Accumulated piecewise at every deterministic boundary
+    /// (`accumulate_suppression`), so frequency changes from demographic
+    /// events are integrated at their own times.
+    pub supp_int: Vec<(u16, f64, f64)>,
+    /// Backward time up to which `supp_int` has been accumulated.
+    pub supp_t: f64,
 }
 
 impl Sweep {
@@ -37,7 +48,102 @@ impl Sweep {
         target_inv: u16,
         joint: JointSweepSpec,
     ) -> Self {
-        Self { x_sel, tau, origin_pop, origin_kary, target_inv, joint, trajectory: None }
+        Self {
+            x_sel, tau, origin_pop, origin_kary, target_inv, joint,
+            trajectory: None, supp_int: Vec::new(), supp_t: tau,
+        }
+    }
+
+    /// Integrate the crossover-suppression weights from `supp_t` up to
+    /// `min(t_to, t_origin)` (midpoint rule, steps of at most one
+    /// generation) using each inversion's current frequency model.
+    /// Call before any event at `t_to` changes an inversion frequency.
+    pub fn accumulate_suppression(&mut self, t_to: f64, inversions: &[InversionSpec]) {
+        let lo = self.supp_t;
+        let hi = t_to.min(self.joint.t_origin);
+        if hi <= lo {
+            return;
+        }
+        let n = ((hi - lo).ceil() as usize).clamp(1, 1_000_000);
+        let h = (hi - lo) / n as f64;
+        for inv in inversions {
+            let t_inv = inv.t_inv_max();
+            let (mut int_s, mut int_i) = (0.0, 0.0);
+            for j in 0..n {
+                let tm = lo + (j as f64 + 0.5) * h;
+                if tm >= t_inv {
+                    int_s += h;
+                    int_i += h;
+                } else {
+                    let p = inv.p_inv_at(tm, self.origin_pop);
+                    int_i += p * h;
+                    int_s += (1.0 - p) * h;
+                }
+            }
+            match self.supp_int.iter_mut().find(|e| e.0 == inv.inv_id) {
+                Some(e) => { e.1 += int_s; e.2 += int_i; }
+                None => self.supp_int.push((inv.inv_id, int_s, int_i)),
+            }
+        }
+        self.supp_t = hi;
+    }
+
+    /// Crossover exposure `∫∫ w(x, t) dx dt` (bp × generations) between
+    /// `x_sel` and the nearest edge of `[seg_left, seg_right)` over the
+    /// selection phase. `w = 1` outside inversions; inside inversion `k`
+    /// it is the accumulated `p_k` of the lineage's arrangement there
+    /// (`kary_at(inv_id)`), or of `origin_kary` at `target_inv` when the
+    /// lineage carries no tagged material there (it is linked to the A
+    /// allele, which arose on `origin_kary`), and 1 at other untagged
+    /// inversions, as in the main-loop thinning. Where inversions nest,
+    /// the time-averaged weights are multiplied (exact when at most one
+    /// of them has a time-varying frequency).
+    /// With no inversions this is `d_min · (t_origin - tau)`, the
+    /// exposure in `p_hh_for_segment`.
+    pub fn escape_exposure(
+        &self,
+        seg_left: f64,
+        seg_right: f64,
+        inversions: &[InversionSpec],
+        kary_at: &dyn Fn(u16) -> Option<Karyotype>,
+    ) -> f64 {
+        let (a, b) = if self.x_sel >= seg_left && self.x_sel < seg_right {
+            return 0.0;
+        } else if seg_right <= self.x_sel {
+            (seg_right, self.x_sel)
+        } else {
+            (self.x_sel, seg_left)
+        };
+        let t_eff = self.joint.t_origin - self.tau;
+        if t_eff <= 0.0 {
+            return 0.0;
+        }
+        let mut cuts: Vec<f64> = vec![a, b];
+        for inv in inversions {
+            for bp in [inv.bp_left, inv.bp_right] {
+                if bp > a && bp < b { cuts.push(bp); }
+            }
+        }
+        cuts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let mut exposure = 0.0;
+        for w in cuts.windows(2) {
+            let len = w[1] - w[0];
+            if len <= 0.0 { continue; }
+            let mid = 0.5 * (w[0] + w[1]);
+            let mut factor = 1.0;
+            for inv in inversions {
+                if mid < inv.bp_left || mid >= inv.bp_right { continue; }
+                let kary = kary_at(inv.inv_id).or(
+                    if inv.inv_id == self.target_inv { Some(self.origin_kary) } else { None });
+                let entry = self.supp_int.iter().find(|e| e.0 == inv.inv_id);
+                if let (Some(k), Some(e)) = (kary, entry) {
+                    let int_k = match k { Karyotype::S => e.1, Karyotype::I => e.2 };
+                    factor *= int_k / t_eff;
+                }
+            }
+            exposure += len * t_eff * factor;
+        }
+        exposure
     }
 
     /// Build the joint trajectory using the given demography accessors.

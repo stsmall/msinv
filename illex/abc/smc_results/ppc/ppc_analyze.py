@@ -1,6 +1,10 @@
 """Summarise the posterior predictive check CSVs written by ppc_run.py against the observed statistics.
 
-    PYTHONNOUSERSITE=1 PYTHONPATH=<checkout> python ppc_analyze.py ppc_A_f0.csv ppc_A_f1.csv ppc_B_f0.csv ppc_B_f1.csv
+    PYTHONNOUSERSITE=1 PYTHONPATH=<checkout> python ppc_analyze.py ppc_A_f0.csv ppc_A_f1.csv [--observed OBS.json]
+
+The observed statistics default to results/illex/abc_observed_ctl2.json at the repository root, the vector the base2
+SMC and the NPE were fitted to (divided by the representative collinear control). Pass --observed for another one,
+e.g. the pre-refit results/illex/abc_observed.json. The file used is printed.
 
 Writes ppc_per_stat.csv (each run x model x statistic: observed value, predictive median and 95% range, the observed
 value's predictive quantile and a two-sided predictive p-value), ppc_joint.csv (a joint check over the 39 fitted
@@ -10,7 +14,6 @@ statistics: the observed vector's MAD-scaled L2 distance from the predictive med
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +21,7 @@ import pandas as pd
 
 from illex.abc.statvec import MODEL_KEYS, ROW_PPC_KEYS
 
-OBS = Path(__file__).resolve().parents[4] / "results" / "illex" / "abc_observed.json"
+OBS = Path(__file__).resolve().parents[4] / "results" / "illex" / "abc_observed_ctl2.json"
 
 
 def scaled_distance_check(sim: np.ndarray, obs: np.ndarray):
@@ -35,8 +38,9 @@ def scaled_distance_check(sim: np.ndarray, obs: np.ndarray):
     return d0, float(np.mean(d >= d0)), int(ok.sum())
 
 
-def main(paths):
-    st = json.load(open(OBS))["stats"]
+def main(paths, obs_path=OBS):
+    print(f"observed statistics: {obs_path}", flush=True)
+    st = json.load(open(obs_path))["stats"]
     keys = list(MODEL_KEYS) + list(ROW_PPC_KEYS)
     obs = {k: float(st[k]) for k in keys}
     d = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
@@ -79,4 +83,9 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("csv", nargs="+")
+    ap.add_argument("--observed", default=str(OBS))
+    a = ap.parse_args()
+    main(a.csv, Path(a.observed))

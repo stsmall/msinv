@@ -11,6 +11,9 @@ Reads results/illex/npe/f{0,1}/posterior_samples.csv (train_npe.py) and writes t
                               draws on the base2 baseline (Fig. 4b)
   traj_aligned_npe_f1.csv     the same trajectories aligned on the onset of selection (forward generations)
   traj_params_npe_f1.csv      t_inv, t_sel, p0, s and the rise time (generations from t_sel to 0.55) of each path
+  npe_ppc.png                 per-statistic predictive quantiles: B from NPE draws (results/illex/npe/ppc, ppc_npe.py),
+                              D1 and D2 from their final SMC particles (smc_summary/ppc_base2), flux 0 and 1
+  npe_control_jsfs_check.png  control JSFS against the baseline, inversion JSFS against B (NPE draws, flux 1)
 
 All NPE draws are soft starts (founding frequency p0), as in the training table.
 """
@@ -200,9 +203,27 @@ def quantiles(rise):
     print(q.to_string(index=False), flush=True)
 
 
+def fig_ppc_npe():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "smc_results"))
+    import plot_base2 as P
+    smc_d = pd.read_csv(SMC / "ppc_base2" / "ppc_per_stat.csv")
+    smc_j = pd.read_csv(SMC / "ppc_base2" / "ppc_joint.csv")
+    npe_d = pd.read_csv(R / "ppc" / "ppc_per_stat.csv")
+    npe_j = pd.read_csv(R / "ppc" / "ppc_joint.csv")
+    d = pd.concat([smc_d[smc_d.model != "B"], npe_d], ignore_index=True)
+    j = pd.concat([smc_j[smc_j.model != "B"], npe_j], ignore_index=True)
+    lab = lambda m, r: f"{int(r.n)} NPE draws" if m == "B" else f"{int(r.n_distinct_particles)} SMC particles"  # noqa: E731
+    P.fig_ppc(d, j, OUT / "npe_ppc.png", n_label=lab)
+    P.fig_control_jsfs(npe_d, OUT / "npe_control_jsfs_check.png")
+    print(npe_j.to_string(index=False), flush=True)
+
+
 def main():
     apply()
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--ppc-only" in sys.argv:
+        fig_ppc_npe()
+        return
     fig_corner(1)
     if "--corner-only" in sys.argv:
         return

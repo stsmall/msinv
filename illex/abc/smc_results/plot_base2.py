@@ -177,9 +177,10 @@ STAT_ORDER = (["pi_ratio", "dxy_pi", "f1_ratio", "edge_centre", "tajd_I", "tajd_
                  "jsfs_20", "jsfs_21", "jsfs_22"])
 
 
-def fig_ppc():
-    d = pd.read_csv(R / "ppc_base2" / "ppc_per_stat.csv")
-    j = pd.read_csv(R / "ppc_base2" / "ppc_joint.csv")
+def fig_ppc(d=None, j=None, out=None, n_label=None):
+    """Per-statistic PPC quantiles. d, j default to ppc_base2; n_label(model, row) overrides the legend count."""
+    d = pd.read_csv(R / "ppc_base2" / "ppc_per_stat.csv") if d is None else d
+    j = pd.read_csv(R / "ppc_base2" / "ppc_joint.csv") if j is None else j
     stats = [s for s in STAT_ORDER if s in set(d["stat"])]
     y = {s: i for i, s in enumerate(stats)}
     fig, axs = plt.subplots(1, 2, figsize=(8.5, 10), sharey=True)
@@ -194,7 +195,8 @@ def fig_ppc():
             jj = j[(j.flux == f) & (j.model == m)].iloc[0]
             ax.scatter(s["obs_quantile"], [y[k] + off[m] for k in s["stat"]], s=22 if m == "B" else 12,
                        color=MODEL_COL[m], edgecolor="white", lw=0.4, zorder=3,
-                       label=f"{m}: joint ppp {jj.joint_ppp:.2f}, {int(jj.n_distinct_particles)} particles")
+                       label=f"{m}: joint ppp {jj.joint_ppp:.2f}, "
+                             + (n_label(m, jj) if n_label else f"{int(jj.n_distinct_particles)} particles"))
         for i in range(len(stats)):
             if i % 2 == 0:
                 ax.axhspan(i - 0.5, i + 0.5, color="#f7f7f7", lw=0, zorder=0)
@@ -210,7 +212,7 @@ def fig_ppc():
     fig.suptitle("Posterior predictive checks (shaded = outside the central 95%)",
                  x=0.01, ha="left", fontweight="bold")
     fig.tight_layout()
-    save(fig, OUT / "base2_ppc.png")
+    save(fig, out or OUT / "base2_ppc.png")
     plt.close(fig)
 
 
@@ -284,13 +286,13 @@ def fig_baseline_refit():
 
 
 # ------------------------------------------------------------------------------------------ control JSFS check
-def fig_control_jsfs():
+def fig_control_jsfs(pp=None, out=None):
     """Control JSFS against the refitted baseline's accepted draws (fit_jsfs8.json; the 8 cells it fits), and the
     inversion JSFS against the balancing model with gene flux (ppc_base2)."""
     obs = json.load(open("results/illex/abc_observed_ctl2.json"))
     ctl = obs["meta"]["jsfs_control"]
     chk = json.load(open(R / "baseline_refit" / "fit_jsfs8.json"))["check_accepted"]
-    pp = pd.read_csv(R / "ppc_base2" / "ppc_per_stat.csv")
+    pp = pd.read_csv(R / "ppc_base2" / "ppc_per_stat.csv") if pp is None else pp
     pp = pp[(pp.flux == 1) & (pp.model == "B")].set_index("stat")
     cells = [c for c in STAT_ORDER if c.startswith("jsfs_")]
     x = np.arange(len(cells))
@@ -315,7 +317,7 @@ def fig_control_jsfs():
     ax.set_ylabel("fraction of variable sites")
     ax.legend(fontsize=8, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.2))
     despine(ax)
-    save(fig, OUT / "control_jsfs_check.png")
+    save(fig, out or OUT / "control_jsfs_check.png")
     plt.close(fig)
 
 

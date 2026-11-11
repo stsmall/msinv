@@ -35,8 +35,15 @@ T="$REPO/illex/abc/talapas"
 [[ -f "$T/submit.sh" && -f "$T/array.sbatch" ]] || { echo "FATAL: $T has no submit.sh / array.sbatch" >&2; exit 2; }
 # shellcheck disable=SC1091
 source "$T/config.sh"
-activate_env
-( cd "$REPO" && PYTHONNOUSERSITE=1 PYTHONPATH="$REPO" python - <<'EOF'
+export PYTHONNOUSERSITE=1   # ~/.local site-packages shadow the env's scipy on Talapas
+# Submit from a clean shell. activate_env (here and in array.sbatch, which runs with --export=ALL) does
+# `module load miniconda3; conda activate`; if the env is already active in the inherited environment, the module load
+# puts base Python 3.13 first and `conda activate` is a no-op, so every task dies with
+# "No module named msinv._msinv_core" (job 48451379). Drop any inherited conda state, and activate the env only in a
+# subshell for the preflight, so submit.sh sees a shell with no env active.
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL CONDA_PROMPT_MODIFIER _CE_CONDA _CE_M
+for v in $(compgen -v | grep -E '^CONDA_PREFIX_[0-9]+$' || true); do unset "$v"; done
+( activate_env && cd "$REPO" && PYTHONPATH="$REPO" python - <<'EOF'
 import illex.theory as T, illex.abc.constants as C
 from illex.abc.smc import OBSERVED
 from illex.abc.error_model import LD_ERROR

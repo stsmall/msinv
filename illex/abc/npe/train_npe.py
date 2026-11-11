@@ -21,6 +21,7 @@ Outputs in --out:
   calibration.csv         per-parameter SBC KS p-value and the coverage at 50/90/95%
   misfit.csv              where x_obs falls among the training x: per-statistic quantile, and the robust
                           Mahalanobis distance of x_obs against the training distribution (its quantile)
+  posterior.pt            the trained (ensemble) posterior; --load reuses it
   corner_npe_vs_smc.png   NPE draws (contours) over the final SMC particles (points)
 """
 from __future__ import annotations
@@ -57,7 +58,7 @@ def smc_box(path, names):
     return np.column_stack([cols[n] for n in names])
 
 
-def train(theta, x, prior, n_ens, device, seed):
+def train(theta, x, prior, n_ens, device, seed, max_epochs=2**31 - 1):
     from sbi.inference import NPE
     from sbi.neural_nets import posterior_nn
     posts = []
@@ -67,7 +68,8 @@ def train(theta, x, prior, n_ens, device, seed):
         inf = NPE(prior=prior, density_estimator=net, device=device)
         est = inf.append_simulations(torch.as_tensor(theta, dtype=torch.float32),
                                      torch.as_tensor(x, dtype=torch.float32)).train(
-            training_batch_size=256, validation_fraction=0.1, stop_after_epochs=30, show_train_summary=False)
+            training_batch_size=256, validation_fraction=0.1, stop_after_epochs=30, max_num_epochs=max_epochs,
+            show_train_summary=False)
         print(f"  flow {e}: best validation loss {inf._summary['best_validation_loss'][-1]:.4f}, "
               f"{inf._summary['epochs_trained'][-1]} epochs", flush=True)
         posts.append(inf.build_posterior(est))
@@ -77,17 +79,17 @@ def train(theta, x, prior, n_ens, device, seed):
     return EnsemblePosterior(posts)
 
 
-def calibrate(post, prior, theta_t, x_t, names, out, n_post):
+def calibrate(post, prior, theta_t, x_t, names, out, n_post, device):
     from sbi.diagnostics import check_sbc, run_sbc, run_tarp
     import matplotlib.pyplot as plt
-    th = torch.as_tensor(theta_t, dtype=torch.float32)
-    xx = torch.as_tensor(x_t, dtype=torch.float32)
+    th = torch.as_tensor(theta_t, dtype=torch.float32, device=device)
+    xx = torch.as_tensor(x_t, dtype=torch.float32, device=device)
     ranks, dap = run_sbc(th, xx, post, num_posterior_samples=n_post, use_batched_sampling=True)
     chk = check_sbc(ranks, th, dap, num_posterior_samples=n_post)
-    ks = chk["ks_pvals"].numpy()
+    ks = chk["ks_pvals"].cpu().numpy()
     ecp, alpha = run_tarp(th, xx, post, num_posterior_samples=n_post, use_batched_sampling=True)
-    ecp, alpha = ecp.numpy(), alpha.numpy()
-    r = ranks.numpy()
+    ecp, alpha = ecp.cpu().numpy(), alpha.cpu().numpy()
+    r = ranks.cpu().numpy()
     # per-parameter central-interval coverage from the ranks: the true value is inside the central c interval when
     # its normalised rank lies in [(1-c)/2, (1+c)/2]
     u = r / n_post
@@ -121,6 +123,8 @@ def misfit(x, x_obs, names, out):
     q = (x < x_obs).mean(axis=0)
     med = np.median(x, axis=0)
     mad = np.median(np.abs(x - med), axis=0) * 1.4826
+    # a statistic with a point mass at its median (e.g. shared polymorphism at 0 without gene flux) has MAD 0
+    mad = np.where(mad > 0, mad, x.std(axis=0))
     z = (x - med) / mad
     zo = (x_obs - med) / mad
     cov = np.cov(z, rowvar=False)
@@ -195,6 +199,9 @@ def main():
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--seed", type=int, default=20261110)
+    ap.add_argument("--load", action="store_true", help="reuse posterior.pt in --out instead of training")
+    ap.add_argument("--max-rows", type=int, default=0, help="smoke test: use only this many rows")
+    ap.add_argument("--max-epochs", type=int, default=2**31 - 1, help="smoke test: cap epochs per flow")
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
     out = Path(a.out)
@@ -206,16 +213,22 @@ def main():
     names, xnames, lo, hi = list(z["theta_names"]), list(z["x_names"]), z["lo"], z["hi"]
     rng = np.random.default_rng(a.seed)
     idx = rng.permutation(len(theta))
+    if a.max_rows:
+        idx = idx[:a.max_rows]
     te, tr = idx[:a.n_test], idx[a.n_test:]
     print(f"{a.npz}: {len(theta)} rows ({len(tr)} train, {len(te)} held out), {len(names)} parameters, "
           f"{x.shape[1]} statistics", flush=True)
     prior = BoxUniform(low=torch.as_tensor(lo, dtype=torch.float32), high=torch.as_tensor(hi, dtype=torch.float32),
                        device=a.device)
     misfit(x[tr], x_obs, xnames, out)
-    post = train(theta[tr], x[tr], prior, a.n_ens, a.device, a.seed)
-    calibrate(post, prior, theta[te], x[te], names, out, n_post=1000)
+    if a.load:
+        post = torch.load(out / "posterior.pt", weights_only=False)
+    else:
+        post = train(theta[tr], x[tr], prior, a.n_ens, a.device, a.seed, a.max_epochs)
+        torch.save(post, out / "posterior.pt")
+    calibrate(post, prior, theta[te], x[te], names, out, n_post=1000, device=a.device)
 
-    xo = torch.as_tensor(x_obs, dtype=torch.float32).unsqueeze(0)
+    xo = torch.as_tensor(x_obs, dtype=torch.float32, device=a.device).unsqueeze(0)
     draws = post.sample((a.n_post,), x=xo).cpu().numpy()
     nat = natural(draws, names)
     nat.to_csv(out / "posterior_samples.csv", index=False, float_format="%.6g")

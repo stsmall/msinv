@@ -1,0 +1,16 @@
+{
+ "npz": "results/illex/npe/npe_B_f1.npz",
+ "n_train": 57743,
+ "n_test": 2000,
+ "n_ens": 5,
+ "seed": 20261110,
+ "flow": "nsf, 64 hidden, 5 transforms",
+ "names": [
+  "t_inv",
+  "u_sel",
+  "log10_p0",
+  "log10_s",
+  "p_star",
+  "log10_gamma"
+ ]
+}

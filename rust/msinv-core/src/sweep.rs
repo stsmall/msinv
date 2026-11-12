@@ -36,13 +36,30 @@ pub struct Sweep {
     pub supp_int: Vec<(u16, f64, f64)>,
     /// Backward time up to which `supp_int` has been accumulated.
     pub supp_t: f64,
-    /// True when the selected site lies inside inversion `target_inv`:
-    /// the allele is carried on an arrangement, so its trajectory and
-    /// the inversion frequency are coupled. False for a sweep outside
-    /// every configured inversion (or with no matching inversion): an
-    /// ordinary discoal-style sweep, independent of arrangement. Set by
-    /// `populate_sweep_trajectories`; `new` defaults to true.
-    pub tied: bool,
+    /// How the selected site changes arrangement background at
+    /// `target_inv`. Set by `populate_sweep_trajectories`; `new`
+    /// defaults to `Exchange::Flux` (a site inside its inversion).
+    pub exchange: Exchange,
+}
+
+/// How a sweep's selected site moves between the arrangements of its
+/// target inversion. With `Flux` or `Recomb` the sweep is *linked*: the
+/// trajectory tracks the A allele on each arrangement (association
+/// decaying at `JointSweepSpec::exchange_rate`), the inversion's
+/// frequency path follows the trajectory, and coalescence of lineages
+/// tagged with an arrangement uses that arrangement's allele frequency.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exchange {
+    /// Unlinked: no target inversion segregating at `t_origin`. A
+    /// single-background, discoal-style sweep.
+    None,
+    /// Site inside the target inversion: moves by gene flux in
+    /// heterokaryotypes.
+    Flux,
+    /// Site outside the target inversion: moves by recombination in
+    /// `[lo, hi)`, the interval between the site and the nearer
+    /// breakpoint.
+    Recomb { lo: f64, hi: f64 },
 }
 
 impl Sweep {
@@ -58,7 +75,79 @@ impl Sweep {
         Self {
             x_sel, tau, origin_pop, origin_kary, target_inv, joint,
             trajectory: None, supp_int: Vec::new(), supp_t: tau,
-            tied: true,
+            exchange: Exchange::Flux,
+        }
+    }
+
+    /// Is the sweep linked to its target inversion (`Exchange` docs)?
+    pub fn linked(&self) -> bool {
+        !matches!(self.exchange, Exchange::None)
+    }
+
+    /// Correction to the rate of events that move a lineage's selected-
+    /// site association between arrangements, for a lineage tagged
+    /// `kary` at `target_inv` with allele `is_a`, at time `t` in
+    /// `origin_pop`. The coalescent proposes those events at their
+    /// linkage-equilibrium rate; the exact backward rate is that times
+    /// this factor:
+    ///
+    /// - `Recomb`: a recombination between the site and the inversion
+    ///   on a (k, α) chromosome happens backward at rate
+    ///   `c p_k p_α / f(k, α) = c P(α) / P(α | k)`.
+    /// - `Flux`: the site of a (k, α) chromosome was copied from the
+    ///   other arrangement k' at rate `γ p_k f(k', α) / f(k, α)`, i.e.
+    ///   `γ p_k'` times `P(α | k') / P(α | k)`.
+    ///
+    /// `f64::INFINITY` when the lineage's own class has frequency 0 in
+    /// the trajectory (it must leave immediately); 1 when unlinked or
+    /// with no trajectory.
+    pub fn assoc_factor(&self, t: f64, kary: Karyotype, is_a: bool) -> f64 {
+        let traj = match &self.trajectory { Some(t) => t, None => return 1.0 };
+        let pop = self.origin_pop;
+        let cond = |k: Karyotype| {
+            let p = traj.p_allele_given_kary(t, pop, k);
+            if is_a { p } else { 1.0 - p }
+        };
+        let own = cond(kary);
+        let num = match self.exchange {
+            Exchange::None => return 1.0,
+            Exchange::Recomb { .. } => {
+                let p = traj.p_allele_overall(t, pop);
+                if is_a { p } else { 1.0 - p }
+            }
+            Exchange::Flux => cond(other_kary(kary)),
+        };
+        if own <= 0.0 {
+            return if num > 0.0 { f64::INFINITY } else { 1.0 };
+        }
+        num / own
+    }
+
+    /// Frequency of A in `origin_pop` at `t` on a chromosome carrying
+    /// arrangement `kary` at `target_inv`: `P(A | k)` for a linked
+    /// sweep and a known arrangement, else the population `P(A)`.
+    /// 0 with no trajectory.
+    pub fn p_allele_for(&self, t: f64, kary: Option<Karyotype>) -> f64 {
+        match (&self.trajectory, kary) {
+            (Some(tr), Some(k)) if self.linked() =>
+                tr.p_allele_given_kary(t, self.origin_pop, k),
+            (Some(tr), _) => tr.p_allele_overall(t, self.origin_pop),
+            (None, _) => 0.0,
+        }
+    }
+
+    /// Linkage-equilibrium rate (per generation) of the association-
+    /// changing events for a lineage tagged `kary`: `r (hi - lo)` for
+    /// `Recomb`, `γ p_k'(t)` for `Flux`, 0 when unlinked.
+    pub fn assoc_base_rate(&self, t: f64, kary: Karyotype) -> f64 {
+        match self.exchange {
+            Exchange::None => 0.0,
+            Exchange::Recomb { .. } => self.joint.exchange_rate,
+            Exchange::Flux => match &self.trajectory {
+                Some(traj) => self.joint.exchange_rate
+                    * traj.p_kary(t, self.origin_pop, other_kary(kary)),
+                None => 0.0,
+            },
         }
     }
 
@@ -115,17 +204,17 @@ impl Sweep {
         inversions: &[InversionSpec],
         kary_at: &dyn Fn(u16) -> Option<Karyotype>,
     ) -> f64 {
-        let fallback = if self.tied { Some(self.origin_kary) } else { None };
+        let fallback = if self.linked() { Some(self.origin_kary) } else { None };
         self.escape_exposure_with(seg_left, seg_right, inversions, kary_at, fallback)
     }
 
     /// Probability that segment `[seg_left, seg_right)` of an A lineage
     /// escapes the sweep by recombination: `exp(-r * exposure)`. For a
-    /// tied sweep and a lineage with no tagged material at `target_inv`,
-    /// the arrangement it carries there is unknown; it is I with
-    /// probability `P(I | A)` at `tau` (1 or 0 without gene flux, i.e.
-    /// `origin_kary`), and the escape probability is the mixture over
-    /// the two arrangements.
+    /// linked sweep and a lineage with no tagged material at
+    /// `target_inv`, the arrangement it carries there is unknown; it is
+    /// I with probability `P(I | A)` at `tau` (1 or 0 for a site inside
+    /// the inversion without gene flux, i.e. `origin_kary`), and the
+    /// escape probability is the mixture over the two arrangements.
     pub fn escape_prob(
         &self,
         seg_left: f64,
@@ -135,7 +224,7 @@ impl Sweep {
         r: f64,
     ) -> f64 {
         let has_target = inversions.iter().any(|inv| inv.inv_id == self.target_inv);
-        let mixture = self.tied && has_target && kary_at(self.target_inv).is_none();
+        let mixture = self.linked() && has_target && kary_at(self.target_inv).is_none();
         if !mixture {
             return (-r * self.escape_exposure(seg_left, seg_right, inversions, kary_at)).exp();
         }
@@ -336,22 +425,28 @@ impl Sweep {
         best
     }
 
-    /// At sample time τ, randomly assign a lineage to the swept (A) vs
-    /// unswept (a) fraction with probability equal to the trajectory's
-    /// per-(pop, kary) A frequency. Returns true for A.
+    /// Draw the allele of a lineage at the sampling time `tau`: A with
+    /// probability `P(A | kary)` when the sweep is linked and the
+    /// lineage carries arrangement `kary` at `target_inv`, else the
+    /// population `P(A)`.
     pub fn assign_a_at_sample<R: rand::Rng>(
         &self,
         pop: u32,
-        kary: Karyotype,
+        kary: Option<Karyotype>,
         rng: &mut R,
     ) -> bool {
-        let p_a = match &self.trajectory {
-            Some(t) if self.tied => t.p_allele_given_kary(self.tau, pop, kary),
-            Some(t) => t.p_allele_overall(self.tau, pop),
-            None => return false,
+        let p_a = match (&self.trajectory, kary) {
+            (Some(t), Some(k)) if self.linked() => t.p_allele_given_kary(self.tau, pop, k),
+            (Some(t), _) => t.p_allele_overall(self.tau, pop),
+            (None, _) => return false,
         };
         rng.random::<f64>() < p_a
     }
+}
+
+/// The other arrangement.
+pub fn other_kary(k: Karyotype) -> Karyotype {
+    match k { Karyotype::S => Karyotype::I, Karyotype::I => Karyotype::S }
 }
 
 #[cfg(test)]
@@ -480,7 +575,7 @@ mod tests {
         let mut a_count = 0;
         let n_trials = 1000;
         for _ in 0..n_trials {
-            if sw.assign_a_at_sample(0, Karyotype::S, &mut rng) {
+            if sw.assign_a_at_sample(0, Some(Karyotype::S), &mut rng) {
                 a_count += 1;
             }
         }

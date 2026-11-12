@@ -258,16 +258,52 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
   I x S pairs are never merged there. Coalescences outside sweep
   windows are not affected.
 
-- **A sweep allele carried by both arrangements.** With gene flux
-  between arrangements (`gamma_flux > 0`) the A allele can reach the
-  arrangement it did not arise on. Those A lineages are not merged into
-  the founder when a hard sweep finalizes: their path back to it runs
-  through a conversion event the coalescent does not track.
+- **Linked sweeps: non-selected material.** The exact rate at which a
+  lineage's allele-arrangement association changes is used for the
+  selected site and for material tagged with an arrangement. Untagged
+  material (flanks) is averaged over arrangements, as elsewhere in
+  msinv. A lineage's allele changes only at simulated crossovers within
+  its own material (as in discoal), except for the extra association
+  events of a linked sweep.
 
 - **Standing-variation sweep escape probability ignores the frequency
   path.** It uses the length of the selection phase, not the A-allele
   trajectory, so deterministic and stochastic trajectories of equal
   length give the same escape probability (issue #24).
+
+## Unreleased
+
+- **Sweeps linked to an inversion.** A sweep whose target inversion
+  exists at `t_origin` now tracks the beneficial allele on each
+  arrangement. Inside the inversion it moves between them by gene flux.
+  Outside, it moves by recombination with the nearer breakpoint
+  (`r * d`). The inversion's frequency follows the trajectory over the
+  sweep and holds its final value afterwards. Selection therefore raises
+  the arrangement the allele arose on, by an amount set by their
+  linkage.
+- **Coalescent side.** The coalescent uses the exact backward rates of
+  the association: crossovers between the selected site and the
+  inversion, and flux tracts over it, are thinned or supplemented
+  according to the trajectory. A hard sweep's A lineages all reach the
+  founder's arrangement by `t_origin`. Before, A lineages that had
+  picked up material of the other arrangement were left unmerged, which
+  inflated diversity at the selected site. For a site 200 kb from the
+  inversion, π at the selected site was 3.7x the no-inversion value and
+  now matches it.
+- **Flux bookkeeping.** Gene-flux tracts during a sweep get the right
+  allele: the tract keeps the lineage's allele if it covers the
+  selected site and draws one against its new arrangement otherwise.
+  Before, tract lineages were left without an allele tag.
+- **API.** `Sweep` has no `gamma_flux` or `mean_tract_length`
+  arguments; both are derived from the target inversion.
+- **`f0` is the overall allele frequency** for every sweep. Before, a
+  sweep inside an inversion started at `f0` within `origin_kary`
+  (overall `f0 * p_k`), so a hard sweep began below one chromosome.
+  `f0` may not exceed the frequency of `origin_kary` at `t_origin`.
+- **Untagged lineages.** Lineages untagged at the target coalesce at
+  the population allele frequency. Before, they were placed on
+  `origin_kary`, which made untagged a lineages coalesce too fast when
+  A was on one arrangement.
 
 ## Changes in 0.4.2
 

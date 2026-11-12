@@ -25,7 +25,7 @@ def test_j1_no_flux_locks_a_to_origin_kary():
     )
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0],
-                             gamma_flux=0.0)
+                             exchange_rate=0.0)
     final = rust_sw.trajectory_samples()[-1][1][0]
     # final[0]=(S,a), final[1]=(S,A), final[2]=(I,a), final[3]=(I,A)
     assert final[1] < 1e-9, f"(S,A) should stay 0, got {final[1]}"
@@ -48,7 +48,7 @@ def test_j2_rdl_lifecycle_post_flux_mixing():
     )
     rust_sw = sw.to_rust()
     rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0],
-                             gamma_flux=1e-3)
+                             exchange_rate=1e-3)
     final = rust_sw.trajectory_samples()[-1][1][0]
     total_a = final[1] + final[3]
     assert total_a >= 0.90, (

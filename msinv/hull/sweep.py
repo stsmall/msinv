@@ -23,19 +23,34 @@ SweepModeStr = Literal[
 class Sweep:
     """One selective sweep (Rust engine only).
 
-    If ``x_sel`` lies inside inversion ``target_inv``, the sweep is tied to
-    an arrangement: the beneficial allele arises on ``origin_kary``, moves
-    between arrangements only by that inversion's gene flux (rate derived
-    from its ``gene_conversion_rate``, ``mean_tract_length`` and phi(x) at
-    ``x_sel``), and selection on it changes the inversion frequency. The
-    inversion frequency then follows the sweep trajectory from ``t_origin``
-    to ``tau`` and stays at its final value after ``tau``. The trajectory
-    starts from the inversion frequency at ``t_origin``.
+    With an inversion ``target_inv`` that exists at ``t_origin``, the sweep
+    is linked to it. The trajectory tracks the beneficial allele on each
+    arrangement, starting from the inversion frequency at ``t_origin``, and
+    the association between allele and arrangement decays at a rate ``c``
+    per generation:
 
-    If ``x_sel`` lies outside the inversion (or no inversion has id
-    ``target_inv``), recombination decouples the selected site from the
-    arrangements: the sweep is an ordinary discoal-style sweep,
-    ``origin_kary`` is ignored, and the inversion frequency is unchanged.
+    - ``x_sel`` inside the inversion: the allele arises on ``origin_kary``
+      at overall frequency ``f0`` (at most that arrangement's frequency)
+      and moves to the other arrangement only by the inversion's gene flux;
+      ``c = gene_conversion_rate * mean_tract_length * phi(x_sel)``.
+    - ``x_sel`` outside it: ``c = r * d``, with ``d`` the distance to the
+      nearer breakpoint. A hard sweep's founder arrangement is drawn from
+      the arrangement frequencies at ``t_origin``. Standing variation
+      starts independent of arrangement, at overall frequency ``f0``.
+      ``origin_kary`` is ignored.
+
+    Selection on the allele changes the inversion frequency in proportion
+    to their linkage. The inversion frequency follows the trajectory from
+    ``t_origin`` to ``tau`` and stays at its final value after ``tau``.
+    Backward in time, lineages carrying an arrangement coalesce at that
+    arrangement's allele frequency. A lineage's association with the
+    allele moves between arrangements at the exact backward rate implied
+    by the trajectory. A sweep far from the inversion therefore behaves as
+    in discoal.
+
+    Without such an inversion (or if it arises after ``t_origin``) the
+    sweep is an ordinary discoal-style sweep, and inversion frequencies
+    are unchanged.
     """
 
     x_sel: float

@@ -109,7 +109,8 @@ impl PySweep {
         let joint = JointSweepSpec {
             mode: mode_enum, s, t_origin, f0,
             partial_sweep_final_freq, recurrent_mutation_rate,
-            gamma_flux: 0.0, seed, dt_scalar,
+            exchange_rate: 0.0, seed, dt_scalar,
+            ..Default::default()
         };
         Ok(Self {
             inner: Sweep::new(x_sel, tau, origin_pop, kary, target_inv, joint),
@@ -119,17 +120,17 @@ impl PySweep {
     /// Build the joint trajectory using per-pop sizes and a migration
     /// matrix. `migration_matrix[dst][src]` matches Demography's
     /// convention. Convenience for tests; production path uses the live
-    /// simulator demography, which also derives `gamma_flux` (per-
+    /// simulator demography, which also derives `exchange_rate` (per-
     /// generation flux at the selected site) from the target inversion.
     #[pyo3(signature = (n_pops, p_inv_init, pop_sizes, migration_matrix=None,
-                        gamma_flux=0.0))]
+                        exchange_rate=0.0))]
     fn build_trajectory(
         &mut self,
         n_pops: u32,
         p_inv_init: Vec<f64>,
         pop_sizes: Vec<f64>,
         migration_matrix: Option<Vec<Vec<f64>>>,
-        gamma_flux: f64,
+        exchange_rate: f64,
     ) -> PyResult<()> {
         if p_inv_init.len() != n_pops as usize {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -154,7 +155,7 @@ impl PySweep {
         let pop_sizes_clone = pop_sizes.clone();
         let mig_clone = mig.clone();
         let mut base = self.inner.clone();
-        base.joint.gamma_flux = gamma_flux;
+        base.joint.exchange_rate = exchange_rate;
         let inner = base.with_trajectory(
             n_pops, &p_inv_init,
             &|_t: f64, p: u32| pop_sizes_clone[p as usize],

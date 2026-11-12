@@ -1225,6 +1225,84 @@ impl Trajectory for PrecomputedTrajectory {
 // Tests
 // =====================================================================
 
+// =====================================================================
+// Inversion frequency driven by a sweep on the inversion
+// =====================================================================
+
+/// Inversion frequency path when a sweep's selected site lies inside
+/// the inversion. The beneficial allele sits on an arrangement (and
+/// moves between arrangements only by gene flux), so selection on it
+/// changes the arrangement frequencies. Backward in time:
+///
+/// - `t > t_origin`: the inversion's own trajectory (`inner`);
+/// - `tau <= t <= t_origin`: the I frequency of the sweep's joint
+///   trajectory, stored per population as a step function on the
+///   same sample times (oldest first) the sweep uses;
+/// - `t < tau`: held at the trajectory's value at `tau` (selection
+///   has ended, frequency assumed constant afterwards).
+///
+/// `t_inv` and `t_inv_max` are those of `inner`.
+#[derive(Debug)]
+pub struct SweptTrajectory {
+    pub inner: Box<dyn Trajectory + Send + Sync>,
+    pub tau: f64,
+    pub t_origin: f64,
+    /// Sample times, non-increasing (oldest first), all in `[tau, t_origin]`.
+    pub times: Vec<f64>,
+    /// `p_inv[pop][i]` is the I frequency at `times[i]`.
+    pub p_inv: Vec<Vec<f64>>,
+}
+
+impl Clone for SweptTrajectory {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone_boxed(),
+            tau: self.tau,
+            t_origin: self.t_origin,
+            times: self.times.clone(),
+            p_inv: self.p_inv.clone(),
+        }
+    }
+}
+
+impl SweptTrajectory {
+    fn idx_at(&self, t: f64) -> usize {
+        self.times.partition_point(|&x| x >= t).saturating_sub(1)
+    }
+}
+
+impl Trajectory for SweptTrajectory {
+    fn p_inv_at(&self, t: f64, pop: u32) -> f64 {
+        let series = match self.p_inv.get(pop as usize) {
+            Some(v) if !v.is_empty() => v,
+            _ => return self.inner.p_inv_at(t, pop),
+        };
+        if t > self.t_origin {
+            self.inner.p_inv_at(t, pop)
+        } else if t < self.tau {
+            *series.last().unwrap()
+        } else {
+            series[self.idx_at(t)]
+        }
+    }
+
+    fn t_inv(&self, pop: u32) -> f64 {
+        self.inner.t_inv(pop)
+    }
+
+    fn t_inv_max(&self) -> f64 {
+        self.inner.t_inv_max()
+    }
+
+    fn n_pops(&self) -> usize {
+        self.inner.n_pops().max(self.p_inv.len())
+    }
+
+    fn clone_boxed(&self) -> Box<dyn Trajectory + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1413,5 +1491,26 @@ mod tests {
         }
         // At t >= t_inv: p = 0
         assert_eq!(pre.p_inv_at(1001.0, 0), 0.0);
+    }
+
+    #[test]
+    fn swept_trajectory_splices_three_pieces() {
+        let inner: Box<dyn Trajectory + Send + Sync> =
+            Box::new(ConstantTrajectory::single(0.3, 40_000.0));
+        let st = SweptTrajectory {
+            inner,
+            tau: 100.0,
+            t_origin: 300.0,
+            times: vec![300.0, 200.0, 100.0],
+            p_inv: vec![vec![0.3, 0.5, 0.8]],
+        };
+        assert_eq!(st.p_inv_at(1_000.0, 0), 0.3);
+        assert_eq!(st.p_inv_at(300.0, 0), 0.3);
+        assert_eq!(st.p_inv_at(250.0, 0), 0.3);
+        assert_eq!(st.p_inv_at(200.0, 0), 0.5);
+        assert_eq!(st.p_inv_at(100.0, 0), 0.8);
+        assert_eq!(st.p_inv_at(10.0, 0), 0.8);
+        assert_eq!(st.p_inv_at(50_000.0, 0), 0.0);
+        assert_eq!(st.t_inv_max(), 40_000.0);
     }
 }

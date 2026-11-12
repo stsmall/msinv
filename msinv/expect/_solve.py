@@ -24,15 +24,49 @@ class _NoPivotBDF(BDF):
     auxiliary entries get picked as pivots and the factors fill in.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, levels=None, **kwargs):
         super().__init__(*args, **kwargs)
         if sp.issparse(self.J):
 
             def lu(a):
                 self.nlu += 1
+                if levels is not None:
+                    return _LevelBlockLU(a, *levels)
                 return splu(a, diag_pivot_thresh=0.0)
 
             self.lu = lu
+
+
+class _LevelBlockLU:
+    """LU of a matrix that is block lower triangular after a permutation.
+
+    The chain only moves from a state to states with the same or fewer
+    lineages, so ordering variables by lineage count (descending, auxiliary
+    variables last) makes I - h*J block lower triangular with one diagonal
+    block per lineage count. Each diagonal block is factored on its own
+    (diagonal pivots, as in _NoPivotBDF) and solves use block forward
+    substitution; this avoids the fill-in of one LU over the whole matrix.
+    """
+
+    def __init__(self, a, order, cuts):
+        p = a[order][:, order].tocsc()
+        self._order, self._cuts = order, cuts
+        self._lu, self._low = [], []
+        for lo, hi in zip(cuts, cuts[1:]):
+            self._lu.append(splu(p[lo:hi, lo:hi].tocsc(), diag_pivot_thresh=0.0))
+            self._low.append(p[lo:hi, :lo].tocsr() if lo else None)
+
+    def solve(self, b):
+        bp = b[self._order]
+        x = np.empty_like(bp)
+        for (lo, hi), lu, low in zip(
+            zip(self._cuts, self._cuts[1:]), self._lu, self._low
+        ):
+            r = bp[lo:hi] if low is None else bp[lo:hi] - low @ x[:lo]
+            x[lo:hi] = lu.solve(r)
+        out = np.empty_like(x)
+        out[self._order] = x
+        return out
 
 
 # ODE method used by Solver; a module attribute so tests can compare it
@@ -91,7 +125,29 @@ class Solver:
         pts |= {t for t, _, _ in self._supp}
         self.breaks = sorted(t for t in pts if 0.0 < t < np.inf)
         self._build_patterns()
+        self._levels = self._level_blocks()
         self._memo_t, self._memo_q = None, None
+
+    def _level_blocks(self):
+        """(order, cuts) for _LevelBlockLU: variables by lineage count
+        (descending), auxiliary variables last. Checks on the fixed Jacobian
+        pattern that no entry sits above the diagonal across levels."""
+        size = self.N + self._n_aux
+        lev = np.zeros(size, dtype=int)
+        lev[: self.N] = np.tile(
+            [0 if s is None else len(s) for s in self.ch.states], self.R
+        )
+        order = np.lexsort((np.arange(size), -lev))
+        lv = lev[order]
+        pat = sp.csc_matrix(
+            (np.ones(self._j_nnz), self._j_indices, self._j_indptr),
+            shape=(size, size),
+        )
+        up = sp.triu(pat[order][:, order], k=1).tocoo()
+        if np.any(lv[up.row] != lv[up.col]):
+            raise AssertionError("Jacobian is not block lower triangular by level")
+        cuts = [0, *(np.flatnonzero(np.diff(lv)) + 1).tolist(), size]
+        return order, cuts
 
     def _build_patterns(self) -> None:
         """Fixed sparsity patterns, so qt(t) and the Jacobian only refill data.
@@ -322,6 +378,7 @@ class Solver:
                 surv[:, sel] = (self._smat @ z[: self.N])[:, None]
             else:
                 t_eval = np.append(np.minimum(times[sel], end), end)
+                opts = {"levels": self._levels} if _ODE_METHOD is _NoPivotBDF else {}
                 sol = solve_ivp(
                     self._rhs,
                     (t, end),
@@ -331,6 +388,7 @@ class Solver:
                     rtol=self.rtol,
                     atol=self.atol,
                     t_eval=t_eval,
+                    **opts,
                 )
                 if not sol.success:
                     raise RuntimeError(

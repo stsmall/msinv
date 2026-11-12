@@ -36,6 +36,13 @@ pub struct Sweep {
     pub supp_int: Vec<(u16, f64, f64)>,
     /// Backward time up to which `supp_int` has been accumulated.
     pub supp_t: f64,
+    /// True when the selected site lies inside inversion `target_inv`:
+    /// the allele is carried on an arrangement, so its trajectory and
+    /// the inversion frequency are coupled. False for a sweep outside
+    /// every configured inversion (or with no matching inversion): an
+    /// ordinary discoal-style sweep, independent of arrangement. Set by
+    /// `populate_sweep_trajectories`; `new` defaults to true.
+    pub tied: bool,
 }
 
 impl Sweep {
@@ -51,6 +58,7 @@ impl Sweep {
         Self {
             x_sel, tau, origin_pop, origin_kary, target_inv, joint,
             trajectory: None, supp_int: Vec::new(), supp_t: tau,
+            tied: true,
         }
     }
 
@@ -107,6 +115,62 @@ impl Sweep {
         inversions: &[InversionSpec],
         kary_at: &dyn Fn(u16) -> Option<Karyotype>,
     ) -> f64 {
+        let fallback = if self.tied { Some(self.origin_kary) } else { None };
+        self.escape_exposure_with(seg_left, seg_right, inversions, kary_at, fallback)
+    }
+
+    /// Probability that segment `[seg_left, seg_right)` of an A lineage
+    /// escapes the sweep by recombination: `exp(-r * exposure)`. For a
+    /// tied sweep and a lineage with no tagged material at `target_inv`,
+    /// the arrangement it carries there is unknown; it is I with
+    /// probability `P(I | A)` at `tau` (1 or 0 without gene flux, i.e.
+    /// `origin_kary`), and the escape probability is the mixture over
+    /// the two arrangements.
+    pub fn escape_prob(
+        &self,
+        seg_left: f64,
+        seg_right: f64,
+        inversions: &[InversionSpec],
+        kary_at: &dyn Fn(u16) -> Option<Karyotype>,
+        r: f64,
+    ) -> f64 {
+        let has_target = inversions.iter().any(|inv| inv.inv_id == self.target_inv);
+        let mixture = self.tied && has_target && kary_at(self.target_inv).is_none();
+        if !mixture {
+            return (-r * self.escape_exposure(seg_left, seg_right, inversions, kary_at)).exp();
+        }
+        let w_i = self.p_kary_given_a_at_tau(Karyotype::I);
+        let e_s = self.escape_exposure_with(
+            seg_left, seg_right, inversions, kary_at, Some(Karyotype::S));
+        let e_i = self.escape_exposure_with(
+            seg_left, seg_right, inversions, kary_at, Some(Karyotype::I));
+        (1.0 - w_i) * (-r * e_s).exp() + w_i * (-r * e_i).exp()
+    }
+
+    /// `P(kary | A)` in `origin_pop` at `tau` from the trajectory;
+    /// `origin_kary` with certainty when there is no trajectory or no A.
+    pub fn p_kary_given_a_at_tau(&self, kary: Karyotype) -> f64 {
+        let certain = if kary == self.origin_kary { 1.0 } else { 0.0 };
+        let traj = match &self.trajectory { Some(t) => t, None => return certain };
+        let p_a = traj.p_allele_overall(self.tau, self.origin_pop);
+        if p_a <= 0.0 {
+            return certain;
+        }
+        traj.p_allele_given_kary(self.tau, self.origin_pop, kary)
+            * traj.p_kary(self.tau, self.origin_pop, kary) / p_a
+    }
+
+    /// `escape_exposure` with an explicit arrangement for a lineage
+    /// untagged at `target_inv` (`None`: weight 1 there, as at any other
+    /// untagged inversion).
+    pub fn escape_exposure_with(
+        &self,
+        seg_left: f64,
+        seg_right: f64,
+        inversions: &[InversionSpec],
+        kary_at: &dyn Fn(u16) -> Option<Karyotype>,
+        target_fallback: Option<Karyotype>,
+    ) -> f64 {
         let (a, b) = if self.x_sel >= seg_left && self.x_sel < seg_right {
             return 0.0;
         } else if seg_right <= self.x_sel {
@@ -134,7 +198,7 @@ impl Sweep {
             for inv in inversions {
                 if mid < inv.bp_left || mid >= inv.bp_right { continue; }
                 let kary = kary_at(inv.inv_id).or(
-                    if inv.inv_id == self.target_inv { Some(self.origin_kary) } else { None });
+                    if inv.inv_id == self.target_inv { target_fallback } else { None });
                 let entry = self.supp_int.iter().find(|e| e.0 == inv.inv_id);
                 if let (Some(k), Some(e)) = (kary, entry) {
                     let int_k = match k { Karyotype::S => e.1, Karyotype::I => e.2 };
@@ -282,7 +346,8 @@ impl Sweep {
         rng: &mut R,
     ) -> bool {
         let p_a = match &self.trajectory {
-            Some(t) => t.p_allele_given_kary(self.tau, pop, kary),
+            Some(t) if self.tied => t.p_allele_given_kary(self.tau, pop, kary),
+            Some(t) => t.p_allele_overall(self.tau, pop),
             None => return false,
         };
         rng.random::<f64>() < p_a

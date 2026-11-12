@@ -42,15 +42,13 @@ pub struct JointSweepSpec {
     pub f0: f64,
     pub partial_sweep_final_freq: f64,
     pub recurrent_mutation_rate: f64,
-    /// Gene-conversion rate per generation. In v1 this is treated as
-    /// the per-gen exchange rate directly; `mean_tract_length` is
-    /// reserved (see note on that field).
+    /// Per-generation probability that gene flux in an I x S
+    /// heterokaryotype copies the selected site from one arrangement
+    /// onto the other. Not a user parameter: the simulator derives it
+    /// from the target inversion's gene-flux settings
+    /// (`populate_sweep_trajectories`); 0 for a sweep outside an
+    /// inversion.
     pub gamma_flux: f64,
-    /// Reserved for v1: not currently consumed by `apply_flux_inplace`
-    /// (gamma is interpreted as already-per-generation). Kept in the
-    /// public API for forward compatibility with a future tract-length
-    /// scaling.
-    pub mean_tract_length: f64,
     pub seed: u64,
     pub dt_scalar: f64,
 }
@@ -65,7 +63,6 @@ impl Default for JointSweepSpec {
             partial_sweep_final_freq: 1.0,
             recurrent_mutation_rate: 0.0,
             gamma_flux: 0.0,
-            mean_tract_length: 0.0,
             seed: 0,
             dt_scalar: 400.0,
         }
@@ -170,7 +167,7 @@ pub fn build_joint_trajectory(
                 if matches!(spec.mode, SweepMode::Stochastic | SweepMode::StochasticConditioned) {
                     wf_resample(f, 2.0 * n, &mut rng);
                 }
-                apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
+                apply_flux_inplace(f, spec.gamma_flux);
             }
             apply_migration_inplace(&mut state, t, migration_at);
             t -= dt;
@@ -384,27 +381,28 @@ fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
     }
 }
 
-/// Per-generation flux exchanges between (I, A) ↔ (S, A) and
-/// (I, a) ↔ (S, a) at rate `gamma`. Symmetric: each direction copies
-/// at rate `gamma`. `mean_tract_length` is currently unused — kept in
-/// the signature for API stability and possible future scaling.
-fn apply_flux_inplace(f: &mut [f64; 4], gamma: f64, _mean_tract: f64) {
+/// Per-generation gene flux at the selected site. In an I x S
+/// heterokaryotype (a chromosome's partner carries the other
+/// arrangement with probability equal to that arrangement's
+/// frequency) the allele at the site is copied onto the other
+/// arrangement at rate `gamma`. Arrangement frequencies and the total
+/// A frequency are unchanged; only the allele-by-arrangement
+/// association D = f(S,a) f(I,A) - f(S,A) f(I,a) decays:
+///
+///   d f(S,A) = gamma * D,   d f(I,A) = -gamma * D
+///
+/// with the opposite changes in the a classes.
+fn apply_flux_inplace(f: &mut [f64; 4], gamma: f64) {
     if gamma <= 0.0 {
         return;
     }
-    let r = gamma.min(0.5);
-    let s_a = f[CLASS_S_A];
-    let s_a_b = f[CLASS_S_A_BENEF];
-    let i_a = f[CLASS_I_A];
-    let i_a_b = f[CLASS_I_A_BENEF];
-    let new_s_a = s_a + r * i_a - r * s_a;
-    let new_i_a = i_a + r * s_a - r * i_a;
-    let new_s_a_b = s_a_b + r * i_a_b - r * s_a_b;
-    let new_i_a_b = i_a_b + r * s_a_b - r * i_a_b;
-    f[CLASS_S_A] = new_s_a.max(0.0);
-    f[CLASS_S_A_BENEF] = new_s_a_b.max(0.0);
-    f[CLASS_I_A] = new_i_a.max(0.0);
-    f[CLASS_I_A_BENEF] = new_i_a_b.max(0.0);
+    let g = gamma.min(1.0);
+    let d = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+    let delta = g * d;
+    f[CLASS_S_A_BENEF] = (f[CLASS_S_A_BENEF] + delta).max(0.0);
+    f[CLASS_S_A] = (f[CLASS_S_A] - delta).max(0.0);
+    f[CLASS_I_A_BENEF] = (f[CLASS_I_A_BENEF] - delta).max(0.0);
+    f[CLASS_I_A] = (f[CLASS_I_A] + delta).max(0.0);
 }
 
 /// Per-generation migration: redistribute haplotype-class counts using
@@ -586,7 +584,6 @@ mod tests {
             partial_sweep_final_freq: 0.99,
             recurrent_mutation_rate: 0.0,
             gamma_flux: 0.0,
-            mean_tract_length: 0.0,
             seed: 0,
             dt_scalar: 400.0,
         };
@@ -751,7 +748,6 @@ mod tests {
             f0: 0.001,
             partial_sweep_final_freq: 0.95,
             gamma_flux: 1e-3,
-            mean_tract_length: 1000.0,
             ..Default::default()
         };
         let traj = build_joint_trajectory(
@@ -783,6 +779,46 @@ mod tests {
         );
         let final_freq = traj.samples.last().unwrap().freq[0];
         assert!(final_freq[CLASS_S_A_BENEF] < 1e-9);
+    }
+
+    /// Flux copies the allele between arrangements: arrangement
+    /// frequencies and total A are conserved, and the association
+    /// D decays by the factor (1 - gamma) per generation.
+    #[test]
+    fn flux_conserves_arrangements_and_allele() {
+        let mut f = [0.6, 0.1, 0.1, 0.2];
+        let d0 = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+        apply_flux_inplace(&mut f, 0.1);
+        let p_s = f[CLASS_S_A] + f[CLASS_S_A_BENEF];
+        let p_a = f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF];
+        assert!((p_s - 0.7).abs() < 1e-12, "p_S changed: {p_s}");
+        assert!((p_a - 0.3).abs() < 1e-12, "p_A changed: {p_a}");
+        let d1 = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+        assert!((d1 - 0.9 * d0).abs() < 1e-12, "D: {d0} -> {d1}");
+    }
+
+    /// A on I with flux and no selection: the I frequency of the
+    /// trajectory stays at its initial value.
+    #[test]
+    fn neutral_flux_keeps_inversion_frequency() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.0,
+            t_origin: 500.0,
+            f0: 0.1,
+            gamma_flux: 1e-2,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::I, &[0.3],
+            &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+        );
+        for smp in traj.samples.iter().filter(|smp| smp.t <= spec.t_origin) {
+            let p_i = smp.freq[0][CLASS_I_A] + smp.freq[0][CLASS_I_A_BENEF];
+            assert!((p_i - 0.3).abs() < 1e-9, "p_I = {p_i} at t = {}", smp.t);
+        }
+        let last = traj.samples.last().unwrap().freq[0];
+        assert!(last[CLASS_S_A_BENEF] > 1e-3, "A should reach S: {last:?}");
     }
 
     /// 2-pop: origin in pop 0, m(1,0)=1e-3 means pop 1 absorbs 1e-3

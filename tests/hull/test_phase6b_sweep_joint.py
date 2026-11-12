@@ -22,10 +22,10 @@ def test_j1_no_flux_locks_a_to_origin_kary():
         t_origin=500.0,
         f0=0.001,
         partial_sweep_final_freq=0.99,
-        gamma_flux=0.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0],
+                             gamma_flux=0.0)
     final = rust_sw.trajectory_samples()[-1][1][0]
     # final[0]=(S,a), final[1]=(S,A), final[2]=(I,a), final[3]=(I,A)
     assert final[1] < 1e-9, f"(S,A) should stay 0, got {final[1]}"
@@ -45,11 +45,10 @@ def test_j2_rdl_lifecycle_post_flux_mixing():
         t_origin=2_000.0,
         f0=0.001,
         partial_sweep_final_freq=0.95,
-        gamma_flux=1e-3,
-        mean_tract_length=1000.0,
     )
     rust_sw = sw.to_rust()
-    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0])
+    rust_sw.build_trajectory(n_pops=1, p_inv_init=[0.3], pop_sizes=[10_000.0],
+                             gamma_flux=1e-3)
     final = rust_sw.trajectory_samples()[-1][1][0]
     total_a = final[1] + final[3]
     assert total_a >= 0.90, (
@@ -182,8 +181,6 @@ def test_j5_backward_flux_consistent_with_trajectory():
         t_origin=2_000.0,
         f0=0.001,
         partial_sweep_final_freq=0.95,
-        gamma_flux=1e-5,
-        mean_tract_length=1000.0,
     )
     sim = HullSimulator(
         sample_config={("S", 0): 10, ("I", 0): 10},

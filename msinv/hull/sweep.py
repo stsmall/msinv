@@ -21,6 +21,23 @@ SweepModeStr = Literal[
 
 @dataclass
 class Sweep:
+    """One selective sweep (Rust engine only).
+
+    If ``x_sel`` lies inside inversion ``target_inv``, the sweep is tied to
+    an arrangement: the beneficial allele arises on ``origin_kary``, moves
+    between arrangements only by that inversion's gene flux (rate derived
+    from its ``gene_conversion_rate``, ``mean_tract_length`` and phi(x) at
+    ``x_sel``), and selection on it changes the inversion frequency. The
+    inversion frequency then follows the sweep trajectory from ``t_origin``
+    to ``tau`` and stays at its final value after ``tau``. The trajectory
+    starts from the inversion frequency at ``t_origin``.
+
+    If ``x_sel`` lies outside the inversion (or no inversion has id
+    ``target_inv``), recombination decouples the selected site from the
+    arrangements: the sweep is an ordinary discoal-style sweep,
+    ``origin_kary`` is ignored, and the inversion frequency is unchanged.
+    """
+
     x_sel: float
     tau: float
     origin_pop: int
@@ -32,8 +49,6 @@ class Sweep:
     f0: float = 0.0
     partial_sweep_final_freq: float = 1.0
     recurrent_mutation_rate: float = 0.0
-    gamma_flux: float = 0.0
-    mean_tract_length: float = 0.0
     seed: int = 0
     dt_scalar: float = 400.0
 
@@ -51,8 +66,6 @@ class Sweep:
             f0=self.f0,
             partial_sweep_final_freq=self.partial_sweep_final_freq,
             recurrent_mutation_rate=self.recurrent_mutation_rate,
-            gamma_flux=self.gamma_flux,
-            mean_tract_length=self.mean_tract_length,
             seed=self.seed,
             dt_scalar=self.dt_scalar,
         )

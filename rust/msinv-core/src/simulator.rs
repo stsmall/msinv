@@ -2023,12 +2023,32 @@ fn emit_coal_events_from_cache(
         // Determine kary for the swept inversion at this class. For
         // panmictic-at-this-locus (no kary tag on target_inv), fall
         // back to origin_kary so the trajectory queries still engage.
+        //
+        // Arrangement frequencies come from the inversions' own paths
+        // (`p_class`); for a tied sweep the target inversion's path is
+        // the sweep trajectory's I frequency over [tau, t_origin]
+        // (`SweptTrajectory`), so the two agree. A tied lineage with no
+        // tagged material at the target is taken to be on
+        // `origin_kary`. An untied sweep (selected site outside every
+        // inversion) uses the population A frequency in every cell.
         let sw = active_sweep.expect("in_sweep_cell implies Some(sw)");
-        let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
-        let p_kary = sw.trajectory.as_ref()
-            .map_or(p_class, |traj| traj.p_kary(t, pop, kary));
-        let p_a = sw.trajectory.as_ref()
-            .map_or(0.0, |traj| traj.p_allele_given_kary(t, pop, kary));
+        let tagged = cls.get_inv(sw.target_inv);
+        let kary = tagged.unwrap_or(sw.origin_kary);
+        let (p_kary, p_a) = match sw.trajectory.as_ref() {
+            None => (p_class, 0.0),
+            Some(traj) if !sw.tied => (p_class, traj.p_allele_overall(t, pop)),
+            Some(traj) => {
+                let target = inversions.iter().find(|i| i.inv_id == sw.target_inv);
+                let untagged_factor = match (tagged, target) {
+                    (None, Some(inv)) if t < inv.t_inv_max() => match kary {
+                        Karyotype::I => inv.p_inv_at(t, pop),
+                        Karyotype::S => inv.p_std_at(t, pop),
+                    },
+                    _ => 1.0,
+                };
+                (p_class * untagged_factor, traj.p_allele_given_kary(t, pop, kary))
+            }
+        };
         let p_kary_safe = p_kary.max(1e-9);
 
         // Lineage-count rate (matches discoal `(n_B choose 2)/(2N x)`
@@ -2721,10 +2741,19 @@ fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
 /// using closures that snapshot the current `Demography` arrays. Called once
 /// at sim entry from each run-loop. Sweeps with a caller-supplied trajectory
 /// are respected (skip-if-some).
+///
+/// A sweep whose selected site lies inside inversion `target_inv` is
+/// tied to an arrangement (`Sweep::tied`): its trajectory starts from
+/// the inversion frequency at `t_origin`, gene flux at the site uses the
+/// inversion's flux settings, and the inversion's frequency path is
+/// replaced over `[tau, t_origin]` by the trajectory's I frequency and
+/// held at its final value for `t < tau` (`SweptTrajectory`). Any other
+/// sweep is untied: a single-background (discoal) trajectory, with the
+/// inversion frequencies left as configured.
 fn populate_sweep_trajectories(
     pending_sweeps: &mut [Sweep],
     demo: &crate::demography::Demography,
-    inversions: &[InversionSpec],
+    inversions: &mut [InversionSpec],
 ) {
     let n_pops = demo.n_pops;
     let pop_sizes_snap = demo.pop_sizes.clone();
@@ -2734,12 +2763,55 @@ fn populate_sweep_trajectories(
     let mig_snap = demo.migration_matrix.clone();
 
     for sw in pending_sweeps.iter_mut() {
-        if sw.trajectory.is_some() { continue; }
-        let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
-            inversions.iter().find(|i| i.inv_id == sw.target_inv)
-                .map(|i| i.p_inv_at(0.0, p as u32))
-                .unwrap_or(0.0)
-        }).collect();
+        let target_idx = inversions.iter().position(|i| i.inv_id == sw.target_inv)
+            .filter(|&k| sw.x_sel >= inversions[k].bp_left
+                         && sw.x_sel < inversions[k].bp_right);
+        sw.tied = target_idx.is_some();
+        let t0 = sw.joint.t_origin;
+        let p_inv_init: Vec<f64> = match target_idx {
+            None => {
+                // Untied: one genetic background, as in discoal.
+                sw.origin_kary = Karyotype::S;
+                sw.joint.gamma_flux = 0.0;
+                vec![0.0; n_pops as usize]
+            }
+            Some(k) => {
+                let inv = &inversions[k];
+                let t_inv_o = inv.t_inv(sw.origin_pop);
+                assert!(t0 < t_inv_o,
+                    "sweep at x_sel={} lies inside inversion {} but starts at \
+                     t_origin={} at or before the inversion arose (t_inv={}); \
+                     a sweep tied to an arrangement must start after it exists",
+                    sw.x_sel, inv.inv_id, t0, t_inv_o);
+                let p_i0 = inv.p_inv_at(t0, sw.origin_pop);
+                let p_origin = match sw.origin_kary {
+                    Karyotype::I => p_i0,
+                    Karyotype::S => 1.0 - p_i0,
+                };
+                assert!(p_origin > 0.0,
+                    "sweep at x_sel={} arises on arrangement {:?} of inversion {}, \
+                     whose frequency in pop {} at t_origin={} is 0",
+                    sw.x_sel, sw.origin_kary, inv.inv_id, sw.origin_pop, t0);
+                // Per-generation flux at the selected site, matching the
+                // coalescent's flux rate for a lineage carrying the site
+                // in a run of material at least one tract long: events
+                // at density gcr * phi(x) per bp, each moving a tract of
+                // mean length `mean_tract_length` (`flux_lineage_rate_*`,
+                // `sample_flux_position`, `draw_tract`).
+                let len = inv.length();
+                let w = inv.mean_tract_length / len;
+                let x_rel = (sw.x_sel - inv.bp_left) / len;
+                sw.joint.gamma_flux =
+                    inv.gene_conversion_rate * inv.mean_tract_length * phi(x_rel, w);
+                (0..n_pops as usize).map(|p| inv.p_inv_at(t0, p as u32)).collect()
+            }
+        };
+        if sw.trajectory.is_some() {
+            if let Some(k) = target_idx {
+                splice_inversion_path(&mut inversions[k], sw, &|_t, _p| f64::INFINITY);
+            }
+            continue;
+        }
         // Per-sweep clones so the closures own their data and don't hold a
         // borrow on the outer snapshot vectors (which a future multi-sweep
         // loop iteration could otherwise contend with).
@@ -2779,7 +2851,52 @@ fn populate_sweep_trajectories(
             sw.target_inv, sw.joint.clone());
         let real = std::mem::replace(sw, placeholder);
         *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
+        if let Some(k) = target_idx {
+            splice_inversion_path(&mut inversions[k], sw, &pop_size_at);
+        }
     }
+}
+
+/// Replace `inv`'s frequency path over `[tau, t_origin]` with the I
+/// frequency of `sw`'s joint trajectory (held at its `tau` value for
+/// `t < tau`). In a population where the inversion segregates at
+/// `t_origin`, both arrangements are kept at frequency `>= 1/(2N(t))`:
+/// a sampled arrangement always has at least one copy.
+fn splice_inversion_path(
+    inv: &mut InversionSpec,
+    sw: &Sweep,
+    pop_size_at: &dyn Fn(f64, u32) -> f64,
+) {
+    use crate::sweep_trajectory::{CLASS_I_A, CLASS_I_A_BENEF};
+    use crate::trajectory::{ConstantTrajectory, SweptTrajectory};
+    let traj = match sw.trajectory.as_ref() { Some(t) => t, None => return };
+    let t0 = sw.joint.t_origin;
+    let n_pops = traj.n_pops as usize;
+    let segregating: Vec<bool> = (0..n_pops)
+        .map(|p| inv.p_inv_at(t0, p as u32) > 0.0).collect();
+    let mut times = Vec::new();
+    let mut p_inv: Vec<Vec<f64>> = vec![Vec::new(); n_pops];
+    for smp in traj.samples.iter().filter(|smp| smp.t <= t0) {
+        times.push(smp.t);
+        for (p, series) in p_inv.iter_mut().enumerate() {
+            let f = &smp.freq[p];
+            let mut v = (f[CLASS_I_A] + f[CLASS_I_A_BENEF]).clamp(0.0, 1.0);
+            if segregating[p] {
+                let lo = (0.5 / pop_size_at(smp.t, p as u32)).min(0.5);
+                v = v.clamp(lo, 1.0 - lo);
+            }
+            series.push(v);
+        }
+    }
+    if times.is_empty() {
+        return;
+    }
+    let inner = std::mem::replace(
+        &mut inv.trajectory,
+        Box::new(ConstantTrajectory::single(0.0, 0.0)));
+    inv.trajectory = Box::new(SweptTrajectory {
+        inner, tau: sw.tau, t_origin: t0, times, p_inv,
+    });
 }
 
 /// Force-coalesce qualifying lineages at a sweep event.
@@ -2938,7 +3055,7 @@ fn apply_sweep_finalize(
         } else if sweep.trajectory.is_none() {
             1.0
         } else {
-            (-recomb_rate * sweep.escape_exposure(l, r, supp_inversions, &kary_at)).exp()
+            sweep.escape_prob(l, r, supp_inversions, &kary_at, recomb_rate)
         };
         // Partition: each segment independently rolls Bernoulli with
         // p_hh based on its distance from x_sel.
@@ -3089,7 +3206,7 @@ fn apply_sweep_finalize(
         let still_a: Vec<LinUid> = active.iter()
             .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
             .filter(|lin| {
-                let other = matches!(
+                let other = sweep.tied && matches!(
                     lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena),
                     Some(k) if k != sweep.origin_kary);
                 if other { n_still_a_other_kary += 1; }
@@ -3207,7 +3324,12 @@ fn apply_sweep_recomb_tag_swap(
     // barrier is over and tags are cleared) the other parent's
     // arrangement is random: draw against the population P(A). With no
     // inversion configured this is the single-background P(A | origin).
+    // A sweep outside its inversion (`!tied`) is independent of
+    // arrangement: every child draws against the population P(A).
     let p_a_for = |head: SegIdx| -> f64 {
+        if !sweep.tied {
+            return traj.p_allele_overall(t, sweep.origin_pop);
+        }
         if !has_target_inv {
             return p_a_origin;
         }

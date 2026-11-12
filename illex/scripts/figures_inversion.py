@@ -57,6 +57,13 @@ SFS2D = Path("results/illex/sfs2d")
 TMP = SFS2D if (SFS2D / "AA_BB.body.2dSFS").exists() else Path(".tmp/sfs2d")
 OUT = R / "figures"
 
+# Manuscript figure directories. The multi-panel figures above are the working
+# drafts (results/illex/figures/); the manuscript wants each panel split into a
+# single-panel file with the explanatory text moved into the captions.
+MANU = Path("/sietch_colab/data_share/illex/popgen_data/analysis/manuscript")
+MANU_FIGS = MANU / "figures"
+MANU_SUPP = MANU / "supp_figures"
+
 # --- pinned breakpoints (NOTES sec 8.31, manuscript sec 3o) ---------------
 BP_L, BP_R = 60_540_000, 79_500_000
 CHR2_LEN = 119_466_599
@@ -116,6 +123,34 @@ def save(fig, name):
         fig.savefig(OUT / f"{name}.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"  wrote {OUT}/{name}.{{png,pdf}}")
+
+
+def save_to(fig, directory: Path, name: str, dpi: int = 200):
+    """Save a single manuscript PNG (dpi ~200, tight bbox)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    fig.savefig(directory / f"{name}.png", dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {directory}/{name}.png")
+
+
+# --- shared data loaders (used by both the draft and manuscript figures) ---
+def _fst_chr2():
+    """(position Mb, Fst) for the AA-vs-BB 100 kb scan restricted to chr2."""
+    fs = [r for r in csv.DictReader(open(R / "karyotype_fst_scan.tsv"),
+                                    delimiter="\t") if r["chrom"] == "2"]
+    fw = np.array([float(r["win"]) for r in fs])
+    ff = np.array([float(r["fst"]) for r in fs])
+    o = np.argsort(fw)
+    return fw[o] / 1e6 + 0.05, ff[o]
+
+
+def _diversity():
+    """(midpoint Mb, pi_AA, pi_BB, dxy) at 100 kb over the 60-80 Mb region."""
+    d = load_csv(R / "empirical_jackknife_windows.csv",
+                 window_start=float, pi_AA=float, pi_BB=float, dxy=float)
+    o = np.argsort(d["window_start"])
+    return (d["window_start"][o] / 1e6 + 0.05,
+            d["pi_AA"][o], d["pi_BB"][o], d["dxy"][o])
 
 
 # =========================================================================
@@ -343,7 +378,7 @@ def figure3():
     fig, axes = plt.subplots(1, 2, figsize=(7.1, 3.5))
 
     for ax, (key, tag, label) in zip(axes, (
-            ("body", "a", "inversion body  (60.54–79.50 Mb)"),
+            ("body", "a", "inversion  (60.54–79.50 Mb)"),
             ("control", "b", "collinear control  (10–30 Mb)"))):
         m = np.loadtxt(TMP / f"AA_BB.{key}.2dSFS").reshape(81, 81)
         # The two monomorphic corners hold ~99% of the mass and would flatten
@@ -386,11 +421,208 @@ def figure3():
     save(fig, "fig3_joint_sfs")
 
 
+# =========================================================================
+# MANUSCRIPT SINGLE-PANEL FIGURES
+# Each is one panel from the drafts above, with the explanatory prose stripped
+# down to axis labels (the manuscript captions carry the rest). Visual style
+# (colours, line weights, shading, breakpoint markers) is unchanged.
+# =========================================================================
+def manu_fig_inv_fst():
+    """fig_inv_fst.png -- FST across chr2 alone, minimal text."""
+    fw, ff = _fst_chr2()
+    fig, ax = plt.subplots(figsize=(7.1, 2.3))
+    ax.axvspan(BP_L / 1e6, BP_R / 1e6, color=C_INV, alpha=0.10, lw=0)
+    ax.plot(fw, ff, lw=0.5, color="#3f3f46")
+    for b in (BP_L, BP_R):
+        ax.axvline(b / 1e6, color=C_INV, lw=0.9, ls="--")
+    ax.set_xlim(0, CHR2_LEN / 1e6)
+    ax.set_ylim(0, 0.86)
+    ax.set_yticks([0, 0.2, 0.4, 0.6])
+    ax.set_ylabel("$F_{ST}$  (AA vs BB)")
+    ax.set_xlabel("chr2 position (Mb)", labelpad=1.5)
+    save_to(fig, MANU_FIGS, "fig_inv_fst")
+
+
+def manu_fig_inv_diversity():
+    """fig_inv_diversity.png -- per-arrangement diversity alone, small legend."""
+    mid, pAA, pBB, dxy = _diversity()
+    fig, ax = plt.subplots(figsize=(7.1, 3.0))
+    ax.axvspan(BP_L / 1e6, BP_R / 1e6, color=C_INV, alpha=0.07, lw=0)
+    ax.plot(mid, dxy * 1e3, lw=0.8, color=C_DXY, label=r"$d_{xy}$ (AA, BB)")
+    ax.plot(mid, pBB * 1e3, lw=0.8, color=C_BB, label=r"$\pi_{BB}$ (inverted)")
+    ax.plot(mid, pAA * 1e3, lw=0.8, color=C_AA, label=r"$\pi_{AA}$ (ancestral)")
+    for b in (BP_L, BP_R):
+        ax.axvline(b / 1e6, color=C_INV, lw=0.9, ls="--")
+    ax.set_xlim(60, 80)
+    ax.set_ylim(0, 6.4)
+    ax.set_yticks([0, 1, 2, 3, 4])
+    ax.set_xlabel("chr2 position (Mb)", labelpad=1.5)
+    ax.set_ylabel(r"diversity  ($\times 10^{-3}$)")
+    ax.legend(loc="upper left", ncol=3, frameon=False, borderaxespad=0.0,
+              bbox_to_anchor=(0.0, 1.02), columnspacing=1.5, handlelength=1.7,
+              handletextpad=0.5)
+    save_to(fig, MANU_FIGS, "fig_inv_diversity")
+
+
+def manu_supp_breakpoints():
+    """supp_breakpoints.png -- the two breakpoint zooms as one supp figure."""
+    fw, ff = _fst_chr2()
+    fig, axes = plt.subplots(1, 2, figsize=(7.1, 2.6))
+    for j, (ax, (bp, lab)) in enumerate(zip(axes,
+                                            ((BP_L, "left"), (BP_R, "right")))):
+        lo, hi = bp - 2.5e6, bp + 2.5e6
+        m = (fw >= lo / 1e6) & (fw <= hi / 1e6)
+        ax.axvspan(*((bp / 1e6, hi / 1e6) if j == 0 else (lo / 1e6, bp / 1e6)),
+                   color=C_INV, alpha=0.07, lw=0)
+        ax.plot(fw[m], ff[m], lw=0.7, color="#3f3f46", marker="o", ms=1.9,
+                mfc="#3f3f46", mec="none")
+        ax.axvline(bp / 1e6, color=C_INV, lw=1.0, ls="--")
+        ax.set_xlim(lo / 1e6, hi / 1e6)
+        ax.set_ylim(0, 0.78)
+        ax.set_yticks([0, 0.2, 0.4, 0.6])
+        ax.set_xlabel("chr2 position (Mb)", labelpad=1.5)
+        ax.set_ylabel("$F_{ST}$" if j == 0 else "")
+        ax.set_title(f"{lab} breakpoint  {bp / 1e6:.2f} Mb", loc="left",
+                     pad=4)
+    fig.subplots_adjust(wspace=0.22)
+    save_to(fig, MANU_SUPP, "supp_breakpoints")
+
+
+def manu_fig_fitted_history():
+    """fig_fitted_history.png -- trajectory + the two chi-square profiles,
+    with the heavy inline prose reduced to short labels."""
+    times, freqs, s_fall = decline_curve(
+        t_inv=FIT["t_inv"], t_decline=FIT["t_decline"],
+        t_fall=FIT["t_fall"], p_hist=FIT["p_hist"], p_now=FIT["p_now"])
+    times, freqs = np.asarray(times) / 1e3, np.asarray(freqs)
+
+    fig = plt.figure(figsize=(7.1, 5.6))
+    gs = GridSpec(2, 2, height_ratios=[1.3, 1.0], hspace=0.50, wspace=0.24,
+                  figure=fig)
+
+    # ---- (a) the fitted trajectory -------------------------------------
+    ax = fig.add_subplot(gs[0, :])
+    t0 = FIT["t_decline"] + FIT["t_fall"]
+    tb = np.linspace(0.0, t0, 400)
+    sd = np.array([drift_sd(FIT["p_hist"], t, t0) for t in tb])
+    for k in (2, 1):
+        ax.fill_between(tb / 1e3, np.clip(FIT["p_hist"] - k * sd, 0, 1),
+                        np.clip(FIT["p_hist"] + k * sd, 0, 1),
+                        color="#71717a", alpha=0.13, lw=0, zorder=1)
+    ax.plot(tb / 1e3, np.full_like(tb, FIT["p_hist"]), lw=0.7, ls=":",
+            color="#71717a", zorder=1)
+    ax.axhline(FIT["p_now"], lw=0.7, ls="--", color="#52525b", zorder=2)
+    ax.plot(times, freqs, lw=1.9, color=C_BB, zorder=3, solid_capstyle="round")
+    ax.scatter([0], [FIT["p_now"]], s=28, color=C_BB, zorder=4,
+               edgecolor="white", linewidth=0.9)
+    ax.set_xlim(FIT["t_inv"] / 1e3 * 1.06, -14)
+    ax.set_ylim(0, 0.96)
+    ax.set_yticks([0, 0.2, 0.374, 0.6, 0.74, 0.9])
+    ax.set_yticklabels(["0", "0.2", "0.374", "0.6", "0.74", "0.9"])
+    ax.set_xlabel("time before present (ka)", labelpad=1.5)
+    ax.set_ylabel("frequency of the\ninverted (BB) arrangement", labelpad=2,
+                  linespacing=1.3)
+    # short labels only -- the demographic detail lives in the caption
+    ax.annotate("arose ~850 ka", xy=(FIT["t_inv"] / 1e3, FIT["p_hist"]),
+                xytext=(FIT["t_inv"] / 1e3 - 8, 0.90), fontsize=7,
+                color="#3f3f46", ha="left", va="center",
+                arrowprops=dict(arrowstyle="-", lw=0.6, color="#71717a",
+                                shrinkA=1, shrinkB=3))
+    ax.text(-8, FIT["p_now"] + 0.035, "$p = 0.374$ today", fontsize=7,
+            color="#3f3f46", ha="right", va="bottom")
+
+    # ---- (b, c) the two profiles ---------------------------------------
+    for j, (tag, key, xlab) in enumerate((
+            ("tdecline", "t_decline", "$t_{decline}$  (ka)"),
+            ("tfall2", "t_fall", "$t_{fall}$  (ky)"))):
+        ax = fig.add_subplot(gs[1, j])
+        v, dc, _ = profile(tag, key)
+        ax.axhspan(0, 2, color="#22c55e", alpha=0.09, lw=0)
+        ax.axhline(2, lw=0.7, ls=":", color="#52525b")
+        ax.plot(v / 1e3, dc, marker="o", ms=3.4, lw=1.1, color=C_BB,
+                mfc="white", mec=C_BB, mew=1.1, clip_on=False, zorder=3)
+        ax.set_yscale("symlog", linthresh=2)
+        ax.set_ylim(-0.4, 260)
+        ax.set_yticks([0, 1, 2, 10, 100])
+        ax.set_yticklabels(["0", "1", "2", "10", "100"])
+        ax.set_xlabel(xlab, labelpad=1.5)
+        if j == 0:
+            ax.set_ylabel(r"$\Delta\chi^2$  from best fit")
+        gx, gha = (0.03, "left") if j == 0 else (0.97, "right")
+        ax.text(gx, 0.045, r"$\Delta\chi^2 < 2$", transform=ax.transAxes,
+                ha=gha, va="bottom", fontsize=6.3, color="#15803d")
+        for x, y in zip(v / 1e3, dc):
+            if y > 2:
+                ax.annotate(f"{y:.0f}" if y >= 10 else f"{y:.1f}", xy=(x, y),
+                            xytext=(0, 5), textcoords="offset points",
+                            ha="center", fontsize=6, color="#3f3f46")
+    save_to(fig, MANU_FIGS, "fig_fitted_history")
+
+
+def manu_supp_joint_sfs():
+    """supp_joint_sfs.png -- joint 2D SFS with the colorbar fixed: no
+    interpolation, counts floored at 1 (log10 >= 0), empty cells masked grey."""
+    stats = json.load(open(R / "sfs2d_karyotype.json"))
+    fig, axes = plt.subplots(1, 2, figsize=(7.1, 3.5))
+
+    cmap = mpl.colormaps["magma"].copy()
+    cmap.set_bad("#d9d9d9")            # empty (0-count) cells, distinct grey
+    im = None
+    for ax, (key, tag, label) in zip(axes, (
+            ("body", "a", "inversion  (60.54–79.50 Mb)"),
+            ("control", "b", "collinear control  (10–30 Mb)"))):
+        m = np.loadtxt(TMP / f"AA_BB.{key}.2dSFS").reshape(81, 81)
+        # The two monomorphic corners hold ~99% of the mass; exclude them so
+        # they do not flatten every polymorphic cell. They join the empty mask.
+        m = m.copy()
+        m[0, 0] = m[-1, -1] = 0.0
+        pos = m > 0
+        # floor counts at 1 so log10 >= 0 (realSFS emits fractional expected
+        # counts down to ~1e-6, which otherwise give impossible negative log10)
+        lv = np.where(pos, np.log10(np.maximum(m, 1.0)), np.nan)
+        lv = np.ma.masked_invalid(lv)
+
+        im = ax.imshow(lv, origin="lower", cmap=cmap, aspect="equal",
+                       vmin=0, vmax=4.2, extent=(0, 1, 0, 1),
+                       interpolation="none")
+        ax.plot([0, 1], [0, 1], lw=0.6, ls=(0, (2, 2)), color="#71717a",
+                alpha=0.55)
+        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_yticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_xlabel("derived allele frequency in BB  (inverted)",
+                      labelpad=1.5)
+        if key == "body":
+            ax.set_ylabel("derived allele frequency in AA  (ancestral)")
+        s = stats[key]
+        nf = s["nearfix_AAalt"] + s["nearfix_BBalt"]
+        ax.set_title(f"{tag}   {label}", loc="left", fontweight="bold", pad=5)
+        ax.text(0.035, 0.965,
+                f"shared polymorphism   {100 * s['shared'] / s['variable']:.1f}%\n"
+                f"near-fixed differences   {nf:,.0f}",
+                transform=ax.transAxes, ha="left", va="top", fontsize=6.8,
+                color="white", linespacing=1.45,
+                bbox=dict(fc="#18181b", ec="none", alpha=0.86, pad=3.2))
+        for side in ("bottom", "left"):
+            ax.spines[side].set_visible(False)
+
+    cb = fig.colorbar(im, ax=axes, fraction=0.030, pad=0.020)
+    cb.set_label("sites per cell  ($\\log_{10}$, floored at 1)", fontsize=7)
+    cb.ax.tick_params(labelsize=6.5)
+    cb.outline.set_visible(False)
+    save_to(fig, MANU_SUPP, "supp_joint_sfs")
+
+
 def main() -> None:
     print("building manuscript figures ->", OUT)
     figure1()
     figure2()
     figure3()
+    print("building single-panel manuscript figures ->", MANU)
+    manu_fig_inv_fst()
+    manu_fig_inv_diversity()
+    manu_supp_breakpoints()
+    manu_fig_fitted_history()
+    manu_supp_joint_sfs()
     print("done")
 
 

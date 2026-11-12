@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from illex.slim.config import REC_RATE  # noqa: F401  chr2 collinear male rate 2.158e-9 per bp per generation
 
-P_NOW = 0.626            # present frequency of the inverted arrangement 2a (provisional; Task 5 replaces it)
+P_NOW = 0.602            # present frequency of 2a in the 619 karyotyped individuals (karyotype_final: 223 / 299 / 97)
 P_TOL = 0.02             # acceptance half-width on p_now
 # Upper bound of the logU prior on c, the per-site conversion probability per generation in heterokaryotypes.
 # Task 5 (illex/abc/calibrate_flux.py, results/illex/abc_flux_calibration.txt): msinv sweep of c over 1e-10..1e-5
@@ -26,13 +26,13 @@ BND_MARGIN_BP = 100_000   # collinear margin on each side of the inversion in th
 BND_EDGES_BP = (0, 1_000, 5_000, 20_000, 100_000)   # boundary distance bins outward from each breakpoint, bp
 CONTROL_BP = 40_000.0    # separate no-inversion neutral control (the flank value of every statistic)
 N_INV, N_STD = 100, 100  # simulated chromosomes per class (50 diploids each for LD); data has 508 / 190
-N_KARYO = 633            # individuals karyotyped; p_obs = Binomial(2 * N_KARYO, p_now) / (2 * N_KARYO)
+N_KARYO = 619            # individuals karyotyped; p_obs = Binomial(2 * N_KARYO, p_now) / (2 * N_KARYO)
 GAMMA_FLOOR = 1e-15      # msinv flux rate used when c (params['gamma_eff']) is NaN (no-flux model)
 
 BP_LEFT, BP_RIGHT = 60_550_000, 79_520_000   # chr2 inversion breakpoints (reference coordinates)
-N_I_CHROM, N_S_CHROM = 508, 190              # observed 2a and 2+ chromosomes (2aa 254, 2++ 95 homokaryotypes)
-N_IND = N_KARYO                              # 633 karyotyped individuals
+N_I_CHROM, N_S_CHROM = 446, 194              # observed 2a and 2+ chromosomes (2aa 223, 2++ 97 homokaryotypes)
+N_IND = N_KARYO                              # 619 karyotyped individuals
 # Observed pi_2a/pi_2+, dxy/pi_2a, f1(2a)/f1(2+). FORMS DIFFER: pi_ratio and dxy_pi are RAW body values
 # (empirical_jackknife.py, 60.5-79.5 Mb); f1_ratio is CONTROL-CALIBRATED body/control (sfs_f1_jackknife.py
 # ratio of ratios, 1.2112 / 0.9842), i.e. the form of the ABC statistic (abc_observed.json "stats").
-TARGETS = dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)
+TARGETS = dict(pi_ratio=0.7377, dxy_pi=1.8763, f1_ratio=1.2307)   # pre-karyofix values (unused by the fit); corrected raw: 0.7200, 1.9639

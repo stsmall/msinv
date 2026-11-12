@@ -62,7 +62,7 @@ SENTINEL = {"sentinel": 1.0}
 MAX_NAN = 3                  # a particle with more NaN statistics than this has distance +inf
 P_STAY = 0.7                 # discrete jump kernel on hard/soft
 RESULTS = FsPath("results/illex")
-OBSERVED = RESULTS / "abc_observed_ctl2.json"   # representative collinear control (baseline refit, 2026-11-10)
+OBSERVED = RESULTS / "abc_observed_ctl2_karyofix.json"   # representative collinear control, karyotype_final groups (2026-11-12)
 RF_POSTERIORS = RESULTS / "abc_posteriors.csv"
 MODELCHOICE = RESULTS / "abc_modelchoice.csv"
 MIN_MODEL_PROB = 0.01        # a Task 8 model survives into SMC model choice at prob_total >= this

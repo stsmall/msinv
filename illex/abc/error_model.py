@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import numpy as np
 
-# region -> class -> (call_rate, h). From results/illex/abc_observed.json meta["ld_error_model"].
+# region -> class -> (call_rate, h). From results/illex/abc_observed_ctl2_karyofix.json meta["ld_error_model"] (karyotype_final groups).
 LD_ERROR = {
-    "body": {"I": (0.6155, 0.6904), "S": (0.6741, 0.6757)},
-    "control": {"I": (0.6240, 0.6656), "S": (0.6720, 0.6843)},   # abc_observed_ctl2.json (chr2 40-55 + 85-115 Mb)
+    "body": {"I": (0.6680, 0.6820), "S": (0.6590, 0.6763)},
+    "control": {"I": (0.6768, 0.6645), "S": (0.6564, 0.6830)},   # abc_observed_ctl2_karyofix.json (chr2 40-55 + 85-115 Mb)
 }
 
 

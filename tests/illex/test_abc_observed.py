@@ -31,7 +31,10 @@ def test_keys_match_sim(obs):
     assert list(obs["stats"]) == list(SV.STAT_KEYS)
     assert list(obs["se"]) == list(SV.STAT_KEYS)
     assert set(obs["raw"]) == set(SV.STAT_KEYS)
-    assert obs["p_obs"] == P_NOW
+    assert obs["p_obs"] == 0.626   # legacy fixture (pre-refit groups); the fitted file is checked below
+    from illex.abc.smc import OBSERVED
+    root = Path(__file__).resolve().parents[2]
+    assert json.loads((root / OBSERVED).read_text())["p_obs"] == P_NOW
     assert all(math.isfinite(obs["stats"][k]) for k in SV.MODEL_KEYS)
 
 

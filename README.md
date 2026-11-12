@@ -273,6 +273,18 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 
 ## Unreleased
 
+- **Gene-flux rate no longer depends on carried material (#28).** A
+  lineage is now hit by every flux tract that overlaps its material
+  inside the inversion, including tracts that start in a gap next to
+  it. Before, only tracts starting on carried material counted, so a
+  site the lineage carried with little material around it was
+  converted too rarely. With a 2 bp piece and 500 bp tracts, the
+  rate was 0.4% of the forward rate `gcr * p_other * phi(x) * l`.
+  Every carried site now gets the forward rate. Lineages carrying the
+  whole inversion are unchanged. Both engines. At realistic rates the
+  run time is unchanged. At extreme rates, where a site is converted
+  more often than about once per 100 generations, fragments now take
+  many more flux events, and runs are much slower than before.
 - **Sweeps linked to an inversion.** A sweep whose target inversion
   exists at `t_origin` now tracks the beneficial allele on each
   arrangement. Inside the inversion it moves between them by gene flux.

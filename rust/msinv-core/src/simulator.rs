@@ -13,7 +13,8 @@ use crate::demography::Demography;
 use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
 use crate::lineage::{ATagMap, LinUid, Lineage};
-use crate::phi::{phi, phi_integral};
+use crate::flux::{self, ClassedSeg};
+use crate::phi::phi;
 use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::{other_kary, Exchange, Sweep};
@@ -528,10 +529,9 @@ impl HullSimulator {
                 };
                 let inv = &inversions[ii];
                 let pre_len = active.len();
-                if let Some(x_event) = self.sample_flux_position(
-                    active, li, inv, arena, rng)
+                if let Some((x_event, tl, tr)) = sample_flux_tract_arena(
+                    active[li].head, inv, active[li].population, t, arena, rng)
                 {
-                    let (tl, tr) = self.draw_tract(x_event, inv, rng);
                     if tr > tl {
                         apply_gene_flux(active, li, tl, tr, inv,
                                          arena, next_uid, None, t, x_event);
@@ -1558,10 +1558,9 @@ impl HullSimulator {
                     let li = match chose_li { Some(l) => l, None => continue };
                     let inv = &inversions[ii];
                     let pre_len_flux = active.len();
-                    if let Some(x_event) = self.sample_flux_position(
-                        active, li, inv, arena, rng)
+                    if let Some((x_event, tl, tr)) = sample_flux_tract_arena(
+                        active[li].head, inv, active[li].population, t, arena, rng)
                     {
-                        let (tl, tr) = self.draw_tract(x_event, inv, rng);
                         let sweep_now = finalized_sweeps.iter().find(|s| s.covers(t));
                         // Linked sweep inside this inversion: a tract over
                         // x_sel moves the lineage's selected-site
@@ -1709,68 +1708,6 @@ impl HullSimulator {
         }
         self.warn_cap_hit(t, inversions, "bucket");
         count_a_samples(&a_tag)
-    }
-
-    fn sample_flux_position(
-        &self,
-        active: &[Lineage],
-        lin_idx: usize,
-        inv: &InversionSpec,
-        arena: &SegmentArena,
-        rng: &mut Xoshiro256PlusPlus,
-    ) -> Option<f64> {
-        let inv_len = inv.length();
-        let w = inv.mean_tract_length / inv.length();
-        let mut intervals: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
-        let mut cum = 0.0;
-        let mut cur = active[lin_idx].head;
-        while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            let l = seg.left.max(inv.bp_left);
-            let r = seg.right.min(inv.bp_right);
-            if r > l {
-                let a = (l - inv.bp_left) / inv_len;
-                let b = (r - inv.bp_left) / inv_len;
-                let weight = phi_integral(a, b, w) * inv_len;
-                intervals.push((l, r, a, b, weight));
-                cum += weight;
-            }
-            cur = seg.next;
-        }
-        if cum <= 0.0 { return None; }
-
-        // Pick interval by weight.
-        let u = rng.random::<f64>() * cum;
-        let mut running = 0.0;
-        let mut chosen = intervals.last().unwrap();
-        for entry in &intervals {
-            running += entry.4;
-            if u < running {
-                chosen = entry;
-                break;
-            }
-        }
-        let (_l, _r, a, b, _w) = *chosen;
-
-        // Rejection sample within interval using phi density.
-        let phi_max = if w < 1.0 { w / (1.0 - w) } else { 1.0 };
-        for _ in 0..1000 {
-            let xx: f64 = rng.random::<f64>() * (b - a) + a;
-            if rng.random::<f64>() * phi_max < phi(xx, w) {
-                return Some(inv.bp_left + xx * inv_len);
-            }
-        }
-        // Fallback: uniform in chosen segment.
-        Some(rng.random::<f64>() * (_r - _l) + _l)
-    }
-
-    fn draw_tract(
-        &self,
-        x_event: f64,
-        inv: &InversionSpec,
-        rng: &mut Xoshiro256PlusPlus,
-    ) -> (f64, f64) {
-        draw_tract_at(x_event, inv, rng)
     }
 
     // ---------------------------------------------------------------
@@ -2362,17 +2299,28 @@ fn lineage_class_for_inv_arena(
     else { None }
 }
 
-/// Per-lineage flux rate with class resolved per segment.
-///
-/// Sums over each in-inv segment of `head`'s chain:
-///   γ · p_other(seg.class) · phi_integral(seg-normalized-bounds, w) · inv_len
-/// where p_other = p_inv(t, pop) for class S segments, 1 - p_inv for class I.
-/// Panmictic segments (`get_inv → None`) contribute 0.
-///
-/// Replaces the prior "one karyotype per lineage" model: mixed-class lineages
-/// (which b2-flux's partial-tract events create regularly) now contribute the
-/// correct non-zero rate from BOTH their S and I segments, instead of being
-/// zero-blocked by `lineage_class_for_inv_arena` returning None.
+/// A lineage's carried segments inside `inv` that have an arrangement
+/// tag, clipped to the inversion and in position order.
+fn classed_segs_arena(head: SegIdx, inv: &InversionSpec, arena: &SegmentArena) -> Vec<ClassedSeg> {
+    let mut out = Vec::new();
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            if let Some(k) = seg.branch_class.get_inv(inv.inv_id) {
+                out.push((l, r, k));
+            }
+        }
+        cur = seg.next;
+    }
+    out
+}
+
+/// Per-lineage flux rate: every forward tract that overlaps the
+/// lineage's tagged material in `inv` (`flux::lineage_flux_rate`).
+/// Untagged (panmictic) segments contribute nothing.
 fn flux_lineage_rate_arena(
     head: SegIdx,
     inv: &InversionSpec,
@@ -2380,57 +2328,22 @@ fn flux_lineage_rate_arena(
     t: f64,
     arena: &SegmentArena,
 ) -> f64 {
-    let inv_len = inv.length();
-    if inv_len <= 0.0 { return 0.0; }
-    let w_phi = inv.mean_tract_length / inv_len;
-    let p_inv_v = inv.p_inv_at(t, pop);
-    let mut rate = 0.0;
     let mut cur = head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let next = seg.next;
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
-        if r > l {
-            if let Some(kary) = seg.branch_class.get_inv(inv.inv_id) {
-                let p_other = match kary {
-                    Karyotype::S => p_inv_v,
-                    Karyotype::I => 1.0 - p_inv_v,
-                };
-                if p_other > 0.0 {
-                    let a = (l - inv.bp_left) / inv_len;
-                    let b = (r - inv.bp_left) / inv_len;
-                    rate += inv.gene_conversion_rate * p_other
-                          * phi_integral(a, b, w_phi) * inv_len;
+    let segs = std::iter::from_fn(|| {
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            cur = seg.next;
+            let l = seg.left.max(inv.bp_left);
+            let r = seg.right.min(inv.bp_right);
+            if r > l {
+                if let Some(k) = seg.branch_class.get_inv(inv.inv_id) {
+                    return Some((l, r, k));
                 }
             }
-            // Panmictic (None) → no flux contribution.
         }
-        cur = next;
-    }
-    rate
-}
-
-/// Determine a lineage's karyotype for one inversion, reading flat segs.
-fn lineage_class_for_inv_segs(
-    segs: &[FlatSeg], inv: &InversionSpec,
-) -> Option<Karyotype> {
-    let mut seen_s = false;
-    let mut seen_i = false;
-    for &(sl, sr, cls) in segs {
-        let l = sl.max(inv.bp_left);
-        let r = sr.min(inv.bp_right);
-        if r > l {
-            match cls.get_inv(inv.inv_id) {
-                Some(Karyotype::S) => seen_s = true,
-                Some(Karyotype::I) => seen_i = true,
-                None => {}
-            }
-        }
-    }
-    if seen_s && !seen_i { Some(Karyotype::S) }
-    else if seen_i && !seen_s { Some(Karyotype::I) }
-    else { None }
+        None
+    });
+    flux::lineage_flux_rate_iter(segs, inv, inv.p_inv_at(t, pop))
 }
 
 /// Flat-segs counterpart of `flux_lineage_rate_arena`. Same semantics; used
@@ -2441,30 +2354,26 @@ fn flux_lineage_rate_segs(
     pop: u32,
     t: f64,
 ) -> f64 {
-    let inv_len = inv.length();
-    if inv_len <= 0.0 { return 0.0; }
-    let w_phi = inv.mean_tract_length / inv_len;
-    let p_inv_v = inv.p_inv_at(t, pop);
-    let mut rate = 0.0;
-    for &(sl, sr, cls) in segs {
+    let it = segs.iter().filter_map(|&(sl, sr, cls)| {
         let l = sl.max(inv.bp_left);
         let r = sr.min(inv.bp_right);
-        if r > l {
-            if let Some(kary) = cls.get_inv(inv.inv_id) {
-                let p_other = match kary {
-                    Karyotype::S => p_inv_v,
-                    Karyotype::I => 1.0 - p_inv_v,
-                };
-                if p_other > 0.0 {
-                    let a = (l - inv.bp_left) / inv_len;
-                    let b = (r - inv.bp_left) / inv_len;
-                    rate += inv.gene_conversion_rate * p_other
-                          * phi_integral(a, b, w_phi) * inv_len;
-                }
-            }
-        }
-    }
-    rate
+        if r > l { cls.get_inv(inv.inv_id).map(|k| (l, r, k)) } else { None }
+    });
+    flux::lineage_flux_rate_iter(it, inv, inv.p_inv_at(t, pop))
+}
+
+/// Sample a flux event for a lineage with the same components as its
+/// rate. `None` means the proposal was thinned and nothing happens.
+fn sample_flux_tract_arena(
+    head: SegIdx,
+    inv: &InversionSpec,
+    pop: u32,
+    t: f64,
+    arena: &SegmentArena,
+    rng: &mut Xoshiro256PlusPlus,
+) -> Option<(f64, f64, f64)> {
+    let segs = classed_segs_arena(head, inv, arena);
+    flux::sample_flux_tract(&segs, inv, inv.p_inv_at(t, pop), rng)
 }
 
 /// Apply a gene-flux event: split tract out of lineage, flip class
@@ -2918,11 +2827,9 @@ fn populate_sweep_trajectories(
                     sw.origin_pop, t0);
                 sw.joint.founder = FounderSeed::OnArrangement;
                 // Per-generation flux at the selected site, matching the
-                // coalescent's flux rate for a lineage carrying the site
-                // in a run of material at least one tract long: events
-                // at density gcr * phi(x) per bp, each moving a tract of
-                // mean length `mean_tract_length` (`flux_lineage_rate_*`,
-                // `sample_flux_position`, `draw_tract`).
+                // coalescent's rate of tracts covering a carried site:
+                // events at density gcr * phi(x) per bp, each moving a
+                // tract of mean length `mean_tract_length` (`flux.rs`).
                 let len = inv.length();
                 let w = inv.mean_tract_length / len;
                 let x_rel = (sw.x_sel - inv.bp_left) / len;
@@ -3387,33 +3294,11 @@ fn draw_tract_at(
     inv: &InversionSpec,
     rng: &mut Xoshiro256PlusPlus,
 ) -> (f64, f64) {
-    use rand_distr::{Distribution, Exp};
-    let inv_len = inv.length();
-
     if inv.mean_tract_length <= 0.0 {
         return (x_event, x_event);
     }
-
-    let l = match inv.tract_distribution {
-        crate::inversion::TractDistribution::Fixed => inv.mean_tract_length,
-        crate::inversion::TractDistribution::Geometric => {
-            let exp = Exp::new(1.0 / inv.mean_tract_length).expect("mean > 0 by guard above");
-            exp.sample(rng)
-        }
-    };
-    let l = l.min(inv_len * 0.99);
-
-    let x_rel = x_event - inv.bp_left;
-    let b1_lo = (x_rel - l).max(0.0);
-    let b1_hi = (x_rel).min(inv_len - l);
-    let b1 = if b1_hi <= b1_lo {
-        (x_rel - l / 2.0).clamp(0.0, inv_len - l)
-    } else {
-        rng.random::<f64>() * (b1_hi - b1_lo) + b1_lo
-    };
-    let tl = (inv.bp_left + b1).max(inv.bp_left);
-    let tr = (tl + l).min(inv.bp_right);
-    (tl, tr)
+    let l = flux::draw_tract_len(inv, rng);
+    flux::place_tract(x_event, l, inv, rng)
 }
 
 /// Set a lineage's sweep allele in all three mirrors (`a_tag`,

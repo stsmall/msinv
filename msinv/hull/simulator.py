@@ -91,6 +91,74 @@ def _phi_integral(a: float, b: float, w: float) -> float:
     return total
 
 
+_FLUX_TOUCH_EPS = 1e-9
+
+
+def _phi_max(w: float) -> float:
+    """Peak of ``_phi(., w)``."""
+    if w >= 1.0:
+        return 1.0
+    return max(0.0, min(1.0, min(w, 0.5) / (1.0 - w)))
+
+
+def _flux_components(segs, inv, p_inv):
+    """Flux-event components for a lineage's tagged material in ``inv``.
+
+    Mirrors Rust ``flux::components``. ``segs`` is a position-ordered
+    list of ``(left, right, 'S' | 'I')`` clipped to the inversion.
+    Returns ``[(kind, a, b, rate)]``: ``('seg', left, right, rate)`` for
+    events starting on carried material, ``('edge', edge, limit, rate)``
+    for events starting in the gap next to a piece of material, nearer
+    to that edge than to any other piece (proposal rate, thinned in
+    ``_sample_flux_tract``).
+    """
+    out = []
+    inv_len = inv.bp_right - inv.bp_left
+    if inv_len <= 0 or inv.gene_conversion_rate <= 0 or not segs:
+        return out
+    ell = inv.mean_tract_length
+    w = ell / inv_len
+
+    def p_other(k):
+        return p_inv if k == "S" else 1.0 - p_inv
+
+    for l, r, k in segs:
+        po = p_other(k)
+        if po <= 0.0 or r <= l:
+            continue
+        a = (l - inv.bp_left) / inv_len
+        b = (r - inv.bp_left) / inv_len
+        rate = inv.gene_conversion_rate * po * _phi_integral(a, b, w) * inv_len
+        if rate > 0.0:
+            out.append(("seg", l, r, rate))
+
+    unit = inv.gene_conversion_rate * _phi_max(w) * ell if ell > 0.0 else 0.0
+    if unit <= 0.0:
+        return out
+    pieces = []
+    for l, r, k in segs:
+        if r <= l:
+            continue
+        if pieces and l <= pieces[-1][1] + _FLUX_TOUCH_EPS:
+            if r > pieces[-1][1]:
+                pieces[-1][1] = r
+                pieces[-1][3] = k
+        else:
+            pieces.append([l, r, k, k])
+    for i, (pl, pr, kl, kr) in enumerate(pieces):
+        if pl > inv.bp_left + _FLUX_TOUCH_EPS:
+            limit = 0.5 * (pieces[i - 1][1] + pl) if i > 0 else inv.bp_left
+            rate = unit * p_other(kl)
+            if rate > 0.0:
+                out.append(("edge", pl, limit, rate))
+        if pr < inv.bp_right - _FLUX_TOUCH_EPS:
+            limit = 0.5 * (pr + pieces[i + 1][0]) if i + 1 < len(pieces) else inv.bp_right
+            rate = unit * p_other(kr)
+            if rate > 0.0:
+                out.append(("edge", pr, limit, rate))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Lineage GC — remove "fully coalesced" lineages
 # ---------------------------------------------------------------------------
@@ -870,64 +938,44 @@ class HullSimulator:
         # FP overshoot: last point of the last weighted segment.
         return last.right if last is not None else self.L
 
-    def _flux_lineage_rate(self, lineage, inv):
-        """Per-lineage flux rate with class resolved per segment.
-
-        Sums over each in-inv segment of the lineage:
-            γ · p_other(seg.class) · phi_integral(seg-bounds, w) · inv_len
-        where p_other = p_inv(pop) for class S segments, 1 - p_inv for class I.
-        Panmictic segments (no S/I tag for this inversion) contribute 0.
-
-        Replaces the prior "one karyotype per lineage" model: mixed-class
-        lineages — which b2-flux's partial-tract events create regularly —
-        now contribute the correct non-zero rate from BOTH their S and I
-        segments, instead of being zero-blocked by ``_lineage_class_for_inv``
-        returning None.
-
-        Mirrors Rust's ``flux_lineage_rate_arena``.
-        """
-        if inv.bp_left is None:
-            return 0.0
-        inv_len = inv.bp_right - inv.bp_left
-        if inv_len <= 0:
-            return 0.0
-        # b2-flux: w_phi is mean_tract_length / inv_length.
-        w_phi = inv.mean_tract_length / inv_len
-        pop = lineage.population
-        p_inv_v = inv.p_inv_for(pop)
+    def _classed_segs(self, lineage, inv):
+        """Tagged segments of ``lineage`` inside ``inv``, clipped, as
+        ``(left, right, 'S' | 'I')`` in position order. Panmictic
+        segments (no S/I tag for this inversion) are skipped."""
         cls_S = inv.class_S()
         cls_I = inv.class_I()
-        rate = 0.0
+        out = []
         seg = lineage.head
         while seg is not None:
             l = max(seg.left, inv.bp_left)
             r = min(seg.right, inv.bp_right)
             if r > l:
                 bc = seg.branch_class
-                seg_class = None
+                k = None
                 if isinstance(bc, frozenset):
                     if cls_S in bc:
-                        seg_class = "S"
+                        k = "S"
                     elif cls_I in bc:
-                        seg_class = "I"
-                else:
-                    if bc == cls_S:
-                        seg_class = "S"
-                    elif bc == cls_I:
-                        seg_class = "I"
-                if seg_class is not None:
-                    p_other = p_inv_v if seg_class == "S" else 1.0 - p_inv_v
-                    if p_other > 0.0:
-                        a = (l - inv.bp_left) / inv_len
-                        b = (r - inv.bp_left) / inv_len
-                        rate += (
-                            inv.gene_conversion_rate
-                            * p_other
-                            * _phi_integral(a, b, w_phi)
-                            * inv_len
-                        )
+                        k = "I"
+                elif bc == cls_S:
+                    k = "S"
+                elif bc == cls_I:
+                    k = "I"
+                if k is not None:
+                    out.append((l, r, k))
             seg = seg.next
-        return rate
+        return out
+
+    def _flux_lineage_rate(self, lineage, inv):
+        """Per-lineage flux rate: every forward tract that overlaps the
+        lineage's tagged material in ``inv``, wherever it starts (see
+        ``_flux_components``). Mirrors Rust ``flux_lineage_rate_arena``.
+        """
+        if inv.bp_left is None:
+            return 0.0
+        segs = self._classed_segs(lineage, inv)
+        p_inv = inv.p_inv_for(lineage.population)
+        return sum(c[3] for c in _flux_components(segs, inv, p_inv))
 
     def _lineage_class_for_inv(self, lineage, inv):
         """Return 'S', 'I', or None for the lineage's karyotype at
@@ -1231,72 +1279,22 @@ class HullSimulator:
 
     # -- gene-flux event helper -------------------------------------------
 
-    def _sample_flux_position(self, lineage, inv):
-        """Sample a gene-flux event position weighted by phi(x) over
-        ``lineage``'s in-inv ancestral material under inversion ``inv``.
-
-        Returns the genomic position where the conversion centres.
-        """
+    def _draw_tract_len(self, inv):
+        """Tract length from ``inv.tract_distribution`` ('fixed': the
+        mean; 'geometric': Exponential(mean)), capped at 0.99 of the
+        inversion."""
         inv_len = inv.bp_right - inv.bp_left
-        # b2-flux: w is mean_tract_length / inv_length.
-        w = inv.mean_tract_length / inv_len
-        intervals = []
-        cum = 0.0
-        seg = lineage.head
-        while seg is not None:
-            l = max(seg.left, inv.bp_left)
-            r = min(seg.right, inv.bp_right)
-            if r > l:
-                a = (l - inv.bp_left) / inv_len
-                b = (r - inv.bp_left) / inv_len
-                weight = _phi_integral(a, b, w) * inv_len
-                intervals.append((l, r, a, b, weight))
-                cum += weight
-            seg = seg.next
-        if cum <= 0.0:
-            return None
-        u = self.rng.random() * cum
-        running = 0.0
-        chosen = intervals[-1]
-        for entry in intervals:
-            running += entry[4]
-            if u < running:
-                chosen = entry
-                break
-        l, r, a, b, weight = chosen
-        phi_max = w / (1.0 - w) if w < 1.0 else 1.0
-        for _ in range(1000):
-            xx = self.rng.uniform(a, b)
-            if self.rng.random() * phi_max < _phi(xx, w):
-                return inv.bp_left + xx * inv_len
-        return self.rng.uniform(l, r)
-
-    def _draw_tract(self, x_event, inv):
-        """Draw a gene-conversion tract centred at ``x_event`` for
-        inversion ``inv``, using the b2 flux model.
-
-        Tract length L is drawn per-event from the distribution
-        configured via ``inv.tract_distribution``:
-            * 'fixed':     L = inv.mean_tract_length
-            * 'geometric': L ~ Exponential(1 / inv.mean_tract_length)
-              (continuous-coordinate analog of geometric).
-        """
-        inv_len = inv.bp_right - inv.bp_left
-        mean_L = inv.mean_tract_length
-
-        # Defensive: rate-zero short-circuit upstream should prevent
-        # reaching here with mean_L == 0, but guard so we never
-        # divide by zero in the Exponential sampler.
-        if mean_L <= 0.0:
-            return float(x_event), float(x_event)
-
         if inv.tract_distribution == "fixed":
-            L = mean_L
+            L = inv.mean_tract_length
         else:  # 'geometric'
-            L = self.rng.exponential(mean_L)
-        L = min(L, inv_len * 0.99)
+            L = self.rng.exponential(inv.mean_tract_length)
+        return min(L, inv_len * 0.99)
 
-        x_rel = x_event - inv.bp_left
+    def _place_tract(self, x, L, inv):
+        """Place a tract of length ``L`` uniformly among the positions
+        that contain ``x`` and fit in the inversion."""
+        inv_len = inv.bp_right - inv.bp_left
+        x_rel = x - inv.bp_left
         b1_lo = max(0.0, x_rel - L)
         b1_hi = min(inv_len - L, x_rel)
         if b1_hi <= b1_lo:
@@ -1306,6 +1304,63 @@ class HullSimulator:
         tract_left = inv.bp_left + b1
         tract_right = min(tract_left + L, inv.bp_right)
         return tract_left, tract_right
+
+    def _sample_flux_tract(self, lineage, inv):
+        """Sample one flux event for ``lineage`` with the components of
+        its rate. Returns ``(x_event, tract_left, tract_right)``, or None
+        when the proposal is thinned. Mirrors Rust
+        ``flux::sample_flux_tract``."""
+        segs = self._classed_segs(lineage, inv)
+        p_inv = inv.p_inv_for(lineage.population)
+        comps = _flux_components(segs, inv, p_inv)
+        total = sum(c[3] for c in comps)
+        if total <= 0.0:
+            return None
+        u = self.rng.random() * total
+        running = 0.0
+        chosen = comps[-1]
+        for c in comps:
+            running += c[3]
+            if u < running:
+                chosen = c
+                break
+        inv_len = inv.bp_right - inv.bp_left
+        ell = inv.mean_tract_length
+        w = ell / inv_len
+        pmax = _phi_max(w)
+        kind, a, b, _ = chosen
+        if kind == "seg":
+            y = None
+            for _ in range(1000):
+                yy = self.rng.uniform(a, b)
+                if self.rng.random() * pmax < _phi((yy - inv.bp_left) / inv_len, w):
+                    y = yy
+                    break
+            if y is None:
+                y = self.rng.uniform(a, b)
+            if ell <= 0.0:
+                return y, y, y
+            tl, tr = self._place_tract(y, self._draw_tract_len(inv), inv)
+            return y, tl, tr
+        edge, limit = a, b
+        if inv.tract_distribution == "fixed":
+            d = self.rng.random() * ell
+        else:
+            d = self.rng.exponential(ell)
+        y = edge - d if limit < edge else edge + d
+        if (limit < edge and y <= limit) or (limit > edge and y >= limit):
+            return None
+        if self.rng.random() * pmax >= _phi((y - inv.bp_left) / inv_len, w):
+            return None
+        if inv.tract_distribution == "fixed":
+            L = ell
+        else:
+            L = d + self.rng.exponential(ell)
+        L = min(L, inv_len * 0.99)
+        tl, tr = self._place_tract(y, L, inv)
+        if not any(tl < sr and tr > sl for sl, sr, _ in segs):
+            return None
+        return y, tl, tr
 
     # -- main loop ---------------------------------------------------------
 
@@ -1480,10 +1535,10 @@ class HullSimulator:
                 inv = next((iv for iv in self.inversions if iv.inv_id == inv_id), None)
                 if inv is None:
                     continue
-                x_event = self._sample_flux_position(lineage, inv)
-                if x_event is None:
+                drawn = self._sample_flux_tract(lineage, inv)
+                if drawn is None:
                     continue
-                tract_left, tract_right = self._draw_tract(x_event, inv)
+                _, tract_left, tract_right = drawn
                 if tract_right <= tract_left:
                     continue
                 apply_gene_flux(active, lineage, tract_left, tract_right, inv=inv)

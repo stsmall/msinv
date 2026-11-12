@@ -1,0 +1,15 @@
+rows 16917; dropped n_nan>0: 18; dropped NA in fit keys: 0; models: B_1 D1_1 D2_1 N_1
+model choice ...
+Warning in lda.default(x, grouping, ...) : variables are collinear
+grouped CV confusion ...
+Warning in lda.default(x, grouping, ...) : variables are collinear
+Warning in lda.default(x, grouping, ...) : variables are collinear
+Warning in lda.default(x, grouping, ...) : variables are collinear
+Warning in lda.default(x, grouping, ...) : variables are collinear
+Warning in lda.default(x, grouping, ...) : variables are collinear
+     unit prob_stats  vote          acc prob_total
+B_1   B_1  0.2965944 0.408 0.0061576921 0.83352178
+D1_1 D1_1  0.2009940 0.145 0.0005065270 0.04646454
+D2_1 D2_1  0.2701128 0.276 0.0005355881 0.06602557
+N_1   N_1  0.2322989 0.171 0.0005092311 0.05398810
+accuracy CV 0.509 OOB 0.478; 11585 s

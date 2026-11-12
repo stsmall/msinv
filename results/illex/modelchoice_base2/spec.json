@@ -1,0 +1,131 @@
+{
+ "fit_keys": [
+  "pi_ratio",
+  "dxy_pi",
+  "f1_ratio",
+  "sfs_I_1",
+  "sfs_I_2",
+  "sfs_I_3",
+  "sfs_I_4",
+  "sfs_I_5",
+  "sfs_I_6p",
+  "sfs_S_1",
+  "sfs_S_2",
+  "sfs_S_3",
+  "sfs_S_4",
+  "sfs_S_5",
+  "sfs_S_6p",
+  "jsfs_01",
+  "jsfs_02",
+  "jsfs_03",
+  "jsfs_04",
+  "jsfs_10",
+  "jsfs_11",
+  "jsfs_12",
+  "jsfs_13",
+  "jsfs_14",
+  "jsfs_20",
+  "jsfs_21",
+  "jsfs_22",
+  "ld_I_1",
+  "ld_I_2",
+  "ld_I_3",
+  "ld_I_4",
+  "ld_I_5",
+  "ld_I_6",
+  "ld_S_1",
+  "ld_S_2",
+  "ld_S_3",
+  "ld_S_4",
+  "ld_S_5",
+  "ld_S_6",
+  "p_obs"
+ ],
+ "log_params": [
+  "s",
+  "p0",
+  "gamma_eff"
+ ],
+ "params": {
+  "t_inv": {
+   "rows": "all",
+   "models": [
+    "N",
+    "D1",
+    "D2",
+    "B"
+   ],
+   "lo": 100000.0,
+   "hi": 1500000.0,
+   "log": false
+  },
+  "s": {
+   "rows": "all",
+   "models": [
+    "D1",
+    "D2",
+    "B"
+   ],
+   "lo": 1e-06,
+   "hi": 0.1,
+   "log": true
+  },
+  "p0": {
+   "rows": "soft",
+   "models": [
+    "N",
+    "D1",
+    "D2",
+    "B"
+   ],
+   "lo": 0.001,
+   "hi": 0.1,
+   "log": true
+  },
+  "t_sel": {
+   "rows": "soft",
+   "models": [
+    "D1",
+    "D2",
+    "B"
+   ],
+   "lo": 0.0,
+   "hi": 1500000.0,
+   "edge_lo": false,
+   "log": false
+  },
+  "t_stop": {
+   "rows": "all",
+   "models": [
+    "D2"
+   ],
+   "lo": 0.0,
+   "hi": 1500000.0,
+   "edge_lo": false,
+   "log": false
+  },
+  "p_star": {
+   "rows": "all",
+   "models": [
+    "B"
+   ],
+   "lo": 0.3,
+   "hi": 0.95,
+   "log": false
+  },
+  "gamma_eff": {
+   "rows": "all",
+   "models": [
+    "N",
+    "D1",
+    "D2",
+    "B"
+   ],
+   "flux": 1,
+   "lo": 1e-09,
+   "hi": 1e-05,
+   "log": true
+  }
+ },
+ "p_hard": 0.5
+}

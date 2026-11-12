@@ -8,15 +8,17 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use smallvec::SmallVec;
 
-use crate::class_tag::{BranchClass, Karyotype};
+use crate::class_tag::{karyotypes_compatible, shared_karyotype, BranchClass, Karyotype};
 use crate::demography::Demography;
 use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombination};
 use crate::inversion::InversionSpec;
 use crate::lineage::{ATagMap, LinUid, Lineage};
-use crate::phi::{phi, phi_integral};
+use crate::flux::{self, ClassedSeg};
+use crate::phi::phi;
 use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
-use crate::sweep::Sweep;
+use crate::sweep::{other_kary, Exchange, Sweep};
+use crate::sweep_trajectory::FounderSeed;
 use crate::sweep_buckets::SweepBuckets;
 use crate::tables::TableBuilder;
 use crate::event_log;
@@ -71,9 +73,6 @@ pub(crate) enum AlleleTag {
 }
 
 enum Event {
-    /// Per-pair coalescence (used by the non-cache structured fallback
-    /// `compute_coal_rates_structured`). Hot path uses CoalAggregate.
-    CoalPair { i: usize, j: usize, class: BranchClass },
     /// Aggregate coalescence rate for all pairs in `pop` whose overlap
     /// lies in `class`. Firing samples the specific (i, j) pair from
     /// RateCache proportional to overlap length in that class — avoids
@@ -92,6 +91,10 @@ enum Event {
     /// Replaces the O(n · n_pops) per-lineage Migration events that
     /// dominated multi-pop event-list builds at ~9.5% of run_loop.
     MigrationAggregate { src_pop: u32, dst_pop: u32 },
+    /// Extra selected-site association events of a linked sweep
+    /// (`sweep_assoc_rates`): firing picks a lineage from the snapshot
+    /// taken at emission, proportional to its rate.
+    SweepAssoc,
 }
 
 // ---------------------------------------------------------------
@@ -144,6 +147,30 @@ pub struct HullSimulator {
     /// together. SMC' matches the linkage of the exact coalescent much
     /// more closely but is slower (about 1.8x at Illex scale).
     pub smc_prime: bool,
+    /// Crossover suppression in heterokaryotypes (default true).
+    /// While an inversion's barrier is active, a crossover at a
+    /// position inside the inversion needs a homokaryotypic partner,
+    /// so a lineage carrying arrangement k there recombines at
+    /// `r * p_k(t)`. Conventions, shared with the coalescence rate
+    /// (`p_class_for_tag`):
+    /// - nested / overlapping inversions take the product of the
+    ///   per-inversion frequencies, which assumes the arrangements are
+    ///   independent;
+    /// - untagged material (samples with a `None` karyotype) is
+    ///   panmictic and gets weight 1, as do collinear flanks and
+    ///   everything older than t_inv.
+    /// The standard SLiM inversion recipe likewise drops crossovers
+    /// inside the inversion in a heterokaryotype. Implemented by
+    /// thinning: breakpoints are proposed at rate `r` per bp of
+    /// material and accepted with probability `w(x, t)` evaluated at
+    /// the proposal time, so recombination is exact for time-varying
+    /// trajectories (coalescence still evaluates p(t) at each event
+    /// and holds it until the next one).
+    /// The sweep hitchhiking escape probability in
+    /// `apply_sweep_finalize` uses the same suppressed rate.
+    /// false restores the msinv <= 0.3.5 behaviour (full `r`
+    /// everywhere) for reproducing earlier results.
+    pub crossover_suppression: bool,
 }
 
 impl HullSimulator {
@@ -185,6 +212,7 @@ impl HullSimulator {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         }
     }
 
@@ -213,6 +241,7 @@ impl HullSimulator {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         }
     }
 
@@ -336,13 +365,24 @@ impl HullSimulator {
         use crate::events::{apply_coalescence_compound, apply_recombination};
         use crate::pair_rate_cache::PairRateCache;
 
+        // TODO(crossover_suppression): this disabled path draws every
+        // breakpoint at the full rate r. If it is revived, port the
+        // thinning step from `run_loop`'s Event::Recombination arm.
+        // Until then refuse to run it silently with the wrong rate.
+        assert!(
+            !self.crossover_suppression || inversions.is_empty(),
+            "run_loop_compound does not implement crossover_suppression; \
+             port the thinning from run_loop or set \
+             crossover_suppression=false");
+
         let mut barrier_active: Vec<bool> = inversions.iter().map(|_| true).collect();
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
         // Snapshot demography state into each sweep's trajectory closures
         // BEFORE any apply_events_at calls fire — otherwise the snapshot
         // would capture mutated pop_sizes rather than t=0 values.
-        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions,
+                                    self.recombination_rate);
         let mut finalized_sweeps: Vec<Sweep> = Vec::new();
         let mut sweep_cursor: (f64, u64) = (f64::NAN, 0);
         let mut a_tag: ATagMap = ATagMap::default();
@@ -446,7 +486,7 @@ impl HullSimulator {
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                        self.sequence_length, rng, self.recombination_rate,
+                        self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                         &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                     pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                         demo, t, self.sequence_length);
@@ -465,7 +505,7 @@ impl HullSimulator {
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                    self.sequence_length, rng, self.recombination_rate,
+                    self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                     &mut sweep_cursor, None, &mut a_tag, &mut buckets);
                 pair_rates.rebuild(active, arena, inversions, &barrier_active,
                                     demo, t, self.sequence_length);
@@ -489,10 +529,9 @@ impl HullSimulator {
                 };
                 let inv = &inversions[ii];
                 let pre_len = active.len();
-                if let Some(x_event) = self.sample_flux_position(
-                    active, li, inv, arena, rng)
+                if let Some((x_event, tl, tr)) = sample_flux_tract_arena(
+                    active[li].head, inv, active[li].population, t, arena, rng)
                 {
-                    let (tl, tr) = self.draw_tract(x_event, inv, rng);
                     if tr > tl {
                         apply_gene_flux(active, li, tl, tr, inv,
                                          arena, next_uid, None, t, x_event);
@@ -601,7 +640,7 @@ impl HullSimulator {
                     let swap_indices: [usize; 2] = [chosen_idx, len_after - 1];
                     apply_sweep_recomb_tag_swap(
                         active, &swap_indices, &finalized_sweeps,
-                        t, rng, &mut a_tag, &mut buckets, x);
+                        t, rng, &mut a_tag, &mut buckets, x, inversions, arena);
                 }
                 pair_rates.recompute_for(
                     chosen_idx, active, arena, inversions,
@@ -675,7 +714,8 @@ impl HullSimulator {
         // Pending sweeps, sorted by tau (earliest first).
         let mut pending_sweeps: Vec<Sweep> = self.sweeps.clone();
         pending_sweeps.sort_by(|a, b| a.tau.partial_cmp(&b.tau).unwrap());
-        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions);
+        populate_sweep_trajectories(&mut pending_sweeps, demo, inversions,
+                                    self.recombination_rate);
         let mut finalized_sweeps: Vec<Sweep> = Vec::new();
 
         // Monotone sweep-merge cursor shared across all sweeps at the
@@ -754,6 +794,10 @@ impl HullSimulator {
         // so a few rounds of delay has no correctness impact.
         let gc_stride = self.gc_stride.max(1);
         let mut gc_counter: u32 = 0;
+        // Snapshot of per-lineage association-event rates of the active
+        // linked sweep, rebuilt with the event list (indices stay valid
+        // until the next mutation, which forces a rebuild).
+        let mut assoc_rates: Vec<(usize, f64)> = Vec::new();
 
         for _ in 0..self.iters_max {
             // Optional early stop (used by msprime-recapitation wrapper):
@@ -808,10 +852,12 @@ impl HullSimulator {
 
             // Check for barrier crossings.
             let mut any_barrier = false;
+            let mut n_active_barriers = 0usize;
             let mut earliest_barrier = f64::INFINITY;
             for (k, inv) in inversions.iter().enumerate() {
                 if barrier_active[k] {
                     any_barrier = true;
+                    n_active_barriers += 1;
                     earliest_barrier = earliest_barrier.min(inv.t_inv_max());
                 }
             }
@@ -856,6 +902,17 @@ impl HullSimulator {
                     &rate_cache, active, arena, &*demo, t,
                     inversions, &barrier_active,
                     &mut all_events, active_sweep, &a_tag);
+
+                // Linked-sweep association events (rate corrections where
+                // the exact rate exceeds the simulated one).
+                assoc_rates = match active_sweep {
+                    Some(sw) if sw.linked() => sweep_assoc_rates(active, sw, t, arena),
+                    _ => Vec::new(),
+                };
+                let assoc_total: f64 = assoc_rates.iter().map(|e| e.1).sum();
+                if assoc_total > 0.0 {
+                    all_events.push((assoc_total, Event::SweepAssoc));
+                }
 
                 // Recombination.
                 if total_recomb_rate > 0.0 {
@@ -922,7 +979,7 @@ impl HullSimulator {
                     apply_boundary(
                         inversions, active, arena, &mut barrier_active,
                         demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                        self.sequence_length, rng, self.recombination_rate,
+                        self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                         &mut sweep_cursor,
                         event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                     total_material = active.iter()
@@ -975,7 +1032,7 @@ impl HullSimulator {
                 apply_boundary(
                     inversions, active, arena, &mut barrier_active,
                     demo, &mut pending_sweeps, &mut finalized_sweeps, t, tables, next_uid,
-                    self.sequence_length, rng, self.recombination_rate,
+                    self.sequence_length, rng, self.recombination_rate, self.crossover_suppression,
                     &mut sweep_cursor,
                     event_log.as_deref_mut(), &mut a_tag, &mut buckets);
                 total_material = active.iter()
@@ -983,6 +1040,8 @@ impl HullSimulator {
                 total_recomb_rate = total_material * self.recombination_rate;
                 engine_dirty = true;
                 cache_dirty = true;
+                lin_tree_dirty = true;
+                flux_dirty = true;
                 last_event = "boundary";
                 continue;
             }
@@ -1150,28 +1209,49 @@ impl HullSimulator {
                         let target = rng.random_range(0..matching.len());
                         crate::rate_index::unpack_ij(matching[target])
                     };
+                    // Karyotype-compatible pairs are stored once, under
+                    // their shared karyotype (`pair_rate_classes`), so the
+                    // overlap-bucket pickers above never see them in a
+                    // second cell and always take the plain
+                    // `barrier_merge_class` rule. The sweep any-pair
+                    // picker selects by lineage class membership instead;
+                    // see `sweep_any_pair_action` for how it keeps one
+                    // rate per pair (and why it falls back to the partial
+                    // merge with more than one active barrier).
+                    // (Signatures are only needed while a barrier is
+                    // active; afterwards every merge is a full merge.)
+                    let any_pair_pick = in_any_sweep_for_aa
+                        && matches!(allele, AlleleTag::A | AlleleTag::ALower);
+                    let allowed = if !any_barrier {
+                        None
+                    } else {
+                        let sig_i = lineage_sig(active[i].head, arena);
+                        let sig_j = lineage_sig(active[j].head, arena);
+                        if any_pair_pick {
+                            let (hi_, hj_) = (active[i].head, active[j].head);
+                            match sweep_any_pair_action(
+                                n_active_barriers, sig_i, sig_j, cls,
+                                |k| lineage_has_class(hi_, k, arena)
+                                    && lineage_has_class(hj_, k, arena)) {
+                                AnyPairAction::Reject => continue,
+                                AnyPairAction::Merge(a) => a,
+                            }
+                        } else {
+                            match barrier_merge_class(
+                                true, karyotypes_compatible(sig_i, sig_j)) {
+                                Some(a) => a,
+                                None => {
+                                    debug_assert!(false,
+                                        "incompatible pair drawn from cell {:?}", cls);
+                                    continue;
+                                }
+                            }
+                        }
+                    };
                     let pre_len = active.len();
                     let (lo, hi) = if i < j { (i, j) } else { (j, i) };
                     let old_i_len = active[i].cached_len;
                     let old_j_len = active[j].cached_len;
-                    // Post-barrier (all inversions inactive) everything
-                    // is PAN, so fall into Hudson's full merge: non-
-                    // overlap segments fold into merged, lineage count
-                    // drops by 1 per event. Barrier-era Some(cls) keeps
-                    // class-mismatched regions on remainder lineages so
-                    // S/I can't coalesce via a PAN-class event.
-                    // Two all-panmictic lineages (no inversion tags) take a
-                    // full Hudson merge even while a barrier is active, so
-                    // pairs made eligible by the SMC' hull rule (no shared
-                    // material) actually merge.
-                    let allowed = if any_barrier
-                        && !(self.smc_prime && cls.is_panmictic()
-                             && lineage_all_pan(active[i].head, arena)
-                             && lineage_all_pan(active[j].head, arena)) {
-                        Some(cls)
-                    } else {
-                        None
-                    };
                     apply_coalescence_partial(
                         active, i, j, t, arena, tables, next_uid,
                         allowed, Some(&mut a_tag), Some(&mut buckets));
@@ -1187,69 +1267,6 @@ impl HullSimulator {
                     // on the length Fenwick so subsequent recomb picks stay
                     // O(log n). Do swap-pattern in the same order as
                     // apply_coalescence_partial.
-                    tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
-                    tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
-                    for new_idx in (pre_len - 2)..post_len {
-                        lin_len_tree.grow(new_idx + 1);
-                        lin_len_tree.set(new_idx, active[new_idx].cached_len);
-                    }
-                    engine_dirty = true;
-
-                    if !cache_dirty {
-                        rate_cache.remove_lineage(hi);
-                        rate_cache.swap_update(hi, pre_len - 1);
-                        rate_cache.remove_lineage(lo);
-                        rate_cache.swap_update(lo, pre_len - 2);
-                        for new_idx in (pre_len - 2)..post_len {
-                            rate_cache.recompute_for(new_idx, active, arena);
-                        }
-                    }
-                    if any_barrier && !flux_dirty {
-                        flux_swap_remove(hi, &mut flux_per_lin, &mut flux_total);
-                        flux_swap_remove(lo, &mut flux_per_lin, &mut flux_total);
-                        for new_idx in (pre_len - 2)..post_len {
-                            if cache_dirty {
-                                rate_cache.rebuild_segs_for(new_idx, active, arena);
-                            }
-                            let pop = active[new_idx].population;
-                            let segs = rate_cache.lineage_segs(new_idx);
-                            flux_push(&mut flux_per_lin,
-                                      &mut flux_total, segs, pop,
-                                      inversions, &barrier_active, t);
-                        }
-                    }
-                }
-                Event::CoalPair { i, j, class } => {
-                    let (i, j) = (*i, *j);
-                    let cls = *class;
-                    last_event = "coal_pair";
-                    let pre_len = active.len();
-                    let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                    let old_i_len = active[i].cached_len;
-                    let old_j_len = active[j].cached_len;
-                    // See CoalAggregate above — post-barrier wants
-                    // Hudson full merge.
-                    // Two all-panmictic lineages (no inversion tags) take a
-                    // full Hudson merge even while a barrier is active, so
-                    // pairs made eligible by the SMC' hull rule (no shared
-                    // material) actually merge.
-                    let allowed = if any_barrier
-                        && !(self.smc_prime && cls.is_panmictic()
-                             && lineage_all_pan(active[i].head, arena)
-                             && lineage_all_pan(active[j].head, arena)) {
-                        Some(cls)
-                    } else {
-                        None
-                    };
-                    apply_coalescence_partial(
-                        active, i, j, t, arena, tables, next_uid,
-                        allowed, Some(&mut a_tag), Some(&mut buckets));
-                    let post_len = active.len();
-                    let mut delta = -old_i_len - old_j_len;
-                    for new_idx in (pre_len - 2)..post_len {
-                        delta += active[new_idx].cached_len;
-                    }
-                    total_material += delta;
                     tree_swap_remove(&mut lin_len_tree, hi, pre_len - 1);
                     tree_swap_remove(&mut lin_len_tree, lo, pre_len - 2);
                     for new_idx in (pre_len - 2)..post_len {
@@ -1373,8 +1390,48 @@ impl HullSimulator {
                     let lin_len = active[chosen_idx].cached_len;
                     if lin_len <= 0.0 { continue; }
                     let x_offset: f64 = rng.random::<f64>() * lin_len;
-                    let x = find_position(active, chosen_idx, x_offset,
-                                           arena, self.sequence_length);
+                    let (x, x_class) = find_position_and_class(
+                        active, chosen_idx, x_offset, arena,
+                        self.sequence_length);
+                    // Heterokaryotype crossover suppression, by thinning:
+                    // the event above was proposed at the full rate r per
+                    // bp of material; keep it with probability
+                    // w(x, t) = p_class(t) of the arrangement(s) the
+                    // lineage carries at x (1 in flanks, on untagged
+                    // material and once barriers are gone). Accepted
+                    // breakpoints then have rate r * w(x, t) at every
+                    // position and time, with w read at the event time.
+                    if self.crossover_suppression && any_barrier
+                        && !x_class.is_panmictic()
+                    {
+                        let w = p_class_for_tag(
+                            x_class, inversions, &barrier_active, t,
+                            active[chosen_idx].population);
+                        if w < 1.0 && rng.random::<f64>() >= w {
+                            // Rejected: no state change. Coalescence rates
+                            // are re-emitted at the new t, as after any
+                            // other event, so p_class(t) stays current.
+                            last_event = "recomb_rejected";
+                            coal_rates_dirty = true;
+                            continue;
+                        }
+                    }
+                    // Linked sweep, site outside its inversion: a crossover
+                    // between x_sel and the inversion moves the lineage's
+                    // selected-site association; thin it to the exact
+                    // backward rate where that is below the proposal
+                    // (`assoc_accept`; the excess fires as SweepAssoc).
+                    if let Some(sw) = finalized_sweeps.iter().find(|s| s.covers(t)) {
+                        if let Exchange::Recomb { lo, hi } = sw.exchange {
+                            if x > lo && x < hi
+                                && !assoc_accept(active, chosen_idx, sw, t, arena, rng)
+                            {
+                                last_event = "recomb_assoc_rejected";
+                                coal_rates_dirty = true;
+                                continue;
+                            }
+                        }
+                    }
                     let len_before_split = active.len();
                     apply_recombination(active, chosen_idx, x, arena,
                                          next_uid, Some(&mut a_tag), Some(&mut buckets));
@@ -1388,7 +1445,7 @@ impl HullSimulator {
                         let swap_indices: [usize; 2] = [chosen_idx, len_after_split - 1];
                         apply_sweep_recomb_tag_swap(
                             active, &swap_indices, &finalized_sweeps,
-                            t, rng, &mut a_tag, &mut buckets, x);
+                            t, rng, &mut a_tag, &mut buckets, x, inversions, arena);
                     }
                     // Recombination preserves total material.
                     engine_dirty = true;
@@ -1501,14 +1558,36 @@ impl HullSimulator {
                     let li = match chose_li { Some(l) => l, None => continue };
                     let inv = &inversions[ii];
                     let pre_len_flux = active.len();
-                    if let Some(x_event) = self.sample_flux_position(
-                        active, li, inv, arena, rng)
+                    if let Some((x_event, tl, tr)) = sample_flux_tract_arena(
+                        active[li].head, inv, active[li].population, t, arena, rng)
                     {
-                        let (tl, tr) = self.draw_tract(x_event, inv, rng);
+                        let sweep_now = finalized_sweeps.iter().find(|s| s.covers(t));
+                        // Linked sweep inside this inversion: a tract over
+                        // x_sel moves the lineage's selected-site
+                        // association; thin it to the exact backward rate
+                        // (`assoc_accept`; the excess fires as SweepAssoc).
+                        if let Some(sw) = sweep_now {
+                            if sw.exchange == Exchange::Flux
+                                && sw.target_inv == inv.inv_id
+                                && tl <= sw.x_sel && sw.x_sel < tr
+                                && !assoc_accept(active, li, sw, t, arena, rng)
+                            {
+                                last_event = "flux_assoc_rejected";
+                                coal_rates_dirty = true;
+                                continue;
+                            }
+                        }
                         if tr > tl {
+                            let orig = active[li].a_tag;
                             apply_gene_flux(active, li, tl, tr, inv,
                                              arena, next_uid,
                                              event_log.as_deref_mut(), t, x_event);
+                            if let Some(sw) = sweep_now {
+                                let affected: Vec<usize> = std::iter::once(li)
+                                    .chain(pre_len_flux..active.len()).collect();
+                                sweep_flux_alleles(active, &affected, orig, tl, tr, sw,
+                                                   t, arena, rng, &mut a_tag, &mut buckets);
+                            }
                         }
                         engine_dirty = true;
                         total_material = active.iter()
@@ -1546,6 +1625,35 @@ impl HullSimulator {
                                           inversions, &barrier_active, t);
                             }
                         }
+                    }
+                }
+                Event::SweepAssoc => {
+                    last_event = "sweep_assoc";
+                    let total: f64 = assoc_rates.iter().map(|e| e.1).sum();
+                    if total <= 0.0 { continue; }
+                    let u: f64 = rng.random::<f64>() * total;
+                    let mut running = 0.0;
+                    let mut pick = assoc_rates.last().map(|e| e.0);
+                    for &(idx, rate) in assoc_rates.iter() {
+                        running += rate;
+                        if u < running { pick = Some(idx); break; }
+                    }
+                    let idx = match pick { Some(i) if i < active.len() => i, _ => continue };
+                    let sw = match finalized_sweeps.iter().find(|s| s.covers(t)) {
+                        Some(sw) => sw,
+                        None => continue,
+                    };
+                    let changed = apply_assoc_event(
+                        active, idx, sw, t, arena, next_uid, rng, inversions,
+                        &mut a_tag, &mut buckets);
+                    if changed {
+                        total_material = active.iter().map(|l| l.cached_len).sum();
+                        engine_dirty = true;
+                        cache_dirty = true;
+                        lin_tree_dirty = true;
+                        flux_dirty = true;
+                    } else {
+                        coal_rates_dirty = true;
                     }
                 }
                 Event::MigrationAggregate { src_pop, dst_pop } => {
@@ -1600,131 +1708,6 @@ impl HullSimulator {
         }
         self.warn_cap_hit(t, inversions, "bucket");
         count_a_samples(&a_tag)
-    }
-
-    // ---------------------------------------------------------------
-    // Per-pair, per-class coalescence rates
-    // ---------------------------------------------------------------
-    #[allow(dead_code)]
-    fn compute_coal_rates_structured(
-        inversions: &[InversionSpec],
-        active: &[Lineage],
-        arena: &SegmentArena,
-        demo: &Demography,
-        t: f64,
-        barrier_active: &[bool],
-        events: &mut Vec<(f64, Event)>,
-    ) {
-        let n = active.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                if active[i].population != active[j].population {
-                    continue;
-                }
-                let ne_pop = demo.size_at(active[i].population, t).max(1e-9);
-                let overlaps = overlap_by_class(
-                    active[i].head, active[j].head, arena);
-                for (cls, ov_len) in &overlaps {
-                    if *ov_len <= 0.0 { continue; }
-                    let pop = active[i].population;
-                    let p_class = p_class_for_tag(
-                        *cls, inversions, barrier_active, t, pop);
-                    if p_class <= 0.0 { continue; }
-                    let rate = 1.0 / (2.0 * ne_pop * p_class);
-                    events.push((rate, Event::CoalPair {
-                        i, j, class: *cls,
-                    }));
-                }
-            }
-        }
-    }
-
-    fn sample_flux_position(
-        &self,
-        active: &[Lineage],
-        lin_idx: usize,
-        inv: &InversionSpec,
-        arena: &SegmentArena,
-        rng: &mut Xoshiro256PlusPlus,
-    ) -> Option<f64> {
-        let inv_len = inv.length();
-        let w = inv.mean_tract_length / inv.length();
-        let mut intervals: Vec<(f64, f64, f64, f64, f64)> = Vec::new();
-        let mut cum = 0.0;
-        let mut cur = active[lin_idx].head;
-        while cur != SEG_NIL {
-            let seg = arena.get(cur);
-            let l = seg.left.max(inv.bp_left);
-            let r = seg.right.min(inv.bp_right);
-            if r > l {
-                let a = (l - inv.bp_left) / inv_len;
-                let b = (r - inv.bp_left) / inv_len;
-                let weight = phi_integral(a, b, w) * inv_len;
-                intervals.push((l, r, a, b, weight));
-                cum += weight;
-            }
-            cur = seg.next;
-        }
-        if cum <= 0.0 { return None; }
-
-        // Pick interval by weight.
-        let u = rng.random::<f64>() * cum;
-        let mut running = 0.0;
-        let mut chosen = intervals.last().unwrap();
-        for entry in &intervals {
-            running += entry.4;
-            if u < running {
-                chosen = entry;
-                break;
-            }
-        }
-        let (_l, _r, a, b, _w) = *chosen;
-
-        // Rejection sample within interval using phi density.
-        let phi_max = if w < 1.0 { w / (1.0 - w) } else { 1.0 };
-        for _ in 0..1000 {
-            let xx: f64 = rng.random::<f64>() * (b - a) + a;
-            if rng.random::<f64>() * phi_max < phi(xx, w) {
-                return Some(inv.bp_left + xx * inv_len);
-            }
-        }
-        // Fallback: uniform in chosen segment.
-        Some(rng.random::<f64>() * (_r - _l) + _l)
-    }
-
-    fn draw_tract(
-        &self,
-        x_event: f64,
-        inv: &InversionSpec,
-        rng: &mut Xoshiro256PlusPlus,
-    ) -> (f64, f64) {
-        use rand_distr::{Distribution, Exp};
-        let inv_len = inv.length();
-
-        if inv.mean_tract_length <= 0.0 {
-            return (x_event, x_event);
-        }
-
-        let l = match inv.tract_distribution {
-            crate::inversion::TractDistribution::Fixed => inv.mean_tract_length,
-            crate::inversion::TractDistribution::Geometric => {
-                let exp = Exp::new(1.0 / inv.mean_tract_length).expect("mean > 0 by guard above");
-                exp.sample(rng)
-            }
-        };
-        let l = l.min(inv_len * 0.99);
-
-        let x_rel = x_event - inv.bp_left;
-        let b1_lo = (x_rel - l).max(0.0);
-        let b1_hi = (x_rel).min(inv_len - l);
-        let b1 = if b1_hi <= b1_lo {
-            (x_rel - l / 2.0).clamp(0.0, inv_len - l)
-        } else {
-            rng.random::<f64>() * (b1_hi - b1_lo) + b1_lo
-        };
-        let tl = (inv.bp_left + b1).max(inv.bp_left);
-        let tr = (tl + l).min(inv.bp_right);
-        (tl, tr)
     }
 
     // ---------------------------------------------------------------
@@ -1998,6 +1981,8 @@ fn emit_coal_events_from_cache(
     // length is the (pop, cls) pair count. O(pops × classes) per emit.
     for (pop, cls, count) in cache.iter_class_totals() {
         if count <= 0.0 { continue; }
+        // Incompatible (I x S) pairs: rate 0 while a barrier is active.
+        if cls == BranchClass::BLOCKED { continue; }
         let p_class = p_class_for_tag(cls, inversions, barrier_active, t, pop);
         if p_class <= 0.0 { continue; }
         let ne = demo.size_at(pop, t).max(1e-9);
@@ -2038,15 +2023,25 @@ fn emit_coal_events_from_cache(
             }
         }
 
-        // Determine kary for the swept inversion at this class. For
-        // panmictic-at-this-locus (no kary tag on target_inv), fall
-        // back to origin_kary so the trajectory queries still engage.
+        // Allele frequency for this cell. Arrangement frequencies come
+        // from the inversions' own paths (`p_class`); for a linked sweep
+        // the target inversion's path is the sweep trajectory's I
+        // frequency over [tau, t_origin] (`SweptTrajectory`), so the two
+        // agree. A cell tagged with arrangement k at the target of a
+        // linked sweep uses P(A | k): the pair rate is
+        // 1 / (2N f(k, A)). A cell with no tag at the target uses the
+        // population P(A): the arrangement behind untagged material is
+        // not tracked, and averaging the per-arrangement rates over it
+        // (weights f(k, A) / P(A)) gives 1 / (2N P(A)) for any pair. An
+        // unlinked sweep has one background and uses P(A) everywhere.
         let sw = active_sweep.expect("in_sweep_cell implies Some(sw)");
-        let kary = cls.get_inv(sw.target_inv).unwrap_or(sw.origin_kary);
-        let p_kary = sw.trajectory.as_ref()
-            .map_or(p_class, |traj| traj.p_kary(t, pop, kary));
-        let p_a = sw.trajectory.as_ref()
-            .map_or(0.0, |traj| traj.p_allele_given_kary(t, pop, kary));
+        let tagged = cls.get_inv(sw.target_inv);
+        let (p_kary, p_a) = match (sw.trajectory.as_ref(), tagged) {
+            (None, _) => (p_class, 0.0),
+            (Some(traj), Some(k)) if sw.linked() =>
+                (p_class, traj.p_allele_given_kary(t, pop, k)),
+            (Some(traj), _) => (p_class, traj.p_allele_overall(t, pop)),
+        };
         let p_kary_safe = p_kary.max(1e-9);
 
         // Lineage-count rate (matches discoal `(n_B choose 2)/(2N x)`
@@ -2083,20 +2078,114 @@ fn emit_coal_events_from_cache(
     }
 }
 
-/// Helper: true if any segment in the lineage's chain has
-/// `branch_class == cls`. Used by the per-allele rate emitter to
-/// decide which (pop, cls) cells a lineage participates in.
-/// True if every segment of the lineage is panmictic (no inversion tag).
-fn lineage_all_pan(head: SegIdx, arena: &SegmentArena) -> bool {
+/// Karyotype signature of a lineage: OR of its segments' class bits
+/// (see `class_tag::karyotypes_compatible`).
+fn lineage_sig(head: SegIdx, arena: &SegmentArena) -> u64 {
+    let mut sig = 0u64;
     let mut cur = head;
     while cur != SEG_NIL {
         let seg = arena.get(cur);
-        if !seg.branch_class.is_panmictic() { return false; }
+        sig |= seg.branch_class.bits();
         cur = seg.next;
     }
-    true
+    sig
 }
 
+/// Merge mode for a barrier-era coalescence event, or `None` when
+/// the pair cannot coalesce.
+///
+/// `Some(None)` is a full Hudson merge: every segment of both lineages,
+/// overlap and non-overlap, folds into the parent. It applies after the
+/// barriers are gone and, while a barrier is active, to every pair that
+/// can coalesce at all: the karyotype-compatible pairs (I x I, S x S,
+/// either with an untagged lineage, two untagged lineages). Their common
+/// parent chromosome has a well-defined arrangement and inherits all of
+/// their material, exactly as in a two-deme coalescent.
+///
+/// `None`: an incompatible pair (one lineage carries I and the other S at
+/// some active inversion) has no common ancestor while that barrier is
+/// active, so the event is dropped. The rate cache stores such pairs under
+/// `BranchClass::BLOCKED` with rate 0, so the overlap-bucket pickers never
+/// draw one; the check is a guard. Margin (flank) material leaves its
+/// arrangement only through a recombination in the flank, which makes an
+/// untagged lineage that is compatible with every other.
+///
+/// History: up to msinv 0.3.5 every barrier-era coalescence was partial
+/// (only the overlap of the event's class merged), which cut
+/// within-arrangement LD about 3-fold. Incompatible pairs also
+/// partial-merged their shared margin at 1/(2N), so arrangement-linked
+/// flank material behaved as panmictic right up to the breakpoints.
+#[inline]
+fn barrier_merge_class(any_barrier: bool, compatible: bool)
+    -> Option<Option<BranchClass>> {
+    if any_barrier && !compatible { None } else { Some(None) }
+}
+
+/// What the sweep any-pair picker does with a pair drawn in cell `cls`.
+#[derive(Debug, PartialEq, Eq)]
+enum AnyPairAction {
+    /// Drop the event: the pair is counted in another cell.
+    Reject,
+    /// Coalesce with this merge mode (`None` = full merge, `Some(cls)` =
+    /// partial merge restricted to `cls`; see `barrier_merge_class`).
+    Merge(Option<BranchClass>),
+}
+
+/// Merge rule for the sweep any-pair picker (in-sweep AA / aa events in
+/// cell `(pop, cls)`), which draws any two lineages of the allele subgroup
+/// that carry class `cls` on some segment, with no overlap test. Called
+/// only while at least one barrier is active. `both_have(k)` is true when
+/// both lineages carry a segment of class `k`.
+///
+/// Exactly one active barrier (the case the full-merge rule is argued
+/// for): every tagged segment carries that one inversion's tag, so the
+/// cell classes are `P`, `S` and `I`, and the shared karyotype `K` of a
+/// compatible pair is `P` or a class that both lineages carry. A
+/// compatible pair is then a candidate in cell `K` (if `K = P`, one
+/// lineage is untagged and carries only `P` material, so `P` is the only
+/// cell in which it is a candidate with the other), and in cell `K` it
+/// takes a full merge; drawn in any other cell it is rejected so the pair
+/// fires at one rate. Incompatible pairs (I x S, with any number of
+/// active barriers) are rejected: they cannot coalesce while the barrier
+/// is active (see `barrier_merge_class`).
+///
+/// More than one active barrier: a lineage's signature ORs tags carried
+/// by different segments (e.g. S0 material in one body and S1 in another),
+/// so the shared karyotype can be a class that no segment carries. Such a
+/// pair is never rejected and would full-merge in every cell where both
+/// lineages are candidates, i.e. at the sum of several cell rates. No
+/// single-cell rule is derived for this case, so the picker falls back to
+/// the pre-0.4.0 behaviour: the partial merge restricted to `cls`, which
+/// is consistent with the per-cell lineage-count rate the sweep emitter
+/// uses. Only compatible pairs reach this fallback (incompatible pairs
+/// are rejected first), so it never merges material across arrangements.
+/// Marginal trees inside the bodies are unaffected; within-arrangement
+/// short-range LD keeps the old barrier-era deficit inside sweep windows
+/// only, and a partial merge can leave a remnant holding only margin
+/// material (an untagged lineage that did not arise through a flank
+/// recombination), so with two or more barriers flank differentiation
+/// inside a sweep window is slightly understated.
+fn sweep_any_pair_action(n_active_barriers: usize, sig_i: u64, sig_j: u64,
+                         cls: BranchClass,
+                         both_have: impl FnOnce(BranchClass) -> bool)
+    -> AnyPairAction {
+    debug_assert!(n_active_barriers >= 1);
+    if !karyotypes_compatible(sig_i, sig_j) {
+        return AnyPairAction::Reject;
+    }
+    if n_active_barriers > 1 {
+        return AnyPairAction::Merge(Some(cls));
+    }
+    let shared = shared_karyotype(sig_i, sig_j);
+    if shared != cls && both_have(shared) {
+        return AnyPairAction::Reject;
+    }
+    AnyPairAction::Merge(None)
+}
+
+/// Helper: true if any segment in the lineage's chain has
+/// `branch_class == cls`. Used by the per-allele rate emitter to
+/// decide which (pop, cls) cells a lineage participates in.
 fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bool {
     let mut cur = head;
     while cur != SEG_NIL {
@@ -2107,72 +2196,17 @@ fn lineage_has_class(head: SegIdx, cls: BranchClass, arena: &SegmentArena) -> bo
     false
 }
 
-/// Compute coal events list. Post-t_inv: Hudson per-pop buckets, O(n).
-/// Active inversions: per-pair overlap-by-class, O(n^2).
-fn compute_coal_events(
-    active: &[Lineage],
-    arena: &SegmentArena,
-    demo: &Demography,
-    t: f64,
-    inversions: &[InversionSpec],
-    barrier_active: &[bool],
-    pop_buckets: &[Vec<u32>],
-    events: &mut Vec<(f64, Event)>,
-) {
-    let any_inv_active = barrier_active.iter().any(|&b| b);
-
-    if !any_inv_active {
-        // Hudson per-pop coalescence rate — read counts directly from
-        // the precomputed `pop_buckets` instead of rebuilding a local
-        // association list with linear-scan finds (~6% of multi-pop
-        // run_loop self-time).
-        if demo.n_pops >= 2 {
-            for (pop, bucket) in pop_buckets.iter().enumerate() {
-                let k = bucket.len();
-                if k < 2 { continue; }
-                let ne = demo.size_at(pop as u32, t).max(1e-9);
-                let kf = k as f64;
-                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-                events.push((rate,
-                    Event::CoalPanmicticPop { pop: pop as u32 }));
-            }
-        } else {
-            // Single-pop: no buckets built — use active.len() directly.
-            let k = active.len();
-            if k >= 2 {
-                let ne = demo.size_at(0, t).max(1e-9);
-                let kf = k as f64;
-                let rate = kf * (kf - 1.0) / 2.0 / (2.0 * ne);
-                events.push((rate, Event::CoalPanmicticPop { pop: 0 }));
-            }
-        }
-        return;
-    }
-
-    // Structured: per-pair overlap-by-class.
-    let n = active.len();
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if active[i].population != active[j].population { continue; }
-            let ne = demo.size_at(active[i].population, t).max(1e-9);
-            let overlaps = overlap_by_class(active[i].head, active[j].head, arena);
-            for (cls, _ov_len) in &overlaps {
-                let pop = active[i].population;
-                let p_class = p_class_for_tag(*cls, inversions, barrier_active, t, pop);
-                if p_class <= 0.0 { continue; }
-                let rate = 1.0 / (2.0 * ne * p_class);
-                events.push((rate, Event::CoalPair { i, j, class: *cls }));
-            }
-        }
-    }
-}
-
 /// Effective sub-population frequency for a BranchClass tag,
 /// using per-population inversion frequencies.
 fn p_class_for_tag(cls: BranchClass, inversions: &[InversionSpec],
                     barrier_active: &[bool], t: f64, pop: u32) -> f64 {
     if cls.is_panmictic() {
         return 1.0;
+    }
+    // Karyotype-incompatible pairs: no coalescence while the barrier is
+    // active (see `rate_index::pair_rate_classes`).
+    if cls == BranchClass::BLOCKED {
+        return 0.0;
     }
     let mut p = 1.0;
     for (k, inv) in inversions.iter().enumerate() {
@@ -2238,46 +2272,6 @@ fn make_initial_segments(
     (head, tail)
 }
 
-/// Compute overlap between two segment chains, bucketed by matching
-/// BranchClass. Only counts positions where BOTH have material AND
-/// their classes agree.
-fn overlap_by_class(
-    head_a: SegIdx, head_b: SegIdx, arena: &SegmentArena,
-) -> Vec<(BranchClass, f64)> {
-    let mut result: Vec<(BranchClass, f64)> = Vec::new();
-    let mut sa = head_a;
-    let mut sb = head_b;
-    while sa != SEG_NIL && sb != SEG_NIL {
-        let a = arena.get(sa);
-        let b = arena.get(sb);
-        if a.right <= b.left {
-            sa = a.next;
-            continue;
-        }
-        if b.right <= a.left {
-            sb = b.next;
-            continue;
-        }
-        let l = a.left.max(b.left);
-        let r = a.right.min(b.right);
-        if r > l && a.branch_class == b.branch_class {
-            let cls = a.branch_class;
-            // Accumulate into result.
-            if let Some(entry) = result.iter_mut().find(|(c, _)| *c == cls) {
-                entry.1 += r - l;
-            } else {
-                result.push((cls, r - l));
-            }
-        }
-        if a.right < b.right {
-            sa = a.next;
-        } else {
-            sb = b.next;
-        }
-    }
-    result
-}
-
 /// Arena-walking counterpart to `lineage_class_for_inv_segs`. Used by
 /// the compound event loop, which doesn't maintain the RateCache's
 /// flat seg mirror.
@@ -2305,17 +2299,28 @@ fn lineage_class_for_inv_arena(
     else { None }
 }
 
-/// Per-lineage flux rate with class resolved per segment.
-///
-/// Sums over each in-inv segment of `head`'s chain:
-///   γ · p_other(seg.class) · phi_integral(seg-normalized-bounds, w) · inv_len
-/// where p_other = p_inv(t, pop) for class S segments, 1 - p_inv for class I.
-/// Panmictic segments (`get_inv → None`) contribute 0.
-///
-/// Replaces the prior "one karyotype per lineage" model: mixed-class lineages
-/// (which b2-flux's partial-tract events create regularly) now contribute the
-/// correct non-zero rate from BOTH their S and I segments, instead of being
-/// zero-blocked by `lineage_class_for_inv_arena` returning None.
+/// A lineage's carried segments inside `inv` that have an arrangement
+/// tag, clipped to the inversion and in position order.
+fn classed_segs_arena(head: SegIdx, inv: &InversionSpec, arena: &SegmentArena) -> Vec<ClassedSeg> {
+    let mut out = Vec::new();
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let l = seg.left.max(inv.bp_left);
+        let r = seg.right.min(inv.bp_right);
+        if r > l {
+            if let Some(k) = seg.branch_class.get_inv(inv.inv_id) {
+                out.push((l, r, k));
+            }
+        }
+        cur = seg.next;
+    }
+    out
+}
+
+/// Per-lineage flux rate: every forward tract that overlaps the
+/// lineage's tagged material in `inv` (`flux::lineage_flux_rate`).
+/// Untagged (panmictic) segments contribute nothing.
 fn flux_lineage_rate_arena(
     head: SegIdx,
     inv: &InversionSpec,
@@ -2323,57 +2328,22 @@ fn flux_lineage_rate_arena(
     t: f64,
     arena: &SegmentArena,
 ) -> f64 {
-    let inv_len = inv.length();
-    if inv_len <= 0.0 { return 0.0; }
-    let w_phi = inv.mean_tract_length / inv_len;
-    let p_inv_v = inv.p_inv_at(t, pop);
-    let mut rate = 0.0;
     let mut cur = head;
-    while cur != SEG_NIL {
-        let seg = arena.get(cur);
-        let next = seg.next;
-        let l = seg.left.max(inv.bp_left);
-        let r = seg.right.min(inv.bp_right);
-        if r > l {
-            if let Some(kary) = seg.branch_class.get_inv(inv.inv_id) {
-                let p_other = match kary {
-                    Karyotype::S => p_inv_v,
-                    Karyotype::I => 1.0 - p_inv_v,
-                };
-                if p_other > 0.0 {
-                    let a = (l - inv.bp_left) / inv_len;
-                    let b = (r - inv.bp_left) / inv_len;
-                    rate += inv.gene_conversion_rate * p_other
-                          * phi_integral(a, b, w_phi) * inv_len;
+    let segs = std::iter::from_fn(|| {
+        while cur != SEG_NIL {
+            let seg = arena.get(cur);
+            cur = seg.next;
+            let l = seg.left.max(inv.bp_left);
+            let r = seg.right.min(inv.bp_right);
+            if r > l {
+                if let Some(k) = seg.branch_class.get_inv(inv.inv_id) {
+                    return Some((l, r, k));
                 }
             }
-            // Panmictic (None) → no flux contribution.
         }
-        cur = next;
-    }
-    rate
-}
-
-/// Determine a lineage's karyotype for one inversion, reading flat segs.
-fn lineage_class_for_inv_segs(
-    segs: &[FlatSeg], inv: &InversionSpec,
-) -> Option<Karyotype> {
-    let mut seen_s = false;
-    let mut seen_i = false;
-    for &(sl, sr, cls) in segs {
-        let l = sl.max(inv.bp_left);
-        let r = sr.min(inv.bp_right);
-        if r > l {
-            match cls.get_inv(inv.inv_id) {
-                Some(Karyotype::S) => seen_s = true,
-                Some(Karyotype::I) => seen_i = true,
-                None => {}
-            }
-        }
-    }
-    if seen_s && !seen_i { Some(Karyotype::S) }
-    else if seen_i && !seen_s { Some(Karyotype::I) }
-    else { None }
+        None
+    });
+    flux::lineage_flux_rate_iter(segs, inv, inv.p_inv_at(t, pop))
 }
 
 /// Flat-segs counterpart of `flux_lineage_rate_arena`. Same semantics; used
@@ -2384,30 +2354,26 @@ fn flux_lineage_rate_segs(
     pop: u32,
     t: f64,
 ) -> f64 {
-    let inv_len = inv.length();
-    if inv_len <= 0.0 { return 0.0; }
-    let w_phi = inv.mean_tract_length / inv_len;
-    let p_inv_v = inv.p_inv_at(t, pop);
-    let mut rate = 0.0;
-    for &(sl, sr, cls) in segs {
+    let it = segs.iter().filter_map(|&(sl, sr, cls)| {
         let l = sl.max(inv.bp_left);
         let r = sr.min(inv.bp_right);
-        if r > l {
-            if let Some(kary) = cls.get_inv(inv.inv_id) {
-                let p_other = match kary {
-                    Karyotype::S => p_inv_v,
-                    Karyotype::I => 1.0 - p_inv_v,
-                };
-                if p_other > 0.0 {
-                    let a = (l - inv.bp_left) / inv_len;
-                    let b = (r - inv.bp_left) / inv_len;
-                    rate += inv.gene_conversion_rate * p_other
-                          * phi_integral(a, b, w_phi) * inv_len;
-                }
-            }
-        }
-    }
-    rate
+        if r > l { cls.get_inv(inv.inv_id).map(|k| (l, r, k)) } else { None }
+    });
+    flux::lineage_flux_rate_iter(it, inv, inv.p_inv_at(t, pop))
+}
+
+/// Sample a flux event for a lineage with the same components as its
+/// rate. `None` means the proposal was thinned and nothing happens.
+fn sample_flux_tract_arena(
+    head: SegIdx,
+    inv: &InversionSpec,
+    pop: u32,
+    t: f64,
+    arena: &SegmentArena,
+    rng: &mut Xoshiro256PlusPlus,
+) -> Option<(f64, f64, f64)> {
+    let segs = classed_segs_arena(head, inv, arena);
+    flux::sample_flux_tract(&segs, inv, inv.p_inv_at(t, pop), rng)
 }
 
 /// Apply a gene-flux event: split tract out of lineage, flip class
@@ -2560,6 +2526,26 @@ fn find_position(
     seq_len
 }
 
+/// `find_position` plus the class tag of the segment that contains the
+/// returned position (`PANMICTIC` for the out-of-material fallback).
+fn find_position_and_class(
+    active: &[Lineage], idx: usize, offset: f64, arena: &SegmentArena,
+    seq_len: f64,
+) -> (f64, BranchClass) {
+    let mut remaining = offset;
+    let mut cur = active[idx].head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        let seg_len = seg.right - seg.left;
+        if remaining < seg_len {
+            return (seg.left + remaining, seg.branch_class);
+        }
+        remaining -= seg_len;
+        cur = seg.next;
+    }
+    (seq_len, BranchClass::PANMICTIC)
+}
+
 /// Apply a deterministic boundary: cross barriers, fire demographic
 /// events (propagating any inversion frequency changes), and fire any
 /// pending sweep whose time matches.
@@ -2577,11 +2563,20 @@ fn apply_boundary(
     seq_len: f64,
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
+    crossover_suppression: bool,
     sweep_cursor: &mut (f64, u64),
     event_log: Option<&mut event_log::EventLog>,
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
+    // Integrate the crossover-suppression weights of every sweep in its
+    // selection phase up to `t`, before anything at `t` (a demographic
+    // inversion-frequency change, a barrier crossing) alters them.
+    if crossover_suppression && !inversions.is_empty() {
+        for sw in finalized_sweeps.iter_mut() {
+            sw.accumulate_suppression(t, inversions);
+        }
+    }
     // Order matches Python (msinv/hull/simulator.py ~1250-1263):
     // class barriers, then sweeps, then demographic events. A sweep
     // scheduled at the same t as an Ej must still see the pre-merge
@@ -2608,8 +2603,17 @@ fn apply_boundary(
         && (finalized_sweeps[0].t_de_novo() - t).abs() < 1e-9
     {
         let sweep = finalized_sweeps.remove(0);
+        let n_moved = resolve_founder_arrangement(
+            active, &sweep, t, arena, next_uid, rng, inversions, a_tag, buckets);
+        if n_moved > 0 && crate::trace::enabled() {
+            crate::trace::mark(t, "sweep_founder_arrangement",
+                               &[("n_moved", &n_moved.to_string())]);
+        }
+        let supp_inversions: &[InversionSpec] =
+            if crossover_suppression { inversions } else { &[] };
         apply_sweep_finalize(active, &sweep, t, arena, tables,
-                              next_uid, rng, recomb_rate, sweep_cursor, a_tag, buckets);
+                              next_uid, rng, recomb_rate, supp_inversions,
+                              sweep_cursor, a_tag, buckets);
     }
     let (inv_changes, class_mig) = demo.apply_events_at(t, active);
     for (inv_id, pop, p_inv_val) in inv_changes {
@@ -2708,10 +2712,24 @@ fn next_sweep_merge_t(cursor: &mut (f64, u64), t: f64) -> f64 {
 /// using closures that snapshot the current `Demography` arrays. Called once
 /// at sim entry from each run-loop. Sweeps with a caller-supplied trajectory
 /// are respected (skip-if-some).
+///
+/// A sweep is linked to inversion `target_inv` (`Sweep::exchange`) when
+/// its selected site lies inside it (`Exchange::Flux`), or lies outside
+/// it and the inversion exists at `t_origin` (`Exchange::Recomb`). A
+/// linked sweep's trajectory starts from the inversion frequency at
+/// `t_origin` and tracks A on each arrangement, with the association
+/// decaying at the gene-flux rate at the site (inside) or the
+/// recombination fraction to the nearer breakpoint (outside). The
+/// inversion's frequency path is replaced over `[tau, t_origin]` by the
+/// trajectory's I frequency and held at its final value for `t < tau`
+/// (`SweptTrajectory`), so a sweep drags the arrangement it arose on in
+/// proportion to their linkage. Any other sweep is unlinked: a single-
+/// background (discoal) trajectory, inversion frequencies untouched.
 fn populate_sweep_trajectories(
     pending_sweeps: &mut [Sweep],
     demo: &crate::demography::Demography,
-    inversions: &[InversionSpec],
+    inversions: &mut [InversionSpec],
+    recomb_rate: f64,
 ) {
     let n_pops = demo.n_pops;
     let pop_sizes_snap = demo.pop_sizes.clone();
@@ -2721,12 +2739,111 @@ fn populate_sweep_trajectories(
     let mig_snap = demo.migration_matrix.clone();
 
     for sw in pending_sweeps.iter_mut() {
-        if sw.trajectory.is_some() { continue; }
-        let p_inv_init: Vec<f64> = (0..n_pops as usize).map(|p| {
-            inversions.iter().find(|i| i.inv_id == sw.target_inv)
-                .map(|i| i.p_inv_at(0.0, p as u32))
-                .unwrap_or(0.0)
-        }).collect();
+        let t0 = sw.joint.t_origin;
+        let target = inversions.iter().position(|i| i.inv_id == sw.target_inv);
+        let inside = target.is_some_and(|k|
+            sw.x_sel >= inversions[k].bp_left && sw.x_sel < inversions[k].bp_right);
+        // A site outside the target inversion is linked to it only when
+        // the inversion already exists at t_origin; one that arises
+        // during the sweep is left unlinked (its own origin on an A or
+        // a chromosome is not modelled).
+        let target_idx = target.filter(|&k|
+            inside || t0 < inversions[k].t_inv(sw.origin_pop));
+        sw.exchange = match target_idx {
+            None => Exchange::None,
+            Some(_) if inside => Exchange::Flux,
+            Some(k) => {
+                let inv = &inversions[k];
+                if sw.x_sel < inv.bp_left {
+                    Exchange::Recomb { lo: sw.x_sel, hi: inv.bp_left }
+                } else {
+                    Exchange::Recomb { lo: inv.bp_right, hi: sw.x_sel }
+                }
+            }
+        };
+        let p_inv_init: Vec<f64> = match target_idx {
+            None => {
+                // Unlinked: one genetic background, as in discoal.
+                sw.origin_kary = Karyotype::S;
+                sw.joint.exchange_rate = 0.0;
+                vec![0.0; n_pops as usize]
+            }
+            Some(k) if !inside => {
+                // Outside the inversion: the site moves to the other
+                // arrangement by recombination in the gap to the nearer
+                // breakpoint (not suppressed: flank material). The A
+                // allele starts at overall frequency f0. A hard sweep has
+                // one founder chromosome, whose arrangement is drawn from
+                // the arrangement frequencies at t_origin; standing
+                // variation starts independent of arrangement.
+                // `origin_kary` is not used.
+                let inv = &inversions[k];
+                let (lo, hi) = match sw.exchange {
+                    Exchange::Recomb { lo, hi } => (lo, hi),
+                    _ => unreachable!(),
+                };
+                sw.joint.exchange_rate = (recomb_rate * (hi - lo)).min(0.5);
+                let p_i0 = inv.p_inv_at(t0, sw.origin_pop);
+                let n0 = demo.size_at(sw.origin_pop, t0).max(1e-9);
+                let hard = sw.joint.f0 <= 1.0 / (2.0 * n0) + 1e-12;
+                if hard {
+                    let mut frng = Xoshiro256PlusPlus::seed_from_u64(
+                        sw.joint.seed ^ 0x9e37_79b9_7f4a_7c15);
+                    sw.origin_kary = if frng.random::<f64>() < p_i0 {
+                        Karyotype::I
+                    } else {
+                        Karyotype::S
+                    };
+                    sw.joint.founder = FounderSeed::OnArrangement;
+                } else {
+                    sw.origin_kary = Karyotype::S;
+                    sw.joint.founder = FounderSeed::Equilibrium;
+                }
+                (0..n_pops as usize).map(|p| inv.p_inv_at(t0, p as u32)).collect()
+            }
+            Some(k) => {
+                let inv = &inversions[k];
+                let t_inv_o = inv.t_inv(sw.origin_pop);
+                assert!(t0 < t_inv_o,
+                    "sweep at x_sel={} lies inside inversion {} but starts at \
+                     t_origin={} at or before the inversion arose (t_inv={}); \
+                     a sweep carried on an arrangement must start after it exists",
+                    sw.x_sel, inv.inv_id, t0, t_inv_o);
+                let p_i0 = inv.p_inv_at(t0, sw.origin_pop);
+                let p_origin = match sw.origin_kary {
+                    Karyotype::I => p_i0,
+                    Karyotype::S => 1.0 - p_i0,
+                };
+                assert!(p_origin > 0.0,
+                    "sweep at x_sel={} arises on arrangement {:?} of inversion {}, \
+                     whose frequency in pop {} at t_origin={} is 0",
+                    sw.x_sel, sw.origin_kary, inv.inv_id, sw.origin_pop, t0);
+                // f0 is the overall A frequency, all on origin_kary.
+                assert!(sw.joint.f0 <= p_origin + 1e-12,
+                    "sweep at x_sel={} has f0={} but its arrangement {:?} of \
+                     inversion {} has frequency {} in pop {} at t_origin={}; \
+                     f0 is the overall allele frequency and cannot exceed it",
+                    sw.x_sel, sw.joint.f0, sw.origin_kary, inv.inv_id, p_origin,
+                    sw.origin_pop, t0);
+                sw.joint.founder = FounderSeed::OnArrangement;
+                // Per-generation flux at the selected site, matching the
+                // coalescent's rate of tracts covering a carried site:
+                // events at density gcr * phi(x) per bp, each moving a
+                // tract of mean length `mean_tract_length` (`flux.rs`).
+                let len = inv.length();
+                let w = inv.mean_tract_length / len;
+                let x_rel = (sw.x_sel - inv.bp_left) / len;
+                sw.joint.exchange_rate =
+                    inv.gene_conversion_rate * inv.mean_tract_length * phi(x_rel, w);
+                (0..n_pops as usize).map(|p| inv.p_inv_at(t0, p as u32)).collect()
+            }
+        };
+        if sw.trajectory.is_some() {
+            if let Some(k) = target_idx {
+                splice_inversion_path(&mut inversions[k], sw, &|_t, _p| f64::INFINITY);
+            }
+            continue;
+        }
         // Per-sweep clones so the closures own their data and don't hold a
         // borrow on the outer snapshot vectors (which a future multi-sweep
         // loop iteration could otherwise contend with).
@@ -2766,7 +2883,52 @@ fn populate_sweep_trajectories(
             sw.target_inv, sw.joint.clone());
         let real = std::mem::replace(sw, placeholder);
         *sw = real.with_trajectory(n_pops, &p_inv_init, &pop_size_at, &mig_at);
+        if let Some(k) = target_idx {
+            splice_inversion_path(&mut inversions[k], sw, &pop_size_at);
+        }
     }
+}
+
+/// Replace `inv`'s frequency path over `[tau, t_origin]` with the I
+/// frequency of `sw`'s joint trajectory (held at its `tau` value for
+/// `t < tau`). In a population where the inversion segregates at
+/// `t_origin`, both arrangements are kept at frequency `>= 1/(2N(t))`:
+/// a sampled arrangement always has at least one copy.
+fn splice_inversion_path(
+    inv: &mut InversionSpec,
+    sw: &Sweep,
+    pop_size_at: &dyn Fn(f64, u32) -> f64,
+) {
+    use crate::sweep_trajectory::{CLASS_I_A, CLASS_I_A_BENEF};
+    use crate::trajectory::{ConstantTrajectory, SweptTrajectory};
+    let traj = match sw.trajectory.as_ref() { Some(t) => t, None => return };
+    let t0 = sw.joint.t_origin;
+    let n_pops = traj.n_pops as usize;
+    let segregating: Vec<bool> = (0..n_pops)
+        .map(|p| inv.p_inv_at(t0, p as u32) > 0.0).collect();
+    let mut times = Vec::new();
+    let mut p_inv: Vec<Vec<f64>> = vec![Vec::new(); n_pops];
+    for smp in traj.samples.iter().filter(|smp| smp.t <= t0) {
+        times.push(smp.t);
+        for (p, series) in p_inv.iter_mut().enumerate() {
+            let f = &smp.freq[p];
+            let mut v = (f[CLASS_I_A] + f[CLASS_I_A_BENEF]).clamp(0.0, 1.0);
+            if segregating[p] {
+                let lo = (0.5 / pop_size_at(smp.t, p as u32)).min(0.5);
+                v = v.clamp(lo, 1.0 - lo);
+            }
+            series.push(v);
+        }
+    }
+    if times.is_empty() {
+        return;
+    }
+    let inner = std::mem::replace(
+        &mut inv.trajectory,
+        Box::new(ConstantTrajectory::single(0.0, 0.0)));
+    inv.trajectory = Box::new(SweptTrajectory {
+        inner, tau: sw.tau, t_origin: t0, times, p_inv,
+    });
 }
 
 /// Force-coalesce qualifying lineages at a sweep event.
@@ -2822,10 +2984,9 @@ fn apply_sweep(
     for (idx, lin) in active.iter_mut().enumerate() {
         if lin.population != sweep.origin_pop { continue; }
         if lin.head == crate::segment::SEG_NIL { continue; }
-        // Determine kary for the trajectory query: use the inv-class at
-        // x_sel if available, else origin_kary.
-        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
-            .unwrap_or(sweep.origin_kary);
+        // The lineage's arrangement at the target inversion, if it
+        // carries tagged material there (`Sweep::assign_a_at_sample`).
+        let kary = lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena);
         let pop = lin.population;
         let is_a = sweep.assign_a_at_sample(pop, kary, rng);
         a_tag.insert(lin.uid, is_a);
@@ -2862,10 +3023,17 @@ fn apply_sweep_finalize(
     next_uid: &mut LinUid,
     rng: &mut Xoshiro256PlusPlus,
     recomb_rate: f64,
+    supp_inversions: &[InversionSpec],
     sweep_cursor: &mut (f64, u64),
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
 ) {
+    // `supp_inversions` is non-empty only with crossover suppression on.
+    // Then the escape probability uses the suppressed crossover exposure
+    // (`Sweep::escape_exposure`): inside an active inversion only
+    // homokaryotype crossovers happen, at rate r · p_k(t). Otherwise it
+    // is the unsuppressed `exp(-r · d · T_eff)`.
+    //
     // For SV-phase sweeps only: per-segment partition into linked
     // vs escaped using `p_hh = exp(-r·d·T_eff)`. Hard sweeps
     // (`t_de_novo == t_origin`) skip the partition — the spatial
@@ -2906,7 +3074,20 @@ fn apply_sweep_finalize(
         };
         let pop = active[idx].population;
         let head = active[idx].head;
-        let p_hh_for = |l: f64, r: f64| sweep.p_hh_for_segment(l, r, recomb_rate);
+        // The lineage's arrangement at each inversion, read before the
+        // partition re-links its chain.
+        let karys: Vec<(u16, Option<Karyotype>)> = supp_inversions.iter()
+            .map(|inv| (inv.inv_id,
+                        lineage_class_for_inv_id_arena(head, inv.inv_id, arena)))
+            .collect();
+        let kary_at = |id: u16| karys.iter().find(|e| e.0 == id).and_then(|e| e.1);
+        let p_hh_for = |l: f64, r: f64| if supp_inversions.is_empty() {
+            sweep.p_hh_for_segment(l, r, recomb_rate)
+        } else if sweep.trajectory.is_none() {
+            1.0
+        } else {
+            sweep.escape_prob(l, r, supp_inversions, &kary_at, recomb_rate)
+        };
         // Partition: each segment independently rolls Bernoulli with
         // p_hh based on its distance from x_sel.
         let (linked_head, escaped_head) =
@@ -2988,11 +3169,17 @@ fn apply_sweep_finalize(
                 None => continue,
             };
             let a_pop = active[a_idx].population;
+            // The founder is one chromosome with one arrangement: only
+            // karyotype-compatible targets (same arrangement at every
+            // inversion both carry, or untagged there) qualify. Tags are
+            // cleared once a barrier ends, so this is no restriction then.
+            let a_sig = lineage_sig(active[a_idx].head, arena);
             let candidates: Vec<usize> = active.iter().enumerate()
                 .filter(|(j, lin)| {
                     *j != a_idx
                         && lin.population == a_pop
                         && !a_tag.contains_key(&lin.uid)
+                        && karyotypes_compatible(a_sig, lineage_sig(lin.head, arena))
                 })
                 .map(|(j, _)| j)
                 .collect();
@@ -3011,6 +3198,9 @@ fn apply_sweep_finalize(
             } else {
                 (target_idx, a_idx)
             };
+            debug_assert!(karyotypes_compatible(
+                lineage_sig(active[lo].head, arena), lineage_sig(active[hi].head, arena)),
+                "sweep de novo merge would join incompatible lineages");
             let t_merge = next_sweep_merge_t(sweep_cursor, t);
             apply_coalescence_partial(
                 active, lo, hi, t_merge, arena, tables, next_uid,
@@ -3033,15 +3223,35 @@ fn apply_sweep_finalize(
     // that match the soft-sweep π expectation. Force-coalescing them
     // at `t_de_novo` collapses T_2 → 0 and under-estimates π
     // (the D3 failure mode).
+    //
+    // The founder of a linked sweep carries `origin_kary` at
+    // `target_inv`; `resolve_founder_arrangement` (run just before this)
+    // has moved every A lineage off the other arrangement, so the filter
+    // below is a guard (its count is traced). `coalesce_uid_group` also
+    // skips any pair that is incompatible at another inversion.
+    let mut n_still_a_other_kary: u32 = 0;
+    let mut n_still_a_left: u32 = 0;
     if !has_sv_phase {
         let still_a: Vec<LinUid> = active.iter()
             .filter(|lin| a_tag.get(&lin.uid).copied().unwrap_or(false))
+            .filter(|lin| {
+                let other = sweep.linked() && matches!(
+                    lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena),
+                    Some(k) if k != sweep.origin_kary);
+                if other { n_still_a_other_kary += 1; }
+                !other
+            })
             .map(|lin| lin.uid)
             .collect();
         if still_a.len() >= 2 {
             coalesce_uid_group(active, &still_a, t, arena, tables, next_uid, sweep_cursor,
                                 Some(buckets));
         }
+        // Group members still present were not merged (a merge replaces
+        // both lineages with a new one).
+        n_still_a_left = active.iter()
+            .filter(|lin| still_a.contains(&lin.uid))
+            .count() as u32;
     }
     // Keep `a_tag` populated past `t_de_novo`. The map doubles as the
     // post-sweep accounting input for `count_a_samples` (T5 / partial
@@ -3062,8 +3272,284 @@ fn apply_sweep_finalize(
             ("n_de_novo_merge", &n_de_novo_merge.to_string()),
             ("n_de_novo_skip_no_target", &n_de_novo_skip_no_target.to_string()),
             ("n_de_novo_skip_no_overlap", &n_de_novo_skip_no_overlap.to_string()),
+            ("n_still_a_other_kary", &n_still_a_other_kary.to_string()),
+            ("n_still_a_left", &n_still_a_left.to_string()),
         ]);
     }
+}
+
+/// Upper bound (per generation) on one lineage's association-event rate
+/// (`sweep_assoc_rates`). The exact rate diverges where the lineage's
+/// own (arrangement, allele) class vanishes from the trajectory; past
+/// this cap the lineage leaves within ~1e-3 generations either way, and
+/// a hard sweep resolves any remainder at the founder
+/// (`resolve_founder_arrangement`).
+const ASSOC_RATE_CAP: f64 = 1.0e3;
+
+/// Draw a gene-flux tract containing `x_event` inside `inv`: length
+/// `mean_tract_length` (fixed or exponential), placed uniformly among
+/// the positions that contain `x_event` and fit in the inversion.
+fn draw_tract_at(
+    x_event: f64,
+    inv: &InversionSpec,
+    rng: &mut Xoshiro256PlusPlus,
+) -> (f64, f64) {
+    if inv.mean_tract_length <= 0.0 {
+        return (x_event, x_event);
+    }
+    let l = flux::draw_tract_len(inv, rng);
+    flux::place_tract(x_event, l, inv, rng)
+}
+
+/// Set a lineage's sweep allele in all three mirrors (`a_tag`,
+/// `Lineage::a_tag`, `buckets`).
+fn sweep_set_allele(
+    active: &mut [Lineage],
+    idx: usize,
+    is_a: bool,
+    a_tag: &mut ATagMap,
+    buckets: &mut SweepBuckets,
+) {
+    let uid = active[idx].uid;
+    let pop = active[idx].population;
+    a_tag.insert(uid, is_a);
+    active[idx].a_tag = Some(is_a);
+    buckets.set_tag(uid, idx as u32, pop, is_a);
+}
+
+/// Does the lineage carry ancestral material at `x`?
+fn lineage_has_material_at(head: SegIdx, x: f64, arena: &SegmentArena) -> bool {
+    let mut cur = head;
+    while cur != SEG_NIL {
+        let seg = arena.get(cur);
+        if seg.left > x { return false; }
+        if x < seg.right { return true; }
+        cur = seg.next;
+    }
+    false
+}
+
+/// Sweep alleles after a gene-flux event on a lineage that had allele
+/// `orig` (`None`: untagged, nothing to do). `affected` lists the
+/// lineage's index and the indices `apply_gene_flux` appended. The
+/// tract `[tl, tr)` was copied from a chromosome of the other
+/// arrangement: if it contains `x_sel` it carries the lineage's allele
+/// there and keeps it, while the rest of the lineage (its own
+/// chromosome) takes a fresh draw against its arrangement; otherwise
+/// the rest keeps the allele and the tract draws against its new
+/// arrangement (`Sweep::p_allele_for`).
+fn sweep_flux_alleles(
+    active: &mut [Lineage],
+    affected: &[usize],
+    orig: Option<bool>,
+    tl: f64,
+    tr: f64,
+    sweep: &Sweep,
+    t: f64,
+    arena: &SegmentArena,
+    rng: &mut Xoshiro256PlusPlus,
+    a_tag: &mut ATagMap,
+    buckets: &mut SweepBuckets,
+) {
+    let orig = match orig { Some(a) => a, None => return };
+    let x_in_tract = tl <= sweep.x_sel && sweep.x_sel < tr;
+    for &idx in affected {
+        if idx >= active.len() || active[idx].head == SEG_NIL { continue; }
+        if active[idx].population != sweep.origin_pop { continue; }
+        let is_tract = active[idx].cached_hull_l >= tl - 1e-9
+            && active[idx].cached_hull_r <= tr + 1e-9;
+        let keeps = is_tract == x_in_tract;
+        let is_a = if keeps {
+            orig
+        } else {
+            let k = lineage_class_for_inv_id_arena(active[idx].head, sweep.target_inv, arena);
+            rng.random::<f64>() < sweep.p_allele_for(t, k)
+        };
+        sweep_set_allele(active, idx, is_a, a_tag, buckets);
+    }
+}
+
+/// Per-lineage rates of the extra association events of a linked
+/// sweep (`Sweep::assoc_factor`): for a lineage in `origin_pop` tagged
+/// with arrangement k at `target_inv` and allele α, the simulated
+/// events that move its selected-site association (recombination in
+/// the gap to the inversion, or flux tracts over `x_sel`) are proposed
+/// at their linkage-equilibrium rate; where the exact rate is higher
+/// (factor λ > 1) the difference `base * (λ - 1)` fires here, and where
+/// it is lower the simulated events are thinned (`assoc_accept`).
+/// Returns `(index, rate)` pairs with positive rate.
+fn sweep_assoc_rates(
+    active: &[Lineage],
+    sweep: &Sweep,
+    t: f64,
+    arena: &SegmentArena,
+) -> Vec<(usize, f64)> {
+    let mut out = Vec::new();
+    if !sweep.linked() || sweep.trajectory.is_none() || !sweep.covers(t) {
+        return out;
+    }
+    for (idx, lin) in active.iter().enumerate() {
+        if lin.population != sweep.origin_pop || lin.head == SEG_NIL { continue; }
+        let is_a = match lin.a_tag { Some(a) => a, None => continue };
+        let k = match lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena) {
+            Some(k) => k,
+            None => continue,
+        };
+        let lam = sweep.assoc_factor(t, k, is_a);
+        if !(lam > 1.0) { continue; }
+        let base = sweep.assoc_base_rate(t, k);
+        if base <= 0.0 { continue; }
+        let rate = (base * (lam - 1.0)).min(ASSOC_RATE_CAP);
+        if rate > 0.0 { out.push((idx, rate)); }
+    }
+    out
+}
+
+/// Thinning of a simulated association-changing event on lineage
+/// `idx` (see `sweep_assoc_rates`): keep it with probability
+/// `min(1, λ)`. Always true for a lineage the sweep does not track.
+fn assoc_accept(
+    active: &[Lineage],
+    idx: usize,
+    sweep: &Sweep,
+    t: f64,
+    arena: &SegmentArena,
+    rng: &mut Xoshiro256PlusPlus,
+) -> bool {
+    let lin = &active[idx];
+    if lin.population != sweep.origin_pop { return true; }
+    let is_a = match lin.a_tag { Some(a) => a, None => return true };
+    let k = match lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena) {
+        Some(k) => k,
+        None => return true,
+    };
+    let lam = sweep.assoc_factor(t, k, is_a);
+    lam >= 1.0 || rng.random::<f64>() < lam
+}
+
+/// Carry out one association event on lineage `idx` (tagged with
+/// arrangement k at the target, allele α). `Recomb`: a crossover at a
+/// uniform point of the gap between `x_sel` and the inversion; it
+/// splits the lineage when it carries material on the `x_sel` side,
+/// and otherwise only re-draws the lineage's allele against
+/// `P(· | k)`. `Flux`: a flux tract over `x_sel` when the lineage
+/// carries material there, otherwise the allele re-draw. Returns true
+/// when the lineage set changed (caches must be rebuilt).
+fn apply_assoc_event(
+    active: &mut Vec<Lineage>,
+    idx: usize,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    next_uid: &mut LinUid,
+    rng: &mut Xoshiro256PlusPlus,
+    inversions: &[InversionSpec],
+    a_tag: &mut ATagMap,
+    buckets: &mut SweepBuckets,
+) -> bool {
+    let k = lineage_class_for_inv_id_arena(active[idx].head, sweep.target_inv, arena);
+    let redraw = |active: &mut [Lineage], rng: &mut Xoshiro256PlusPlus,
+                  a_tag: &mut ATagMap, buckets: &mut SweepBuckets| {
+        let is_a = rng.random::<f64>() < sweep.p_allele_for(t, k);
+        sweep_set_allele(active, idx, is_a, a_tag, buckets);
+    };
+    match sweep.exchange {
+        Exchange::None => false,
+        Exchange::Recomb { lo, hi } => {
+            let x = lo + rng.random::<f64>() * (hi - lo);
+            let near_side = if sweep.x_sel < x {
+                active[idx].cached_hull_l < x
+            } else {
+                active[idx].cached_hull_r > x
+            };
+            if !near_side {
+                redraw(active, rng, a_tag, buckets);
+                return false;
+            }
+            let before = active.len();
+            apply_recombination(active, idx, x, arena, next_uid,
+                                Some(&mut *a_tag), Some(&mut *buckets));
+            if active.len() > before {
+                let new_idx = active.len() - 1;
+                apply_sweep_recomb_tag_swap(
+                    active, &[idx, new_idx], std::slice::from_ref(sweep),
+                    t, rng, a_tag, buckets, x, inversions, arena);
+                true
+            } else {
+                false
+            }
+        }
+        Exchange::Flux => {
+            let inv = match inversions.iter().find(|i| i.inv_id == sweep.target_inv) {
+                Some(inv) => inv,
+                None => return false,
+            };
+            if !lineage_has_material_at(active[idx].head, sweep.x_sel, arena) {
+                redraw(active, rng, a_tag, buckets);
+                return false;
+            }
+            let (tl, tr) = draw_tract_at(sweep.x_sel, inv, rng);
+            if tr <= tl { return false; }
+            let orig = active[idx].a_tag;
+            let before = active.len();
+            apply_gene_flux(active, idx, tl, tr, inv, arena, next_uid, None, t, sweep.x_sel);
+            let affected: Vec<usize> =
+                std::iter::once(idx).chain(before..active.len()).collect();
+            sweep_flux_alleles(active, &affected, orig, tl, tr, sweep, t, arena,
+                               rng, a_tag, buckets);
+            true
+        }
+    }
+}
+
+/// Hard-sweep founder of a linked sweep, just before the collapse at
+/// `t_origin`: the A allele is on one chromosome of arrangement
+/// `origin_kary`, so every A lineage tagged with the other arrangement
+/// must have moved its association by now. The association-event rate
+/// diverges as `t_origin` approaches; lineages still on the other
+/// arrangement make that move in the final instant
+/// (`apply_assoc_event` at `t`, where `P(A | other) = 0`, so a re-drawn
+/// or split-off non-`x_sel` part becomes a). Returns how many moved.
+fn resolve_founder_arrangement(
+    active: &mut Vec<Lineage>,
+    sweep: &Sweep,
+    t: f64,
+    arena: &mut SegmentArena,
+    next_uid: &mut LinUid,
+    rng: &mut Xoshiro256PlusPlus,
+    inversions: &[InversionSpec],
+    a_tag: &mut ATagMap,
+    buckets: &mut SweepBuckets,
+) -> u32 {
+    if !sweep.linked() || sweep.has_sv_phase() || sweep.trajectory.is_none() {
+        return 0;
+    }
+    let founder = sweep.origin_kary;
+    let mut moved = 0u32;
+    // Each move removes one off-founder A lineage (a split leaves the
+    // arrangement-carrying part as a), so this terminates; the bound
+    // guards against a degenerate lineage that cannot move.
+    for _ in 0..(4 * active.len() + 16) {
+        let pick = active.iter().position(|lin| {
+            lin.population == sweep.origin_pop
+                && lin.a_tag == Some(true)
+                && lineage_class_for_inv_id_arena(lin.head, sweep.target_inv, arena)
+                    == Some(other_kary(founder))
+        });
+        let idx = match pick { Some(i) => i, None => break };
+        apply_assoc_event(active, idx, sweep, t, arena, next_uid, rng,
+                          inversions, a_tag, buckets);
+        moved += 1;
+        // A flux tract that missed the lineage's material, or a split
+        // that did not happen, leaves it in place: drop it to a.
+        if idx < active.len() && active[idx].a_tag == Some(true)
+            && lineage_class_for_inv_id_arena(active[idx].head, sweep.target_inv, arena)
+                == Some(other_kary(founder))
+        {
+            sweep_set_allele(active, idx, false, a_tag, buckets);
+        }
+    }
+    moved
 }
 
 /// Walk a chain to find its tail (last segment whose `next == SEG_NIL`).
@@ -3120,16 +3606,27 @@ fn apply_sweep_recomb_tag_swap(
     a_tag: &mut ATagMap,
     buckets: &mut SweepBuckets,
     breakpoint_x: f64,
+    _inversions: &[InversionSpec],
+    arena: &SegmentArena,
 ) {
     let sweep = match sweeps.iter().find(|s| s.covers(t)) {
         Some(s) => s,
         None => return,
     };
-    let traj = match sweep.trajectory.as_ref() {
-        Some(t) => t,
-        None => return,
+    if sweep.trajectory.is_none() {
+        return;
+    }
+    // The non-carrier child takes the allele of the other parent at
+    // x_sel. Where the child carries material inside the target
+    // inversion of a linked sweep, the other parent has the child's
+    // arrangement k (an accepted crossover inside the inversion means a
+    // homokaryotype; one between x_sel and the inversion leaves the
+    // child on its own chromosome's arrangement): draw against
+    // P(A | k). Otherwise (no tagged material there, the barrier is
+    // over, or the sweep is unlinked) draw against the population P(A).
+    let p_a_for = |head: SegIdx| -> f64 {
+        sweep.p_allele_for(t, lineage_class_for_inv_id_arena(head, sweep.target_inv, arena))
     };
-    let p_a = traj.p_allele_given_kary(t, sweep.origin_pop, sweep.origin_kary);
     // Position-based carrier rule mirrors discoal
     // `recombineAtTimePopnSweep` (`discoalFunctions.c:2735-2746`):
     // the child whose chromosomal range includes `x_sel` keeps its
@@ -3153,6 +3650,7 @@ fn apply_sweep_recomb_tag_swap(
         let pop = active[idx].population;
         let was_present = a_tag.contains_key(&uid);
         let was_a = a_tag.get(&uid).copied().unwrap_or(false);
+        let p_a = p_a_for(active[idx].head);
         let stay_prob = if was_a { p_a } else { 1.0 - p_a };
         if rng.random::<f64>() < stay_prob {
             a_tag.entry(uid).or_insert(was_a);
@@ -3278,6 +3776,14 @@ fn coalesce_uid_group(
                     next_pending.push(other_uid);
                     continue;
                 }
+                // Never force-merge karyotype-incompatible lineages (one
+                // chromosome cannot carry both arrangements). Such a pair
+                // stays pending; a later merge cannot make it compatible.
+                if !karyotypes_compatible(lineage_sig(active[mi].head, arena),
+                                          lineage_sig(active[oi].head, arena)) {
+                    next_pending.push(other_uid);
+                    continue;
+                }
                 apply_coalescence(active, mi, oi, t_merge, arena, tables, next_uid,
                                    None, buckets.as_deref_mut());
                 merged_uid = active.last().unwrap().uid;
@@ -3315,6 +3821,85 @@ fn segments_overlap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Single active barrier: every compatible pair full-merges in exactly
+    /// one cell (its shared karyotype) and is rejected in the others;
+    /// I x S pairs are rejected in every cell.
+    #[test]
+    fn sweep_any_pair_action_single_barrier() {
+        let p = BranchClass::PANMICTIC;
+        let s = BranchClass::single(0, Karyotype::S);
+        let i = BranchClass::single(0, Karyotype::I);
+        // Lineages carry body + margin material: classes {S, P} / {I, P}.
+        let sig_sp = s.bits();
+        let sig_ip = i.bits();
+        let sig_p = 0u64;
+        // S x S, both carry S and P: counted in cell S only.
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_sp, s, |_| true),
+                   AnyPairAction::Merge(None));
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_sp, p, |_| true),
+                   AnyPairAction::Reject);
+        // S x untagged: shared = P, the only cell where both are candidates.
+        assert_eq!(sweep_any_pair_action(1, sig_sp, sig_p, p, |k| k == p),
+                   AnyPairAction::Merge(None));
+        // I x S meeting in the margin: cannot coalesce, in any cell.
+        for c in [p, s, i] {
+            assert_eq!(sweep_any_pair_action(1, sig_ip, sig_sp, c, |k| k == p),
+                       AnyPairAction::Reject);
+        }
+    }
+
+    /// I x S pairs are rejected with several barriers active too (the
+    /// partial-merge fallback is for compatible pairs only).
+    #[test]
+    fn sweep_any_pair_action_multi_barrier_rejects_incompatible() {
+        let p = BranchClass::PANMICTIC;
+        let i0 = BranchClass::single(0, Karyotype::I).bits();
+        let s0 = BranchClass::single(0, Karyotype::S).bits();
+        let s1 = BranchClass::single(1, Karyotype::S).bits();
+        assert_eq!(sweep_any_pair_action(2, i0 | s1, s0 | s1, p, |_| true),
+                   AnyPairAction::Reject);
+        // Compatible across different inversions: partial fallback.
+        assert_eq!(sweep_any_pair_action(2, i0, s1, p, |_| true),
+                   AnyPairAction::Merge(Some(p)));
+    }
+
+    #[test]
+    fn barrier_merge_class_blocks_incompatible() {
+        assert_eq!(barrier_merge_class(true, false), None);
+        assert_eq!(barrier_merge_class(true, true), Some(None));
+        assert_eq!(barrier_merge_class(false, false), Some(None));
+        assert_eq!(p_class_for_tag(BranchClass::BLOCKED, &[], &[], 0.0, 0), 0.0);
+    }
+
+    /// Two active barriers: with two disjoint inversions, lineages that
+    /// each carry S0 body, S1 body and P margins have shared karyotype
+    /// S0|S1, which no segment carries. The single-barrier rule would
+    /// full-merge such a pair in each of the cells S0, S1 and P (three
+    /// rates for one pair); the multi-barrier fallback instead gives each
+    /// cell the partial merge restricted to its own class.
+    #[test]
+    fn sweep_any_pair_action_multi_barrier_falls_back_to_partial() {
+        let p = BranchClass::PANMICTIC;
+        let s0 = BranchClass::single(0, Karyotype::S);
+        let s1 = BranchClass::single(1, Karyotype::S);
+        let sig = s0.bits() | s1.bits();
+        let carried = [p, s0, s1];
+        let both_have = |k: BranchClass| carried.contains(&k);
+        let shared = shared_karyotype(sig, sig);
+        assert!(!carried.contains(&shared));
+        // What the single-barrier rule would do: full merge in all 3 cells.
+        let full_merges = carried.iter()
+            .filter(|&&c| sweep_any_pair_action(1, sig, sig, c, both_have)
+                    == AnyPairAction::Merge(None))
+            .count();
+        assert_eq!(full_merges, 3, "single-barrier rule over-counts here");
+        // With two barriers active the picker partial-merges per cell.
+        for &c in &carried {
+            assert_eq!(sweep_any_pair_action(2, sig, sig, c, both_have),
+                       AnyPairAction::Merge(Some(c)));
+        }
+    }
 
     #[test]
     fn panmictic_no_recomb_gives_single_tree() {
@@ -3457,6 +4042,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         assert_eq!(result.tables.num_nodes(), 15);
@@ -3485,6 +4071,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // 6 samples, no recomb → 11 nodes.
@@ -3726,6 +4313,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // 10 samples + at least 9 internal = 19 nodes.
@@ -3766,6 +4354,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // Should produce a valid tree with migration allowing
@@ -3807,6 +4396,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         assert!(result.tables.num_nodes() >= 11);
@@ -3991,6 +4581,7 @@ mod tests {
             iters_max: 10_000_000,
             gc_stride: 160,
             record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         sim.record_events = true;
 
@@ -4159,6 +4750,7 @@ mod tests {
             seed: 7, stop_at: f64::INFINITY,
             compound_rate: false, iters_max: 1_000_000,
             gc_stride: 160, record_events: false, smc_prime: false,
+            crossover_suppression: true,
         };
         let result = sim.simulate();
         // The deepest internal node should fall inside the sweep window
@@ -4207,5 +4799,486 @@ mod tests {
             partition_lineage_segments(s1, &mut arena, |_l, _r| true);
         assert_eq!(linked_head, s1);
         assert_eq!(escaped_head, SEG_NIL);
+    }
+}
+
+/// Sweeps inside an active inversion (issue #22): the escape probability
+/// uses the suppressed crossover rate, the tag swap draws against the
+/// child's own arrangement, and forced founder merges never join an I
+/// lineage with an S lineage.
+#[cfg(test)]
+mod sweep_inversion_tests {
+    use super::*;
+    use crate::class_tag::sig_has_conflict;
+    use crate::sweep_trajectory::{JointSample, JointSweepSpec, JointSweepTrajectory};
+
+    const L: f64 = 1_000_000.0;
+
+    fn inv_full(p_inv: f64, t_inv: f64) -> InversionSpec {
+        let mut s = InversionSpec::with_p_inv(0.0, L, vec![p_inv], t_inv);
+        s.inv_id = 0;
+        s
+    }
+
+    /// Sweep at x_sel on inversion 0 with a constant hand-built trajectory.
+    /// `freq` = [(S,a), (S,A), (I,a), (I,A)].
+    fn mk_sweep(x_sel: f64, origin_kary: Karyotype, t_origin: f64, t_de_novo: f64,
+                freq: [f64; 4]) -> Sweep {
+        let mut sw = Sweep::new(x_sel, 0.0, 0, origin_kary, 0,
+                                JointSweepSpec { t_origin, ..Default::default() });
+        sw.trajectory = Some(JointSweepTrajectory {
+            t_origin, t_de_novo, tau: 0.0, n_pops: 1,
+            samples: vec![
+                JointSample { t: t_de_novo, freq: vec![freq] },
+                JointSample { t: 0.0, freq: vec![freq] },
+            ],
+        });
+        sw
+    }
+
+    fn mk_lin(arena: &mut SegmentArena, tables: &mut TableBuilder, cls: BranchClass,
+              l: f64, r: f64, uid: LinUid) -> Lineage {
+        let node = tables.add_sample(0.0, 0);
+        let s = arena.alloc(l, r, node, cls);
+        Lineage::new(s, s, 0, uid, arena)
+    }
+
+    fn tag(active: &mut [Lineage], a_tag: &mut ATagMap, buckets: &mut SweepBuckets,
+           idx: usize, is_a: bool) {
+        let uid = active[idx].uid;
+        a_tag.insert(uid, is_a);
+        active[idx].a_tag = Some(is_a);
+        buckets.set_tag(uid, idx as u32, 0, is_a);
+    }
+
+    fn no_conflicts(active: &[Lineage], arena: &SegmentArena) -> bool {
+        active.iter().all(|l| !sig_has_conflict(lineage_sig(l.head, arena)))
+    }
+
+    // ---- escape exposure --------------------------------------------
+
+    #[test]
+    fn exposure_inside_constant_inversion_scales_by_p_of_arrangement() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        let d = 10_000.0;
+        let (l, r) = (510_000.0, 520_000.0);
+        let i = sw.escape_exposure(l, r, &invs, &|_| Some(Karyotype::I));
+        let s = sw.escape_exposure(l, r, &invs, &|_| Some(Karyotype::S));
+        let none = sw.escape_exposure(l, r, &invs, &|_| None);
+        assert!((i - d * 0.3 * 1000.0).abs() < 1e-3 * i, "I: {i}");
+        assert!((s - d * 0.7 * 1000.0).abs() < 1e-3 * s, "S: {s}");
+        // Untagged at the swept inversion: linked to A, which is on I.
+        assert!((none - i).abs() < 1e-6 * i, "untagged: {none}");
+        // A segment spanning x_sel has no exposure.
+        assert_eq!(sw.escape_exposure(490_000.0, 510_000.0, &invs, &|_| None), 0.0);
+    }
+
+    #[test]
+    fn exposure_across_a_breakpoint_splits_full_and_suppressed_parts() {
+        let mut inv = InversionSpec::with_p_inv(500_000.0, L, vec![0.3], 1e9);
+        inv.inv_id = 0;
+        let invs = vec![inv];
+        let mut sw = mk_sweep(400_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        // Gap [400k, 700k): 100 kb of flank at r, 200 kb inside at r p_I.
+        let e = sw.escape_exposure(700_000.0, 800_000.0, &invs, &|_| Some(Karyotype::I));
+        let want = 100_000.0 * 1000.0 + 200_000.0 * 0.3 * 1000.0;
+        assert!((e - want).abs() < 1e-6 * want, "{e} vs {want}");
+    }
+
+    #[test]
+    fn exposure_without_inversions_matches_unsuppressed_formula() {
+        let sw = mk_sweep(500_000.0, Karyotype::S, 1000.0, 1000.0, [1.0, 0.0, 0.0, 0.0]);
+        let r = 1e-8;
+        let e = sw.escape_exposure(560_000.0, 570_000.0, &[], &|_| None);
+        let p_old = sw.p_hh_for_segment(560_000.0, 570_000.0, r);
+        assert!(((-r * e).exp() - p_old).abs() < 1e-12);
+    }
+
+    #[test]
+    fn suppression_weight_is_one_after_the_inversion_arises() {
+        // t_inv = 600 inside a 1000-generation selection phase.
+        let invs = vec![inv_full(0.3, 600.0)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(1000.0, &invs);
+        let (_, s, i) = sw.supp_int[0];
+        assert!((i - (0.3 * 600.0 + 400.0)).abs() < 1e-6, "int_I = {i}");
+        assert!((s - (0.7 * 600.0 + 400.0)).abs() < 1e-6, "int_S = {s}");
+    }
+
+    #[test]
+    fn suppression_integrates_frequency_changes_at_their_times() {
+        // A demographic event sets p_I from 0.3 to 0.6 at t = 400.
+        let mut invs = vec![inv_full(0.3, 1e9)];
+        let mut sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.0, 0.3]);
+        sw.accumulate_suppression(400.0, &invs);
+        invs[0].set_p_inv_for(0, 0.6);
+        sw.accumulate_suppression(1500.0, &invs); // capped at t_origin
+        let (_, _, i) = sw.supp_int[0];
+        assert!((i - (0.3 * 400.0 + 0.6 * 600.0)).abs() < 1e-6, "int_I = {i}");
+        assert_eq!(sw.supp_t, 1000.0);
+    }
+
+    /// End to end through `apply_sweep_finalize`: the linked fraction of
+    /// an I lineage 50 kb from x_sel is exp(-r · p_I · d · T), not
+    /// exp(-r · d · T).
+    #[test]
+    fn finalize_linked_fraction_uses_suppressed_rate() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let r = 1e-8;
+        let n = 4000;
+        let mut linked = 0;
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        for _ in 0..n {
+            // SV-phase sweep so the partition runs.
+            let mut sw = mk_sweep(100_000.0, Karyotype::I, 1000.0, 2000.0,
+                                  [0.7, 0.0, 0.15, 0.15]);
+            sw.accumulate_suppression(1000.0, &invs);
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            let mut active = vec![mk_lin(&mut arena, &mut tables, i_cls,
+                                         150_000.0, 160_000.0, 0)];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, true);
+            let mut next_uid: LinUid = 10;
+            let mut cursor = (f64::NAN, 0u64);
+            apply_sweep_finalize(&mut active, &sw, 2000.0, &mut arena, &mut tables,
+                                 &mut next_uid, &mut rng, r, &invs, &mut cursor,
+                                 &mut a_tag, &mut buckets);
+            if a_tag.get(&0).copied() == Some(true) { linked += 1; }
+        }
+        let frac = linked as f64 / n as f64;
+        let want = (-r * 0.3 * 50_000.0 * 1000.0_f64).exp();
+        assert!((frac - want).abs() < 0.025, "linked {frac} vs {want}");
+    }
+
+    // ---- tag swap ---------------------------------------------------
+
+    /// Fraction of trials in which the non-carrier child (class `cls`)
+    /// of an a-tagged lineage comes out A.
+    fn tag_swap_a_rate(cls: BranchClass, n: usize) -> f64 {
+        let invs = vec![inv_full(0.3, 1e9)];
+        // A at 50% on I, absent on S; population P(A) = 0.15.
+        let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.7, 0.0, 0.15, 0.15]);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(11);
+        let mut n_a = 0;
+        for _ in 0..n {
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            let mut active = vec![
+                mk_lin(&mut arena, &mut tables, cls, 0.0, 600_000.0, 0),
+                mk_lin(&mut arena, &mut tables, cls, 600_000.0, L, 1),
+            ];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, false);
+            tag(&mut active, &mut a_tag, &mut buckets, 1, false);
+            apply_sweep_recomb_tag_swap(&mut active, &[0, 1], std::slice::from_ref(&sw),
+                                        100.0, &mut rng, &mut a_tag, &mut buckets,
+                                        600_000.0, &invs, &arena);
+            if a_tag.get(&1).copied() == Some(true) { n_a += 1; }
+        }
+        n_a as f64 / n as f64
+    }
+
+    #[test]
+    fn tag_swap_never_gives_a_to_the_arrangement_without_it() {
+        assert_eq!(tag_swap_a_rate(BranchClass::single(0, Karyotype::S), 2000), 0.0);
+    }
+
+    #[test]
+    fn tag_swap_draws_against_the_childs_arrangement_or_the_population() {
+        let i = tag_swap_a_rate(BranchClass::single(0, Karyotype::I), 4000);
+        assert!((i - 0.5).abs() < 0.04, "I child: {i}");
+        let p = tag_swap_a_rate(BranchClass::PANMICTIC, 4000);
+        assert!((p - 0.15).abs() < 0.03, "untagged child: {p}");
+    }
+
+    // ---- founder merges ---------------------------------------------
+
+    #[test]
+    fn hard_sweep_collapse_merges_only_the_founder_arrangement() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 1000.0, [0.6, 0.1, 0.0, 0.3]);
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(L, 1);
+        let mut active = vec![
+            mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 0),
+            mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 1),
+            mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 2),
+        ];
+        let mut a_tag = ATagMap::default();
+        let mut buckets = SweepBuckets::new(1);
+        for k in 0..3 { tag(&mut active, &mut a_tag, &mut buckets, k, true); }
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(3);
+        let mut next_uid: LinUid = 10;
+        let mut cursor = (f64::NAN, 0u64);
+        apply_sweep_finalize(&mut active, &sw, 1000.0, &mut arena, &mut tables,
+                             &mut next_uid, &mut rng, 1e-8, &invs, &mut cursor,
+                             &mut a_tag, &mut buckets);
+        assert!(no_conflicts(&active, &arena), "a lineage carries both I and S");
+        assert_eq!(active.len(), 2, "the two I lineages merge, the S one stays");
+        assert!(active.iter().any(|l| l.uid == 1), "S lineage was merged");
+    }
+
+    #[test]
+    fn de_novo_merge_only_targets_compatible_lineages() {
+        let invs = vec![inv_full(0.3, 1e9)];
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        for seed in 0..40 {
+            let sw = mk_sweep(500_000.0, Karyotype::I, 1000.0, 2000.0,
+                              [0.7, 0.0, 0.15, 0.15]);
+            let mut arena = SegmentArena::new();
+            let mut tables = TableBuilder::new(L, 1);
+            // The A lineage spans x_sel, so it stays linked.
+            let mut active = vec![
+                mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 0),
+                mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 1),
+                mk_lin(&mut arena, &mut tables, s_cls, 0.0, L, 2),
+                mk_lin(&mut arena, &mut tables, i_cls, 0.0, L, 3),
+            ];
+            let mut a_tag = ATagMap::default();
+            let mut buckets = SweepBuckets::new(1);
+            tag(&mut active, &mut a_tag, &mut buckets, 0, true);
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(seed);
+            let mut next_uid: LinUid = 10;
+            let mut cursor = (f64::NAN, 0u64);
+            apply_sweep_finalize(&mut active, &sw, 2000.0, &mut arena, &mut tables,
+                                 &mut next_uid, &mut rng, 1e-8, &invs, &mut cursor,
+                                 &mut a_tag, &mut buckets);
+            assert!(no_conflicts(&active, &arena), "seed {seed}: I x S merge");
+            assert_eq!(active.len(), 3, "seed {seed}: expected one merge with the I target");
+            assert!(active.iter().any(|l| l.uid == 1) && active.iter().any(|l| l.uid == 2),
+                    "seed {seed}: an S lineage was merged");
+        }
+    }
+}
+
+/// Linked sweeps (`Sweep::exchange`): association-rate factors, the
+/// association events, gene-flux allele bookkeeping and the hard-sweep
+/// founder's arrangement.
+#[cfg(test)]
+mod sweep_linkage_tests {
+    use super::*;
+    use crate::sweep_trajectory::{JointSample, JointSweepSpec, JointSweepTrajectory};
+
+    const L: f64 = 1_000_000.0;
+    const BP: f64 = 400_000.0;
+
+    fn inv_left(p_inv: f64) -> InversionSpec {
+        let mut s = InversionSpec::with_p_inv(0.0, BP, vec![p_inv], 1e9);
+        s.inv_id = 0;
+        s
+    }
+
+    /// Sweep on inversion 0 with a constant hand-built trajectory.
+    /// `freq` = [(S,a), (S,A), (I,a), (I,A)].
+    fn mk_sweep(x_sel: f64, exchange: Exchange, founder: Karyotype, freq: [f64; 4],
+                rate: f64) -> Sweep {
+        let mut sw = Sweep::new(x_sel, 0.0, 0, founder, 0, JointSweepSpec {
+            t_origin: 1000.0, exchange_rate: rate, ..Default::default() });
+        sw.exchange = exchange;
+        sw.trajectory = Some(JointSweepTrajectory {
+            t_origin: 1000.0, t_de_novo: 1000.0, tau: 0.0, n_pops: 1,
+            samples: vec![
+                JointSample { t: 1000.0, freq: vec![freq] },
+                JointSample { t: 0.0, freq: vec![freq] },
+            ],
+        });
+        sw
+    }
+
+    /// Lineage with the given `(left, right, class)` segments.
+    fn mk_lin(arena: &mut SegmentArena, tables: &mut TableBuilder,
+              segs: &[(f64, f64, BranchClass)], uid: LinUid) -> Lineage {
+        let node = tables.add_sample(0.0, 0);
+        let mut head = SEG_NIL;
+        let mut tail = SEG_NIL;
+        for &(l, r, c) in segs {
+            let s = arena.alloc(l, r, node, c);
+            if head == SEG_NIL { head = s; } else { arena.get_mut(tail).next = s; }
+            tail = s;
+        }
+        Lineage::new(head, tail, 0, uid, arena)
+    }
+
+    fn set(active: &mut [Lineage], a_tag: &mut ATagMap, buckets: &mut SweepBuckets,
+           idx: usize, is_a: bool) {
+        sweep_set_allele(active, idx, is_a, a_tag, buckets);
+    }
+
+    const FREQ: [f64; 4] = [0.5, 0.2, 0.1, 0.2];
+
+    #[test]
+    fn recomb_factor_is_population_over_conditional_allele_frequency() {
+        let sw = mk_sweep(600_000.0, Exchange::Recomb { lo: BP, hi: 600_000.0 },
+                          Karyotype::S, FREQ, 2e-3);
+        // P(A) = 0.4, P(A|S) = 0.2/0.7, P(A|I) = 0.2/0.3.
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(close(sw.assoc_factor(0.0, Karyotype::S, true), 0.4 / (0.2 / 0.7)));
+        assert!(close(sw.assoc_factor(0.0, Karyotype::I, true), 0.4 / (0.2 / 0.3)));
+        assert!(close(sw.assoc_factor(0.0, Karyotype::S, false), 0.6 / (0.5 / 0.7)));
+        assert!(close(sw.assoc_factor(0.0, Karyotype::I, false), 0.6 / (0.1 / 0.3)));
+        assert!(close(sw.assoc_base_rate(0.0, Karyotype::I), 2e-3));
+    }
+
+    #[test]
+    fn flux_factor_is_ratio_of_conditional_allele_frequencies() {
+        let sw = mk_sweep(200_000.0, Exchange::Flux, Karyotype::I, FREQ, 1e-3);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        assert!(close(sw.assoc_factor(0.0, Karyotype::S, true), (0.2 / 0.3) / (0.2 / 0.7)));
+        assert!(close(sw.assoc_factor(0.0, Karyotype::I, true), (0.2 / 0.7) / (0.2 / 0.3)));
+        // LE rate of a flux tract over x_sel: gamma * p of the other arrangement.
+        assert!(close(sw.assoc_base_rate(0.0, Karyotype::S), 1e-3 * 0.3));
+        assert!(close(sw.assoc_base_rate(0.0, Karyotype::I), 1e-3 * 0.7));
+    }
+
+    #[test]
+    fn factors_are_one_at_linkage_equilibrium_and_unlinked() {
+        // f(k, A) = p_k P(A): no association.
+        let le = [0.7 * 0.6, 0.7 * 0.4, 0.3 * 0.6, 0.3 * 0.4];
+        for ex in [Exchange::Recomb { lo: BP, hi: 600_000.0 }, Exchange::Flux] {
+            let sw = mk_sweep(600_000.0, ex, Karyotype::S, le, 1e-3);
+            for k in [Karyotype::S, Karyotype::I] {
+                for a in [true, false] {
+                    assert!((sw.assoc_factor(0.0, k, a) - 1.0).abs() < 1e-12);
+                }
+            }
+        }
+        let sw = mk_sweep(600_000.0, Exchange::None, Karyotype::S, FREQ, 0.0);
+        assert_eq!(sw.assoc_factor(0.0, Karyotype::I, true), 1.0);
+        assert_eq!(sw.assoc_base_rate(0.0, Karyotype::I), 0.0);
+    }
+
+    #[test]
+    fn assoc_rates_cap_an_arrangement_the_allele_is_absent_from() {
+        // A only on S: an A lineage tagged I must leave at once.
+        let sw = mk_sweep(600_000.0, Exchange::Recomb { lo: BP, hi: 600_000.0 },
+                          Karyotype::S, [0.6, 0.1, 0.3, 0.0], 2e-3);
+        assert_eq!(sw.assoc_factor(0.0, Karyotype::I, true), f64::INFINITY);
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(L, 1);
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let mut active = vec![
+            mk_lin(&mut arena, &mut tables, &[(0.0, BP, i_cls)], 0),
+            mk_lin(&mut arena, &mut tables, &[(0.0, BP, s_cls)], 1),
+            mk_lin(&mut arena, &mut tables, &[(500_000.0, 700_000.0, BranchClass::PANMICTIC)], 2),
+        ];
+        let mut a_tag = ATagMap::default();
+        let mut buckets = SweepBuckets::new(1);
+        for k in 0..3 { set(&mut active, &mut a_tag, &mut buckets, k, true); }
+        let rates = sweep_assoc_rates(&active, &sw, 10.0, &arena);
+        // Only the I lineage: S has factor 0.1/(0.1/0.7) ... < 1, untagged is skipped.
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].0, 0);
+        assert_eq!(rates[0].1, ASSOC_RATE_CAP);
+    }
+
+    #[test]
+    fn founder_resolution_splits_or_redraws_off_founder_a_lineages() {
+        let invs = vec![inv_left(0.3)];
+        let x_sel = 600_000.0;
+        // Founder on S; no A on I at t_origin.
+        let sw = mk_sweep(x_sel, Exchange::Recomb { lo: BP, hi: x_sel }, Karyotype::S,
+                          [0.7 - 1e-4, 1e-4, 0.3, 0.0], 2e-3);
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let s_cls = BranchClass::single(0, Karyotype::S);
+        let p = BranchClass::PANMICTIC;
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(L, 1);
+        let mut active = vec![
+            // Spans x_sel and carries I: must split in the gap.
+            mk_lin(&mut arena, &mut tables, &[(0.0, BP, i_cls), (BP, L, p)], 0),
+            // Inversion material only, on I: allele re-drawn (to a).
+            mk_lin(&mut arena, &mut tables, &[(100_000.0, 300_000.0, i_cls)], 1),
+            // On the founder arrangement: untouched.
+            mk_lin(&mut arena, &mut tables, &[(0.0, BP, s_cls), (BP, L, p)], 2),
+        ];
+        let mut a_tag = ATagMap::default();
+        let mut buckets = SweepBuckets::new(1);
+        for k in 0..3 { set(&mut active, &mut a_tag, &mut buckets, k, true); }
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(11);
+        let mut next_uid: LinUid = 10;
+        let moved = resolve_founder_arrangement(
+            &mut active, &sw, 1000.0, &mut arena, &mut next_uid, &mut rng, &invs,
+            &mut a_tag, &mut buckets);
+        assert_eq!(moved, 2);
+        assert_eq!(active.len(), 4, "the spanning I lineage split in two");
+        for lin in &active {
+            let k = lineage_class_for_inv_id_arena(lin.head, 0, &arena);
+            if lin.a_tag == Some(true) {
+                assert_ne!(k, Some(Karyotype::I), "A lineage left on I: uid {}", lin.uid);
+            }
+        }
+        // The x_sel piece of the split lineage is untagged at the
+        // inversion and still A; its I piece is a.
+        let x_piece = active.iter().find(|l| l.cached_hull_r > x_sel
+            && lineage_class_for_inv_id_arena(l.head, 0, &arena).is_none()).unwrap();
+        assert_eq!(x_piece.a_tag, Some(true));
+        assert!(x_piece.cached_hull_l > BP && x_piece.cached_hull_l < x_sel);
+        let i_piece = active.iter().find(|l| l.uid == 0).unwrap();
+        assert_eq!(i_piece.a_tag, Some(false));
+        // The founder collapse now merges every A lineage into one.
+        let mut cursor = (f64::NAN, 0u64);
+        apply_sweep_finalize(&mut active, &sw, 1000.0, &mut arena, &mut tables,
+                             &mut next_uid, &mut rng, 1e-8, &invs, &mut cursor,
+                             &mut a_tag, &mut buckets);
+        // x piece + founder-arrangement lineage -> one; two a lineages stay.
+        assert_eq!(active.len(), 3);
+    }
+
+    #[test]
+    fn flux_tract_over_x_sel_keeps_the_allele_and_the_rest_redraws() {
+        let mut inv = InversionSpec::with_p_inv(0.0, BP, vec![0.3], 1e9);
+        inv.inv_id = 0;
+        inv.mean_tract_length = 1_000.0;
+        let x_sel = 200_000.0;
+        // A only on I: a draw against S always gives a.
+        let sw = mk_sweep(x_sel, Exchange::Flux, Karyotype::I, [0.7, 0.0, 0.1, 0.2], 1e-3);
+        let i_cls = BranchClass::single(0, Karyotype::I);
+        let mut arena = SegmentArena::new();
+        let mut tables = TableBuilder::new(L, 1);
+        let mut active = vec![mk_lin(&mut arena, &mut tables, &[(0.0, BP, i_cls)], 0)];
+        let mut a_tag = ATagMap::default();
+        let mut buckets = SweepBuckets::new(1);
+        set(&mut active, &mut a_tag, &mut buckets, 0, true);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(5);
+        let mut next_uid: LinUid = 10;
+        // A tract over x_sel moves it to S with A; the rest stays on I
+        // and draws against P(A | I) = 2/3.
+        let (tl, tr) = (x_sel - 500.0, x_sel + 500.0);
+        let before = active.len();
+        apply_gene_flux(&mut active, 0, tl, tr, &inv, &mut arena, &mut next_uid,
+                        None, 10.0, x_sel);
+        let affected: Vec<usize> = std::iter::once(0).chain(before..active.len()).collect();
+        sweep_flux_alleles(&mut active, &affected, Some(true), tl, tr, &sw, 10.0,
+                           &arena, &mut rng, &mut a_tag, &mut buckets);
+        let tract = active.iter().find(|l| l.cached_hull_l >= tl - 1e-9
+            && l.cached_hull_r <= tr + 1e-9).unwrap();
+        assert_eq!(lineage_class_for_inv_id_arena(tract.head, 0, &arena), Some(Karyotype::S));
+        assert_eq!(tract.a_tag, Some(true));
+        // A tract away from x_sel copies a piece of an S chromosome,
+        // which carries a (P(A | S) = 0); the lineage keeps its A.
+        let li = active.iter().position(|l| l.cached_hull_l < tl).unwrap();
+        set(&mut active, &mut a_tag, &mut buckets, li, true);
+        let (tl2, tr2) = (50_000.0, 51_000.0);
+        let before = active.len();
+        apply_gene_flux(&mut active, li, tl2, tr2, &inv, &mut arena, &mut next_uid,
+                        None, 10.0, 50_500.0);
+        let affected: Vec<usize> = std::iter::once(li).chain(before..active.len()).collect();
+        sweep_flux_alleles(&mut active, &affected, Some(true), tl2, tr2, &sw, 10.0,
+                           &arena, &mut rng, &mut a_tag, &mut buckets);
+        let tract2 = active.iter().find(|l| l.cached_hull_l >= tl2 - 1e-9
+            && l.cached_hull_r <= tr2 + 1e-9).unwrap();
+        assert_eq!(tract2.a_tag, Some(false));
+        assert_eq!(active[li].a_tag, Some(true));
     }
 }

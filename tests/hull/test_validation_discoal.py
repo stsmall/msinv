@@ -8,9 +8,18 @@ Per-rep stats arrive as JSON on the child's stdout; peak RSS is read
 from ``os.wait4`` rusage.
 """
 
+import os
+
 import pytest
 
 from tests.hull._validation_common import _run_validation
+from tests.hull._discoal_bench_runner import DISCOAL_BIN
+
+# discoal is an external binary; skip the comparison where it is not installed
+# (for example on CI runners). Set DISCOAL_BIN to point at a local build.
+pytestmark = pytest.mark.skipif(
+    not os.path.exists(DISCOAL_BIN),
+    reason=f"discoal binary not found at {DISCOAL_BIN} (set DISCOAL_BIN)")
 
 RUNNER = "tests.hull._discoal_bench_runner"
 BENCH_LOG = ".tmp/discoal_validation_bench.jsonl"

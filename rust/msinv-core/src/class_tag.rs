@@ -35,6 +35,17 @@ impl BranchClass {
     /// Panmictic — no active inversion barriers.
     pub const PANMICTIC: Self = Self(0);
 
+    /// Rate-cache key of a karyotype-incompatible lineage pair (one lineage
+    /// carries S and the other I at some active inversion). Such a pair
+    /// cannot coalesce while the barrier is active, so its coalescence
+    /// rate is 0 (`p_class_for_tag` returns 0 for this key). The pair is
+    /// still stored in the rate cache under this key so that a later
+    /// recombination split, which can make it compatible, re-keys it
+    /// (`RateCache::refresh_karyotype_key`). All bits set: every per-
+    /// inversion slot holds the reserved `11` pattern, so no segment ever
+    /// carries this class.
+    pub const BLOCKED: Self = Self(u64::MAX);
+
     /// Maximum number of inversions supported by the bitmask.
     pub const MAX_INVERSIONS: usize = 32;
 
@@ -141,6 +152,54 @@ impl BranchClass {
     pub fn from_bits_unchecked(bits: u64) -> Self {
         Self(bits)
     }
+
+    /// Union of two `can_coalesce`-compatible tags (each inversion
+    /// tagged in either input keeps that karyotype). Falls back to
+    /// `self` when the tags conflict, so it never builds the reserved
+    /// 0b11 bit pair.
+    #[inline]
+    pub fn union_compatible(self, other: Self) -> Self {
+        if self.can_coalesce(other) { Self(self.0 | other.0) } else { self }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lineage karyotype signatures
+// ---------------------------------------------------------------------------
+//
+// A lineage's *karyotype signature* is the bitwise OR of the `BranchClass`
+// bits of all of its segments: for each inversion it records which
+// arrangement(s) the lineage carries material from. A signature with both
+// bits of some inversion set (S and I material for the same inversion, e.g.
+// after gene flux) is self-conflicting.
+//
+// Two lineages are *karyotype-compatible* when the OR of their signatures has
+// no conflict: their common ancestor chromosome then has a well-defined
+// arrangement at every inversion, so a coalescence between them is an
+// ordinary Hudson merge of all their material. Their shared karyotype (the
+// inversions tagged, identically, in both) sets the coalescence rate
+// 1 / (2 N p_shared); see `RateCache::pair_rate_classes`.
+
+/// Mask of the low bit of every 2-bit inversion slot.
+const LOW_BITS: u64 = 0x5555_5555_5555_5555;
+
+/// True if `sig` carries both S and I for some inversion.
+#[inline]
+pub fn sig_has_conflict(sig: u64) -> bool {
+    (sig & (sig >> 1)) & LOW_BITS != 0
+}
+
+/// True if two lineage signatures are karyotype-compatible.
+#[inline]
+pub fn karyotypes_compatible(sig_a: u64, sig_b: u64) -> bool {
+    !sig_has_conflict(sig_a | sig_b)
+}
+
+/// Shared karyotype of two compatible signatures: the inversions tagged in
+/// both. `PANMICTIC` when at least one lineage carries no tagged material.
+#[inline]
+pub fn shared_karyotype(sig_a: u64, sig_b: u64) -> BranchClass {
+    BranchClass(sig_a & sig_b)
 }
 
 #[cfg(test)]
@@ -213,6 +272,32 @@ mod tests {
         // both have active tags → can coalesce.
         assert!(p.can_coalesce(s0));
         assert!(p.can_coalesce(p));
+    }
+
+    #[test]
+    fn karyotype_signatures() {
+        let p = BranchClass::PANMICTIC.bits();
+        let i0 = BranchClass::single(0, Karyotype::I).bits();
+        let s0 = BranchClass::single(0, Karyotype::S).bits();
+        let s1 = BranchClass::single(1, Karyotype::S).bits();
+        // Body + margin of the same arrangement: one karyotype.
+        assert!(!sig_has_conflict(i0 | p));
+        assert!(karyotypes_compatible(i0 | p, i0));
+        assert_eq!(shared_karyotype(i0 | p, i0), BranchClass::single(0, Karyotype::I));
+        // Margin-only lineage pairs at the panmictic rate.
+        assert!(karyotypes_compatible(i0, p));
+        assert_eq!(shared_karyotype(i0, p), BranchClass::PANMICTIC);
+        // I x S is incompatible; a lineage carrying both conflicts by itself.
+        assert!(!karyotypes_compatible(i0, s0));
+        assert!(sig_has_conflict(i0 | s0));
+        // Independent inversions: shared = inversions tagged in both.
+        assert!(karyotypes_compatible(i0 | s1, i0));
+        assert_eq!(shared_karyotype(i0 | s1, i0 | s1).bits(), i0 | s1);
+        assert_eq!(shared_karyotype(i0 | s1, i0).bits(), i0);
+        // Union keeps tags, refuses conflicts.
+        let ci0 = BranchClass::single(0, Karyotype::I);
+        assert_eq!(BranchClass::PANMICTIC.union_compatible(ci0), ci0);
+        assert_eq!(ci0.union_compatible(BranchClass::single(0, Karyotype::S)), ci0);
     }
 
     #[test]

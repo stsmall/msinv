@@ -87,6 +87,7 @@ fn task13_diag_hard_sweep_drain() {
         gc_stride: 160,
         record_events: false,
         smc_prime: false,
+        crossover_suppression: true,
     };
 
     let result = sim.simulate();
@@ -158,6 +159,7 @@ fn task13_diag_hard_sweep_seed_scan() {
             gc_stride: 160,
             record_events: false,
             smc_prime: false,
+            crossover_suppression: true,
         };
         let res = sim.simulate();
         let mut log = SNAP_LOG.lock().unwrap();

@@ -45,7 +45,7 @@ pub fn unpack_pair_idx(pidx: usize, cap: usize) -> (usize, usize) {
 
 /// Number of entries in the triangular pair array for `n` lineages.
 #[inline]
-pub fn tri_size(n: usize) -> usize { n * (n - 1) / 2 }
+pub fn tri_size(n: usize) -> usize { n * n.saturating_sub(1) / 2 }
 
 pub struct PairRateCache {
     pair_rates: Fenwick,

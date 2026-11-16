@@ -37,7 +37,51 @@ pub struct InversionSpec {
     /// pre-b2 deterministic-tract semantics; `Geometric` samples
     /// Exponential(1/mean_tract_length).
     pub tract_distribution: TractDistribution,
+    /// Optional second exchange process with long tracts (#30), for
+    /// example double crossovers in heterokaryotypes. Same forward model
+    /// as the short process (events start at `long_flux_rate * phi(y)`
+    /// per bp, with `phi` computed from `long_mean_tract_length`), and
+    /// independent of it. `long_flux_rate = 0` (the default) disables it.
+    pub long_flux_rate: f64,
+    /// Mean long-process tract length (bp).
+    pub long_mean_tract_length: f64,
+    /// Long-process tract length distribution.
+    pub long_tract_distribution: TractDistribution,
     pub inv_id: u16,
+}
+
+/// One gene-flux process of an inversion: event rate per bp per
+/// generation, tract-length law, and the inversion it acts in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FluxProc {
+    pub bp_left: f64,
+    pub bp_right: f64,
+    pub gcr: f64,
+    pub mean: f64,
+    pub dist: TractDistribution,
+}
+
+impl FluxProc {
+    #[inline]
+    pub fn length(&self) -> f64 {
+        self.bp_right - self.bp_left
+    }
+}
+
+/// The flux processes of an inversion: the short process, then the long
+/// one when it is switched on. Fixed-size so the hot rate path does not
+/// allocate.
+#[derive(Clone, Copy, Debug)]
+pub struct FluxProcs {
+    procs: [FluxProc; 2],
+    n: usize,
+}
+
+impl FluxProcs {
+    #[inline]
+    pub fn as_slice(&self) -> &[FluxProc] {
+        &self.procs[..self.n]
+    }
 }
 
 impl InversionSpec {
@@ -54,6 +98,9 @@ impl InversionSpec {
             gene_conversion_rate: 1e-9,
             mean_tract_length: 100.0,
             tract_distribution: TractDistribution::Geometric,
+            long_flux_rate: 0.0,
+            long_mean_tract_length: 0.0,
+            long_tract_distribution: TractDistribution::Geometric,
             inv_id: 0,
         }
     }
@@ -77,6 +124,27 @@ impl InversionSpec {
     #[inline]
     pub fn length(&self) -> f64 {
         self.bp_right - self.bp_left
+    }
+
+    /// The short flux process and, when `long_flux_rate > 0` and
+    /// `long_mean_tract_length > 0`, the long one.
+    #[inline]
+    pub fn flux_procs(&self) -> FluxProcs {
+        let short = FluxProc {
+            bp_left: self.bp_left,
+            bp_right: self.bp_right,
+            gcr: self.gene_conversion_rate,
+            mean: self.mean_tract_length,
+            dist: self.tract_distribution,
+        };
+        let long = FluxProc {
+            gcr: self.long_flux_rate,
+            mean: self.long_mean_tract_length,
+            dist: self.long_tract_distribution,
+            ..short
+        };
+        let n = if self.long_flux_rate > 0.0 && self.long_mean_tract_length > 0.0 { 2 } else { 1 };
+        FluxProcs { procs: [short, long], n }
     }
 
     /// Inverted-arrangement frequency for `pop` at backward time `t`.

@@ -352,6 +352,18 @@ fn simulate_raw(
                 _ => return Err(pyo3::exceptions::PyValueError::new_err(
                     format!("tract_distribution must be 'fixed' or 'geometric', got {td_str:?}"))),
             };
+            let lfr: f64 = d.get_item("long_flux_rate")?
+                .map_or_else(|| Ok(0.0_f64), |v| v.extract())?;
+            let lmtl: f64 = d.get_item("long_mean_tract_length")?
+                .map_or_else(|| Ok(0.0_f64), |v| v.extract())?;
+            let ltd_str: String = d.get_item("long_tract_distribution")?
+                .map_or_else(|| Ok("geometric".to_string()), |v| v.extract())?;
+            let ltd = match ltd_str.as_str() {
+                "fixed" => TractDistribution::Fixed,
+                "geometric" => TractDistribution::Geometric,
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("long_tract_distribution must be 'fixed' or 'geometric', got {ltd_str:?}"))),
+            };
 
             // Build trajectory
             let trajectory: Box<dyn Trajectory + Send + Sync> =
@@ -506,6 +518,9 @@ fn simulate_raw(
             spec.gene_conversion_rate = gcr;
             spec.mean_tract_length = mtl;
             spec.tract_distribution = td;
+            spec.long_flux_rate = lfr;
+            spec.long_mean_tract_length = lmtl;
+            spec.long_tract_distribution = ltd;
             spec.inv_id = i as u16;
             inv_specs.push(spec);
         }

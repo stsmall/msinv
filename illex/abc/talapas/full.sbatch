@@ -1,7 +1,8 @@
 #!/bin/bash
 # Full-length NPE training run (msinv #30), one SLURM array task.
 #   FULL_MODE=bank : control_bank.py, BANK_PER_TASK full-length controls -> $FULL_OUTROOT/bank/ctl_<idx>.jsonl.gz
-#   FULL_MODE=rows : run_full.py, K_PER_TASK accepted rows -> $FULL_OUTROOT/table/B_full_<idx>.jsonl.gz
+#   FULL_MODE=rows : run_full.py, K_PER_TASK accepted rows -> $FULL_OUTROOT/table/B_full_<idx>.jsonl.gz,
+#                    idx = ROW_OFFSET + array index
 # Submit with illex/abc/npe/submit_full.sh (it sets the array, account, partition, resources and the dependency).
 #SBATCH --job-name=illex_full
 #SBATCH --output=logs/%x_%A_%a.out
@@ -25,6 +26,7 @@ case "$FULL_MODE" in
             --workers "$SLURM_CPUS_PER_TASK"
         ;;
     rows)
+        idx=$((idx + ${ROW_OFFSET:-0}))
         if [[ -s "$FULL_OUTROOT/table/B_full_$idx.jsonl.gz" ]]; then echo "exists, skipping"; exit 0; fi
         python -m illex.abc.run_full --task-id "$idx" --n-accept "$K_PER_TASK" --bank "$FULL_OUTROOT/bank" \
             --out "$FULL_OUTROOT/table" --workers "$SLURM_CPUS_PER_TASK" --save-ts-every "$SAVE_TS_EVERY"

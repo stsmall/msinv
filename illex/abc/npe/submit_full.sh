@@ -14,8 +14,11 @@
 # (ABC_ENV=$FULL_ENV REPO=... BRANCH=illex/fulllength bash illex/abc/talapas/install_env.sh). Use a separate env
 # from the 40-kb runs, because `pip install -e` points the env's msinv at this checkout.
 #
-# Sizing (box, msinv 0.4.2): one full-length row takes 49-62 min and 60-72 GB peak; one 45-Mb control 12 min and
-# 13 GB. Defaults: rows 2 workers x 180G per task, 8 rows per task (~4-5 h); bank 4 workers x 80G, 10 per task.
+# Sizing (box, msinv 0.4.2, four posterior draws): one full-length row took 49, 62, 82 and 466 min with peaks of 61,
+# 72, 91 and 152 GB; the slow one had strong selection (s = 0.094). One 45-Mb control took 12 min and 13 GB.
+# Defaults: rows 1 worker x 200G per task, 2 rows per task, 24 h; bank 4 workers x 80G, 8 per task.
+# Rows: 40,000 tasks (80,000 rows) in four arrays of 10,000, ROW_OFFSET=0, 10000, 20000, 30000 (STAGE=rows after
+# the first). The row task id (and its seeds) is ROW_OFFSET + the array index.
 # Confirm with the pilot in illex/abc/talapas/TALAPAS_FULL.md before production. Each array task is resumable: a
 # finished task file is skipped on resubmission, and a killed rows task keeps its finished rows in a .partial file.
 set -euo pipefail
@@ -28,10 +31,11 @@ export BANK_CPUS=${BANK_CPUS:-4}
 export BANK_MEM=${BANK_MEM:-80G}
 export BANK_WALLTIME=${BANK_WALLTIME:-08:00:00}
 export ROW_TASKS=${ROW_TASKS:-10000}
-export K_PER_TASK=${K_PER_TASK:-8}
-export ROW_CPUS=${ROW_CPUS:-2}
-export ROW_MEM=${ROW_MEM:-180G}
-export ROW_WALLTIME=${ROW_WALLTIME:-12:00:00}
+export K_PER_TASK=${K_PER_TASK:-2}
+export ROW_CPUS=${ROW_CPUS:-1}
+export ROW_MEM=${ROW_MEM:-200G}
+export ROW_WALLTIME=${ROW_WALLTIME:-24:00:00}
+export ROW_OFFSET=${ROW_OFFSET:-0}
 export MAX_CONCURRENT=${MAX_CONCURRENT:-200}
 export SAVE_TS_EVERY=${SAVE_TS_EVERY:-1000}
 STAGE=${STAGE:-all}
@@ -65,7 +69,7 @@ BANK_CMD=(sbatch --parsable --array="0-$((BANK_TASKS - 1))%${MAX_CONCURRENT}" --
 ROW_CMD=(sbatch --parsable --array="0-$((ROW_TASKS - 1))%${MAX_CONCURRENT}" --account="$ACCOUNT"
          --partition="$PARTITION" --cpus-per-task="$ROW_CPUS" --mem="$ROW_MEM" --time="$ROW_WALLTIME"
          --job-name=illex_full_rows --export="ALL,FULL_MODE=rows" "$SB")
-echo "bank: $BANK_TASKS tasks x $BANK_PER_TASK controls; rows: $ROW_TASKS tasks x $K_PER_TASK rows"
+echo "bank: $BANK_TASKS tasks x $BANK_PER_TASK controls; rows: $ROW_TASKS tasks x $K_PER_TASK rows, task ids $ROW_OFFSET-$((ROW_OFFSET + ROW_TASKS - 1))"
 echo "FULL_OUTROOT=$FULL_OUTROOT"
 echo "${BANK_CMD[*]}"
 echo "${ROW_CMD[*]} (after the bank)"

@@ -91,13 +91,28 @@ each row (`row k/K seed ... s ... GB` lines), and the sizes of `bank/ctl_*.jsonl
 bash illex/abc/npe/submit_full.sh
 ```
 
-Defaults (override by environment variable): BANK_TASKS 100 x BANK_PER_TASK 10 controls (4 CPUs, 80G);
-ROW_TASKS 10000 x K_PER_TASK 8 rows (80,000 rows), ROW_CPUS 2 with ROW_MEM 180G and 12 h, at most 200 tasks at a
-time. On the box (msinv 0.4.2) one full-length row took 49-62 min with a 60-72 GB peak and one 45-Mb control 12 min
-with 13 GB; if the pilot's peaks differ, scale ROW_MEM to about 2.5 x the largest row peak per worker. If Slurm
-refuses an array of 10000, submit in parts with STAGE=rows and a smaller ROW_TASKS (finished tasks are skipped). A task is skipped
-when its output file exists, so resubmitting the same command resumes the run. A rows task that hits its wall time
-keeps its finished rows in `table/.B_full_<task>.jsonl.gz.partial`.
+Defaults (override by environment variable): BANK_TASKS 100 x BANK_PER_TASK 8 controls (4 CPUs, 80G);
+ROW_TASKS 10000 x K_PER_TASK 2 rows per array, ROW_CPUS 1 with ROW_MEM 200G and 24 h, at most 200 tasks at a time.
+On the box (msinv 0.4.2) four full-length rows took 49, 62, 82 and 466 min with peaks of 61, 72, 91 and 152 GB (the
+slow one had strong selection, s = 0.094), and one 45-Mb control 12 min with 13 GB. Rows drawn from the prior may
+include more strong-selection draws than these posterior draws, so one row per task with room for about 3x the
+slowest row. If a rows task runs out of memory or time, report its log tail and its parameters; do not change
+ROW_MEM or ROW_WALLTIME without asking.
+
+The full run is 40,000 row tasks (80,000 rows) in four arrays of 10,000. The row task id, which sets the seeds, is
+ROW_OFFSET plus the array index:
+
+```bash
+bash illex/abc/npe/submit_full.sh                                  # bank, then rows 0-9999
+STAGE=rows ROW_OFFSET=10000 bash illex/abc/npe/submit_full.sh      # rows 10000-19999
+STAGE=rows ROW_OFFSET=20000 bash illex/abc/npe/submit_full.sh      # rows 20000-29999
+STAGE=rows ROW_OFFSET=30000 bash illex/abc/npe/submit_full.sh      # rows 30000-39999
+```
+
+Submit the later arrays once the bank is complete. If Slurm refuses an array of 10000, use a smaller ROW_TASKS and
+step ROW_OFFSET by the same amount. A task is skipped when its output file exists, so resubmitting the same command
+resumes the run. A rows task that hits its wall time keeps its finished rows in
+`table/.B_full_<task>.jsonl.gz.partial`.
 
 Report progress as the number of `table/B_full_*.jsonl.gz` files, and any failed tasks with their log tails.
 

@@ -20,7 +20,7 @@ second gene-flux process.
 - **Saved per row.** The 42 statistics of the 40-kb fits (same functions), the raw values before division, LD by
   1-Mb block, LD in 12 fine bins (with and without the genotype-error model), LD at 20 kb to 2 Mb, the unfolded
   spectra, the exact joint count spectrum, per-Mb pi and dxy, the edge profile, the frequency path, all parameters
-  and seeds. Mutated tree sequences are kept for every SAVE_TS_EVERY-th row (default 500).
+  and seeds. Mutated tree sequences are kept for every SAVE_TS_EVERY-th row (default 1000).
 
 ## Rules
 

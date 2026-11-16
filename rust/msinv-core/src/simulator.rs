@@ -14,7 +14,6 @@ use crate::events::{apply_coalescence, apply_coalescence_partial, apply_recombin
 use crate::inversion::InversionSpec;
 use crate::lineage::{ATagMap, LinUid, Lineage};
 use crate::flux::{self, ClassedSeg};
-use crate::phi::phi;
 use crate::rate_index::{FlatSeg, RateCache};
 use crate::segment::{SegIdx, SegmentArena, SEG_NIL};
 use crate::sweep::{other_kary, Exchange, Sweep};
@@ -2829,12 +2828,9 @@ fn populate_sweep_trajectories(
                 // Per-generation flux at the selected site, matching the
                 // coalescent's rate of tracts covering a carried site:
                 // events at density gcr * phi(x) per bp, each moving a
-                // tract of mean length `mean_tract_length` (`flux.rs`).
-                let len = inv.length();
-                let w = inv.mean_tract_length / len;
-                let x_rel = (sw.x_sel - inv.bp_left) / len;
-                sw.joint.exchange_rate =
-                    inv.gene_conversion_rate * inv.mean_tract_length * phi(x_rel, w);
+                // tract of mean length `mean_tract_length`, summed over
+                // the inversion's flux processes (`flux.rs`).
+                sw.joint.exchange_rate = flux::site_cover_rate(inv, sw.x_sel);
                 (0..n_pops as usize).map(|p| inv.p_inv_at(t0, p as u32)).collect()
             }
         };
@@ -3286,19 +3282,17 @@ fn apply_sweep_finalize(
 /// (`resolve_founder_arrangement`).
 const ASSOC_RATE_CAP: f64 = 1.0e3;
 
-/// Draw a gene-flux tract containing `x_event` inside `inv`: length
-/// `mean_tract_length` (fixed or exponential), placed uniformly among
-/// the positions that contain `x_event` and fit in the inversion.
+/// Draw a gene-flux tract containing `x_event` inside `inv`, from one of
+/// the inversion's flux processes in proportion to its cover rate at
+/// `x_event`: length `mean_tract_length` of that process (fixed or
+/// exponential), placed uniformly among the positions that contain
+/// `x_event` and fit in the inversion.
 fn draw_tract_at(
     x_event: f64,
     inv: &InversionSpec,
     rng: &mut Xoshiro256PlusPlus,
 ) -> (f64, f64) {
-    if inv.mean_tract_length <= 0.0 {
-        return (x_event, x_event);
-    }
-    let l = flux::draw_tract_len(inv, rng);
-    flux::place_tract(x_event, l, inv, rng)
+    flux::draw_tract_covering(x_event, inv, rng)
 }
 
 /// Set a lineage's sweep allele in all three mirrors (`a_tag`,

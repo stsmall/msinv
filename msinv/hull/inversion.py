@@ -72,6 +72,17 @@ class InversionSpec:
         Mean gene-conversion tract length in bp (Peischl b2 flux model).
     tract_distribution : str
         Tract-length distribution: 'geometric' (default) or 'fixed'.
+    long_flux_rate : float
+        Per-bp per-generation start rate of a second, independent flux
+        process with long tracts (#30), for example double crossovers in
+        heterokaryotypes. Same forward model as the short process, with
+        phi(x) computed from ``long_mean_tract_length``. 0 (the default)
+        disables it.
+    long_mean_tract_length : float
+        Mean tract length of the long process in bp.
+    long_tract_distribution : str
+        Long-process tract-length distribution: 'geometric' (default) or
+        'fixed'.
     inv_id : int
         Identifier; auto-assigned by HullSimulator from the inversions
         list index.
@@ -85,6 +96,10 @@ class InversionSpec:
     # Peischl b2 flux model — see docs/superpowers/specs/2026-04-27-peischl-b2-flux-design.md.
     mean_tract_length: float = 100.0  # bp
     tract_distribution: str = "geometric"  # 'geometric' or 'fixed'
+    # Optional long-tract exchange process (#30); 0 disables it.
+    long_flux_rate: float = 0.0
+    long_mean_tract_length: float = 0.0  # bp
+    long_tract_distribution: str = "geometric"  # 'geometric' or 'fixed'
     inv_id: int = -1  # set by simulator
     # Trajectory dict overrides p_inv/t_inv when provided.  See module
     # docstring for the supported shapes.
@@ -93,6 +108,23 @@ class InversionSpec:
     @property
     def length(self) -> float:
         return self.bp_right - self.bp_left
+
+    def flux_procs(self) -> list["InversionSpec"]:
+        """The flux processes as single-process views of this spec: the
+        short process, then the long one when ``long_flux_rate > 0`` and
+        ``long_mean_tract_length > 0``. Each view carries its process in
+        ``gene_conversion_rate``/``mean_tract_length``/``tract_distribution``.
+        """
+        procs = [self]
+        if self.long_flux_rate > 0.0 and self.long_mean_tract_length > 0.0:
+            long = object.__new__(type(self))
+            long.__dict__.update(self.__dict__)
+            long.gene_conversion_rate = float(self.long_flux_rate)
+            long.mean_tract_length = float(self.long_mean_tract_length)
+            long.tract_distribution = self.long_tract_distribution
+            long.long_flux_rate = 0.0
+            procs.append(long)
+        return procs
 
     def p_inv_for(self, pop: int) -> float:
         """Return inverted-arrangement frequency for population *pop*."""
@@ -190,6 +222,20 @@ class InversionSpec:
             raise ValueError(
                 f"tract_distribution must be 'geometric' or 'fixed', "
                 f"got {self.tract_distribution!r}."
+            )
+        if self.long_flux_rate < 0.0 or self.long_mean_tract_length < 0.0:
+            raise ValueError(
+                f"long_flux_rate and long_mean_tract_length must be >= 0, got "
+                f"{self.long_flux_rate} and {self.long_mean_tract_length}."
+            )
+        if self.long_flux_rate > 0.0 and self.long_mean_tract_length <= 0.0:
+            raise ValueError(
+                "long_flux_rate > 0 needs long_mean_tract_length > 0."
+            )
+        if self.long_tract_distribution not in ("geometric", "fixed"):
+            raise ValueError(
+                f"long_tract_distribution must be 'geometric' or 'fixed', "
+                f"got {self.long_tract_distribution!r}."
             )
         inv_len_local = self.bp_right - self.bp_left
         if self.mean_tract_length > inv_len_local / 2.0:

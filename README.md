@@ -273,6 +273,18 @@ python benchmarks/rho_scaling.py --rho 500,1000,2000,4000,8000,16000 --reps 5
 
 ## Unreleased
 
+- **Second, long-tract flux process (#30).** `InversionSpec` takes
+  `long_flux_rate`, `long_mean_tract_length` and
+  `long_tract_distribution` for an exchange process with long tracts
+  (for example double crossovers in heterokaryotypes) next to short gene
+  conversion. It follows the same forward model as the short process,
+  with `phi` computed from its own tract length, and is independent of
+  it, so a carried site is covered at the sum of the two forward rates
+  `p_other * (gcr * mean * phi_short + long_flux_rate * long_mean * phi_long)`,
+  each `phi` with its own `w = mean / inversion length`. Both
+  engines. `long_flux_rate = 0` (the default) leaves simulations
+  unchanged, draw for draw.
+
 - **Gene-flux rate no longer depends on carried material (#28).** A
   lineage is now hit by every flux tract that overlaps its material
   inside the inversion, including tracts that start in a gap next to

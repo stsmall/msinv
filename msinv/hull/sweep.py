@@ -21,6 +21,38 @@ SweepModeStr = Literal[
 
 @dataclass
 class Sweep:
+    """One selective sweep (Rust engine only).
+
+    With an inversion ``target_inv`` that exists at ``t_origin``, the sweep
+    is linked to it. The trajectory tracks the beneficial allele on each
+    arrangement, starting from the inversion frequency at ``t_origin``, and
+    the association between allele and arrangement decays at a rate ``c``
+    per generation:
+
+    - ``x_sel`` inside the inversion: the allele arises on ``origin_kary``
+      at overall frequency ``f0`` (at most that arrangement's frequency)
+      and moves to the other arrangement only by the inversion's gene flux;
+      ``c = gene_conversion_rate * mean_tract_length * phi(x_sel)``.
+    - ``x_sel`` outside it: ``c = r * d``, with ``d`` the distance to the
+      nearer breakpoint. A hard sweep's founder arrangement is drawn from
+      the arrangement frequencies at ``t_origin``. Standing variation
+      starts independent of arrangement, at overall frequency ``f0``.
+      ``origin_kary`` is ignored.
+
+    Selection on the allele changes the inversion frequency in proportion
+    to their linkage. The inversion frequency follows the trajectory from
+    ``t_origin`` to ``tau`` and stays at its final value after ``tau``.
+    Backward in time, lineages carrying an arrangement coalesce at that
+    arrangement's allele frequency. A lineage's association with the
+    allele moves between arrangements at the exact backward rate implied
+    by the trajectory. A sweep far from the inversion therefore behaves as
+    in discoal.
+
+    Without such an inversion (or if it arises after ``t_origin``) the
+    sweep is an ordinary discoal-style sweep, and inversion frequencies
+    are unchanged.
+    """
+
     x_sel: float
     tau: float
     origin_pop: int
@@ -32,8 +64,6 @@ class Sweep:
     f0: float = 0.0
     partial_sweep_final_freq: float = 1.0
     recurrent_mutation_rate: float = 0.0
-    gamma_flux: float = 0.0
-    mean_tract_length: float = 0.0
     seed: int = 0
     dt_scalar: float = 400.0
 
@@ -51,8 +81,6 @@ class Sweep:
             f0=self.f0,
             partial_sweep_final_freq=self.partial_sweep_final_freq,
             recurrent_mutation_rate=self.recurrent_mutation_rate,
-            gamma_flux=self.gamma_flux,
-            mean_tract_length=self.mean_tract_length,
             seed=self.seed,
             dt_scalar=self.dt_scalar,
         )

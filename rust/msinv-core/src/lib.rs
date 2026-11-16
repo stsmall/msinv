@@ -6,6 +6,7 @@ pub mod inversion;
 pub mod tables;
 pub mod events;
 pub mod phi;
+pub mod flux;
 pub mod fenwick;
 pub mod hull_index;
 pub mod rate_index;

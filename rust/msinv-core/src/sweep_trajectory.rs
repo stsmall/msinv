@@ -42,17 +42,28 @@ pub struct JointSweepSpec {
     pub f0: f64,
     pub partial_sweep_final_freq: f64,
     pub recurrent_mutation_rate: f64,
-    /// Gene-conversion rate per generation. In v1 this is treated as
-    /// the per-gen exchange rate directly; `mean_tract_length` is
-    /// reserved (see note on that field).
-    pub gamma_flux: f64,
-    /// Reserved for v1: not currently consumed by `apply_flux_inplace`
-    /// (gamma is interpreted as already-per-generation). Kept in the
-    /// public API for forward compatibility with a future tract-length
-    /// scaling.
-    pub mean_tract_length: f64,
+    /// Per-generation rate `c` at which the selected site changes
+    /// arrangement background: the haplotype association decays as
+    /// `D -> (1 - c) D`. Not a user parameter: the simulator derives it
+    /// (`populate_sweep_trajectories`). For a site inside the target
+    /// inversion it is the gene-flux probability at the site; for a site
+    /// outside it, the recombination fraction `r * d` between the site
+    /// and the nearer breakpoint. 0 with no target inversion.
+    pub exchange_rate: f64,
     pub seed: u64,
     pub dt_scalar: f64,
+    /// How the A allele is placed on the arrangements at `t_origin`.
+    pub founder: FounderSeed,
+}
+
+/// Placement of the A allele at `t_origin` (`build_joint_trajectory`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FounderSeed {
+    /// A at overall frequency `f0`, all of it on `origin_kary` (a single
+    /// founder chromosome of known arrangement).
+    OnArrangement,
+    /// A at overall frequency `f0`, independent of arrangement.
+    Equilibrium,
 }
 
 impl Default for JointSweepSpec {
@@ -64,10 +75,10 @@ impl Default for JointSweepSpec {
             f0: 0.0,
             partial_sweep_final_freq: 1.0,
             recurrent_mutation_rate: 0.0,
-            gamma_flux: 0.0,
-            mean_tract_length: 0.0,
+            exchange_rate: 0.0,
             seed: 0,
             dt_scalar: 400.0,
+            founder: FounderSeed::OnArrangement,
         }
     }
 }
@@ -112,29 +123,24 @@ pub fn build_joint_trajectory(
 ) -> JointSweepTrajectory {
     assert_eq!(p_inv_init_per_pop.len(), n_pops as usize);
     assert!(spec.t_origin > tau, "t_origin must be older than tau");
-    // Initialize freq[pop] from p_inv_init at t_origin, with f0 of A on origin_kary in origin_pop.
+    // Initialize freq[pop] from p_inv_init at t_origin; place A in
+    // origin_pop as `spec.founder` says.
     let mut state: Vec<[f64; 4]> = (0..n_pops)
         .map(|p| {
             let p_inv = p_inv_init_per_pop[p as usize];
             let p_s = 1.0 - p_inv;
             // Default: ancestral allele only, distributed as p_kary
             let mut f = [p_s, 0.0, p_inv, 0.0];
-            // Seed origin: f0 of A on origin_kary in origin_pop
             if p == origin_pop {
-                match origin_kary {
-                    Karyotype::S => {
-                        let kary_freq = p_s;
-                        let a_freq = spec.f0 * kary_freq;
-                        f[CLASS_S_A] = (kary_freq - a_freq).max(0.0);
-                        f[CLASS_S_A_BENEF] = a_freq;
-                    }
-                    Karyotype::I => {
-                        let kary_freq = p_inv;
-                        let a_freq = spec.f0 * kary_freq;
-                        f[CLASS_I_A] = (kary_freq - a_freq).max(0.0);
-                        f[CLASS_I_A_BENEF] = a_freq;
-                    }
-                }
+                let (a_s, a_i) = match (spec.founder, origin_kary) {
+                    (FounderSeed::OnArrangement, Karyotype::S) => (spec.f0.min(p_s), 0.0),
+                    (FounderSeed::OnArrangement, Karyotype::I) => (0.0, spec.f0.min(p_inv)),
+                    (FounderSeed::Equilibrium, _) => (spec.f0 * p_s, spec.f0 * p_inv),
+                };
+                f[CLASS_S_A] = (p_s - a_s).max(0.0);
+                f[CLASS_S_A_BENEF] = a_s;
+                f[CLASS_I_A] = (p_inv - a_i).max(0.0);
+                f[CLASS_I_A_BENEF] = a_i;
             }
             f
         })
@@ -170,7 +176,7 @@ pub fn build_joint_trajectory(
                 if matches!(spec.mode, SweepMode::Stochastic | SweepMode::StochasticConditioned) {
                     wf_resample(f, 2.0 * n, &mut rng);
                 }
-                apply_flux_inplace(f, spec.gamma_flux, spec.mean_tract_length);
+                apply_exchange_inplace(f, spec.exchange_rate);
             }
             apply_migration_inplace(&mut state, t, migration_at);
             t -= dt;
@@ -384,27 +390,29 @@ fn wf_resample(f: &mut [f64; 4], two_n: f64, rng: &mut Xoshiro256PlusPlus) {
     }
 }
 
-/// Per-generation flux exchanges between (I, A) ↔ (S, A) and
-/// (I, a) ↔ (S, a) at rate `gamma`. Symmetric: each direction copies
-/// at rate `gamma`. `mean_tract_length` is currently unused — kept in
-/// the signature for API stability and possible future scaling.
-fn apply_flux_inplace(f: &mut [f64; 4], gamma: f64, _mean_tract: f64) {
+/// Per-generation exchange of the selected site between arrangements
+/// at rate `gamma` (`JointSweepSpec::exchange_rate`). Gene flux: in an
+/// I x S heterokaryotype the allele at the site is copied onto the
+/// other arrangement. Recombination between the site and the
+/// arrangement: the site moves onto the partner's arrangement. Either
+/// way arrangement frequencies and the total A frequency are
+/// unchanged; only the allele-by-arrangement association
+/// D = f(S,a) f(I,A) - f(S,A) f(I,a) decays:
+///
+///   d f(S,A) = gamma * D,   d f(I,A) = -gamma * D
+///
+/// with the opposite changes in the a classes.
+fn apply_exchange_inplace(f: &mut [f64; 4], gamma: f64) {
     if gamma <= 0.0 {
         return;
     }
-    let r = gamma.min(0.5);
-    let s_a = f[CLASS_S_A];
-    let s_a_b = f[CLASS_S_A_BENEF];
-    let i_a = f[CLASS_I_A];
-    let i_a_b = f[CLASS_I_A_BENEF];
-    let new_s_a = s_a + r * i_a - r * s_a;
-    let new_i_a = i_a + r * s_a - r * i_a;
-    let new_s_a_b = s_a_b + r * i_a_b - r * s_a_b;
-    let new_i_a_b = i_a_b + r * s_a_b - r * i_a_b;
-    f[CLASS_S_A] = new_s_a.max(0.0);
-    f[CLASS_S_A_BENEF] = new_s_a_b.max(0.0);
-    f[CLASS_I_A] = new_i_a.max(0.0);
-    f[CLASS_I_A_BENEF] = new_i_a_b.max(0.0);
+    let g = gamma.min(1.0);
+    let d = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+    let delta = g * d;
+    f[CLASS_S_A_BENEF] = (f[CLASS_S_A_BENEF] + delta).max(0.0);
+    f[CLASS_S_A] = (f[CLASS_S_A] - delta).max(0.0);
+    f[CLASS_I_A_BENEF] = (f[CLASS_I_A_BENEF] - delta).max(0.0);
+    f[CLASS_I_A] = (f[CLASS_I_A] + delta).max(0.0);
 }
 
 /// Per-generation migration: redistribute haplotype-class counts using
@@ -563,7 +571,7 @@ mod tests {
         assert_eq!(spec.s, 0.0);
         assert_eq!(spec.partial_sweep_final_freq, 1.0);
         assert_eq!(spec.recurrent_mutation_rate, 0.0);
-        assert_eq!(spec.gamma_flux, 0.0);
+        assert_eq!(spec.exchange_rate, 0.0);
     }
 
     #[test]
@@ -585,10 +593,10 @@ mod tests {
             f0: 0.001,
             partial_sweep_final_freq: 0.99,
             recurrent_mutation_rate: 0.0,
-            gamma_flux: 0.0,
-            mean_tract_length: 0.0,
+            exchange_rate: 0.0,
             seed: 0,
             dt_scalar: 400.0,
+            founder: FounderSeed::OnArrangement,
         };
         let n_pops = 1u32;
         let pop_size_at = |_t: f64, _pop: u32| 10_000.0;
@@ -750,8 +758,7 @@ mod tests {
             t_origin: 1000.0,
             f0: 0.001,
             partial_sweep_final_freq: 0.95,
-            gamma_flux: 1e-3,
-            mean_tract_length: 1000.0,
+            exchange_rate: 1e-3,
             ..Default::default()
         };
         let traj = build_joint_trajectory(
@@ -774,7 +781,7 @@ mod tests {
             s: 0.05,
             t_origin: 1000.0,
             f0: 0.001,
-            gamma_flux: 0.0,
+            exchange_rate: 0.0,
             ..Default::default()
         };
         let traj = build_joint_trajectory(
@@ -783,6 +790,92 @@ mod tests {
         );
         let final_freq = traj.samples.last().unwrap().freq[0];
         assert!(final_freq[CLASS_S_A_BENEF] < 1e-9);
+    }
+
+    /// Flux copies the allele between arrangements: arrangement
+    /// frequencies and total A are conserved, and the association
+    /// D decays by the factor (1 - gamma) per generation.
+    #[test]
+    fn flux_conserves_arrangements_and_allele() {
+        let mut f = [0.6, 0.1, 0.1, 0.2];
+        let d0 = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+        apply_exchange_inplace(&mut f, 0.1);
+        let p_s = f[CLASS_S_A] + f[CLASS_S_A_BENEF];
+        let p_a = f[CLASS_S_A_BENEF] + f[CLASS_I_A_BENEF];
+        assert!((p_s - 0.7).abs() < 1e-12, "p_S changed: {p_s}");
+        assert!((p_a - 0.3).abs() < 1e-12, "p_A changed: {p_a}");
+        let d1 = f[CLASS_S_A] * f[CLASS_I_A_BENEF] - f[CLASS_S_A_BENEF] * f[CLASS_I_A];
+        assert!((d1 - 0.9 * d0).abs() < 1e-12, "D: {d0} -> {d1}");
+    }
+
+    /// A on I with flux and no selection: the I frequency of the
+    /// trajectory stays at its initial value.
+    #[test]
+    fn neutral_flux_keeps_inversion_frequency() {
+        let spec = JointSweepSpec {
+            mode: SweepMode::Deterministic,
+            s: 0.0,
+            t_origin: 500.0,
+            f0: 0.1,
+            exchange_rate: 1e-2,
+            ..Default::default()
+        };
+        let traj = build_joint_trajectory(
+            &spec, 1, 0, Karyotype::I, &[0.3],
+            &|_t, _p| 10_000.0, &|_t, _i, _j| 0.0, 0.0,
+        );
+        for smp in traj.samples.iter().filter(|smp| smp.t <= spec.t_origin) {
+            let p_i = smp.freq[0][CLASS_I_A] + smp.freq[0][CLASS_I_A_BENEF];
+            assert!((p_i - 0.3).abs() < 1e-9, "p_I = {p_i} at t = {}", smp.t);
+        }
+        let last = traj.samples.last().unwrap().freq[0];
+        assert!(last[CLASS_S_A_BENEF] > 1e-3, "A should reach S: {last:?}");
+    }
+
+    /// Founder placement at t_origin (`FounderSeed`).
+    #[test]
+    fn founder_seed_modes_place_a_as_documented() {
+        let first = |founder: FounderSeed, kary: Karyotype| {
+            let spec = JointSweepSpec {
+                mode: SweepMode::Deterministic, s: 0.05, t_origin: 100.0,
+                f0: 1e-3, founder, ..Default::default()
+            };
+            // f0 > 1/(2N): there is an SV phase; read the state at t_origin.
+            build_joint_trajectory(&spec, 1, 0, kary, &[0.3],
+                &|_t, _p| 1e4, &|_t, _i, _j| 0.0, 0.0)
+                .samples.iter().find(|s| s.t == 100.0).unwrap().freq[0]
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-15;
+        let o = first(FounderSeed::OnArrangement, Karyotype::I);
+        assert!(close(o[CLASS_I_A_BENEF], 1e-3) && o[CLASS_S_A_BENEF] == 0.0);
+        assert!(close(o[CLASS_I_A], 0.3 - 1e-3));
+        let e = first(FounderSeed::Equilibrium, Karyotype::I);
+        assert!(close(e[CLASS_I_A_BENEF], 1e-3 * 0.3) && close(e[CLASS_S_A_BENEF], 1e-3 * 0.7));
+    }
+
+    /// A complete hard sweep that arose on I drags I upward by an amount
+    /// set by the exchange rate: almost to fixation when tightly linked,
+    /// hardly at all when the site exchanges arrangements fast.
+    #[test]
+    fn sweep_drags_the_founder_arrangement_in_proportion_to_linkage() {
+        let n = 10_000.0;
+        let p_i_end = |c: f64| {
+            let spec = JointSweepSpec {
+                mode: SweepMode::Deterministic, s: 0.05, t_origin: 2000.0,
+                f0: 1.0 / (2.0 * n), exchange_rate: c,
+                founder: FounderSeed::OnArrangement, ..Default::default()
+            };
+            let traj = build_joint_trajectory(&spec, 1, 0, Karyotype::I, &[0.3],
+                &|_t, _p| n, &|_t, _i, _j| 0.0, 0.0);
+            let f = traj.samples.last().unwrap().freq[0];
+            f[CLASS_I_A] + f[CLASS_I_A_BENEF]
+        };
+        let tight = p_i_end(1e-7);
+        let loose = p_i_end(0.1);
+        assert!(tight > 0.98, "tightly linked: p_I = {tight}");
+        assert!((loose - 0.3).abs() < 0.01, "loosely linked: p_I = {loose}");
+        let mid = p_i_end(2e-3);
+        assert!(mid > loose + 0.01 && mid < tight - 0.01, "r d = 2e-3: p_I = {mid}");
     }
 
     /// 2-pop: origin in pop 0, m(1,0)=1e-3 means pop 1 absorbs 1e-3

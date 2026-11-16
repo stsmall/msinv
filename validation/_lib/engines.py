@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Iterable
 
 import msprime
 import tskit
@@ -85,7 +84,10 @@ def msprime_run(
     return ts
 
 
-DISCOAL_BIN = "/home/adkern/discoal/build/discoal"
+# Pinned to discoal 96ebd15 (2026-05-06). The Nov 2026 rewrite (2738431)
+# disagrees with both msinv and msprime on neutral tree counts (D1) and
+# soft-sweep pi (D3); 96ebd15 passes D1-D5.
+DISCOAL_BIN = "/sietch_colab/ssmall/projects/msinv_dir/discoal_96ebd15/build/discoal"
 
 
 def discoal_run(

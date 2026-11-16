@@ -28,8 +28,14 @@ from msinv.hull.simulator import HullSimulator
 pytestmark = pytest.mark.skip("child runner — invoked via subprocess")
 
 
+# Default is discoal 96ebd15 (2026-05-06). The Nov 2026 rewrite (2738431)
+# disagrees with both msinv and msprime on neutral tree counts (D1) and
+# soft-sweep pi (D3); 96ebd15 passes D1-D5.
 # Override with the DISCOAL_BIN environment variable on other machines.
-DISCOAL_BIN = os.environ.get("DISCOAL_BIN", "/home/adkern/discoal/build/discoal")
+DISCOAL_BIN = os.environ.get(
+    "DISCOAL_BIN",
+    "/sietch_colab/ssmall/projects/msinv_dir/discoal_96ebd15/build/discoal",
+)
 
 
 # Scenario registry filled in by Task B2 (D1) and Phase C tasks (D2-D5).

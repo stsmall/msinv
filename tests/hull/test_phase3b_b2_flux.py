@@ -15,6 +15,22 @@ from msinv.hull.demography import Demography
 # ----- Tier 1: geometric sampling correctness ----------------------
 
 
+
+def _carries(rec, x):
+    """The flux event's lineage carried ``x`` inside the tract."""
+    return any(seg["seg_left"] <= x < seg["seg_right"] for seg in rec["tract_segments"])
+
+
+def _carried_coverage(flux, x):
+    """Flux events whose tract covered ``x`` on a lineage carrying ``x``.
+
+    Counting every tract that covers ``x`` (``coverage_count``) also
+    counts tracts on lineages that carry other material nearby but not
+    ``x``; those are real events but say nothing about flux at ``x``.
+    """
+    return sum(1 for r in flux if _carries(r, x))
+
+
 def test_geometric_tract_length_mean_matches_parameter():
     """Sampled tract lengths should have mean ≈ mean_tract_length
     within 2-sigma tolerance over N=10_000 draws."""
@@ -258,8 +274,10 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
 
     lam = 300.0
     # Tune γ × t_inv to produce ≥200 flux events for ±0.05 MC precision.
-    # gamma=5e-3 + t_inv=4000 with n_samples=20 achieves this.
-    gamma = 5e-3
+    # gamma=5e-4 + t_inv=4000 with n_samples=20 achieves this. (5e-3 is
+    # no longer viable: since #28 fragments get flux at the forward
+    # rate, and at 5e-3 each site switches arrangement every ~13 gens.)
+    gamma = 5e-4
     t_inv = 4000.0
 
     # Store raw lengths for each mode so assertions can use eps-adjusted thresholds.
@@ -286,7 +304,12 @@ def test_flux_tract_break_survival_geometric_vs_fixed():
             record_events=True,
         )
         sim.simulate()
-        flux = filter_flux(sim.event_log, inv_id=0)
+        # Only events that start on carried material have the forward
+        # tract-length law: a tract starting in a gap is kept only if it
+        # reaches the lineage's material, so those are length-biased.
+        flux = [
+            r for r in filter_flux(sim.event_log, inv_id=0) if _carries(r, r["position"])
+        ]
         assert len(flux) >= 200, (
             f"mode={mode}: only {len(flux)} flux events; "
             f"bump γ or t_inv for adequate MC sample size"
@@ -339,9 +362,9 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
     (ii) has equal mean between 'fixed' and 'geometric' at matched λ
          (within 20% relative tolerance — variance differs, mean shouldn't).
     """
-    from msinv.hull._event_log import filter_flux, coverage_count
+    from msinv.hull._event_log import filter_flux
 
-    gamma = 5e-3  # bumped well above biological for sufficient event counts
+    gamma = 5e-4  # well above biological for sufficient event counts
     lam = 300.0
     t_inv_ladder = [500.0, 2000.0, 5000.0]
     n_seeds = 20
@@ -375,7 +398,7 @@ def test_andolfatto_event_coverage_monotone_in_t_inv():
                 )
                 sim.simulate()
                 flux = filter_flux(sim.event_log, inv_id=0)
-                covers.append(coverage_count(flux, inv_center))
+                covers.append(_carried_coverage(flux, inv_center))
             means_per_t.append(float(np.mean(covers)))
 
         # (i) monotonicity in t_inv at fixed (γ, λ)
@@ -568,59 +591,94 @@ def test_andolfatto_sample_fraction_matches_closed_form():
         )
 
 
-def test_event_coverage_matches_coalescent_closed_form():
-    """Tier 3-full (D): empirical mean coverage_count(x_center) tracks
-    γ·p_other·(λ²/L) · 4Ne·H_{n−1} at t_inv ≫ 2Ne, within ±50%.
+def test_flux_hits_per_branch_generation_match_forward_rate():
+    """Tier 3-full (D): at the inversion centre, flux tracts cover a
+    carried site at the forward per-site rate.
 
-    Like test C, tolerance is loose to absorb the simulator's
-    coalescent-integral behavior — the simulator runs past TMRCA
-    until full coalescence (post-TMRCA recomb generates new lineages
-    that contribute to events). The pure-coalescent prediction
-    underestimates the actual event count by ~3×; we use a single
-    multiplicative anchor with very loose tolerance to catch
-    order-of-magnitude regressions, not absolute calibration. The
-    quantitative correction is theory-todo; see
-    memory/project_andolfatto_closed_form_correction.md.
+    Hits on lineages carrying ``x`` before ``x``'s TMRCA, divided by the
+    tree length at ``x``, estimate the rate at which flux reaches a
+    carried site: ``γ · p_other · ∫ phi(y) P(tract from y covers x) dy``,
+    which in the flat middle of phi is ``γ · p_other · phi(x) · E[l]``.
+    Before #28 this was ~0.4 of the forward rate (lineages carrying
+    little material around ``x`` were rarely hit).
     """
-    from msinv.hull._event_log import filter_flux, coverage_count
+    from msinv.hull._event_log import filter_flux
+    from msinv.hull.simulator import _phi
 
-    gamma = 5e-3  # γ_D: matches Q5b; ~500 events/seed at t_inv=25k
+    gamma = 5e-4
     lam = 300.0
     bp_left, bp_right = 2000.0, 8000.0
     L = bp_right - bp_left
-    Ne, p_inv = 1000, 0.5
-    p_other = 1.0 - p_inv
-    n_S, n_I = 10, 10
-    n = n_S + n_I  # 20 lineages at t=0
-    t_inv = 25_000.0  # ≫ 2Ne; truncation corr. ~4e-6
-    inv_center = 5000.0
+    p_inv = 0.5
+    x = 5000.0
     n_seeds = 30
+    e_len = lam * (1.0 - math.exp(-0.99 * L / lam))  # capped exponential
+    forward = gamma * (1.0 - p_inv) * _phi((x - bp_left) / L, lam / L) * e_len
 
-    H = sum(1.0 / k for k in range(1, n))  # H_{n−1} ≈ 3.548
-    e_total_branch = 4.0 * Ne * H  # generations
-    expected = gamma * p_other * (lam**2 / L) * e_total_branch
-
-    counts = []
+    hits, tree_len = 0, 0.0
     for seed in range(n_seeds):
         ts, log = _run_tier3_sim(
-            t_inv=t_inv,
+            t_inv=25_000.0,
             gamma=gamma,
             seed=seed,
             bp_left=bp_left,
             bp_right=bp_right,
             lam=lam,
             p_inv=p_inv,
-            Ne=Ne,
         )
-        flux = filter_flux(log, inv_id=0)
-        counts.append(coverage_count(flux, inv_center))
-
-    mean_emp = float(np.mean(counts))
-    # Empirical is ~3× expected (post-TMRCA recomb generates extra events).
-    # Allow [0.3×, 5×] of expected — ~order-of-magnitude anchor only.
-    assert expected * 0.3 < mean_emp < expected * 5.0, (
-        f"empirical coverage {mean_emp:.1f} outside [0.3×, 5×] of "
-        f"closed-form prediction {expected:.1f}. Pure Kingman predicts "
-        f"~{expected:.0f}; simulator typically gives ~3× this due to "
-        f"post-TMRCA recomb. A 10× drift indicates a real regression."
+        tree = ts.at(x)
+        tmrca = max(tree.time(r) for r in tree.roots)
+        tree_len += tree.total_branch_length
+        hits += sum(
+            1 for r in filter_flux(log, inv_id=0) if r["t"] < tmrca and _carries(r, x)
+        )
+    ratio = hits / tree_len / forward
+    # ~2000 hits: Poisson SE ~2%.
+    assert 0.9 < ratio < 1.1, (
+        f"flux hits per branch-generation at x={x} are {ratio:.3f} of the "
+        f"forward rate {forward:.3e} ({hits} hits)"
     )
+
+# ----- Issue #28: per-site flux rate vs carried material ----------
+
+
+@pytest.mark.parametrize("dist", ["fixed", "geometric"])
+def test_per_site_flux_rate_does_not_depend_on_carried_material(dist):
+    """Python engine: flux covers a carried site at the forward rate
+    gcr * p_other * phi(x) * mean_tract_length whether the lineage
+    carries the whole inversion or a 2 bp sliver around the site
+    (issue #28; the Rust engine is pinned in ``flux.rs``)."""
+    from msinv.hull.lineage import Lineage
+    from msinv.hull.segment import make_segment_list
+    from msinv.hull.simulator import _phi
+
+    inv = InversionSpec(
+        bp_left=0.0,
+        bp_right=100_000.0,
+        p_inv=0.4,
+        t_inv=1e9,
+        gene_conversion_rate=1e-6,
+        mean_tract_length=500.0,
+        tract_distribution=dist,
+    )
+    sim = HullSimulator(
+        sample_config={("S", 0): 2},
+        demography=Demography(pop_sizes=[1000]),
+        sequence_length=100_000,
+        recombination_rate=1e-8,
+        inversions=[inv],
+        seed=3,
+    )
+    x = 40_000.0
+    expect = 1e-6 * 0.4 * _phi(0.4, 500.0 / 100_000.0) * 500.0
+    for intervals in ([(0.0, 100_000.0)], [(x - 1.0, x + 1.0)]):
+        head, tail = make_segment_list(intervals, range(len(intervals)))
+        lin = Lineage(head, tail, branch_class=inv.class_S())
+        rate = sim._flux_lineage_rate(lin, inv)
+        n = 100_000
+        hits = 0
+        for _ in range(n):
+            drawn = sim._sample_flux_tract(lin, inv)
+            if drawn is not None and drawn[1] <= x < drawn[2]:
+                hits += 1
+        assert rate * hits / n == pytest.approx(expect, rel=0.1), intervals

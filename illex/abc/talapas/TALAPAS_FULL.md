@@ -91,8 +91,11 @@ each row (`row k/K seed ... s ... GB` lines), and the sizes of `bank/ctl_*.jsonl
 bash illex/abc/npe/submit_full.sh
 ```
 
-Defaults (override by environment variable): BANK_TASKS 100 x BANK_PER_TASK 10 controls; ROW_TASKS 10000 x
-K_PER_TASK 10 rows (100,000 rows), ROW_CPUS 5 with ROW_MEM 100G, at most 200 tasks at a time. A task is skipped
+Defaults (override by environment variable): BANK_TASKS 100 x BANK_PER_TASK 10 controls (4 CPUs, 80G);
+ROW_TASKS 10000 x K_PER_TASK 8 rows (80,000 rows), ROW_CPUS 2 with ROW_MEM 180G and 12 h, at most 200 tasks at a
+time. On the box (msinv 0.4.2) one full-length row took 49-62 min with a 60-72 GB peak and one 45-Mb control 12 min
+with 13 GB; if the pilot's peaks differ, scale ROW_MEM to about 2.5 x the largest row peak per worker. If Slurm
+refuses an array of 10000, submit in parts with STAGE=rows and a smaller ROW_TASKS (finished tasks are skipped). A task is skipped
 when its output file exists, so resubmitting the same command resumes the run. A rows task that hits its wall time
 keeps its finished rows in `table/.B_full_<task>.jsonl.gz.partial`.
 

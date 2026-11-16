@@ -14,22 +14,24 @@
 # (ABC_ENV=$FULL_ENV REPO=... BRANCH=illex/fulllength bash illex/abc/talapas/install_env.sh). Use a separate env
 # from the 40-kb runs, because `pip install -e` points the env's msinv at this checkout.
 #
-# Sizing: see the "Full-length run" section of illex/abc/talapas/TALAPAS_FULL.md. Each array task is resumable: a
+# Sizing (box, msinv 0.4.2): one full-length row takes 49-62 min and 60-72 GB peak; one 45-Mb control 12 min and
+# 13 GB. Defaults: rows 2 workers x 180G per task, 8 rows per task (~4-5 h); bank 4 workers x 80G, 10 per task.
+# Confirm with the pilot in illex/abc/talapas/TALAPAS_FULL.md before production. Each array task is resumable: a
 # finished task file is skipped on resubmission, and a killed rows task keeps its finished rows in a .partial file.
 set -euo pipefail
 export REPO=${REPO:-/gpfs/projects/kernlab/$USER/msinv_illex_full}
 export FULL_ENV=${FULL_ENV:-illex_full}
 export FULL_OUTROOT=${FULL_OUTROOT:-/gpfs/projects/kernlab/$USER/illex_full}
 export BANK_TASKS=${BANK_TASKS:-100}
-export BANK_PER_TASK=${BANK_PER_TASK:-10}
-export BANK_CPUS=${BANK_CPUS:-5}
-export BANK_MEM=${BANK_MEM:-60G}
-export BANK_WALLTIME=${BANK_WALLTIME:-06:00:00}
+export BANK_PER_TASK=${BANK_PER_TASK:-8}
+export BANK_CPUS=${BANK_CPUS:-4}
+export BANK_MEM=${BANK_MEM:-80G}
+export BANK_WALLTIME=${BANK_WALLTIME:-08:00:00}
 export ROW_TASKS=${ROW_TASKS:-10000}
-export K_PER_TASK=${K_PER_TASK:-10}
-export ROW_CPUS=${ROW_CPUS:-5}
-export ROW_MEM=${ROW_MEM:-100G}
-export ROW_WALLTIME=${ROW_WALLTIME:-08:00:00}
+export K_PER_TASK=${K_PER_TASK:-8}
+export ROW_CPUS=${ROW_CPUS:-2}
+export ROW_MEM=${ROW_MEM:-180G}
+export ROW_WALLTIME=${ROW_WALLTIME:-12:00:00}
 export MAX_CONCURRENT=${MAX_CONCURRENT:-200}
 export SAVE_TS_EVERY=${SAVE_TS_EVERY:-500}
 STAGE=${STAGE:-all}

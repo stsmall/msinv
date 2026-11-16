@@ -207,17 +207,19 @@ def ld_site_keep(dos, maf=LD_MAF):
     return keep, called, x
 
 
-def ld_block_sums(dos, pos, blk, n_blocks, maf=LD_MAF, xp=None, step=1024):
+def ld_block_sums(dos, pos, blk, n_blocks, maf=LD_MAF, xp=None, step=1024, edges=None):
     """Per-block, per-LD_EDGES-bin sums and counts of pairwise-complete genotype r^2 -- the ONE LD kernel, used by
     the simulations (``_ld``) and the data (``observed.py``).
 
     dos: (sites, individuals) dosage 0/1/2, missing as -1 (int) or NaN (float); pos sorted; blk: block id of each
     site (a pair is credited to its left site's block). Sites pass ``ld_site_keep``; a pair counts when it has >= 2
     jointly called individuals and both variances over those are > 0. With no missing data this is the plain
-    Pearson r^2 of the dosages. Returns (sums, counts), each (n_blocks, len(LD_EDGES) - 1).
+    Pearson r^2 of the dosages. Returns (sums, counts), each (n_blocks, len(LD_EDGES) - 1). ``edges`` replaces
+    LD_EDGES (distance bins in bp, increasing) for other distance ranges; the default is the fitted LD_EDGES.
     """
     xp = xp or np
-    nbin = len(LD_EDGES) - 1
+    E = np.asarray(LD_EDGES if edges is None else edges, float)
+    nbin = len(E) - 1
     sums = np.zeros((n_blocks, nbin))
     cnt = np.zeros((n_blocks, nbin))
     keep, called, x = ld_site_keep(dos, maf)
@@ -228,8 +230,8 @@ def ld_block_sums(dos, pos, blk, n_blocks, maf=LD_MAF, xp=None, step=1024):
     X = xp.asarray(x[keep])
     M = xp.asarray(called[keep].astype(np.float64))
     X2 = X * X
-    edges = xp.asarray(LD_EDGES)
-    lo_d, hi_d = LD_EDGES[0], LD_EDGES[-1]
+    edges = xp.asarray(E)
+    lo_d, hi_d = E[0], E[-1]
     pd = xp.asarray(p)
     bd = xp.asarray(b)
     S_acc = xp.zeros(n_blocks * nbin)

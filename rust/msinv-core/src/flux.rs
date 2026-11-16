@@ -26,13 +26,21 @@
 //!
 //! In a gap, `p_other` uses the arrangement of the nearest piece of
 //! material. A lineage carrying the whole inversion has no edges.
+//!
+//! An inversion can carry two independent flux processes (#30): the
+//! short process (`gene_conversion_rate`, `mean_tract_length`) and an
+//! optional long one (`long_flux_rate`, `long_mean_tract_length`). Each
+//! follows the forward model above with its own `w`, rates add, and an
+//! event is drawn from the components of both, so a lineage meets the
+//! long process at its own forward rate. With the long process off the
+//! components, the rate and the random draws are those of one process.
 
 use rand::Rng;
 use rand_distr::{Distribution, Exp};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use crate::class_tag::Karyotype;
-use crate::inversion::{InversionSpec, TractDistribution};
+use crate::inversion::{FluxProc, InversionSpec, TractDistribution};
 use crate::phi::{phi, phi_integral};
 
 /// Material touching within this distance is one piece.
@@ -64,37 +72,39 @@ pub fn phi_max(w: f64) -> f64 {
     }
 }
 
-/// Components and their rates. `segs` must be sorted by position and
-/// clipped to the inversion.
-fn components(segs: &[ClassedSeg], inv: &InversionSpec, p_inv: f64) -> Vec<(Component, f64)> {
-    let mut out = Vec::new();
-    let inv_len = inv.length();
-    if inv_len <= 0.0 || inv.gene_conversion_rate <= 0.0 || segs.is_empty() {
-        return out;
+/// Components of one process and their rates, tagged with the process
+/// index `pi`. `segs` must be sorted by position and clipped to the
+/// inversion.
+fn components_proc(
+    segs: &[ClassedSeg],
+    pr: &FluxProc,
+    pi: usize,
+    p_inv: f64,
+    out: &mut Vec<(Component, usize, f64)>,
+) {
+    let inv_len = pr.length();
+    if inv_len <= 0.0 || pr.gcr <= 0.0 || segs.is_empty() {
+        return;
     }
-    let ell = inv.mean_tract_length;
+    let ell = pr.mean;
     let w = ell / inv_len;
-    let edge_rate_unit = if ell > 0.0 {
-        inv.gene_conversion_rate * phi_max(w) * ell
-    } else {
-        0.0
-    };
+    let edge_rate_unit = if ell > 0.0 { pr.gcr * phi_max(w) * ell } else { 0.0 };
 
     for &(l, r, k) in segs {
         let po = p_other(k, p_inv);
         if po <= 0.0 || r <= l {
             continue;
         }
-        let a = (l - inv.bp_left) / inv_len;
-        let b = (r - inv.bp_left) / inv_len;
-        let rate = inv.gene_conversion_rate * po * phi_integral(a, b, w) * inv_len;
+        let a = (l - pr.bp_left) / inv_len;
+        let b = (r - pr.bp_left) / inv_len;
+        let rate = pr.gcr * po * phi_integral(a, b, w) * inv_len;
         if rate > 0.0 {
-            out.push((Component::Seg { left: l, right: r }, rate));
+            out.push((Component::Seg { left: l, right: r }, pi, rate));
         }
     }
 
     if edge_rate_unit <= 0.0 {
-        return out;
+        return;
     }
     // Pieces: maximal runs of touching segments, with the arrangement at
     // each end.
@@ -113,25 +123,34 @@ fn components(segs: &[ClassedSeg], inv: &InversionSpec, p_inv: f64) -> Vec<(Comp
             _ => pieces.push((l, r, k, k)),
         }
     }
-    for (i, &(pl, pr, kl, kr)) in pieces.iter().enumerate() {
-        if pl > inv.bp_left + TOUCH_EPS {
-            let limit = if i > 0 { 0.5 * (pieces[i - 1].1 + pl) } else { inv.bp_left };
+    for (i, &(pl, prt, kl, kr)) in pieces.iter().enumerate() {
+        if pl > pr.bp_left + TOUCH_EPS {
+            let limit = if i > 0 { 0.5 * (pieces[i - 1].1 + pl) } else { pr.bp_left };
             let rate = edge_rate_unit * p_other(kl, p_inv);
             if rate > 0.0 {
-                out.push((Component::Edge { edge: pl, limit }, rate));
+                out.push((Component::Edge { edge: pl, limit }, pi, rate));
             }
         }
-        if pr < inv.bp_right - TOUCH_EPS {
+        if prt < pr.bp_right - TOUCH_EPS {
             let limit = if i + 1 < pieces.len() {
-                0.5 * (pr + pieces[i + 1].0)
+                0.5 * (prt + pieces[i + 1].0)
             } else {
-                inv.bp_right
+                pr.bp_right
             };
             let rate = edge_rate_unit * p_other(kr, p_inv);
             if rate > 0.0 {
-                out.push((Component::Edge { edge: pr, limit }, rate));
+                out.push((Component::Edge { edge: prt, limit }, pi, rate));
             }
         }
+    }
+}
+
+/// Components of every flux process of `inv`, short process first.
+fn components(segs: &[ClassedSeg], inv: &InversionSpec, p_inv: f64) -> Vec<(Component, usize, f64)> {
+    let mut out = Vec::new();
+    let procs = inv.flux_procs();
+    for (pi, pr) in procs.as_slice().iter().enumerate() {
+        components_proc(segs, pr, pi, p_inv, &mut out);
     }
     out
 }
@@ -143,26 +162,41 @@ pub fn lineage_flux_rate(segs: &[ClassedSeg], inv: &InversionSpec, p_inv: f64) -
 
 /// `lineage_flux_rate` in one pass without allocating: the rate needs
 /// only the edges' arrangements, not their limits. Must sum the same
-/// components as `components`.
+/// components as `components`, over every process.
 pub fn lineage_flux_rate_iter<I>(segs: I, inv: &InversionSpec, p_inv: f64) -> f64
 where
     I: IntoIterator<Item = ClassedSeg>,
 {
     let inv_len = inv.length();
-    if inv_len <= 0.0 || inv.gene_conversion_rate <= 0.0 {
+    if inv_len <= 0.0 {
         return 0.0;
     }
-    let ell = inv.mean_tract_length;
-    let w = ell / inv_len;
-    let unit = if ell > 0.0 { inv.gene_conversion_rate * phi_max(w) * ell } else { 0.0 };
-    let edges = |(pl, pr, kl, kr): (f64, f64, Karyotype, Karyotype)| -> f64 {
+    let procs = inv.flux_procs();
+    let ps = procs.as_slice();
+    let mut w = [0.0f64; 2];
+    let mut unit = [0.0f64; 2];
+    let mut any = false;
+    for (i, pr) in ps.iter().enumerate() {
+        if pr.gcr <= 0.0 {
+            continue;
+        }
+        any = true;
+        w[i] = pr.mean / inv_len;
+        unit[i] = if pr.mean > 0.0 { pr.gcr * phi_max(w[i]) * pr.mean } else { 0.0 };
+    }
+    if !any {
+        return 0.0;
+    }
+    let edges = |(pl, prt, kl, kr): (f64, f64, Karyotype, Karyotype)| -> f64 {
         let mut e = 0.0;
-        if unit > 0.0 {
-            if pl > inv.bp_left + TOUCH_EPS {
-                e += unit * p_other(kl, p_inv);
-            }
-            if pr < inv.bp_right - TOUCH_EPS {
-                e += unit * p_other(kr, p_inv);
+        for i in 0..ps.len() {
+            if unit[i] > 0.0 {
+                if pl > inv.bp_left + TOUCH_EPS {
+                    e += unit[i] * p_other(kl, p_inv);
+                }
+                if prt < inv.bp_right - TOUCH_EPS {
+                    e += unit[i] * p_other(kr, p_inv);
+                }
             }
         }
         e
@@ -177,7 +211,11 @@ where
         if po > 0.0 {
             let a = (l - inv.bp_left) / inv_len;
             let b = (r - inv.bp_left) / inv_len;
-            rate += inv.gene_conversion_rate * po * phi_integral(a, b, w) * inv_len;
+            for (i, pr) in ps.iter().enumerate() {
+                if pr.gcr > 0.0 {
+                    rate += pr.gcr * po * phi_integral(a, b, w[i]) * inv_len;
+                }
+            }
         }
         piece = match piece {
             Some(mut p) if l <= p.1 + TOUCH_EPS => {
@@ -200,22 +238,25 @@ where
     rate
 }
 
-/// Draw a tract length from the inversion's tract distribution.
-pub fn draw_tract_len(inv: &InversionSpec, rng: &mut Xoshiro256PlusPlus) -> f64 {
-    let l = match inv.tract_distribution {
-        TractDistribution::Fixed => inv.mean_tract_length,
-        TractDistribution::Geometric => Exp::new(1.0 / inv.mean_tract_length)
-            .expect("mean > 0")
-            .sample(rng),
+/// Draw a tract length from one process's tract distribution.
+pub fn draw_tract_len_proc(pr: &FluxProc, rng: &mut Xoshiro256PlusPlus) -> f64 {
+    let l = match pr.dist {
+        TractDistribution::Fixed => pr.mean,
+        TractDistribution::Geometric => Exp::new(1.0 / pr.mean).expect("mean > 0").sample(rng),
     };
-    l.min(inv.length() * 0.99)
+    l.min(pr.length() * 0.99)
+}
+
+/// Draw a tract length from the inversion's short-process distribution.
+pub fn draw_tract_len(inv: &InversionSpec, rng: &mut Xoshiro256PlusPlus) -> f64 {
+    draw_tract_len_proc(&inv.flux_procs().as_slice()[0], rng)
 }
 
 /// Place a tract of length `l` uniformly among the positions that
-/// contain `x` and fit in the inversion.
-pub fn place_tract(x: f64, l: f64, inv: &InversionSpec, rng: &mut Xoshiro256PlusPlus) -> (f64, f64) {
-    let inv_len = inv.length();
-    let x_rel = x - inv.bp_left;
+/// contain `x` and fit in the inversion `[bp_left, bp_right)`.
+fn place_tract_in(x: f64, l: f64, bp_left: f64, bp_right: f64, rng: &mut Xoshiro256PlusPlus) -> (f64, f64) {
+    let inv_len = bp_right - bp_left;
+    let x_rel = x - bp_left;
     let b1_lo = (x_rel - l).max(0.0);
     let b1_hi = x_rel.min(inv_len - l);
     let b1 = if b1_hi <= b1_lo {
@@ -223,14 +264,56 @@ pub fn place_tract(x: f64, l: f64, inv: &InversionSpec, rng: &mut Xoshiro256Plus
     } else {
         rng.random::<f64>() * (b1_hi - b1_lo) + b1_lo
     };
-    let tl = (inv.bp_left + b1).max(inv.bp_left);
-    let tr = (tl + l).min(inv.bp_right);
+    let tl = (bp_left + b1).max(bp_left);
+    let tr = (tl + l).min(bp_right);
     (tl, tr)
 }
 
+/// Place a tract of length `l` uniformly among the positions that
+/// contain `x` and fit in the inversion.
+pub fn place_tract(x: f64, l: f64, inv: &InversionSpec, rng: &mut Xoshiro256PlusPlus) -> (f64, f64) {
+    place_tract_in(x, l, inv.bp_left, inv.bp_right, rng)
+}
+
+/// Rate per generation at which tracts of one process cover a carried
+/// site `x`, before the factor `p_other`: `gcr * mean * phi(x)`.
+pub fn site_cover_rate_proc(pr: &FluxProc, x: f64) -> f64 {
+    let len = pr.length();
+    if len <= 0.0 || pr.gcr <= 0.0 || pr.mean <= 0.0 {
+        return 0.0;
+    }
+    pr.gcr * pr.mean * phi((x - pr.bp_left) / len, pr.mean / len)
+}
+
+/// `site_cover_rate_proc` summed over the inversion's processes.
+pub fn site_cover_rate(inv: &InversionSpec, x: f64) -> f64 {
+    inv.flux_procs().as_slice().iter().map(|pr| site_cover_rate_proc(pr, x)).sum()
+}
+
+/// Draw a tract that covers `x`, from the process chosen in proportion
+/// to its cover rate at `x`. One process: no extra random draw.
+pub fn draw_tract_covering(x: f64, inv: &InversionSpec, rng: &mut Xoshiro256PlusPlus) -> (f64, f64) {
+    let procs = inv.flux_procs();
+    let ps = procs.as_slice();
+    let mut pr = ps[0];
+    if ps.len() > 1 {
+        let r: Vec<f64> = ps.iter().map(|p| site_cover_rate_proc(p, x)).collect();
+        let tot: f64 = r.iter().sum();
+        if tot > 0.0 && rng.random::<f64>() * tot >= r[0] {
+            pr = ps[1];
+        }
+    }
+    if pr.mean <= 0.0 {
+        return (x, x);
+    }
+    let l = draw_tract_len_proc(&pr, rng);
+    place_tract_in(x, l, pr.bp_left, pr.bp_right, rng)
+}
+
 /// Sample one flux event for a lineage, proportional to the components
-/// of `lineage_flux_rate`. Returns `(x_event, tract_left, tract_right)`,
-/// or `None` when the proposal is thinned (no event happens).
+/// of `lineage_flux_rate` over every process. Returns
+/// `(x_event, tract_left, tract_right)`, or `None` when the proposal is
+/// thinned (no event happens).
 pub fn sample_flux_tract(
     segs: &[ClassedSeg],
     inv: &InversionSpec,
@@ -238,25 +321,29 @@ pub fn sample_flux_tract(
     rng: &mut Xoshiro256PlusPlus,
 ) -> Option<(f64, f64, f64)> {
     let comps = components(segs, inv, p_inv);
-    let total: f64 = comps.iter().map(|c| c.1).sum();
+    let total: f64 = comps.iter().map(|c| c.2).sum();
     if total <= 0.0 {
         return None;
     }
     let u = rng.random::<f64>() * total;
     let mut running = 0.0;
-    let mut chosen = comps.last().unwrap().0;
-    for &(c, rate) in &comps {
+    let last = comps.last().unwrap();
+    let (mut chosen, mut pi) = (last.0, last.1);
+    for &(c, i, rate) in &comps {
         running += rate;
         if u < running {
             chosen = c;
+            pi = i;
             break;
         }
     }
-    let inv_len = inv.length();
-    let ell = inv.mean_tract_length;
+    let procs = inv.flux_procs();
+    let pr = procs.as_slice()[pi];
+    let inv_len = pr.length();
+    let ell = pr.mean;
     let w = ell / inv_len;
     let pmax = phi_max(w);
-    let rel = |y: f64| (y - inv.bp_left) / inv_len;
+    let rel = |y: f64| (y - pr.bp_left) / inv_len;
 
     match chosen {
         Component::Seg { left, right } => {
@@ -272,12 +359,12 @@ pub fn sample_flux_tract(
             if ell <= 0.0 {
                 return Some((y, y, y));
             }
-            let l = draw_tract_len(inv, rng);
-            let (tl, tr) = place_tract(y, l, inv, rng);
+            let l = draw_tract_len_proc(&pr, rng);
+            let (tl, tr) = place_tract_in(y, l, pr.bp_left, pr.bp_right, rng);
             Some((y, tl, tr))
         }
         Component::Edge { edge, limit } => {
-            let d = match inv.tract_distribution {
+            let d = match pr.dist {
                 TractDistribution::Fixed => rng.random::<f64>() * ell,
                 TractDistribution::Geometric => Exp::new(1.0 / ell).expect("mean > 0").sample(rng),
             };
@@ -289,12 +376,12 @@ pub fn sample_flux_tract(
             if rng.random::<f64>() * pmax >= phi(rel(y), w) {
                 return None;
             }
-            let l = match inv.tract_distribution {
+            let l = match pr.dist {
                 TractDistribution::Fixed => ell,
                 TractDistribution::Geometric => d + Exp::new(1.0 / ell).expect("mean > 0").sample(rng),
             }
             .min(inv_len * 0.99);
-            let (tl, tr) = place_tract(y, l, inv, rng);
+            let (tl, tr) = place_tract_in(y, l, pr.bp_left, pr.bp_right, rng);
             let hits = segs.iter().any(|&(sl, sr, _)| tl < sr && tr > sl);
             if hits { Some((y, tl, tr)) } else { None }
         }
@@ -433,7 +520,7 @@ mod tests {
                 }
                 let p = rng.random::<f64>();
                 let a = lineage_flux_rate(&segs, &v, p);
-                let b: f64 = components(&segs, &v, p).iter().map(|c| c.1).sum();
+                let b: f64 = components(&segs, &v, p).iter().map(|c| c.2).sum();
                 assert!((a - b).abs() <= 1e-12 * b.max(1e-30), "{:?}: {} vs {}", segs, a, b);
             }
         }
@@ -450,5 +537,110 @@ mod tests {
                 assert!(tl >= v.bp_left && tr <= v.bp_right);
             }
         }
+    }
+
+    fn two_proc(dist: TractDistribution) -> InversionSpec {
+        let mut v = inv(dist);
+        v.long_flux_rate = 2e-8;
+        v.long_mean_tract_length = 20_000.0;
+        v.long_tract_distribution = dist;
+        v
+    }
+
+    /// The long process alone, as a one-process spec.
+    fn long_only(v: &InversionSpec) -> InversionSpec {
+        let mut l = InversionSpec::with_p_inv(v.bp_left, v.bp_right, vec![0.4], 1e9);
+        l.gene_conversion_rate = v.long_flux_rate;
+        l.mean_tract_length = v.long_mean_tract_length;
+        l.tract_distribution = v.long_tract_distribution;
+        l
+    }
+
+    #[test]
+    fn long_process_off_by_default() {
+        let v = inv(TractDistribution::Geometric);
+        assert_eq!(v.flux_procs().as_slice().len(), 1);
+        let mut w = v.clone();
+        w.long_mean_tract_length = 5_000.0; // rate still 0
+        assert_eq!(w.flux_procs().as_slice().len(), 1);
+        // Same draws as a spec that never had the field set.
+        let segs = vec![(1_000.0, 1_050.0, Karyotype::S), (30_000.0, 31_000.0, Karyotype::I)];
+        let mut r1 = Xoshiro256PlusPlus::seed_from_u64(3);
+        let mut r2 = Xoshiro256PlusPlus::seed_from_u64(3);
+        for _ in 0..5_000 {
+            assert_eq!(sample_flux_tract(&segs, &v, 0.4, &mut r1), sample_flux_tract(&segs, &w, 0.4, &mut r2));
+        }
+    }
+
+    #[test]
+    fn two_process_rate_is_the_sum() {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(5);
+        for dist in [TractDistribution::Fixed, TractDistribution::Geometric] {
+            let v = two_proc(dist);
+            let s = inv(dist);
+            let l = long_only(&v);
+            for _ in 0..500 {
+                let a = rng.random::<f64>() * 90_000.0;
+                let b = a + rng.random::<f64>() * 10_000.0;
+                let segs = vec![(a, b, Karyotype::S), (b, (b + 500.0).min(100_000.0), Karyotype::I)];
+                let p = rng.random::<f64>();
+                let both = lineage_flux_rate(&segs, &v, p);
+                let sum = lineage_flux_rate(&segs, &s, p) + lineage_flux_rate(&segs, &l, p);
+                assert!((both / sum - 1.0).abs() < 1e-12, "{} vs {}", both, sum);
+                let c: f64 = components(&segs, &v, p).iter().map(|c| c.2).sum();
+                assert!((both / c - 1.0).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn two_process_per_site_rate_matches_forward() {
+        for dist in [TractDistribution::Fixed, TractDistribution::Geometric] {
+            let v = two_proc(dist);
+            let s = inv(dist);
+            let l = long_only(&v);
+            for x in [400.0, 50_000.0] {
+                let exact = forward_cover_rate(&s, 0.4, x, 2_000_000, 9)
+                    + forward_cover_rate(&l, 0.4, x, 2_000_000, 10);
+                let layouts = [
+                    vec![(x - 1.0, x + 1.0, Karyotype::S)],
+                    vec![(x - 1_000.0_f64.min(x), x + 1_000.0, Karyotype::S)],
+                    vec![(0.0, 100_000.0, Karyotype::S)],
+                ];
+                for (i, segs) in layouts.iter().enumerate() {
+                    let c = cover_rate(segs, &v, x, 1_000_000, 30 + i as u64);
+                    assert!(
+                        (c / exact - 1.0).abs() < 0.05,
+                        "{:?} x={} layout {}: cover rate {} vs forward {}",
+                        dist, x, i, c, exact
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn site_cover_rate_sums_processes() {
+        let v = two_proc(TractDistribution::Geometric);
+        let x = 37_000.0;
+        let s = inv(TractDistribution::Geometric);
+        let l = long_only(&v);
+        let a = site_cover_rate(&v, x);
+        let b = site_cover_rate(&s, x) + site_cover_rate(&l, x);
+        assert!((a / b - 1.0).abs() < 1e-12);
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
+        let mut long_hits = 0usize;
+        let n = 200_000;
+        for _ in 0..n {
+            let (tl, tr) = draw_tract_covering(x, &v, &mut rng);
+            assert!(tl <= x && x <= tr);
+            if tr - tl > 5_000.0 { long_hits += 1; }
+        }
+        // Share of tracts from the long process, against its cover-rate share
+        // (geometric short tracts of mean 500 bp almost never exceed 5 kb).
+        let share = site_cover_rate(&l, x) / a;
+        let p_long_gt = (-5_000.0f64 / 20_000.0).exp();
+        let got = long_hits as f64 / n as f64;
+        assert!((got / (share * p_long_gt) - 1.0).abs() < 0.05, "{} vs {}", got, share * p_long_gt);
     }
 }

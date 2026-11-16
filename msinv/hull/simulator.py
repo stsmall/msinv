@@ -975,7 +975,7 @@ class HullSimulator:
             return 0.0
         segs = self._classed_segs(lineage, inv)
         p_inv = inv.p_inv_for(lineage.population)
-        return sum(c[3] for c in _flux_components(segs, inv, p_inv))
+        return sum(c[3] for pv in inv.flux_procs() for c in _flux_components(segs, pv, p_inv))
 
     def _lineage_class_for_inv(self, lineage, inv):
         """Return 'S', 'I', or None for the lineage's karyotype at
@@ -1307,22 +1307,24 @@ class HullSimulator:
 
     def _sample_flux_tract(self, lineage, inv):
         """Sample one flux event for ``lineage`` with the components of
-        its rate. Returns ``(x_event, tract_left, tract_right)``, or None
+        its rate over every flux process of ``inv``. Returns ``(x_event, tract_left, tract_right)``, or None
         when the proposal is thinned. Mirrors Rust
         ``flux::sample_flux_tract``."""
         segs = self._classed_segs(lineage, inv)
         p_inv = inv.p_inv_for(lineage.population)
-        comps = _flux_components(segs, inv, p_inv)
-        total = sum(c[3] for c in comps)
+        # Components of every flux process (short first), each with the
+        # single-process view it belongs to.
+        comps = [(c, pv) for pv in inv.flux_procs() for c in _flux_components(segs, pv, p_inv)]
+        total = sum(c[3] for c, _ in comps)
         if total <= 0.0:
             return None
         u = self.rng.random() * total
         running = 0.0
-        chosen = comps[-1]
-        for c in comps:
+        chosen, inv = comps[-1]
+        for c, pv in comps:
             running += c[3]
             if u < running:
-                chosen = c
+                chosen, inv = c, pv
                 break
         inv_len = inv.bp_right - inv.bp_left
         ell = inv.mean_tract_length

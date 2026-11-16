@@ -66,6 +66,9 @@ def rust_simulate(simulator) -> "tuple[tskit.TreeSequence, list | None]":
             "gene_conversion_rate": float(inv.gene_conversion_rate),
             "mean_tract_length": float(inv.mean_tract_length),
             "tract_distribution": str(inv.tract_distribution),
+            "long_flux_rate": float(getattr(inv, "long_flux_rate", 0.0)),
+            "long_mean_tract_length": float(getattr(inv, "long_mean_tract_length", 0.0)),
+            "long_tract_distribution": str(getattr(inv, "long_tract_distribution", "geometric")),
         }
         if getattr(inv, "trajectory", None) is not None:
             # New trajectory path — pass dict straight to Rust.

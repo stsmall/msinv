@@ -13,7 +13,10 @@ P_TOL = 0.02             # acceptance half-width on p_now
 # 1.05-1.15, near the no-barrier value, and 1e-4 costs ~40 GB per run).
 # Korunes & Noor 2019 Mol Ecol 28:1302 (doi 10.1111/mec.14921): 1e-5 to 2.5e-5 converted sites per bp per generation
 # (D. pseudoobscura/persimilis crosses); ML tract length 188-390 bp (TRACT_BP below = 300, within that range).
-GAMMA_MAX = 1e-5
+# Full-length run (illex/fulllength, 2026-11-16, user decision): capped at 1e-6. At 18.96 Mb every row with
+# c >= 1e-6 exceeded 64 GB (0 of ~200 finished), and one at c = 7.5e-6 exceeded 210 GB; the 40-kb fit puts c at
+# 3.9e-7 (95% 9.9e-8 to 8.6e-7), so the cut removes prior mass the data already exclude. The 40-kb runs used 1e-5.
+GAMMA_MAX = 1e-6
 GAMMA_MIN = 1e-9   # lower end of the logU prior on c (trajectory.draw_prior)
 
 PRIOR = dict(t_inv=(1e5, 1.5e6), p_hard=0.5, p0=(1e-3, 0.10), s=(1e-6, 1e-1), p_star=(0.3, 0.95))  # s ceiling 1e-1: run set B (2026-11-08)
